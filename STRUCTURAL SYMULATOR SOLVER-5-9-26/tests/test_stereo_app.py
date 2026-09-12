@@ -19,6 +19,8 @@ import pytest
 from apps.stereo.stereo_app import (
     StereoApp, force_color, deform_color, FAMILY_LABEL, CHORD_ROLES,
     QUICK_SUPPORT_PIN, QUICK_SUPPORT_FIXED, QUICK_SUPPORT_CLEAR, QUICK_SUPPORT_CUSTOM,
+    moment_color, reaction_moment_signed, MOMENT_ZERO_COLOR, MOMENT_AXES,
+    MOMENT_AXIS_RESULTANT, MOMENT_AXIS_MX, MOMENT_AXIS_MY, MOMENT_AXIS_MZ,
 )
 from apps.stereo import stereo_math as sm
 
@@ -1243,3 +1245,127 @@ def test_module_editor_refreshes_after_generating_a_different_family(app):
         for ci in idxs:
             for nid in app._me_cells[ci]['nodes']:
                 assert 0 <= nid < len(app.nodes)   # no stale node references
+
+
+# ── Load Example menu ────────────────────────────────────────────────────────
+
+def test_load_example_replaces_the_model_and_solves(app):
+    from apps.stereo import stereo_examples as sx
+    label, builder = sx.EXAMPLES[0]
+    n0 = len(app.nodes)
+    app._load_example(builder, label)
+    assert len(app.nodes) != n0
+    app._analyze()
+    assert app.results is not None
+    assert app.err is None
+
+
+def test_load_example_is_undoable(app):
+    from apps.stereo import stereo_examples as sx
+    n0 = len(app.nodes)
+    label, builder = sx.EXAMPLES[2]
+    app._load_example(builder, label)
+    assert len(app.nodes) != n0
+    app._undo()
+    assert len(app.nodes) == n0
+
+
+def test_every_example_loads_and_analyzes_through_the_real_app(app):
+    from apps.stereo import stereo_examples as sx
+    for label, builder in sx.EXAMPLES:
+        app._load_example(builder, label)
+        app._analyze()
+        assert app.results is not None, f'{label} failed to analyze: {app.err}'
+
+
+# ── Supports-by-moment colouring (rigid connections) ────────────────────────
+
+def _make_rigid_fixed(app):
+    app.sec_conn.set('rigid')
+    app._apply_sections()
+    for s in app.supports:
+        s['type'] = 'fixed'
+    app._analyze()
+
+
+def test_reaction_moment_signed_picks_the_dominant_axis_and_its_sign():
+    r = {'Mx': 1.0, 'My': -5.0, 'Mz': 2.0}
+    assert reaction_moment_signed(r, MOMENT_AXIS_RESULTANT) < 0   # My dominates, negative
+    assert reaction_moment_signed(r, MOMENT_AXIS_MX) == 1.0
+    assert reaction_moment_signed(r, MOMENT_AXIS_MY) == -5.0
+    assert reaction_moment_signed(r, MOMENT_AXIS_MZ) == 2.0
+
+
+def test_reaction_moment_signed_defaults_to_resultant():
+    r = {'Mx': 3.0, 'My': 0.0, 'Mz': 4.0}
+    import math
+    assert reaction_moment_signed(r) == pytest.approx(math.hypot(3.0, 4.0))
+
+
+def test_moment_color_is_neutral_at_zero_and_split_by_sign():
+    assert moment_color(0.0, 10.0) == MOMENT_ZERO_COLOR
+    assert moment_color(1.0, 0.0) == MOMENT_ZERO_COLOR   # no range yet
+    pos = moment_color(5.0, 10.0)
+    neg = moment_color(-5.0, 10.0)
+    assert pos != neg
+    assert pos != MOMENT_ZERO_COLOR
+    assert neg != MOMENT_ZERO_COLOR
+
+
+def test_moment_color_toggle_colors_support_nodes_on_a_rigid_model(app):
+    _make_rigid_fixed(app)
+    app.colour_by_moment.set(True)
+    app._draw()
+    support_nodes = {s['node'] for s in app.supports}
+    colored = []
+    for i in support_nodes:
+        for item in app.canvas.find_withtag(f'node{i}'):
+            if app.canvas.type(item) == 'oval':
+                colored.append(app.canvas.itemcget(item, 'fill'))
+    assert colored
+    assert any(c != MOMENT_ZERO_COLOR for c in colored)
+
+
+def test_moment_axis_selector_changes_the_displayed_colours(app):
+    _make_rigid_fixed(app)
+    app.colour_by_moment.set(True)
+
+    def support_colors():
+        app._draw()
+        out = []
+        for s in app.supports:
+            for item in app.canvas.find_withtag(f"node{s['node']}"):
+                if app.canvas.type(item) == 'oval':
+                    out.append(app.canvas.itemcget(item, 'fill'))
+        return out
+
+    results_per_axis = {}
+    for axis in MOMENT_AXES:
+        app.moment_axis.set(axis)
+        results_per_axis[axis] = support_colors()
+    # at least one axis choice must produce a DIFFERENT colouring than
+    # another -- otherwise the selector would be decorative
+    assert len(set(tuple(v) for v in results_per_axis.values())) > 1
+
+
+def test_moment_colour_mode_shows_neutral_on_a_pin_jointed_model(app):
+    # a pin-jointed model reacts to force only -- every support should
+    # read as the neutral ~0 colour regardless of load
+    app._analyze()
+    app.colour_by_moment.set(True)
+    app._draw()
+    support_nodes = {s['node'] for s in app.supports}
+    for i in support_nodes:
+        for item in app.canvas.find_withtag(f'node{i}'):
+            if app.canvas.type(item) == 'oval':
+                assert app.canvas.itemcget(item, 'fill') == MOMENT_ZERO_COLOR
+
+
+def test_moment_legend_mentions_the_selected_axis(app):
+    _make_rigid_fixed(app)
+    app.colour_by_moment.set(True)
+    app.moment_axis.set(MOMENT_AXIS_MY)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any('My' in t for t in texts)

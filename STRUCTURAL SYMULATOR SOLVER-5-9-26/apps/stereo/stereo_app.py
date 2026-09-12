@@ -40,6 +40,7 @@ from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_checks as sc
 from apps.stereo import stereo_reports as sr
 from apps.stereo import expr_math as em
+from apps.stereo import stereo_examples as sx
 
 BG = '#f0f0ee'
 CANVAS_BG = '#ffffff'
@@ -75,6 +76,12 @@ UTIL_MID = '#f9a825'    # amber -- approaching capacity
 UTIL_HIGH = '#c62828'   # red -- at or over capacity
 MEMBER_SEL_COLOR = '#e0522b'
 MEMBER_SEL_HIT_PX = 8
+MOMENT_NEG_LOW = '#fbe3c6'    # pale orange
+MOMENT_NEG_HIGH = '#c46a12'   # saturated orange -- negative resultant moment
+MOMENT_ZERO_COLOR = '#9a9a9a'   # neutral grey, same as NEAR_ZERO_COLOR
+MOMENT_POS_LOW = '#e6dbf2'    # pale violet
+MOMENT_POS_HIGH = '#6a2ca0'   # saturated violet -- positive resultant moment
+MOMENT_GAMMA = 0.6
 
 DOF_LABELS = (('ux', 'Ux'), ('uy', 'Uy'), ('uz', 'Uz'),
               ('rx', 'Rx'), ('ry', 'Ry'), ('rz', 'Rz'))
@@ -185,6 +192,63 @@ def util_color(util):
     if util <= 1.0:
         return _lerp_hex(UTIL_MID, UTIL_HIGH, (util - 0.5) / 0.5)
     return UTIL_HIGH
+
+
+MOMENT_AXIS_RESULTANT = 'Resultant (dominant)'
+MOMENT_AXIS_MX = 'Mx'
+MOMENT_AXIS_MY = 'My'
+MOMENT_AXIS_MZ = 'Mz'
+MOMENT_AXES = (MOMENT_AXIS_RESULTANT, MOMENT_AXIS_MX, MOMENT_AXIS_MY, MOMENT_AXIS_MZ)
+
+
+def reaction_moment_signed(reaction, axis=MOMENT_AXIS_RESULTANT):
+    """One signed scalar (kN*m) from a solved reaction's own Mx/My/Mz, for
+    moment_color. `axis` picks which:
+
+    'Mx'/'My'/'Mz' : that single component's own signed value directly --
+                  lets you look at one specific bending direction in
+                  isolation (e.g. the moment resisting bending about the
+                  span's own transverse axis) instead of a blend of all
+                  three.
+    'Resultant (dominant)' (default) : the RESULTANT magnitude
+                  (sqrt(Mx^2+My^2+Mz^2)), signed by whichever of the three
+                  components has the largest magnitude at that support --
+                  one number combining all three without picking an axis
+                  up front (which could read ~0 everywhere if a model's
+                  real bending happens to be about a different axis than
+                  the one chosen) or reporting an unsigned magnitude
+                  (which cannot show as "negative" at all, and this is
+                  specifically meant to)."""
+    mx = reaction.get('Mx', 0.0)
+    my = reaction.get('My', 0.0)
+    mz = reaction.get('Mz', 0.0)
+    if axis == MOMENT_AXIS_MX:
+        return mx
+    if axis == MOMENT_AXIS_MY:
+        return my
+    if axis == MOMENT_AXIS_MZ:
+        return mz
+    resultant = math.sqrt(mx * mx + my * my + mz * mz)
+    dominant = max((mx, my, mz), key=abs)
+    return resultant if dominant >= 0 else -resultant
+
+
+def moment_color(m_signed, max_abs_m):
+    """Orange-grey-violet spectrum for a support node's own net reaction
+    moment (see reaction_moment_signed): orange toward negative, a
+    neutral grey at ~0, violet toward positive -- the per-node quantity a
+    RIGID (moment-transferring) connection scheme actually produces at
+    its supports, unlike a pin-jointed truss's, which reacts to force
+    only and would read ~0 here at every support regardless of load."""
+    if max_abs_m < 1e-9:
+        return MOMENT_ZERO_COLOR
+    frac = abs(m_signed) / max_abs_m
+    if frac < NEAR_ZERO_FRAC:
+        return MOMENT_ZERO_COLOR
+    frac = min(1.0, frac) ** MOMENT_GAMMA
+    if m_signed >= 0:
+        return _lerp_hex(MOMENT_POS_LOW, MOMENT_POS_HIGH, frac)
+    return _lerp_hex(MOMENT_NEG_LOW, MOMENT_NEG_HIGH, frac)
 
 
 class StereoApp(UnitsMixin):
@@ -298,6 +362,14 @@ class StereoApp(UnitsMixin):
                   command=self._generate).pack(side='left', padx=4)
         tk.Button(g, text='Custom Surface Wizard…', command=self._open_custom_surface_wizard
                  ).pack(side='left', padx=(2, 4))
+        examples_btn = tk.Menubutton(g, text='Load Example ▾', relief='raised',
+                                     font=('Helvetica', 9))
+        examples_menu = tk.Menu(examples_btn, tearoff=False)
+        for label, builder in sx.EXAMPLES:
+            examples_menu.add_command(label=label,
+                                      command=lambda b=builder, lbl=label: self._load_example(b, lbl))
+        examples_btn['menu'] = examples_menu
+        examples_btn.pack(side='left', padx=(2, 4))
 
         self.toolbar_flow.separator()
         g = self.toolbar_flow.group()
@@ -354,6 +426,14 @@ class StereoApp(UnitsMixin):
         self.show_reactions = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Reaction arrows', variable=self.show_reactions, bg=BG,
                        command=self._draw).pack(side='left', padx=(6, 0))
+        self.colour_by_moment = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Supports by moment (rigid)', variable=self.colour_by_moment,
+                      bg=BG, command=self._draw).pack(side='left', padx=(6, 0))
+        self.moment_axis = tk.StringVar(value=MOMENT_AXIS_RESULTANT)
+        moment_axis_box = ttk.Combobox(g, textvariable=self.moment_axis, state='readonly',
+                                       width=15, values=MOMENT_AXES)
+        moment_axis_box.pack(side='left', padx=(2, 0))
+        moment_axis_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
 
         self.toolbar_flow.separator()
         g = self.toolbar_flow.group()
@@ -1572,6 +1652,19 @@ class StereoApp(UnitsMixin):
         self._reset_view(redraw=False)
         self._refresh_all()
 
+    def _load_example(self, builder, label):
+        """Build and load one of stereo_examples.EXAMPLES -- a ready-made
+        scene demonstrating the add-on features (columns, reinforcement
+        beams) or the Custom Surface Wizard's single-/two-surface
+        generators end to end, without having to lasso-select node
+        targets or type an expression by hand first."""
+        try:
+            mesh = builder()
+        except (ValueError, em.ExpressionError) as exc:
+            messagebox.showerror('Load Example', str(exc))
+            return
+        self._load_mesh(mesh, push_undo=True, undo_label=f'load example: {label}')
+
     # ── Custom Surface Wizard: typed-expression surfaces + domain/module ────
     def _open_custom_surface_wizard(self):
         """A Toplevel dialog for defining a surface by typed expression
@@ -2271,13 +2364,38 @@ class StereoApp(UnitsMixin):
 
             support_nodes = {s['node'] for s in self.supports
                              if any(sm.support_restraints(s).values())}
+            # Supports-by-moment: a support's reaction Mx/My/Mz only exists
+            # to begin with because SOMETHING in the model transfers moment
+            # into it -- a rigid (moment-transmitting) connection scheme,
+            # or a directly-applied point moment. A purely pin-jointed
+            # model reacts to force alone, so every support reads ~0 here
+            # regardless of load -- an accurate reflection of the physics,
+            # not a sign the feature is broken on that kind of model.
+            by_moment = self.colour_by_moment.get() and self.results is not None
+            moment_by_node = {}
+            max_abs_moment = 0.0
+            if by_moment:
+                moment_axis = self.moment_axis.get()
+                for i in support_nodes:
+                    r = self.results['reactions'].get(i)
+                    if r is not None:
+                        m = reaction_moment_signed(r, moment_axis) * frac
+                        moment_by_node[i] = m
+                        max_abs_moment = max(max_abs_moment, abs(m))
             for i, (px, py, _) in enumerate(proj):
                 sx, sy = to_screen(px, py)
                 sel = i in self.selected_nodes
                 r = 5 if sel else 4
-                color = NODE_SEL_COLOR if sel else (
-                    ref_grey if ref_grey is not None else (
-                    SUPPORT_COLOR if i in support_nodes else NODE_COLOR))
+                if sel:
+                    color = NODE_SEL_COLOR
+                elif by_moment and i in support_nodes:
+                    color = moment_color(moment_by_node.get(i, 0.0), max_abs_moment)
+                elif ref_grey is not None:
+                    color = ref_grey
+                elif i in support_nodes:
+                    color = SUPPORT_COLOR
+                else:
+                    color = NODE_COLOR
                 c.create_oval(sx - r, sy - r, sx + r, sy + r, fill=color, outline='',
                              tags=('node', f'node{i}'))
                 # A small box drawn AROUND a supported node -- the "box
@@ -2286,7 +2404,12 @@ class StereoApp(UnitsMixin):
                 # would otherwise override/obscure).
                 if i in support_nodes:
                     h = SUPPORT_BOX_HALF_PX
-                    box_color = ref_grey if ref_grey is not None else SUPPORT_COLOR
+                    if by_moment:
+                        box_color = moment_color(moment_by_node.get(i, 0.0), max_abs_moment)
+                    elif ref_grey is not None:
+                        box_color = ref_grey
+                    else:
+                        box_color = SUPPORT_COLOR
                     c.create_rectangle(sx - h, sy - h, sx + h, sy + h, outline=box_color,
                                        width=2, tags=('node', f'node{i}'))
 
@@ -2511,6 +2634,11 @@ class StereoApp(UnitsMixin):
             row('#555555', 'dashed = over capacity (utilisation > 1.0)', dashed=True)
             if self.show_reactions.get() and self.results is not None:
                 row(REACTION_COLOR, 'reaction (support pushing back)')
+            if self.colour_by_moment.get() and self.results is not None:
+                axis_txt = self.moment_axis.get()
+                row(MOMENT_NEG_HIGH, f'support moment ({axis_txt}): negative')
+                row(MOMENT_ZERO_COLOR, f'support moment ({axis_txt}): ~0')
+                row(MOMENT_POS_HIGH, f'support moment ({axis_txt}): positive')
 
         if show_def:
             if self.deform_color_mode.get() == DEFORM_MODE_FORCE:

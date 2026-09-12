@@ -1341,7 +1341,88 @@ class StereoApp(UnitsMixin):
             c.create_text(x, y - r - 8, text=str(k), font=('Helvetica', 8, 'bold'),
                          fill='#333333')
 
+        self._me_draw_axonometric_inset(cell_nodes)
         self._me_show_selection_info(cell_nodes, coords)
+
+    # -- axonometric 3D inset -----------------------------------------------
+    ME_AXO_SIZE = 96
+    ME_AXO_MARGIN = 6
+    ME_AXO_AZIMUTH = 35.0
+    ME_AXO_ELEVATION = 22.0
+
+    def _me_axonometric_project(self, x, y, z):
+        """The exact same rotate-then-orthographic-project maths as the
+        main 3D view's own _project (see its docstring), but at FIXED
+        angles -- this app's own default main-view angles, for a familiar
+        look -- rather than self.azimuth/self.elevation, so the inset
+        does not spin as you orbit the main canvas for an unrelated
+        reason while editing a module."""
+        az = math.radians(self.ME_AXO_AZIMUTH)
+        el = math.radians(self.ME_AXO_ELEVATION)
+        xr = x * math.cos(az) - y * math.sin(az)
+        yr = x * math.sin(az) + y * math.cos(az)
+        zr = z
+        y2 = yr * math.cos(el) - zr * math.sin(el)
+        depth = yr * math.sin(el) + zr * math.cos(el)
+        return xr, -depth, y2
+
+    def _me_draw_axonometric_inset(self, cell_nodes):
+        """A small, fixed-angle axonometric (isometric-style, no
+        perspective distortion) 3D rendering of the SAME cell, drawn as
+        an inset panel over the corner of the flattened (u, v) polygon
+        view above -- the flattened view is what you actually edit
+        against (its own plane is exactly the cell's own local u/v
+        directions, which is what makes dragging within it meaningful),
+        but it necessarily discards the cell's true 3D shape outside
+        that plane; this inset restores that at a glance, using each
+        node's REAL world (x, y, z) position (re-centred on the cell's
+        own centroid so it always sits nicely inside the inset
+        regardless of where the module actually sits in the model)."""
+        c = self.me_canvas
+        n = len(cell_nodes)
+        pts = [self.nodes[nid] for nid in cell_nodes]
+        cx = sum(p[0] for p in pts) / n
+        cy = sum(p[1] for p in pts) / n
+        cz = sum(p[2] for p in pts) / n
+        proj = [self._me_axonometric_project(p[0] - cx, p[1] - cy, p[2] - cz) for p in pts]
+        xs = [p[0] for p in proj]
+        ys = [p[1] for p in proj]
+        span = max(max(xs) - min(xs), max(ys) - min(ys), 1e-6)
+
+        size = self.ME_AXO_SIZE
+        m = self.ME_AXO_MARGIN
+        x0 = MODULE_CANVAS_SIZE - size - m
+        y0 = m
+        inner_pad = 14
+        scale = (size - 2 * inner_pad) / span
+        cx0 = x0 + size / 2.0
+        cy0 = y0 + size / 2.0
+
+        def to_inset(px, py):
+            return (cx0 + px * scale, cy0 - py * scale)
+
+        c.create_rectangle(x0, y0, x0 + size, y0 + size, fill='#fbfbf8',
+                           outline='#999999', width=1, tags='axo')
+        c.create_text(x0 + 4, y0 + 4, text='3D', anchor='nw',
+                     font=('Helvetica', 7, 'italic'), fill='#888888', tags='axo')
+
+        for i in range(n):
+            ax, ay = to_inset(proj[i][0], proj[i][1])
+            bx, by = to_inset(proj[(i + 1) % n][0], proj[(i + 1) % n][1])
+            c.create_line(ax, ay, bx, by, fill='#333333', width=1.5, tags='axo')
+        # the cell's actual diagonal(s), if a quad has one toggled on --
+        # drawn distinctly (thin, grey) from the ring edges above
+        if n == 4:
+            for pos_a, pos_b in ((0, 2), (1, 3)):
+                a_id, b_id = cell_nodes[pos_a], cell_nodes[pos_b]
+                if any({m2['a'], m2['b']} == {a_id, b_id} for m2 in self.members):
+                    ax, ay = to_inset(*proj[pos_a][:2])
+                    bx, by = to_inset(*proj[pos_b][:2])
+                    c.create_line(ax, ay, bx, by, fill='#888888', width=1, tags='axo')
+        for i in range(n):
+            px, py = to_inset(proj[i][0], proj[i][1])
+            c.create_oval(px - 3, py - 3, px + 3, py + 3, fill='#333333',
+                         outline='', tags='axo')
 
     def _me_show_selection_info(self, cell_nodes, coords):
         sel = self._me_selection

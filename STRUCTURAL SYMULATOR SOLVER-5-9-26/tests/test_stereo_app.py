@@ -984,3 +984,128 @@ def test_stop_units_detaches_from_the_selector(app):
     app.stop_units()
     assert listener not in units._listeners
     assert app._units_listener is None
+
+
+# ── Custom Surface Wizard ────────────────────────────────────────────────────
+
+def _toplevels(w):
+    out = []
+    for c in w.winfo_children():
+        if isinstance(c, tk.Toplevel):
+            out.append(c)
+        out.extend(_toplevels(c))
+    return out
+
+
+def _descendants(w, kind):
+    out = []
+    for c in w.winfo_children():
+        if isinstance(c, kind):
+            out.append(c)
+        out.extend(_descendants(c, kind))
+    return out
+
+
+def _open_wizard(app):
+    app._open_custom_surface_wizard()
+    return _toplevels(app.root)[-1]
+
+
+def test_wizard_default_single_surface_generates_a_flat_square_grid(app):
+    win = _open_wizard(app)
+    buttons = _descendants(win, tk.Button)
+    [b for b in buttons if b.cget('text') == 'Generate'][0].invoke()
+    assert len(app.nodes) == 81   # default n1=n2=8 -> a 9x9 node grid
+    zs = {round(z, 9) for x, y, z in app.nodes}
+    assert zs == {0.0}   # default surface is the flat z=0 height field
+    assert not win.winfo_exists()   # Generate closes the dialog on success
+
+
+def test_wizard_bad_expression_shows_an_error_and_keeps_the_dialog_open(app):
+    win = _open_wizard(app)
+    entries = _descendants(win, tk.Entry)
+    z_entry = entries[0]
+    z_entry.delete(0, tk.END)
+    z_entry.insert(0, 'x + not_a_real_name')
+    win.update_idletasks()   # flush the Entry -> StringVar trace before reading it
+    n0 = len(app.nodes)
+    buttons = _descendants(win, tk.Button)
+    [b for b in buttons if b.cget('text') == 'Generate'][0].invoke()
+    assert win.winfo_exists()
+    assert len(app.nodes) == n0   # model untouched by the failed attempt
+    labels = _descendants(win, tk.Label)
+    assert any('unknown name' in l.cget('text') for l in labels)
+
+
+def test_wizard_calculator_palette_inserts_into_the_focused_field(app):
+    win = _open_wizard(app)
+    entries = _descendants(win, tk.Entry)
+    z_entry = entries[0]
+    z_entry.delete(0, tk.END)
+    z_entry.focus_set()
+    z_entry.update()   # let <FocusIn> actually fire before the palette click
+    buttons = _descendants(win, tk.Button)
+    [b for b in buttons if b.cget('text') == 'sqrt'][0].invoke()
+    assert z_entry.get() == 'sqrt()'
+
+
+def test_wizard_3d_module_offsets_the_second_layer(app):
+    win = _open_wizard(app)
+    radios = _descendants(win, tk.Radiobutton)
+    [r for r in radios if r.cget('text') == '3D (double layer)'][0].invoke()
+    win.update_idletasks()
+    buttons = _descendants(win, tk.Button)
+    [b for b in buttons if b.cget('text') == 'Generate'][0].invoke()
+    zs = sorted({round(z, 6) for x, y, z in app.nodes})
+    assert len(zs) == 2
+    assert zs[1] - zs[0] == pytest.approx(0.5)   # default depth = 0.5
+
+
+def test_wizard_two_surfaces_mode_builds_a_double_layer_between_them(app):
+    win = _open_wizard(app)
+    radios = _descendants(win, tk.Radiobutton)
+    [r for r in radios if 'Two surfaces' in r.cget('text')][0].invoke()
+
+    labelframes = _descendants(win, tk.LabelFrame)
+    top_lf = [lf for lf in labelframes if lf.cget('text') == 'Top surface'][0]
+    bot_lf = [lf for lf in labelframes if lf.cget('text') == 'Bottom surface'][0]
+    top_entry = _descendants(top_lf, tk.Entry)[0]
+    bot_entry = _descendants(bot_lf, tk.Entry)[0]
+    top_entry.delete(0, tk.END); top_entry.insert(0, '1.0')
+    bot_entry.delete(0, tk.END); bot_entry.insert(0, '0')
+    win.update_idletasks()
+
+    buttons = _descendants(win, tk.Button)
+    [b for b in buttons if b.cget('text') == 'Generate'][0].invoke()
+    zs = sorted({round(z, 6) for x, y, z in app.nodes})
+    assert zs == [0.0, 1.0]
+    assert len(app.nodes) == 81 * 2
+
+
+def test_wizard_polar_full_circle_and_isometric_pattern_generates_cleanly(app):
+    win = _open_wizard(app)
+    radios = _descendants(win, tk.Radiobutton)
+    [r for r in radios if r.cget('text') == 'Polar'][0].invoke()
+    [r for r in radios if 'Isometric' in r.cget('text')][0].invoke()
+    [r for r in radios if r.cget('text') == '3D (double layer)'][0].invoke()
+    checks = _descendants(win, tk.Checkbutton)
+    [c for c in checks if 'Full circle' in c.cget('text')][0].invoke()
+    entries = _descendants(win, tk.Entry)
+    entries[0].delete(0, tk.END); entries[0].insert(0, '1.0')   # a nonzero flat surface
+    win.update_idletasks()
+
+    buttons = _descendants(win, tk.Button)
+    [b for b in buttons if b.cget('text') == 'Generate'][0].invoke()
+    assert not win.winfo_exists()
+    assert len(app.nodes) > 0
+    assert len(app.members) > 0
+
+
+def test_wizard_generated_mesh_is_undoable(app):
+    n0 = len(app.nodes)
+    win = _open_wizard(app)
+    buttons = _descendants(win, tk.Button)
+    [b for b in buttons if b.cget('text') == 'Generate'][0].invoke()
+    assert len(app.nodes) != n0
+    app._undo()
+    assert len(app.nodes) == n0

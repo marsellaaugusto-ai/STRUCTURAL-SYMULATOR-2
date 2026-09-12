@@ -1,0 +1,22 @@
+# Python build artifacts — never part of the source tree.
+__pycache__/
+*.py[cod]
+*.so
+
+# Test/tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+
+# Excel files written by Cable Web's own Export, and scratch solve output.
+# The cableweb_report*.xlsx regression fixtures are deliberately NOT ignored
+# (see MANIFESTO.md sec 2, checklist item 4) -- add them explicitly with
+# `git add -f` if you keep them here.
+~$*.xlsx

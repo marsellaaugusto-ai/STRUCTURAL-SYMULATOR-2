@@ -1,0 +1,22 @@
+# Structural Simulator — runtime dependencies
+#
+# numpy and scipy are REQUIRED, not optional:
+#   numpy  -- imported unguarded at common.py module scope; without it none
+#             of the five tabs start at all.
+#   scipy  -- cable_web_math.solve_analysis reaches its tolerance via
+#             scipy.optimize.least_squares on every multi-cable network.
+#             Its Newton/LM seeds alone converge on NO web with a junction,
+#             including this project's own built-in examples (measured
+#             2026-09-04; see REPORTS AND GUIDES/CABLE_WEB_DIAGNOSIS_2026-09-04.md).
+#
+# openpyxl is required only for Excel import/export, and common.py's
+# _ensure_openpyxl() will pip-install it on first use if it is absent --
+# but installing it up front avoids that first-use delay.
+numpy>=1.24
+scipy>=1.10
+openpyxl>=3.1
+
+# Optional. common.py's _ensure_matplotlib() auto-installs these on demand
+# for the LaTeX-style equation images in the Truss/Beam/Arch guides.
+# matplotlib>=3.7
+# pillow>=10.0

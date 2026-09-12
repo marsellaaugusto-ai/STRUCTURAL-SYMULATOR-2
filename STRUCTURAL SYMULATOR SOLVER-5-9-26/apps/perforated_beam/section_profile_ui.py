@@ -78,7 +78,7 @@ import math
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
-from common import ZoomCanvas
+from common import ZoomCanvas, FlowBar
 from apps.perforated_beam import profile_sketcher_math as psm
 from apps.perforated_beam import section_profile_math as secm
 from apps.perforated_beam import welded_section_math as wsm
@@ -167,82 +167,106 @@ class SectionProfileDesigner(tk.Toplevel):
 
     # ── UI layout ────────────────────────────────────────────────────────
     def _build_ui(self):
+        # Every bar below used to be one un-wrapping row of pack(side='left')
+        # calls. Packed together with the seven drawing tools, the row ran
+        # off the right edge of the window (measured: 1483px of controls in
+        # a 1280px default window), putting Save/Load and the selection
+        # tools out of reach entirely. FlowBar (common.py) is the project's
+        # own fix for exactly this -- see its docstring and
+        # REPORTS AND GUIDES/HANDOFF_MANIFESTO_2026-09-10.md sec. on
+        # responsive layout -- so every bar here wraps its groups onto a new
+        # row instead of running off the edge.
         toolbar = tk.Frame(self, bg=BG)
         toolbar.pack(side='top', fill='x', padx=4, pady=4)
+        toolbar_flow = FlowBar(toolbar)
 
+        g = toolbar_flow.group()
         self._tool_buttons = {}
         for t, label, _key, _n in TOOLS:
-            b = tk.Button(toolbar, text=label, relief='flat', bd=0, padx=6,
+            b = tk.Button(g, text=label, relief='flat', bd=0, padx=6,
                           command=lambda t=t: self._set_tool(t))
             b.pack(side='left', padx=1)
             self._tool_buttons[t] = b
 
-        ttk.Separator(toolbar, orient='vertical').pack(side='left', fill='y', padx=6)
-        tk.Label(toolbar, text='Draw into:', bg=BG).pack(side='left')
+        toolbar_flow.separator()
+        g = toolbar_flow.group()
+        tk.Label(g, text='Draw into:', bg=BG).pack(side='left')
         for val, lbl in (('outline', 'Outline'), ('hole', 'Hole')):
-            tk.Radiobutton(toolbar, text=lbl, value=val, variable=self.target,
+            tk.Radiobutton(g, text=lbl, value=val, variable=self.target,
                            bg=BG, command=self._on_target_change).pack(side='left')
 
-        ttk.Separator(toolbar, orient='vertical').pack(side='left', fill='y', padx=6)
-        tk.Checkbutton(toolbar, text='Arc CCW', variable=self.arc_ccw, bg=BG,
+        toolbar_flow.separator()
+        g = toolbar_flow.group()
+        tk.Checkbutton(g, text='Arc CCW', variable=self.arc_ccw, bg=BG,
                        command=self._redraw).pack(side='left')
-        tk.Checkbutton(toolbar, text='Grid snap', variable=self.snap_grid, bg=BG).pack(side='left')
-        tk.Checkbutton(toolbar, text='Point snap', variable=self.snap_points, bg=BG).pack(side='left')
+        tk.Checkbutton(g, text='Grid snap', variable=self.snap_grid, bg=BG).pack(side='left')
+        tk.Checkbutton(g, text='Point snap', variable=self.snap_points, bg=BG).pack(side='left')
 
-        ttk.Separator(toolbar, orient='vertical').pack(side='left', fill='y', padx=6)
-        tk.Label(toolbar, text='Grid:', bg=BG).pack(side='left')
+        toolbar_flow.separator()
+        g = toolbar_flow.group()
+        tk.Label(g, text='Grid:', bg=BG).pack(side='left')
         self.grid_var = tk.DoubleVar(value=self.grid_size)
-        tk.Entry(toolbar, textvariable=self.grid_var, width=5).pack(side='left', padx=2)
-        tk.Button(toolbar, text='Set', relief='flat', bd=0, command=self._set_grid_size).pack(side='left')
+        tk.Entry(g, textvariable=self.grid_var, width=5).pack(side='left', padx=2)
+        tk.Button(g, text='Set', relief='flat', bd=0, command=self._set_grid_size).pack(side='left')
+        toolbar_flow.start()
 
-        # File/history actions get their own row. Packed together with the
-        # seven tools they ran off the right edge of the window, which on
-        # a 1180-wide default put Save and Load out of reach entirely.
+        # File/history actions.
         filebar = tk.Frame(self, bg=BG)
         filebar.pack(side='top', fill='x', padx=4)
+        filebar_flow = FlowBar(filebar)
+        g = filebar_flow.group()
         for label, cmd in (('Undo', self._undo), ('Clear all', self._clear_all),
                            ('Close loop', self._close_loop),
                            ('Save…', self._save), ('Load…', self._load)):
-            tk.Button(filebar, text=label, relief='flat', bd=0, command=cmd).pack(side='left', padx=2)
+            tk.Button(g, text=label, relief='flat', bd=0, command=cmd).pack(side='left', padx=2)
+        filebar_flow.start()
 
         # Second toolbar row: everything that acts on the SELECTION.
         selbar = tk.Frame(self, bg=BG)
         selbar.pack(side='top', fill='x', padx=4)
-        tk.Label(selbar, text='Selection:', bg=BG,
+        selbar_flow = FlowBar(selbar)
+
+        g = selbar_flow.group()
+        tk.Label(g, text='Selection:', bg=BG,
                  font=('Helvetica', 9, 'bold')).pack(side='left')
-        self.sel_label = tk.Label(selbar, text='nothing selected', bg=BG, fg='#666',
+        self.sel_label = tk.Label(g, text='nothing selected', bg=BG, fg='#666',
                                    font=('Helvetica', 8), width=22, anchor='w')
         self.sel_label.pack(side='left', padx=(2, 6))
-        tk.Button(selbar, text='Select all', relief='flat', bd=0,
+        tk.Button(g, text='Select all', relief='flat', bd=0,
                   command=self._select_all).pack(side='left', padx=1)
-        tk.Button(selbar, text='Clear sel.', relief='flat', bd=0,
+        tk.Button(g, text='Clear sel.', relief='flat', bd=0,
                   command=self._clear_selection).pack(side='left', padx=1)
 
-        ttk.Separator(selbar, orient='vertical').pack(side='left', fill='y', padx=6)
-        tk.Button(selbar, text='Mirror ⇔ left/right', relief='flat', bd=0, bg='#eef4fb',
+        selbar_flow.separator()
+        g = selbar_flow.group()
+        tk.Button(g, text='Mirror ⇔ left/right', relief='flat', bd=0, bg='#eef4fb',
                   command=lambda: self._mirror_selection(True)).pack(side='left', padx=1)
-        tk.Button(selbar, text='Mirror ⇕ top/bottom', relief='flat', bd=0, bg='#eef4fb',
+        tk.Button(g, text='Mirror ⇕ top/bottom', relief='flat', bd=0, bg='#eef4fb',
                   command=lambda: self._mirror_selection(False)).pack(side='left', padx=1)
 
-        tk.Label(selbar, text=' about:', bg=BG, font=('Helvetica', 8)).pack(side='left')
+        g = selbar_flow.group()
+        tk.Label(g, text=' about:', bg=BG, font=('Helvetica', 8)).pack(side='left')
         self.mirror_about = tk.StringVar(value='axis')
         for val, lbl in (('axis', 'the axis (x=0 / y=0)'),
                          ('centre', "selection's centre"),
                          ('custom', 'this coordinate:')):
-            tk.Radiobutton(selbar, text=lbl, value=val, variable=self.mirror_about,
+            tk.Radiobutton(g, text=lbl, value=val, variable=self.mirror_about,
                            bg=BG, font=('Helvetica', 8)).pack(side='left')
         self.mirror_at_var = tk.StringVar(value='0')
-        tk.Entry(selbar, textvariable=self.mirror_at_var, width=7).pack(side='left', padx=2)
+        tk.Entry(g, textvariable=self.mirror_at_var, width=7).pack(side='left', padx=2)
 
+        g = selbar_flow.group()
         self.mirror_copy = tk.BooleanVar(value=False)
-        tk.Checkbutton(selbar, text='as a copy', variable=self.mirror_copy, bg=BG,
+        tk.Checkbutton(g, text='as a copy', variable=self.mirror_copy, bg=BG,
                        font=('Helvetica', 8)).pack(side='left', padx=(6, 0))
 
-        ttk.Separator(selbar, orient='vertical').pack(side='left', fill='y', padx=6)
-        tk.Button(selbar, text='Move…', relief='flat', bd=0,
+        selbar_flow.separator()
+        g = selbar_flow.group()
+        tk.Button(g, text='Move…', relief='flat', bd=0,
                   command=self._move_selection).pack(side='left', padx=1)
-        tk.Button(selbar, text='Delete sel.', relief='flat', bd=0,
+        tk.Button(g, text='Delete sel.', relief='flat', bd=0,
                   command=self._delete_selection).pack(side='left', padx=1)
+        selbar_flow.start()
 
         main = tk.Frame(self, bg=BG)
         main.pack(fill='both', expand=True, padx=4)

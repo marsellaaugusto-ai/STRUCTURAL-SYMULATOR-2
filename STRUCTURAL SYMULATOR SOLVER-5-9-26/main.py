@@ -22,6 +22,7 @@ from apps.arch.arch_app import ArchApp
 from apps.cable.cable_app import CableApp
 from apps.cable_web.cable_web_app import CableWebApp
 from apps.perforated_beam.perforated_beam_app import PerforatedBeamApp
+from apps.stereo.stereo_app import StereoApp
 
 class App:
     def __init__(self, root):
@@ -76,12 +77,14 @@ class App:
         cable_tab = tk.Frame(nb)
         cable_web_tab = tk.Frame(nb)
         perforated_beam_tab = tk.Frame(nb)
+        stereo_tab = tk.Frame(nb)
         nb.add(truss_tab, text='Truss')
         nb.add(beam_tab, text='Beam')
         nb.add(arch_tab, text='Arch')
         nb.add(cable_tab, text='Cable')
         nb.add(cable_web_tab, text='Cable Web')
         nb.add(perforated_beam_tab, text='Perforated Beam')
+        nb.add(stereo_tab, text='Stereo')
 
         TrussApp(truss_tab)
         beam_app = BeamApp(beam_tab)
@@ -94,6 +97,7 @@ class App:
         cable_web_app.pack(fill='both', expand=True)
         perforated_beam_app = PerforatedBeamApp(perforated_beam_tab)
         perforated_beam_app.pack(fill='both', expand=True)
+        StereoApp(stereo_tab)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

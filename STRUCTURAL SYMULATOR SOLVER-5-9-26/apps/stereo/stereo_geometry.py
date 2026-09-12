@@ -565,11 +565,13 @@ def dome(base_radius, rise, n_rings=4, n_sectors=12):
 # already there" tools a real space-frame designer reaches for once the
 # base grid is in place.
 
-def add_column(nodes, members, target_node, height, n_legs=4):
-    """Add a column supporting the mesh at `target_node`: a vertical SHAFT
+def add_column(nodes, members, target_nodes, height):
+    """Add a column supporting the mesh at `target_nodes`: a vertical SHAFT
     from a new ground-level node up to a new "head" node just below the
-    surface, and a CAPITAL of `n_legs` short raking members fanning from
-    that head out to `target_node`'s existing neighbours in the mesh.
+    surface, and a CAPITAL of raking members fanning from that head out to
+    EVERY node in `target_nodes` -- the exact attachment points the caller
+    (the UI's lasso selection) chose, not an automatically-guessed nearest-
+    neighbour set.
 
     This is the standard space-frame column detail: a column landing on a
     single joint would concentrate its whole reaction (and, in the other
@@ -578,104 +580,92 @@ def add_column(nodes, members, target_node, height, n_legs=4):
     meeting there are sized for. Fanning the head out to several
     neighbouring nodes through the capital spreads that force into the
     grid the way it is actually built to carry load, before it ever
-    reaches the single node above the column.
+    reaches any single node above the column.
 
-    height  : shaft length (m), from the new base node up to the head.
-    n_legs  : how many of target_node's existing mesh-neighbours the
-              capital connects to (nearest first). Must be <= the number
-              of members already meeting at target_node -- a capital
-              cannot fan out to neighbours that do not exist.
+    target_nodes : >= 3 existing node indices the capital's legs attach
+                   to (e.g. every node of one or a few grid modules,
+                   selected with a lasso box in the UI).
+    height       : shaft length (m), from the new base node up to the head.
 
     Returns (nodes, members, base_node, head_node) -- new lists, the
     mesh's own node/member lists are not mutated in place.
     """
-    if not (0 <= target_node < len(nodes)):
-        raise ValueError(f'target_node {target_node} does not exist.')
+    target_nodes = list(target_nodes)
+    if len(target_nodes) < 3:
+        raise ValueError('a capital needs at least 3 attachment nodes to distribute load usefully.')
+    for j in target_nodes:
+        if not (0 <= j < len(nodes)):
+            raise ValueError(f'target node {j} does not exist.')
     if height <= 0:
         raise ValueError('height must be positive.')
-    if n_legs < 3:
-        raise ValueError('a capital needs at least 3 legs to distribute load usefully.')
 
-    neighbour_ids = sorted(
-        {m['a'] if m['b'] == target_node else m['b']
-         for m in members if target_node in (m['a'], m['b'])},
-        key=lambda j: math.dist(nodes[j][:2], nodes[target_node][:2]))
-    if len(neighbour_ids) < n_legs:
-        raise ValueError(f'target_node {target_node} only has {len(neighbour_ids)} '
-                         f'mesh neighbour(s); need at least {n_legs} for a {n_legs}-leg capital.')
-    legs = neighbour_ids[:n_legs]
+    cx = sum(nodes[j][0] for j in target_nodes) / len(target_nodes)
+    cy = sum(nodes[j][1] for j in target_nodes) / len(target_nodes)
+    cz = sum(nodes[j][2] for j in target_nodes) / len(target_nodes)
 
-    tx, ty, tz = nodes[target_node]
     nodes = list(nodes)
     members = list(members)
     seen = {(min(m['a'], m['b']), max(m['a'], m['b'])) for m in members}
 
-    # The head sits a short distance below the surface (never AT it, or
-    # the "shaft" would be zero-length) so the capital legs are genuinely
-    # inclined -- horizontal legs (head in the same plane as target_node)
-    # would carry no vertical component at all.
+    # The head sits a short distance below the (average) attachment
+    # surface -- never AT it, or the "shaft" would be zero-length -- so
+    # the capital legs are genuinely inclined -- legs coplanar with the
+    # attachment nodes would carry no vertical component at all.
     head_drop = min(0.3 * height, max(0.3, height))
-    head_z = tz - head_drop
     head = len(nodes)
-    nodes.append((tx, ty, head_z))
+    nodes.append((cx, cy, cz - head_drop))
     base = len(nodes)
-    nodes.append((tx, ty, head_z - height))
+    nodes.append((cx, cy, cz - head_drop - height))
 
     _add_member(members, seen, base, head, role='column_shaft')
-    for j in legs:
+    for j in target_nodes:
         _add_member(members, seen, head, j, role='capital')
 
     return nodes, members, base, head
 
 
-def reinforcement_beam(nodes, members, edge_nodes, depth, direction=(0.0, 0.0, -1.0), width=None):
-    """Attach a linear space-truss reinforcement beam along an existing
-    run of `edge_nodes` (given in order along the line to reinforce).
+def reinforcement_beam(nodes, members, edge_a, edge_b, depth, direction=(0.0, 0.0, -1.0)):
+    """Attach a linear space-truss reinforcement beam to TWO existing,
+    parallel rows of nodes (`edge_a`, `edge_b` -- same length, each in
+    order along the row, e.g. two adjacent bottom-chord rows of a
+    flat_grid). Those two rows become the WIDE BASE of a triangular-
+    cross-section truss girder -- already attached to the rest of the
+    mesh through their own existing members -- and ONE new row of "apex"
+    nodes, offset `depth` away along `direction`, is added and triangulated
+    back to both rows. This is the real detail: the BASE (not a single new
+    offset chord) does the attaching, matching how a triangular space-truss
+    girder actually reinforces a roof/floor from below, base flush against
+    the surface and the apex pointing away from it.
 
-    Space-truss beams reinforce part of a larger grid by attaching "the
-    same type of structure... in a linear fashion": the existing edge_nodes
-    become the beam's single TOP chord, and TWO new longitudinal chords
-    ("left"/"right") run `depth` away from it, offset to either side of the
-    edge by `width`. Every station forms a genuine, non-degenerate 3D
-    triangle (edge[k], left[k], right[k]) -- not just a flat zig-zag in the
-    plane of the edge -- and consecutive triangles are tied by both new
-    chords plus a crossed pair of diagonals per bay, giving the classic
-    triangulated ("tetrahedral") 3-chord space-truss girder cross-section
-    used for real linear reinforcement/gantry beams. That triangulation is
-    NOT optional decoration: an earlier version of this function offset a
-    SINGLE new chord straight down from the edge -- with every new node and
-    every new member confined to the one plane containing the (straight or
-    gently curved) edge and the offset direction, that geometry is a true
-    3D mechanism (zero-energy out-of-plane mode) REGARDLESS of how the
-    single chord's own bracing is arranged, caught by
-    test_generated_mesh_with_a_reinforcement_beam_analyzes_cleanly.
+    An earlier version of this function instead reused a SINGLE existing
+    row as the top chord and added two new chords below it -- structurally
+    workable, but "upside down" relative to the real detail (narrow point
+    at the grid, wide base hanging free) and it required the caller to
+    hand-pick one already-straight row. Basing it on two existing rows
+    both fixes the orientation and makes selection trivial: a lasso box
+    dragged across two adjacent rows already contains everything needed.
 
-    edge_nodes : >= 2 existing node indices, in order along the line to
-                 reinforce (e.g. one boundary row of a flat_grid, or a
-                 barrel_vault springing line). Works best for a straight or
-                 gently curved run; a very tightly curved one (e.g. a small
-                 arc of a dome's own ring) can still leave a soft mode --
-                 the same "pick a sensible edge" judgment a real designer
-                 would make attaching a stiffening truss.
-    depth      : offset (m) from the edge to the new chords, along
-                 `direction`.
-    direction  : (x, y, z) direction the new chords are offset in;
-                 normalized internally. Must not run parallel to the
-                 edge's own local direction anywhere along its length (a
-                 beam cannot be offset "along itself") -- raises
-                 ValueError if it does. The out-of-plane direction (e.g.
-                 straight down/up off a roof edge) is the reliable choice;
-                 an in-plane direction can leave the beam under-braced.
-    width      : lateral separation (m) between the "left" and "right"
-                 chords; defaults to `depth` (a roughly square cross-
-                 section, typical of real linear space-truss girders).
+    edge_a, edge_b : >= 2 existing node indices each, same length, in the
+                     same order along the two rows (edge_a[k] and
+                     edge_b[k] are the two ends of one cross-station).
+    depth          : offset (m) from the rows' shared midline to the new
+                     apex chord, along `direction`.
+    direction      : (x, y, z) direction the apex is offset in;
+                     normalized internally. The out-of-surface direction
+                     (straight down/up off a roof) is the reliable choice
+                     -- an in-plane direction can leave the beam
+                     under-braced, the same way it did for the single-row
+                     version.
 
-    Returns (nodes, members, new_chord_node_ids) -- left chord node ids
-    followed by right chord node ids, both in edge_nodes order.
+    Returns (nodes, members, apex_node_ids).
     """
-    if len(edge_nodes) < 2:
-        raise ValueError('reinforcement_beam needs at least 2 edge nodes to span.')
-    for j in edge_nodes:
+    edge_a = list(edge_a)
+    edge_b = list(edge_b)
+    if len(edge_a) != len(edge_b):
+        raise ValueError('edge_a and edge_b must be the same length.')
+    if len(edge_a) < 2:
+        raise ValueError('reinforcement_beam needs at least 2 stations to span.')
+    for j in edge_a + edge_b:
         if not (0 <= j < len(nodes)):
             raise ValueError(f'edge node {j} does not exist.')
     dx, dy, dz = direction
@@ -683,53 +673,37 @@ def reinforcement_beam(nodes, members, edge_nodes, depth, direction=(0.0, 0.0, -
     if norm < 1e-9:
         raise ValueError('direction must be nonzero.')
     dx, dy, dz = dx / norm, dy / norm, dz / norm
-    if width is None:
-        width = depth
 
     nodes = list(nodes)
     members = list(members)
     seen = {(min(m['a'], m['b']), max(m['a'], m['b'])) for m in members}
 
-    n = len(edge_nodes)
-    laterals = []
+    n = len(edge_a)
+    apex = []
     for k in range(n):
-        lo, hi = max(k - 1, 0), min(k + 1, n - 1)
-        ax, ay, az = nodes[edge_nodes[lo]]
-        bx, by, bz = nodes[edge_nodes[hi]]
-        tx, ty, tz = bx - ax, by - ay, bz - az
-        lx = ty * dz - tz * dy
-        ly = tz * dx - tx * dz
-        lz = tx * dy - ty * dx
-        lnorm = math.sqrt(lx * lx + ly * ly + lz * lz)
-        if lnorm < 1e-9:
-            raise ValueError(f'direction runs parallel to the edge at node {edge_nodes[k]}; '
-                             'pick a direction that is not along the edge itself.')
-        laterals.append((lx / lnorm, ly / lnorm, lz / lnorm))
+        ax, ay, az = nodes[edge_a[k]]
+        bx, by, bz = nodes[edge_b[k]]
+        mx, my, mz = (ax + bx) / 2.0, (ay + by) / 2.0, (az + bz) / 2.0
+        apex.append(len(nodes))
+        nodes.append((mx + dx * depth, my + dy * depth, mz + dz * depth))
 
-    left, right = [], []
-    for k, j in enumerate(edge_nodes):
-        x, y, z = nodes[j]
-        lx, ly, lz = laterals[k]
-        left.append(len(nodes))
-        nodes.append((x + dx * depth + lx * width / 2.0,
-                     y + dy * depth + ly * width / 2.0,
-                     z + dz * depth + lz * width / 2.0))
-        right.append(len(nodes))
-        nodes.append((x + dx * depth - lx * width / 2.0,
-                     y + dy * depth - ly * width / 2.0,
-                     z + dz * depth - lz * width / 2.0))
-
-    for k, j in enumerate(edge_nodes):
-        _add_member(members, seen, j, left[k], role='reinf_web')
-        _add_member(members, seen, j, right[k], role='reinf_web')
-        _add_member(members, seen, left[k], right[k], role='reinf_web')
+    for k in range(n):
+        _add_member(members, seen, edge_a[k], apex[k], role='reinf_web')
+        _add_member(members, seen, edge_b[k], apex[k], role='reinf_web')
     for k in range(n - 1):
-        _add_member(members, seen, left[k], left[k + 1], role='reinf_chord')
-        _add_member(members, seen, right[k], right[k + 1], role='reinf_chord')
-        _add_member(members, seen, left[k], right[k + 1], role='reinf_web')
-        _add_member(members, seen, right[k], left[k + 1], role='reinf_web')
+        _add_member(members, seen, edge_a[k], edge_a[k + 1], role='reinf_chord')
+        _add_member(members, seen, edge_b[k], edge_b[k + 1], role='reinf_chord')
+        _add_member(members, seen, apex[k], apex[k + 1], role='reinf_chord')
+        # crossed bracing both ways per bay -- needed to stop the whole
+        # apex chain from twisting about the base's own axis, the same
+        # "spin" mechanism the single-row version needed both-direction
+        # X-bracing to kill.
+        _add_member(members, seen, edge_a[k], apex[k + 1], role='reinf_web')
+        _add_member(members, seen, apex[k], edge_a[k + 1], role='reinf_web')
+        _add_member(members, seen, edge_b[k], apex[k + 1], role='reinf_web')
+        _add_member(members, seen, apex[k], edge_b[k + 1], role='reinf_web')
 
-    return nodes, members, left + right
+    return nodes, members, apex
 
 
 GENERATORS = {

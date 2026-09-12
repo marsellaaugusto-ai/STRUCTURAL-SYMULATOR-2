@@ -420,60 +420,67 @@ def _flat_grid_with_degrees():
     return mesh, degree
 
 
-def test_add_column_creates_a_shaft_and_a_capital_fanning_to_nearest_neighbours():
+def test_add_column_creates_a_shaft_and_a_capital_fanning_to_the_given_targets():
     mesh, degree = _flat_grid_with_degrees()
-    target = max(degree, key=degree.get)
+    # 4 well-connected nodes, standing in for a lasso-selected attachment set
+    top = sorted(degree, key=degree.get, reverse=True)[:4]
     n0, m0 = len(mesh['nodes']), len(mesh['members'])
-    nodes, members, base, head = sg.add_column(mesh['nodes'], mesh['members'], target,
-                                                height=3.0, n_legs=4)
+    nodes, members, base, head = sg.add_column(mesh['nodes'], mesh['members'], top, height=3.0)
     assert len(nodes) == n0 + 2
     shaft = [m for m in members if m.get('role') == 'column_shaft']
     capital = [m for m in members if m.get('role') == 'capital']
     assert len(shaft) == 1 and {shaft[0]['a'], shaft[0]['b']} == {base, head}
-    assert len(capital) == 4
-    assert all(head in (m['a'], m['b']) for m in capital)
-    assert len(members) == m0 + 1 + 4
+    assert len(capital) == len(top)
+    assert {m['a'] if m['b'] == head else m['b'] for m in capital} == set(top)
+    assert len(members) == m0 + 1 + len(top)
     # the base is strictly below the head, which is strictly below the
-    # target's own elevation -- a genuine, non-degenerate shaft + capital
-    assert nodes[base][2] < nodes[head][2] < mesh['nodes'][target][2]
+    # targets' own (average) elevation -- a genuine, non-degenerate shaft + capital
+    avg_z = sum(mesh['nodes'][j][2] for j in top) / len(top)
+    assert nodes[base][2] < nodes[head][2] < avg_z
 
 
 def test_add_column_rejects_a_target_node_that_does_not_exist():
-    mesh, _ = _flat_grid_with_degrees()
+    mesh, degree = _flat_grid_with_degrees()
+    top = sorted(degree, key=degree.get, reverse=True)[:3]
+    top[0] = len(mesh['nodes']) + 5
     with pytest.raises(ValueError):
-        sg.add_column(mesh['nodes'], mesh['members'], len(mesh['nodes']) + 5, height=3.0)
+        sg.add_column(mesh['nodes'], mesh['members'], top, height=3.0)
 
 
 def test_add_column_rejects_a_nonpositive_height():
     mesh, degree = _flat_grid_with_degrees()
-    target = max(degree, key=degree.get)
+    top = sorted(degree, key=degree.get, reverse=True)[:4]
     with pytest.raises(ValueError):
-        sg.add_column(mesh['nodes'], mesh['members'], target, height=0.0)
+        sg.add_column(mesh['nodes'], mesh['members'], top, height=0.0)
 
 
-def test_add_column_rejects_too_few_legs_for_the_requested_capital():
+def test_add_column_rejects_fewer_than_three_target_nodes():
     mesh, degree = _flat_grid_with_degrees()
-    # a corner node has very few mesh neighbours -- not enough for a big capital
-    corner = min(mesh['support_candidates'])
+    top = sorted(degree, key=degree.get, reverse=True)[:2]
     with pytest.raises(ValueError):
-        sg.add_column(mesh['nodes'], mesh['members'], corner, height=3.0, n_legs=8)
+        sg.add_column(mesh['nodes'], mesh['members'], top, height=3.0)
 
 
 def test_add_column_does_not_mutate_the_caller_s_lists():
     mesh, degree = _flat_grid_with_degrees()
-    target = max(degree, key=degree.get)
+    top = sorted(degree, key=degree.get, reverse=True)[:4]
     nodes_before = list(mesh['nodes'])
     members_before = [dict(m) for m in mesh['members']]
-    sg.add_column(mesh['nodes'], mesh['members'], target, height=3.0)
+    sg.add_column(mesh['nodes'], mesh['members'], top, height=3.0)
     assert mesh['nodes'] == nodes_before
     assert mesh['members'] == members_before
 
 
 def test_mesh_with_a_column_still_analyzes_once_the_base_is_pinned():
-    mesh, degree = _flat_grid_with_degrees()
-    target = max(degree, key=degree.get)
-    nodes, members, base, _head = sg.add_column(mesh['nodes'], mesh['members'], target,
-                                                height=3.0, n_legs=4)
+    mesh, _degree = _flat_grid_with_degrees()
+    # a genuine 2D footprint (one module's 4 corners, spanning both x and
+    # y) -- a capital fanning to COLINEAR targets only is a real mechanism
+    # (it can revolve about that line), the same class of bug diagnosed
+    # earlier for a straight-line-anchored reinforcement beam; a real
+    # column capital always has a 2D spread footprint for exactly this
+    # reason, so that is what this test exercises.
+    top = [0, 1, 9, 10]
+    nodes, members, base, _head = sg.add_column(mesh['nodes'], mesh['members'], top, height=3.0)
     for m in members:
         m.setdefault('E', 200e3); m.setdefault('A', 20.0)
     supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
@@ -483,84 +490,109 @@ def test_mesh_with_a_column_still_analyzes_once_the_base_is_pinned():
     assert err is None
 
 
-def test_reinforcement_beam_builds_a_triangulated_left_right_chord_pair():
+def test_a_capital_fanning_to_colinear_targets_is_a_genuine_mechanism():
+    """A capital's legs anchor its head only through the target nodes; if
+    those targets are all COLINEAR, the head can still revolve about that
+    line without changing any leg's length -- the same "3 colinear anchors
+    can't pin a point" mechanism found (and fixed, by never anchoring to a
+    straight line alone) for the reinforcement beam. This is not a
+    solver quirk to patch around: a real column capital always spans a
+    genuine 2D footprint for exactly this reason, so the UI must pick
+    targets accordingly -- this test documents the failure mode so a
+    future change doesn't reintroduce it silently."""
+    mesh, degree = _flat_grid_with_degrees()
+    colinear = sorted(degree, key=degree.get, reverse=True)[:5]   # one straight row
+    assert len({round(mesh['nodes'][j][1], 6) for j in colinear}) == 1   # sanity: same y
+    nodes, members, base, _head = sg.add_column(mesh['nodes'], mesh['members'], colinear,
+                                                height=3.0)
+    for m in members:
+        m.setdefault('E', 200e3); m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    supports.append({'node': base, 'type': 'pin'})
+    loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is not None
+
+
+def _two_adjacent_rows(mesh, n_stations):
+    """The first n_stations nodes of two adjacent bottom-chord rows of the
+    24x24 (module 3) flat_grid built by _flat_grid_with_degrees -- row 0 is
+    nodes 0..8 (y=0), row 1 is nodes 9..17 (y=3), both varying only in x."""
+    return list(range(n_stations)), list(range(9, 9 + n_stations))
+
+
+def test_reinforcement_beam_builds_a_triangulated_apex_over_two_base_rows():
     mesh, _ = _flat_grid_with_degrees()
-    edge = sorted(mesh['support_candidates'])[:4]   # a straight, colinear boundary row
+    edge_a, edge_b = _two_adjacent_rows(mesh, 4)
     n0, m0 = len(mesh['nodes']), len(mesh['members'])
-    nodes, members, new_ids = sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge,
-                                                     depth=1.0, direction=(0.0, 0.0, -1.0))
-    n = len(edge)
-    assert len(new_ids) == 2 * n
-    assert len(nodes) == n0 + 2 * n
+    nodes, members, apex = sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge_a, edge_b,
+                                                 depth=1.0, direction=(0.0, 0.0, -1.0))
+    n = len(edge_a)
+    assert len(apex) == n
+    assert len(nodes) == n0 + n
     new_chord = [m for m in members if m.get('role') == 'reinf_chord']
     new_web = [m for m in members if m.get('role') == 'reinf_web']
-    assert len(new_chord) == 2 * (n - 1)          # a left chord + a right chord
-    assert len(new_web) == 3 * n + 2 * (n - 1)    # n rings of 3 + crossed bay braces
+    # edge_a's and edge_b's own chords already exist in the mesh (they are
+    # real bottom-chord rows) -- _add_member dedups them, so only the
+    # brand-new apex chord actually gets the 'reinf_chord' role.
+    assert len(new_chord) == n - 1
+    assert len(new_web) == 2 * n + 4 * (n - 1)    # 2 rings/station + crossed bay braces
     assert len(members) == m0 + len(new_chord) + len(new_web)
 
-    left, right = new_ids[:n], new_ids[n:]
-    for j, l, r in zip(edge, left, right):
-        x, y, z = mesh['nodes'][j]
-        assert nodes[l][2] == pytest.approx(z - 1.0)
-        assert nodes[r][2] == pytest.approx(z - 1.0)
-        # left and right straddle the edge, on opposite sides of it
-        assert nodes[l][1] != pytest.approx(nodes[r][1])
-        midpoint_y = (nodes[l][1] + nodes[r][1]) / 2.0
-        assert midpoint_y == pytest.approx(y)
+    for ja, jb, ap in zip(edge_a, edge_b, apex):
+        ax, ay, az = mesh['nodes'][ja]
+        bx, by, bz = mesh['nodes'][jb]
+        mx, my, mz = (ax + bx) / 2.0, (ay + by) / 2.0, (az + bz) / 2.0
+        assert nodes[ap] == pytest.approx((mx, my, mz - 1.0))
 
 
-def test_reinforcement_beam_honors_a_custom_direction_and_width():
+def test_reinforcement_beam_honors_a_custom_direction():
     mesh, _ = _flat_grid_with_degrees()
-    edge = sorted(mesh['support_candidates'])[:2]
-    nodes, _members, new_ids = sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge,
-                                                      depth=2.0, direction=(0.0, 1.0, 0.0),
-                                                      width=1.0)
-    n = len(edge)
-    left, right = new_ids[0], new_ids[n]   # new_ids is left-chord then right-chord
-    x0, y0, z0 = mesh['nodes'][edge[0]]
-    # offset by depth along +Y, then split +-0.5 (half of width=1.0) apart
-    assert nodes[left][1] == pytest.approx(y0 + 2.0)
-    assert nodes[right][1] == pytest.approx(y0 + 2.0)
-    assert nodes[left][2] != pytest.approx(nodes[right][2])
-    assert math.dist(nodes[left], nodes[right]) == pytest.approx(1.0)
+    edge_a, edge_b = _two_adjacent_rows(mesh, 2)
+    nodes, _members, apex = sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge_a, edge_b,
+                                                  depth=2.0, direction=(0.0, 0.0, 1.0))
+    ax, ay, az = mesh['nodes'][edge_a[0]]
+    bx, by, bz = mesh['nodes'][edge_b[0]]
+    mx, my, mz = (ax + bx) / 2.0, (ay + by) / 2.0, (az + bz) / 2.0
+    assert nodes[apex[0]] == pytest.approx((mx, my, mz + 2.0))
 
 
-def test_reinforcement_beam_rejects_fewer_than_two_edge_nodes():
+def test_reinforcement_beam_rejects_mismatched_row_lengths():
     mesh, _ = _flat_grid_with_degrees()
+    edge_a, edge_b = _two_adjacent_rows(mesh, 4)
     with pytest.raises(ValueError):
-        sg.reinforcement_beam(mesh['nodes'], mesh['members'], [mesh['support_candidates'][0]],
-                              depth=1.0)
+        sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge_a, edge_b[:-1], depth=1.0)
+
+
+def test_reinforcement_beam_rejects_fewer_than_two_stations():
+    mesh, _ = _flat_grid_with_degrees()
+    edge_a, edge_b = _two_adjacent_rows(mesh, 1)
+    with pytest.raises(ValueError):
+        sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge_a, edge_b, depth=1.0)
 
 
 def test_reinforcement_beam_rejects_a_zero_direction():
     mesh, _ = _flat_grid_with_degrees()
-    edge = sorted(mesh['support_candidates'])[:2]
+    edge_a, edge_b = _two_adjacent_rows(mesh, 2)
     with pytest.raises(ValueError):
-        sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge, depth=1.0,
+        sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge_a, edge_b, depth=1.0,
                               direction=(0.0, 0.0, 0.0))
-
-
-def test_reinforcement_beam_rejects_a_direction_parallel_to_the_edge():
-    mesh, _ = _flat_grid_with_degrees()
-    edge = sorted(mesh['support_candidates'])[:4]   # runs along +X
-    with pytest.raises(ValueError):
-        sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge, depth=1.0,
-                              direction=(1.0, 0.0, 0.0))
 
 
 def test_reinforcement_beam_rejects_an_edge_node_that_does_not_exist():
     mesh, _ = _flat_grid_with_degrees()
+    edge_a, edge_b = _two_adjacent_rows(mesh, 2)
+    edge_b[0] = len(mesh['nodes']) + 9
     with pytest.raises(ValueError):
-        sg.reinforcement_beam(mesh['nodes'], mesh['members'],
-                              [mesh['support_candidates'][0], len(mesh['nodes']) + 9], depth=1.0)
+        sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge_a, edge_b, depth=1.0)
 
 
-@pytest.mark.parametrize('n_edge', [2, 3, 4, 6])
-def test_reinforced_edge_still_analyzes_under_self_weight(n_edge):
+@pytest.mark.parametrize('n_stations', [2, 3, 4, 6])
+def test_reinforced_edge_still_analyzes_under_self_weight(n_stations):
     mesh, _ = _flat_grid_with_degrees()
-    edge = list(range(n_edge))   # the straight y=0 boundary row, guaranteed colinear
-    nodes, members, _new_ids = sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge,
-                                                      depth=1.0)
+    edge_a, edge_b = _two_adjacent_rows(mesh, n_stations)
+    nodes, members, _apex = sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge_a, edge_b,
+                                                  depth=1.0)
     for m in members:
         m.setdefault('E', 200e3); m.setdefault('A', 20.0)
     supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]

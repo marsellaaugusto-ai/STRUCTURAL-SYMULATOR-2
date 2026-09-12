@@ -17,7 +17,7 @@ import tkinter as tk
 import pytest
 
 from apps.stereo.stereo_app import (
-    StereoApp, force_color, FAMILY_LABEL, CHORD_ROLES,
+    StereoApp, force_color, deform_color, FAMILY_LABEL, CHORD_ROLES,
     QUICK_SUPPORT_PIN, QUICK_SUPPORT_FIXED, QUICK_SUPPORT_CLEAR, QUICK_SUPPORT_CUSTOM,
 )
 from apps.stereo import stereo_math as sm
@@ -87,9 +87,10 @@ class FakeEvent:
 def _screen_pos_of(app, node_idx):
     """The exact screen coordinates _draw() placed a given node at, so a
     synthetic click/drag can target it precisely -- the same computation
-    _draw and _select_node_at share."""
-    nodes = app._display_nodes()
-    proj = [app._project(x, y, z) for x, y, z in nodes]
+    _draw and _select_node_at share. Always the REST position: interaction
+    targets the real structure even when "Show deformed" draws its
+    additional green overlay in parallel."""
+    proj = [app._project(x, y, z) for x, y, z in app.nodes]
     xs = [p[0] for p in proj]; ys = [p[1] for p in proj]
     cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
     px, py, _ = proj[node_idx]
@@ -104,6 +105,16 @@ def test_opening_the_tab_generates_a_default_analyzable_mesh(app):
     assert len(app.nodes) > 0
     assert len(app.members) > 0
     assert len(app.supports) > 0
+
+
+def test_default_load_state_is_area_load_on_top_only_no_self_weight(app):
+    """By default only the roof/shell area load (top layer only -- see
+    stereo_geometry's load_nodes docstring) should be applied, not also
+    self-weight spread across both the bottom layer and every web."""
+    assert app.area_load_on.get() is True
+    assert app.self_weight_on.get() is False
+    loaded_nodes = set(app._load_nodes)
+    assert loaded_nodes and loaded_nodes.isdisjoint(app._support_candidates)
 
 
 def test_analyze_button_runs_a_real_solve_and_populates_results_text(app):
@@ -506,6 +517,48 @@ def test_over_capacity_members_are_drawn_dashed(app):
         assert len(dashed_items) > 0
 
 
+# ── deformed-shape overlay: green, parallel to the rest structure ──────────
+
+def test_deform_color_is_pale_near_zero_and_saturated_green_at_the_max():
+    faint = deform_color(0.5, 100.0)
+    strong = deform_color(95.0, 100.0)
+
+    def greenness(hexcolor):
+        r, g, b = (int(hexcolor[i:i + 2], 16) for i in (1, 3, 5))
+        return g - (r + b) / 2.0
+
+    assert greenness(strong) > greenness(faint)
+    assert faint != '#ffffff'   # legible, not pure white
+
+
+def test_deform_color_handles_a_model_with_no_displacement_anywhere():
+    assert deform_color(0.0, 0.0) != '#ffffff'
+
+
+def test_show_deformed_draws_a_green_overlay_without_moving_the_real_structure(app):
+    app._analyze()
+    sx_before, sy_before = _screen_pos_of(app, 0)
+
+    app.show_deformed.set(True)
+    app.deform_scale.set(500)   # exaggerate so the overlay is not degenerate
+    app._draw()
+    assert len(app.canvas.find_withtag('deform')) > 0
+    # the REST structure (and therefore click-select) never moved
+    sx_after, sy_after = _screen_pos_of(app, 0)
+    assert (sx_after, sy_after) == pytest.approx((sx_before, sy_before))
+
+    app.show_deformed.set(False)
+    app._draw()
+    assert len(app.canvas.find_withtag('deform')) == 0
+
+
+def test_show_deformed_is_a_no_op_before_analysis(app):
+    app.results = None
+    app.show_deformed.set(True)
+    app._draw()   # must not raise
+    assert len(app.canvas.find_withtag('deform')) == 0
+
+
 # ── member report dialog ─────────────────────────────────────────────────────
 
 def test_member_report_requires_analysis_first(app):
@@ -532,26 +585,29 @@ def test_member_report_opens_a_populated_table(app):
 
 
 # ── add-on features: column (capital + shaft) and reinforcement beam ────────
+# The default app mesh is a flat_grid(nx=10, ny=10, module=3, offset=True):
+# row j=0 is nodes 0..10 (y=0), row j=1 is nodes 11..21 (y=3), both varying
+# only in x -- used below as a straightforward two-row / 2D-footprint
+# source for these tests, the same way a user would lasso them in the view.
 
-def test_add_column_requires_exactly_one_selected_node(app):
+def test_add_column_requires_at_least_three_selected_nodes(app):
     app.selected_nodes = set()
-    app._add_column()   # must not raise; dialogs fixture records the error
     n_before = len(app.nodes)
+    app._add_column()   # must not raise; dialogs fixture records the error
+    assert len(app.nodes) == n_before
+
     app.selected_nodes = {app._support_candidates[0], app._support_candidates[1]}
     app._add_column()
     assert len(app.nodes) == n_before
 
 
 def test_add_column_adds_a_shaft_and_a_fanned_out_capital(app):
-    from collections import Counter
-    degree = Counter()
-    for m in app.members:
-        degree[m['a']] += 1
-        degree[m['b']] += 1
-    target = max(degree, key=degree.get)   # a node with plenty of mesh neighbours
-    app.selected_nodes = {target}
+    # a genuine 2D footprint (one module's 4 corners) -- a capital fanning
+    # to COLINEAR targets alone is a real mechanism, see
+    # test_stereo_geometry.py's own regression test for that failure mode
+    targets = {0, 1, 11, 12}
+    app.selected_nodes = set(targets)
     app.col_height.set(3.0)
-    app.col_legs.set(4)
     n_nodes_before = len(app.nodes)
     n_members_before = len(app.members)
     app._add_column()
@@ -560,8 +616,9 @@ def test_add_column_adds_a_shaft_and_a_fanned_out_capital(app):
     shaft = [m for m in app.members if m.get('role') == 'column_shaft']
     capital = [m for m in app.members if m.get('role') == 'capital']
     assert len(shaft) == 1
-    assert len(capital) == 4
-    assert len(app.members) == n_members_before + 1 + 4
+    assert len(capital) == len(targets)
+    assert {m['b'] for m in capital} == targets   # capital's 'a' is always the head
+    assert len(app.members) == n_members_before + 1 + len(targets)
     base = shaft[0]['a']
     assert any(s['node'] == base for s in app.supports)
 
@@ -569,28 +626,36 @@ def test_add_column_adds_a_shaft_and_a_fanned_out_capital(app):
     assert app.err is None
 
 
-def test_add_reinforcement_beam_requires_at_least_two_selected_nodes(app):
+def test_add_reinforcement_beam_requires_two_parallel_rows(app):
     app.selected_nodes = {app._support_candidates[0]}
     n_before = len(app.nodes)
     app._add_reinforcement_beam()
     assert len(app.nodes) == n_before
 
+    # a single row alone (no second distinct value on any axis) isn't a
+    # valid two-row selection either
+    app.selected_nodes = {0, 1, 2}
+    app._add_reinforcement_beam()
+    assert len(app.nodes) == n_before
 
-def test_add_reinforcement_beam_triangulates_a_new_chord_pair(app):
-    edge = sorted(app._support_candidates)[:3]
-    app.selected_nodes = set(edge)
+
+def test_add_reinforcement_beam_triangulates_an_apex_over_two_rows(app):
+    edge_a, edge_b = [0, 1, 2], [11, 12, 13]
+    app.selected_nodes = set(edge_a + edge_b)
     app.beam_depth.set(1.2)
     app.beam_dir.set('Down (-Z)')
     n_nodes_before = len(app.nodes)
     n_members_before = len(app.members)
     app._add_reinforcement_beam()
 
-    n = len(edge)
-    assert len(app.nodes) == n_nodes_before + 2 * n
+    n = len(edge_a)
+    assert len(app.nodes) == n_nodes_before + n   # one new apex row only
     new_chord = [m for m in app.members if m.get('role') == 'reinf_chord']
     new_web = [m for m in app.members if m.get('role') == 'reinf_web']
-    assert len(new_chord) == 2 * (n - 1)
-    assert len(new_web) == 3 * n + 2 * (n - 1)
+    # edge_a's and edge_b's own chords already exist (real bottom-chord
+    # rows) -- only the brand-new apex chord gets the 'reinf_chord' role
+    assert len(new_chord) == n - 1
+    assert len(new_web) == 2 * n + 4 * (n - 1)
     assert len(app.members) == n_members_before + len(new_chord) + len(new_web)
 
     app._analyze()

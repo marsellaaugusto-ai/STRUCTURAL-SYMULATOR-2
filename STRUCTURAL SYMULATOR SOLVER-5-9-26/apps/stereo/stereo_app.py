@@ -60,6 +60,9 @@ UNDO_LIMIT = 60
 LOAD_COLOR = '#e07b1f'
 SUPPORT_BOX_HALF_PX = 7
 LASSO_DRAG_THRESHOLD_PX = 4
+DEFORM_LOW = '#eaf6ee'    # pale green -- legible, deliberately not pure white
+DEFORM_HIGH = '#0e7a3d'   # saturated green -- the largest displacement present
+DEFORM_GAMMA = 0.6
 
 DOF_LABELS = (('ux', 'Ux'), ('uy', 'Uy'), ('uz', 'Uz'),
               ('rx', 'Rx'), ('ry', 'Ry'), ('rz', 'Rz'))
@@ -119,6 +122,21 @@ def force_color(N, max_abs_N):
     if N >= 0:
         return _lerp_hex(TENSION_LOW, TENSION_HIGH, frac)
     return _lerp_hex(COMPRESSION_LOW, COMPRESSION_HIGH, frac)
+
+
+def deform_color(disp_mm, max_disp_mm):
+    """White-to-green spectrum for the deformed-shape overlay: pale (but
+    not pure white -- that would be illegible against the canvas
+    background) for near-zero displacement, saturated green for whatever
+    moved the most, gamma-compressed the same way force_color and
+    common.LoadScale size/color everything else in this app so a model
+    with displacements spanning orders of magnitude still shows visible
+    contrast instead of one saturated member and a field of invisible
+    near-white ones."""
+    if max_disp_mm < 1e-9:
+        return DEFORM_LOW
+    frac = min(1.0, disp_mm / max_disp_mm) ** DEFORM_GAMMA
+    return _lerp_hex(DEFORM_LOW, DEFORM_HIGH, frac)
 
 
 class StereoApp(UnitsMixin):
@@ -465,7 +483,12 @@ class StereoApp(UnitsMixin):
         tk.Checkbutton(row, text='Apply area load to the roof/shell surface',
                        variable=self.area_load_on, bg=BG, font=('Helvetica', 8)
                       ).pack(anchor='w')
-        self.self_weight_on = tk.BooleanVar(value=True)
+        # Off by default: the area load above already covers the roof/
+        # shell surface (top layer only -- see stereo_geometry's load_nodes
+        # docstring), so the DEFAULT view shows load only there, not also
+        # spread across the bottom layer and every web by self-weight.
+        # Self-weight stays one checkbox away for anyone who wants it.
+        self.self_weight_on = tk.BooleanVar(value=False)
         self.unit_weight_var = tk.DoubleVar(value=sm.DEFAULT_STEEL_UNIT_WEIGHT)
         row2 = tk.Frame(box, bg=BG)
         row2.pack(fill='x', padx=6, pady=(0, 6))
@@ -569,20 +592,21 @@ class StereoApp(UnitsMixin):
         col = tk.LabelFrame(box, text='Column (shaft + capital)', bg=BG,
                             font=('Helvetica', 8, 'bold'))
         col.pack(fill='x', padx=6, pady=(4, 4))
-        tk.Label(col, text='Select ONE node in the view, then:', bg=BG,
-                font=('Helvetica', 8), fg='#666').pack(anchor='w', padx=4, pady=(2, 0))
+        tk.Label(col, text='Select >=3 nodes (lasso box) for the capital to '
+                          'attach to, then:', bg=BG, font=('Helvetica', 8), fg='#666',
+                wraplength=PANEL_W - 40, justify='left').pack(anchor='w', padx=4, pady=(2, 0))
         self.col_height = tk.DoubleVar(value=3.0)
-        self.col_legs = tk.IntVar(value=4)
         self._labeled_entry(col, 'Shaft height (m):', self.col_height)
-        self._labeled_entry(col, 'Capital legs:', self.col_legs)
-        tk.Button(col, text='Add column at selected node', command=self._add_column
+        tk.Button(col, text='Add column at selected nodes', command=self._add_column
                  ).pack(padx=4, pady=(2, 4), anchor='w')
 
         beam = tk.LabelFrame(box, text='Reinforcement beam', bg=BG,
                              font=('Helvetica', 8, 'bold'))
         beam.pack(fill='x', padx=6, pady=(0, 6))
-        tk.Label(beam, text='Select an edge run of >=2 nodes in the view, then:', bg=BG,
-                font=('Helvetica', 8), fg='#666').pack(anchor='w', padx=4, pady=(2, 0))
+        tk.Label(beam, text='Select TWO adjacent rows of nodes (lasso a box '
+                          'spanning both rows), then:', bg=BG, font=('Helvetica', 8),
+                fg='#666', wraplength=PANEL_W - 40, justify='left'
+               ).pack(anchor='w', padx=4, pady=(2, 0))
         self.beam_depth = tk.DoubleVar(value=1.0)
         self.beam_dir = tk.StringVar(value='Down (-Z)')
         self._labeled_entry(beam, 'Offset depth (m):', self.beam_depth)
@@ -592,34 +616,36 @@ class StereoApp(UnitsMixin):
                 font=('Helvetica', 9)).pack(side='left')
         ttk.Combobox(row, textvariable=self.beam_dir, state='readonly', width=14,
                     values=list(self.BEAM_DIRECTIONS)).pack(side='left')
-        tk.Button(beam, text='Add reinforcement beam along selected nodes',
+        tk.Button(beam, text='Add reinforcement beam over selected rows',
                  command=self._add_reinforcement_beam).pack(padx=4, pady=(2, 4), anchor='w')
 
-    # Only the two OUT-OF-SURFACE directions are offered: reinforcing an
-    # edge by hanging/raising a truss beam below/above it (offset
-    # perpendicular to the roof plane) is both the realistic use case and
-    # the one verified rigid for every edge length in
-    # tests/test_stereo_geometry.py. An in-plane offset (e.g. sideways off
-    # a flat_grid edge, still within its own z=0 surface) was tested and
-    # found to leave a soft/singular mode for this triangulation, so it is
-    # deliberately not exposed here even though reinforcement_beam() itself
-    # accepts any non-edge-parallel direction for callers who need it.
+    # Only the two OUT-OF-SURFACE directions are offered: reinforcing a
+    # roof/floor by hanging or raising a triangular truss girder below/
+    # above it (offset perpendicular to the surface, apex pointing away --
+    # base flush against the two selected rows) is both the realistic use
+    # case and the one verified rigid for every row length in
+    # tests/test_stereo_geometry.py. An in-plane offset (still within the
+    # surface's own z=0 plane, say) was tested and found to leave a soft/
+    # singular mode for this triangulation, so it is deliberately not
+    # offered here even though reinforcement_beam() itself accepts any
+    # non-edge-parallel direction for callers who need it.
     BEAM_DIRECTIONS = {'Down (-Z)': (0.0, 0.0, -1.0), 'Up (+Z)': (0.0, 0.0, 1.0)}
 
     def _add_column(self):
-        node = self.selected_node
-        if node is None:
-            messagebox.showerror('Column', 'Select exactly ONE node in the view first.')
+        targets = sorted(self.selected_nodes)
+        if len(targets) < 3:
+            messagebox.showerror('Column',
+                                 'Select at least 3 nodes (a lasso box) for the capital '
+                                 'to attach to first.')
             return
         try:
             height = float(self.col_height.get())
-            n_legs = int(self.col_legs.get())
         except (tk.TclError, ValueError):
-            messagebox.showerror('Column', 'Enter a valid height and leg count.')
+            messagebox.showerror('Column', 'Enter a valid shaft height.')
             return
         try:
-            nodes, members, base, head = sg.add_column(self.nodes, self.members, node,
-                                                        height, n_legs=n_legs)
+            nodes, members, base, head = sg.add_column(self.nodes, self.members, targets,
+                                                        height)
         except ValueError as exc:
             messagebox.showerror('Column', str(exc))
             return
@@ -634,24 +660,41 @@ class StereoApp(UnitsMixin):
         self.member_checks = None
         self._refresh_all()
 
-    def _ordered_selection_along_line(self):
-        """The current selection, ordered along whichever axis it spans the
-        most -- so a lasso box dragged across a straight edge of the grid
-        (the usual way to pick "this row of nodes") comes back in walking
-        order along that edge rather than by raw node index."""
+    def _split_selection_into_two_rows(self):
+        """Split the current lasso selection into two equal-length,
+        correspondingly-ordered rows for the reinforcement beam: the axis
+        with exactly two distinct coordinate values (rounded) is treated as
+        "across" the two rows -- e.g. two adjacent bottom-chord rows of a
+        flat_grid differ only in y -- and each side is then ordered along
+        whichever remaining axis actually varies, so row A's k-th node
+        lines up with row B's k-th the way two parallel grid rows do.
+        Returns (edge_a, edge_b), each possibly empty if the selection
+        does not look like two clean parallel rows."""
         ids = sorted(self.selected_nodes)
-        if len(ids) < 2:
-            return ids
+        if len(ids) < 4:
+            return [], []
         pts = [self.nodes[i] for i in ids]
-        spans = [max(p[k] for p in pts) - min(p[k] for p in pts) for k in range(3)]
-        axis = spans.index(max(spans))
-        return sorted(ids, key=lambda i: self.nodes[i][axis])
+        axis_values = [sorted({round(p[k], 6) for p in pts}) for k in range(3)]
+        row_axis = next((k for k in range(3) if len(axis_values[k]) == 2), None)
+        if row_axis is None:
+            return [], []
+        v0, v1 = axis_values[row_axis]
+        group0 = [i for i in ids if round(self.nodes[i][row_axis], 6) == v0]
+        group1 = [i for i in ids if round(self.nodes[i][row_axis], 6) == v1]
+        if len(group0) != len(group1) or len(group0) < 2:
+            return [], []
+        remaining = [k for k in range(3) if k != row_axis]
+        order_axis = max(remaining, key=lambda k: len(axis_values[k]))
+        group0.sort(key=lambda i: self.nodes[i][order_axis])
+        group1.sort(key=lambda i: self.nodes[i][order_axis])
+        return group0, group1
 
     def _add_reinforcement_beam(self):
-        edge_nodes = self._ordered_selection_along_line()
-        if len(edge_nodes) < 2:
+        edge_a, edge_b = self._split_selection_into_two_rows()
+        if not edge_a:
             messagebox.showerror('Reinforcement beam',
-                                 'Select at least 2 nodes (a lasso box over an edge) first.')
+                                 'Select two parallel rows of >=2 nodes each (a lasso box '
+                                 'spanning both rows) first.')
             return
         try:
             depth = float(self.beam_depth.get())
@@ -660,15 +703,15 @@ class StereoApp(UnitsMixin):
             return
         direction = self.BEAM_DIRECTIONS[self.beam_dir.get()]
         try:
-            nodes, members, bottom = sg.reinforcement_beam(self.nodes, self.members,
-                                                            edge_nodes, depth, direction)
+            nodes, members, apex = sg.reinforcement_beam(self.nodes, self.members,
+                                                          edge_a, edge_b, depth, direction)
         except ValueError as exc:
             messagebox.showerror('Reinforcement beam', str(exc))
             return
         self._push_undo('add reinforcement beam')
         self.nodes, self.members = nodes, members
         self._apply_sections(members=self.members, redraw=False)
-        self.selected_nodes = set(bottom)
+        self.selected_nodes = set(apex)
         self.results = None
         self.member_checks = None
         self._refresh_all()
@@ -1005,29 +1048,36 @@ class StereoApp(UnitsMixin):
 
     PX_PER_M = 20.0
 
-    def _display_nodes(self):
-        """World-space node positions to actually draw: the model as
-        generated, or (Show deformed) offset by the solved displacement
-        times the scale slider -- the same def_scale idiom truss_app.py
-        uses, just applied directly in metres since this view already
-        works in world units rather than pixels."""
-        if not (self.show_deformed.get() and self.results is not None):
-            return self.nodes
+    def _deformed_nodes_and_disp(self):
+        """World-space node positions offset by the solved displacement
+        times the scale slider, and each node's own (unscaled) displacement
+        magnitude in mm -- the same def_scale idiom truss_app.py uses, just
+        applied directly in metres since this view already works in world
+        units rather than pixels. Used only by the deformed-shape overlay:
+        the REST structure (self.nodes) is what everything else -- the
+        main render, click-select, the lasso -- always uses, so "Show
+        deformed" draws an additional green overlay in parallel rather
+        than moving the real structure out from under the mouse."""
         scale = self.deform_scale.get()
-        out = []
+        deformed, disp_mm = [], []
         for (x, y, z), nr in zip(self.nodes, self.results['node_res']):
-            out.append((x + nr['ux'] / 1000.0 * scale,
-                       y + nr['uy'] / 1000.0 * scale,
-                       z + nr['uz'] / 1000.0 * scale))
-        return out
+            ux, uy, uz = nr['ux'], nr['uy'], nr['uz']
+            deformed.append((x + ux / 1000.0 * scale,
+                            y + uy / 1000.0 * scale,
+                            z + uz / 1000.0 * scale))
+            disp_mm.append(math.sqrt(ux * ux + uy * uy + uz * uz))
+        return deformed, disp_mm
 
     def _draw(self):
         c = self.canvas
         c.delete('all')
         if not self.nodes:
             return
-        display_nodes = self._display_nodes()
-        proj = [self._project(x, y, z) for x, y, z in display_nodes]
+        # Always the REST structure -- "Show deformed" draws an ADDITIONAL
+        # green overlay in parallel (see _draw_deformed_overlay), it never
+        # replaces this, so the real structure stays exactly where clicks,
+        # the lasso and everything else expect to find it.
+        proj = [self._project(x, y, z) for x, y, z in self.nodes]
 
         xs = [p[0] for p in proj]; ys = [p[1] for p in proj]
         cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
@@ -1036,6 +1086,13 @@ class StereoApp(UnitsMixin):
             wx = (px - cx) * self.PX_PER_M
             wy = (py - cy) * self.PX_PER_M
             return self.zc.w2s(wx, wy)
+
+        # Drawn FIRST (underneath), same convention as truss_app.py's own
+        # "Show deformed": the real, normally-colored structure then draws
+        # on top of it.
+        show_def = self.show_deformed.get() and self.results is not None
+        if show_def:
+            self._draw_deformed_overlay(c, to_screen)
 
         by_force = self.colour_by_force.get() and self.results is not None
         max_abs_N = 0.0
@@ -1114,8 +1171,37 @@ class StereoApp(UnitsMixin):
             c.create_rectangle(x0, y0, x1, y1, outline='#333333', dash=(5, 3),
                                stipple='gray12', fill='#333333', tags='lasso')
 
-        self._draw_legend(c, by_force)
+        self._draw_legend(c, by_force, show_def)
         self._to_screen_cache = to_screen   # for hit-testing on click
+
+    def _draw_deformed_overlay(self, c, to_screen):
+        """A green wireframe copy of the structure, offset by the solved
+        displacement (times the scale slider) and drawn through the SAME
+        `to_screen` closure the rest structure uses -- so it deforms "in
+        parallel to the at-rest structure and in the same place" rather
+        than being independently re-centered (which would visually hide
+        the very offset it is meant to show). Each member/node is colored
+        along a white-to-green spectrum by how much it actually moved
+        (deform_color), not a single flat green, so the AMOUNT of
+        displacement is visible at a glance and not just its direction --
+        mirroring truss_app.py's green deformed-shape overlay, with that
+        added per-element spectrum."""
+        deformed, disp_mm = self._deformed_nodes_and_disp()
+        proj_def = [self._project(x, y, z) for x, y, z in deformed]
+        max_disp = max(disp_mm, default=0.0)
+        for m in self.members:
+            a, b = m['a'], m['b']
+            ax, ay, _ = proj_def[a]
+            bx, by, _ = proj_def[b]
+            sx0, sy0 = to_screen(ax, ay)
+            sx1, sy1 = to_screen(bx, by)
+            mag = (disp_mm[a] + disp_mm[b]) / 2.0
+            c.create_line(sx0, sy0, sx1, sy1, fill=deform_color(mag, max_disp),
+                         width=2, tags='deform')
+        for i, (px, py, _) in enumerate(proj_def):
+            sx, sy = to_screen(px, py)
+            c.create_oval(sx - 3, sy - 3, sx + 3, sy + 3,
+                         fill=deform_color(disp_mm[i], max_disp), outline='', tags='deform')
 
     def _draw_load_arrows(self, c, to_screen):
         """Arrows for every node currently carrying nonzero net load (point
@@ -1129,7 +1215,7 @@ class StereoApp(UnitsMixin):
             return
         mags = [math.sqrt(fx * fx + fy * fy + fz * fz)
                for fx, fy, fz in self._load_glyphs.values()]
-        scale = LoadScale.of(mags, 14.0, 50.0)
+        scale = LoadScale.of(mags, 6.0, 20.0)
         eps = 1e-3
         for i, (fx, fy, fz) in self._load_glyphs.items():
             mag = math.sqrt(fx * fx + fy * fy + fz * fz)
@@ -1149,10 +1235,10 @@ class StereoApp(UnitsMixin):
             ddx, ddy = ddx / d * length, ddy / d * length
             # Arrowhead points AT the node (the load acts ON it); the tail
             # trails away in the load's own direction.
-            c.create_line(sx0 - ddx, sy0 - ddy, sx0, sy0, fill=LOAD_COLOR, width=2,
-                         arrow=tk.LAST, arrowshape=(9, 11, 4), tags='load')
+            c.create_line(sx0 - ddx, sy0 - ddy, sx0, sy0, fill=LOAD_COLOR, width=1.5,
+                         arrow=tk.LAST, arrowshape=(5, 6, 2), tags='load')
 
-    def _draw_legend(self, c, by_force):
+    def _draw_legend(self, c, by_force, show_def=False):
         x0, y0 = 10, 10
         lines = []
         if by_force:
@@ -1165,18 +1251,31 @@ class StereoApp(UnitsMixin):
             y = y0 + i * 15
             c.create_line(x0, y, x0 + 18, y, fill=color, width=3)
             c.create_text(x0 + 24, y, text=text, anchor='w', font=('Helvetica', 8), fill='#444')
-        hint_y = y0 + len(lines) * 15 + 6
+        y_next = y0 + len(lines) * 15
+
+        if show_def:
+            _deformed, disp_mm = self._deformed_nodes_and_disp()
+            max_disp = max(disp_mm, default=0.0)
+            c.create_line(x0, y_next, x0 + 18, y_next, fill=DEFORM_LOW, width=3)
+            c.create_line(x0 + 18, y_next, x0 + 36, y_next, fill=DEFORM_HIGH, width=3)
+            c.create_text(x0 + 42, y_next, anchor='w', font=('Helvetica', 8), fill='#444',
+                         text=f'deformed shape (white→green: 0–{max_disp:.1f} mm)')
+            y_next += 15
+
+        hint_y = y_next + 6
         c.create_text(x0, hint_y, anchor='nw', font=('Helvetica', 8), fill='#888',
                      text='left-drag: lasso select (+Shift: add)  ·  right-drag: orbit\n'
                           'wheel: zoom  ·  middle-drag: pan  ·  □ box = support')
 
     def _screen_positions(self):
-        """Every node's current on-screen (sx, sy), in the exact same
-        projection+centering _draw() uses -- shared by click-select,
-        lasso box-select and _draw() itself so all three agree on where a
-        node actually is."""
-        display_nodes = self._display_nodes()
-        proj = [self._project(x, y, z) for x, y, z in display_nodes]
+        """Every node's current on-screen (sx, sy) at its REST position, in
+        the exact same projection+centering _draw() uses -- shared by
+        click-select, lasso box-select and _draw() itself so all three
+        agree on where a node actually is. Always the rest position, even
+        with "Show deformed" on: that overlay is an ADDITIONAL green copy
+        drawn in parallel, not a replacement, so interaction always targets
+        the real structure."""
+        proj = [self._project(x, y, z) for x, y, z in self.nodes]
         xs = [p[0] for p in proj]; ys = [p[1] for p in proj]
         cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
         out = []

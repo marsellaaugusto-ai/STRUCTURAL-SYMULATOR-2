@@ -345,7 +345,8 @@ def _headers_by_section(rows):
 UNITLESS_OK = {
     # identities and indices
     'type', 'name', 'kind', 'nodes', 'node', 'a', 'b', 'idx', 'rod',
-    'profile', 'conn', 'conn_type', 'arch_type', 'support', 'mode',
+    'profile', 'conn', 'conn_type', 'arch_type', 'support', 'support_a',
+    'support_b', 'mode',
     # expressions and categories
     'shape', 'expr', 'shape_expr', 'measure', 'direction', 'udl_global',
     'params', 'family', 'set_by', 'flip', 'branch', 'pts_m',

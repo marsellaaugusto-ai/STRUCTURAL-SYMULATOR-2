@@ -685,6 +685,84 @@ def test_clicking_a_node_clears_any_selected_member(app):
     assert app.selected_nodes == {0}
 
 
+def test_delete_selected_node_removes_it_and_its_members(app):
+    n0 = len(app.nodes)
+    m0 = len(app.members)
+    target = 0
+    touching = sum(1 for m in app.members if m['a'] == target or m['b'] == target)
+    assert touching > 0   # node 0 in a generated grid always has members on it
+
+    app.selected_nodes = {target}
+    app._on_delete_nodes()
+
+    assert len(app.nodes) == n0 - 1
+    assert len(app.members) == m0 - touching
+    assert app.selected_nodes == set()
+    assert app.selected_member is None
+    for m in app.members:
+        assert 0 <= m['a'] < len(app.nodes)
+        assert 0 <= m['b'] < len(app.nodes)
+
+
+def test_delete_selected_node_remaps_every_surviving_index(app):
+    # Delete an early node and confirm every reference that used to point
+    # PAST it (a member endpoint, a support, a support_candidate) still
+    # points at the SAME physical node, just shifted down by one -- not
+    # silently re-pointed at whatever now sits at the old index.
+    target = 0
+    old_nodes = list(app.nodes)
+    old_supports_nodes = {s['node'] for s in app.supports}
+
+    app.selected_nodes = {target}
+    app._on_delete_nodes()
+
+    for old_i in old_supports_nodes:
+        if old_i == target:
+            continue
+        new_i = old_i - 1 if old_i > target else old_i
+        assert app.nodes[new_i] == old_nodes[old_i]
+    for i in app._support_candidates:
+        assert 0 <= i < len(app.nodes)
+
+
+def test_delete_with_no_selection_is_a_no_op(app):
+    n0, m0 = len(app.nodes), len(app.members)
+    app.selected_nodes = set()
+    app._on_delete_nodes()
+    assert len(app.nodes) == n0
+    assert len(app.members) == m0
+
+
+def test_delete_selected_nodes_is_undoable(app):
+    n0 = len(app.nodes)
+    app.selected_nodes = {0}
+    app._on_delete_nodes()
+    assert len(app.nodes) == n0 - 1
+    app._undo()
+    assert len(app.nodes) == n0
+    app._redo()
+    assert len(app.nodes) == n0 - 1
+
+
+def test_delete_key_on_the_canvas_deletes_the_selection(app):
+    n0 = len(app.nodes)
+    app.selected_nodes = {0}
+    app.canvas.focus_set()
+    app.canvas.event_generate('<Delete>')
+    app.canvas.update_idletasks()
+    app.canvas.update()
+    assert len(app.nodes) == n0 - 1
+
+
+def test_delete_after_analysis_clears_stale_results(app):
+    app._analyze()
+    assert app.results is not None
+    app.selected_nodes = {0}
+    app._on_delete_nodes()
+    assert app.results is None
+    assert app.member_checks is None
+
+
 def test_member_info_before_analysis_says_so(app):
     app.results = None
     app.selected_member = 0

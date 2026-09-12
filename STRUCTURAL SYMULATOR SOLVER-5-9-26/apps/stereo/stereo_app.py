@@ -410,6 +410,14 @@ class StereoApp(UnitsMixin):
         for seq in ('<ButtonPress-2>', '<MouseWheel>', '<Button-4>', '<Button-5>'):
             self.canvas.bind(seq, self._mark_view_touched, add='+')
 
+        # Delete/Backspace remove the selected node(s) -- bound on the
+        # canvas itself (not root.bind_all), matching truss_app.py, so a
+        # keypress only ever hits this while the canvas -- not a text entry
+        # elsewhere in the panel -- actually has focus.
+        self.canvas.bind('<Delete>', self._on_delete_nodes)
+        self.canvas.bind('<BackSpace>', self._on_delete_nodes)
+        self.canvas.focus_set()
+
         self._build_panel(self.panel_outer.interior)
         self.panel_outer.fit_to_content()
 
@@ -793,6 +801,8 @@ class StereoApp(UnitsMixin):
                                   bg=BG, fg='#666', font=('Helvetica', 9),
                                   wraplength=PANEL_W - 24, justify='left')
         self.sel_label.pack(anchor='w', padx=6, pady=4)
+        tk.Button(box, text='Delete selected node(s)', command=self._on_delete_nodes
+                 ).pack(anchor='w', padx=6, pady=(0, 4))
 
     # ── add-on features: column (capital + shaft) and reinforcement beam ────
     def _build_addons_panel(self, parent):
@@ -1282,6 +1292,7 @@ class StereoApp(UnitsMixin):
             self._draw()
 
     def _on_canvas_release(self, event):
+        self.canvas.focus_set()   # so a following Delete/Backspace reaches us
         additive = bool(event.state & 0x0001)   # Shift held: add to selection
         if self._lasso_dragging and self._lasso_cur is not None:
             x0, y0 = self._lasso_press
@@ -1828,6 +1839,48 @@ class StereoApp(UnitsMixin):
             if d < best_d:
                 best, best_d = i, d
         return best
+
+    def _on_delete_nodes(self, event=None):
+        """Delete every currently selected node, and (transitively) every
+        member touching one, remapping every remaining reference to a node
+        INDEX -- other members' a/b, supports, loads, support_candidates,
+        load_nodes -- down past the removed indices. Node identity in this
+        tab is the list index (as in truss_app.py's own _on_delete, which
+        this mirrors), so anything left referring to a stale index once
+        the list has shifted would be silent corruption, not a crash.
+        Deleting a support node (or enough of the mesh) can leave the rest
+        of the structure a genuine mechanism -- that surfaces the normal
+        way, as Analyze reporting a singular stiffness matrix, rather than
+        being auto-patched here."""
+        targets = set(self.selected_nodes)
+        if not targets:
+            return
+        self._push_undo('delete node' + ('s' if len(targets) != 1 else ''))
+
+        remap = {}
+        new_nodes = []
+        for i, n in enumerate(self.nodes):
+            if i in targets:
+                continue
+            remap[i] = len(new_nodes)
+            new_nodes.append(n)
+        self.nodes = new_nodes
+        self.members = [{**m, 'a': remap[m['a']], 'b': remap[m['b']]}
+                       for m in self.members if m['a'] not in targets and m['b'] not in targets]
+        self.supports = [{**s, 'node': remap[s['node']]}
+                        for s in self.supports if s['node'] not in targets]
+        self.loads = [{**ld, 'node': remap[ld['node']]}
+                    for ld in self.loads if ld['node'] not in targets]
+        self._support_candidates = [remap[i] for i in self._support_candidates
+                                    if i not in targets]
+        self._load_nodes = {remap[i]: v for i, v in self._load_nodes.items()
+                           if i not in targets}
+
+        self.selected_nodes = set()
+        self.selected_member = None
+        self.results = None
+        self.member_checks = None
+        self._refresh_all()
 
     # ── refresh / lists / results text ──────────────────────────────────────
     def _refresh_all(self):

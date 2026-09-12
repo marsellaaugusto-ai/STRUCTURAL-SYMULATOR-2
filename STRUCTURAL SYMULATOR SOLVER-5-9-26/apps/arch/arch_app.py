@@ -418,8 +418,8 @@ def export_arch_excel(state, path, result=None, model=None):
       • 'Results' — reactions, extremes, and a station-by-station table of
                     N, M, and extreme-fibre stresses (only if `result` given).
     `state` is a plain dict with keys: span, rise, n_elem, shape_expr,
-    arch_type, hinge_frac, w_weight, w_wind, point_loads, distributed_loads,
-    profile.
+    arch_type, hinge_frac, support_a, support_b, w_weight, w_wind,
+    point_loads, distributed_loads, profile.
     """
     if not _ensure_openpyxl():
         raise RuntimeError('openpyxl is not available.')
@@ -446,11 +446,13 @@ def export_arch_excel(state, path, result=None, model=None):
     row += 2
 
     ws.cell(row=row, column=1, value='[SUPPORTS]'); row += 1
-    for col, lbl in enumerate(['arch_type', 'hinge_frac'], 1):
+    for col, lbl in enumerate(['arch_type', 'hinge_frac', 'support_a', 'support_b'], 1):
         ws.cell(row=row, column=col, value=lbl)
     row += 1
     ws.cell(row=row, column=1, value=state['arch_type'])
     ws.cell(row=row, column=2, value=state['hinge_frac'])
+    ws.cell(row=row, column=3, value=state.get('support_a', 'pin'))
+    ws.cell(row=row, column=4, value=state.get('support_b', 'pin'))
     row += 2
 
     ws.cell(row=row, column=1, value='[UNIFORM_LOADS]'); row += 1
@@ -588,11 +590,17 @@ def import_arch_excel(path):
 
     si = find_section('[SUPPORTS]')
     arch_type, hinge_frac = 'Two-hinged', 0.5
+    support_a, support_b = 'pin', 'pin'
     if si >= 0:
         srow = read_table(si)
         if srow:
             arch_type = str(srow[0]['arch_type'])
             hinge_frac = float(srow[0]['hinge_frac']) if srow[0]['hinge_frac'] is not None else 0.5
+            # older exports (before per-end supports existed) have no
+            # support_a/support_b columns at all; default to 'pin' rather
+            # than KeyError on an older workbook.
+            support_a = str(srow[0].get('support_a') or 'pin')
+            support_b = str(srow[0].get('support_b') or 'pin')
 
     ui = find_section('[UNIFORM_LOADS]')
     w_weight, w_wind = 0.0, 0.0
@@ -632,6 +640,7 @@ def import_arch_excel(path):
 
     return {'span': span, 'rise': rise, 'n_elem': n_elem, 'shape_expr': shape_expr,
             'arch_type': arch_type, 'hinge_frac': hinge_frac,
+            'support_a': support_a, 'support_b': support_b,
             'w_weight': w_weight, 'w_wind': w_wind,
             'point_loads': point_loads, 'distributed_loads': distributed_loads,
             'profile': profile}
@@ -662,7 +671,7 @@ class ArchApp(UnitsMixin, tk.Frame):
     CGRID = '#e8e8e8'
     CTHH, CTHV, CTHR = '#2ecc71', '#8e44ad', '#1a6bbd'   # thrust vector: horiz / vert / resultant
 
-    ARCH_TYPES = ['Two-hinged', 'Three-hinged', 'Fixed']
+    ARCH_TYPES = ['Two-hinged', 'Three-hinged', 'Fixed', 'Custom (per end)']
     SHAPE_PRESETS = ['Parabolic', 'Circular', 'Catenary-like', 'Custom']
 
     def __init__(self, master, **kw):
@@ -950,6 +959,32 @@ class ArchApp(UnitsMixin, tk.Frame):
         self.hinge_var = tk.DoubleVar(value=self.hinge_frac)
         self.hinge_entry = tk.Entry(sup, textvariable=self.hinge_var, width=8, font=('Helvetica', 9))
         self.hinge_entry.grid(row=2, column=0, sticky='w', pady=2)
+
+        # The math layer (ArchModel) has always taken support_a and
+        # support_b independently -- apply_support(0, support_a) and
+        # apply_support(n, support_b) never assumed they match (see
+        # _analyze below). Only the UI forced them equal, through one
+        # combobox that always set both ends the same way, so a real and
+        # common case -- one abutment pinned, the other fixed -- had no
+        # way to be built despite the solver already supporting it. This
+        # row is shown only for 'Custom (per end)', so the three original
+        # presets are unchanged.
+        self.custom_sup_frame = tk.Frame(sup, bg='#f0f0ee')
+        self.custom_sup_frame.grid(row=3, column=0, columnspan=2, sticky='w', pady=(6, 0))
+        tk.Label(self.custom_sup_frame, text='End at x=0:', bg='#f0f0ee',
+                 font=('Helvetica', 8)).grid(row=0, column=0, sticky='w')
+        self.support_a_var = tk.StringVar(value='pin')
+        ttk.Combobox(self.custom_sup_frame, textvariable=self.support_a_var,
+                    values=['pin', 'fixed'], width=8, state='readonly').grid(
+                    row=0, column=1, sticky='w', padx=(4, 10))
+        tk.Label(self.custom_sup_frame, text='End at x=L:', bg='#f0f0ee',
+                 font=('Helvetica', 8)).grid(row=0, column=2, sticky='w')
+        self.support_b_var = tk.StringVar(value='pin')
+        ttk.Combobox(self.custom_sup_frame, textvariable=self.support_b_var,
+                    values=['pin', 'fixed'], width=8, state='readonly').grid(
+                    row=0, column=3, sticky='w', padx=4)
+        for var in (self.support_a_var, self.support_b_var):
+            var.trace_add('write', lambda *a: self._draw_schematic())
         self._on_arch_type_change()
 
         tk.Label(panel, text='LOADS (horizontal-projected)', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
@@ -1042,6 +1077,10 @@ class ArchApp(UnitsMixin, tk.Frame):
             self.hinge_entry.config(state='normal')
         else:
             self.hinge_entry.config(state='disabled')
+        if at == 'Custom (per end)':
+            self.custom_sup_frame.grid()
+        else:
+            self.custom_sup_frame.grid_remove()
         self._draw_schematic()
 
     # ── row management ──────────────────────────────────────────────────────
@@ -1226,6 +1265,7 @@ class ArchApp(UnitsMixin, tk.Frame):
             'span': self._span(), 'rise': self._rise(),
             'n_elem': int(self.nelem_var.get()), 'shape_expr': self.expr_var.get(),
             'arch_type': self.arch_type_var.get(), 'hinge_frac': self.hinge_var.get(),
+            'support_a': self.support_a_var.get(), 'support_b': self.support_b_var.get(),
             'w_weight': self.unit_value(self.wweight_var),
             'w_wind': self.unit_value(self.wwind_var),
             'point_loads': self.point_loads, 'distributed_loads': self.distributed_loads,
@@ -1287,6 +1327,8 @@ class ArchApp(UnitsMixin, tk.Frame):
         self.shape_var.set('Custom')
         self.expr_entry.config(state='normal')
         self.expr_var.set(st['shape_expr'])
+        self.support_a_var.set(st.get('support_a', 'pin'))
+        self.support_b_var.set(st.get('support_b', 'pin'))
         self.arch_type_var.set(st['arch_type'])
         self._on_arch_type_change()
         self.hinge_var.set(st['hinge_frac'])
@@ -1355,6 +1397,10 @@ class ArchApp(UnitsMixin, tk.Frame):
             elif at == 'Three-hinged':
                 m.support_a = 'pin'; m.support_b = 'pin'
                 m.hinge_x = max(0.0, min(1.0, self.hinge_var.get())) * self.span
+            elif at == 'Custom (per end)':
+                m.support_a = self.support_a_var.get()
+                m.support_b = self.support_b_var.get()
+                m.hinge_x = None
             else:
                 m.support_a = 'fixed'; m.support_b = 'fixed'; m.hinge_x = None
 
@@ -1498,8 +1544,13 @@ class ArchApp(UnitsMixin, tk.Frame):
 
         at = self.arch_type_var.get()
         ends = [(xs_s[0], ys_s[0]), (xs_s[-1], ys_s[-1])]
-        for x0, y0 in ends:
-            typ = 'fixed' if at == 'Fixed' else 'pin'
+        if at == 'Fixed':
+            end_types = ['fixed', 'fixed']
+        elif at == 'Custom (per end)':
+            end_types = [self.support_a_var.get(), self.support_b_var.get()]
+        else:
+            end_types = ['pin', 'pin']
+        for (x0, y0), typ in zip(ends, end_types):
             sx, sy = X(x0), Y(y0)
             if typ == 'fixed':
                 c.create_line(sx-14, sy+18, sx+14, sy+18, width=3, fill=self.CSUP)

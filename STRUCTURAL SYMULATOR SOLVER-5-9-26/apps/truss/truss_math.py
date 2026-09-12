@@ -413,6 +413,24 @@ def analyze(nodes, rods, loads, supports, plates=None):
     N = len(nodes)
     plates = plates or []
 
+    # Every support must reference a real node and a recognized type BEFORE
+    # anything below reads sp['node']/sp['type'] -- otherwise an invalid
+    # entry (reachable only via a hand-edited or corrupted Excel import;
+    # the UI's own combobox is readonly) either raises an uncaught
+    # IndexError at dof_of[sp['node']] below, or a type that matches none
+    # of the four branches at the boundary-condition step silently
+    # contributes ZERO constraints, so the node reports as unrestrained
+    # with no error at all -- the worst kind of wrong answer. See
+    # REPORTS AND GUIDES/REMAINING_BUGS_TRUSS_2026-09-10.md.
+    valid_types = ('pin', 'rollerX', 'rollerY', 'fixed')
+    for sp in supports:
+        if not (0 <= sp.get('node', -1) < N):
+            return None, (f"Support references node {sp.get('node')}, but the "
+                          f"model has {N} nodes.")
+        if sp.get('type') not in valid_types:
+            return None, (f"Support at node {sp['node']} has unrecognized type "
+                          f"{sp.get('type')!r}; expected one of {valid_types}.")
+
     needs_theta = [False] * N
     for rod in rods:
         if rod.get('conn', 'pin') == 'rigid':

@@ -272,3 +272,31 @@ def test_unsupported_model_reports_a_singular_matrix_instead_of_raising():
     result, error = analyze(nodes, rods, [{'node': 1, 'fx': 0.0, 'fy': 10.0}], [])
     assert result is None
     assert error and 'ingular' in error
+
+
+def test_an_unrecognized_support_type_is_reported_not_silently_ignored():
+    """A support whose 'type' matches none of the four accepted strings
+    used to fall through analyze()'s if/elif chain untouched, contributing
+    ZERO constraints -- the node reported as unrestrained with no error at
+    all. Only reachable today via a hand-edited or corrupted Excel import
+    (the UI's own combobox is readonly), but that path exists
+    (truss_reports.import_excel_model reads the type string with no
+    validation), so it must fail loudly rather than silently answer a
+    different, unintended problem."""
+    nodes = [(0.0, 0.0), (240.0, 0.0)]
+    rods = [{'a': 0, 'b': 1, 'E': 200.0, 'A': 10.0}]
+    result, error = analyze(nodes, rods, [], [{'node': 0, 'type': 'Pin'}])  # wrong case
+    assert result is None
+    assert error is not None and 'unrecognized type' in error
+
+
+def test_a_support_on_an_out_of_range_node_is_reported_not_a_crash():
+    """Same import path as above: nothing bounds-checked a support's node
+    index against the actual node list, so a stale/corrupted reference
+    raised an uncaught IndexError deep inside analyze() instead of the
+    (result, error) contract every caller relies on."""
+    nodes = [(0.0, 0.0), (240.0, 0.0)]
+    rods = [{'a': 0, 'b': 1, 'E': 200.0, 'A': 10.0}]
+    result, error = analyze(nodes, rods, [], [{'node': 5, 'type': 'pin'}])
+    assert result is None
+    assert error is not None and '5' in error

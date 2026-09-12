@@ -1249,22 +1249,32 @@ class CableWebApp(UnitsMixin, tk.Frame):
                   relief='flat').grid(row=6, column=0, pady=8, sticky='w')
         tk.Button(self.inspector, text='Delete', command=lambda: self._delete_node(nid),
                   relief='flat').grid(row=6, column=1, pady=8, sticky='e')
+        # A node's boundary condition (support vs. free/junction) was only
+        # ever settable ONE way: the "Support" drawing tool could turn a
+        # junction into a support, but nothing turned it back -- a
+        # misclick with that tool, or simply changing your mind about
+        # which nodes are anchored, was otherwise only undoable with
+        # Ctrl+Z. This button is the other direction.
+        convert_label = 'Convert to junction (free node)' if n['support'] else 'Convert to support'
+        tk.Button(self.inspector, text=convert_label, relief='flat',
+                  command=lambda: self._toggle_node_support(nid)).grid(
+                  row=7, column=0, columnspan=2, pady=(0, 8), sticky='w')
         if not n['support']:
             tk.Label(self.inspector, text='Cable attachments:', bg=PANEL_BG,
-                     font=('Helvetica', 10, 'bold')).grid(row=7, column=0, columnspan=2,
+                     font=('Helvetica', 10, 'bold')).grid(row=8, column=0, columnspan=2,
                      sticky='w', pady=(8, 2))
             attachment_vars=[]
             for k, (cid, s) in enumerate(n['attachments']):
                 tk.Label(self.inspector, text=f'C{cid}  s ({self.u("length")})',
-                         bg=PANEL_BG).grid(row=8+k, column=0, sticky='w')
+                         bg=PANEL_BG).grid(row=9+k, column=0, sticky='w')
                 sv=tk.DoubleVar(value=self.show('length', s)); attachment_vars.append((cid,sv))
-                tk.Entry(self.inspector, textvariable=sv, width=12).grid(row=8+k, column=1, sticky='e')
+                tk.Entry(self.inspector, textvariable=sv, width=12).grid(row=9+k, column=1, sticky='e')
             if attachment_vars:
                 tk.Label(self.inspector, text='Edit s precisely; the junction moves on the\nselected cable and other attachment s values are\nreprojected automatically.', bg=PANEL_BG, fg=MUTED,
-                         justify='left').grid(row=8+len(attachment_vars), column=0, columnspan=2, sticky='w', pady=(5,2))
+                         justify='left').grid(row=9+len(attachment_vars), column=0, columnspan=2, sticky='w', pady=(5,2))
                 tk.Button(self.inspector, text='Apply attachment positions', relief='flat',
                           command=lambda nid=nid, av=attachment_vars: self._apply_attachment_positions(nid,av)).grid(
-                          row=9+len(attachment_vars), column=0, columnspan=2, sticky='w', pady=5)
+                          row=10+len(attachment_vars), column=0, columnspan=2, sticky='w', pady=5)
 
     def _show_cable_inspector(self, cid):
         c = self._cable(cid)
@@ -1952,6 +1962,31 @@ class CableWebApp(UnitsMixin, tk.Frame):
         self._invalidate('Node changed.')
         self._refresh_tree(); self._draw()
 
+    def _toggle_node_support(self, nid):
+        """Flip a node between SUPPORT (a fixed anchor) and JUNCTION (a free
+        node, optionally attached onto a cable's path) -- the boundary
+        condition this node represents. Previously the "Support" drawing
+        tool could only set this flag, never clear it, so a node marked a
+        support by mistake (or one the user simply wants a different
+        condition on) had no way back short of Ctrl+Z or deleting and
+        rebuilding it.
+
+        Converting TO a support clears any cable attachments: those are a
+        junction-only concept (a support is itself a fixed endpoint, not a
+        point riding along another cable's path), and leaving them in
+        place would silently reappear, stale, if the node were ever
+        converted back."""
+        self._checkpoint()
+        n = self._node(nid)
+        n['support'] = not n['support']
+        if n['support']:
+            n['attachments'] = []
+        self._invalidate(f"Node {nid} converted to "
+                         f"{'support' if n['support'] else 'junction'}.")
+        self._refresh_tree()
+        self._show_node_inspector(nid)
+        self._draw()
+
     def _apply_attachment_positions(self, nid, attachment_vars):
         try:
             values=[(cid, self.store('length', float(var.get())))
@@ -2011,9 +2046,23 @@ class CableWebApp(UnitsMixin, tk.Frame):
     def _delete_node(self, nid):
         self._checkpoint()
         nid = int(nid)
+        deleted_cable_ids = {c['id'] for c in self.cables if c['a'] == nid or c['b'] == nid}
         self.cables = [c for c in self.cables if c['a'] != nid and c['b'] != nid]
         self.loads = [l for l in self.loads if l['cable'] in {c['id'] for c in self.cables}]
         self.nodes = [n for n in self.nodes if n['id'] != nid]
+        # A surviving node's attachments must not go on naming a cable that
+        # just vanished with this node -- exactly the cleanup _delete_cable
+        # already does when a cable is removed directly. Without it, a
+        # junction node attached to a cable ending at the deleted node kept
+        # a dangling (cable_id, s) entry that crashed the first UI action
+        # touching it (e.g. "Apply attachment positions" -> _cable_length
+        # -> a StopIteration from looking up a cable id that no longer
+        # exists), since the solver silently ignores stale attachments but
+        # the UI does not.
+        if deleted_cable_ids:
+            for n in self.nodes:
+                n['attachments'] = [(c, s) for c, s in n['attachments']
+                                    if c not in deleted_cable_ids]
         self.selected_kind = self.selected_id = None
         self.selected_items.clear()
         self._invalidate(f'Node {nid} deleted.')

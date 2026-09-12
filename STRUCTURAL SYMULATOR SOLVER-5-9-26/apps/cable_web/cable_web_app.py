@@ -14,7 +14,10 @@ import queue
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
+import units
+
 from common import (
+    UnitsMixin,
     SNAP, PX_PER_M, PANEL_W, INIT_CW, INIT_CH, INIT_DH, INIT_FD,
     DEFAULT_SELF_WEIGHT,
     CT, CC, CV, CZ, CN, CS, CL, CSP, CG, CG_MINOR, CG_MICRO, CR,
@@ -127,7 +130,16 @@ class InfoTooltip:
             self._tip = None
 
 
-class CableWebApp(tk.Frame):
+class CableWebApp(UnitsMixin, tk.Frame):
+    # This tab holds forces in newtons and self-weight in N/m, not the kN the
+    # Beam and Cable tabs use. Declaring that is what keeps the selector
+    # cosmetic: a model saved here still means newtons whatever is chosen.
+    STORAGE_UNITS = units.storage_like(
+        'cable-web storage',
+        force=units.Unit('N', 1.0),
+        line_load=units.Unit('N/m', 1.0),
+    )
+
     """Interactive cable-web editor using the existing CableWeb solver."""
 
     def __init__(self, master):
@@ -143,6 +155,7 @@ class CableWebApp(tk.Frame):
         self.selected_kind = None
         self.selected_id = None
         self.selected_items = set()  # multi-selection: {(kind, id), ...}
+        self.init_units(repaint=self._on_units_changed)
         self.connect_start = None
         self.drag_state = None
         self.result = None
@@ -191,6 +204,11 @@ class CableWebApp(tk.Frame):
         # so the same diagram can be read as a hanging cable or as the arch it
         # is dual to.
         self.fd_flip = tk.BooleanVar(value=False)
+        # Draw T/H/V as the smooth closed form instead of the stepped per-edge
+        # values. OFF by default: the stepped band is what the solve literally
+        # produced, and it stays the default so nothing about the existing
+        # diagrams changes until this is asked for. See _analytic_group_params.
+        self.diagram_smooth = tk.BooleanVar(value=False)
         # Percent, matching the Arch tab's own scale sliders.
         self.fd_scale = tk.IntVar(value=100)
         # Kept as the authoritative flag for the two-pass solve. Driven by
@@ -397,6 +415,11 @@ class CableWebApp(tk.Frame):
         tk.Label(hdr, text='T = cable tension · H = horizontal thrust · V = vertical shear',
                  bg=PANEL_BG, fg='#9a9a9a',
                  font=('Helvetica', 8)).pack(side='left', padx=(12, 0))
+        cb = tk.Checkbutton(hdr, text='Smooth', variable=self.diagram_smooth,
+                            bg=PANEL_BG, font=('Helvetica', 8),
+                            command=self._on_diagram_smooth_toggled)
+        cb.pack(side='left', padx=(14, 0))
+        InfoTooltip(cb, self._SMOOTH_TIP)
         tk.Button(hdr, text='Hide', command=lambda: self.show_diagrams.set(False),
                   relief='flat', bg=PANEL_BG, fg=MUTED,
                   font=('Helvetica', 8)).pack(side='right')
@@ -574,7 +597,23 @@ class CableWebApp(tk.Frame):
             bot = top + band_h
             base = bot - 12                     # zero line: these are magnitudes
             avail = max(band_h - 26, 8)
-            peaks = [r[idx] for r in series]
+            # Two data sources, one drawing. STEPPED is what each solver edge
+            # literally carries -- the honest default. SMOOTH is the closed
+            # form those edges are samples of, drawn only where it applies
+            # (see _analytic_group_params); a stretch it does not cover keeps
+            # its steps, so the picture never claims resolution the solve
+            # does not have there.
+            smooth = self.diagram_smooth.get()
+            sv_pts = self._diagram_curve(cid, idx) if smooth else None
+            if not sv_pts:
+                smooth = False
+                sv_pts = []
+                for (_a, _b, *vals) in series:
+                    v = vals[idx - 2]
+                    sv_pts.append((_a, v))
+                    sv_pts.append((_b, v))
+
+            peaks = [r[idx] for r in series] + [v for _s, v in sv_pts]
             if idx == 2:
                 peaks += [t for t in t_ends if t is not None]
             vmax = max(1e-9, max(peaks))
@@ -597,19 +636,16 @@ class CableWebApp(tk.Frame):
             c.create_line(margin_l, top + 2, margin_l, base, fill='#c8c8c8')
             c.create_line(margin_l, base, w - margin_r, base, fill='#b0b0b0')
 
-            # Stepped: tension is constant within a solver edge, so a
-            # piecewise-constant plot is the honest shape -- not a smooth
-            # curve through midpoints, which would imply resolution the
-            # solve does not have.
+            # One construction for both sources: the stepped series is just a
+            # point list with two points per edge at the same height, so the
+            # step corners fall out of the same loop that draws the curve.
             poly = [(margin_l, base)]
             outline = []
-            for (s0, s1, *vals) in series:
-                v = vals[idx - 2]
-                x0 = margin_l + max(0.0, min(L, s0)) * scale_x
-                x1 = margin_l + max(0.0, min(L, s1)) * scale_x
+            for sv, v in sv_pts:
+                xx = margin_l + max(0.0, min(L, sv)) * scale_x
                 yy = base - (v / vmax) * avail
-                poly.extend([(x0, yy), (x1, yy)])
-                outline.extend([(x0, yy), (x1, yy)])
+                poly.append((xx, yy))
+                outline.append((xx, yy))
             poly.append((margin_l + L * scale_x, base))
             c.create_polygon([q for p in poly for q in p], fill=color,
                              outline='', stipple='gray25')
@@ -620,7 +656,7 @@ class CableWebApp(tk.Frame):
             # of the tension past the last edge's midpoint to the anchorage.
             # Kept visually distinct from the stepped band so the plot never
             # implies the SOLVE has resolution it does not have.
-            if idx == 2:
+            if idx == 2 and not smooth:
                 for is_start, tv in zip((True, False), t_ends):
                     if tv is None:
                         continue
@@ -635,12 +671,20 @@ class CableWebApp(tk.Frame):
 
             c.create_text(margin_l + 4, top + 8, text=label, anchor='w',
                           font=('Helvetica', 8, 'bold'), fill='#5a5a5a')
-            vmin = min(r[idx] for r in series)
+            # Read the min off the SAME data that was drawn. Taking it from
+            # the per-edge series while the smooth curve is on top reports a
+            # number the picture visibly contradicts: on a symmetric span the
+            # curve takes V to zero at the vertex, while the nearest edge
+            # midpoint reads 13.7 N -- and the label said 13.7.
+            vmin = (min(v for _s, v in sv_pts) if sv_pts
+                    else min(r[idx] for r in series))
             # Notes ride on the read-out line rather than floating in the
             # middle of the band: a centred item collides with the band title
             # as soon as the title is long, which both of these were.
             note = ''
-            if idx == 2 and any(t is not None for t in t_ends):
+            if smooth:
+                note = '   ~ closed form'
+            elif idx == 2 and any(t is not None for t in t_ends):
                 note = '   ● ends exact'
             elif idx == 3 and vmax > 1e-9 and (vmax - min(r[idx] for r in series)) / vmax < 0.01:
                 # Worth calling out: under purely vertical load the horizontal
@@ -650,10 +694,12 @@ class CableWebApp(tk.Frame):
                 # (0.44%) where the true answer is dead constant.
                 note = '   — constant, vertical loading only'
             c.create_text(w - margin_r, top + 8,
-                          text=f'max {vmax:.4g} N   min {vmin:.4g} N{note}',
+                          text=f'max {self.show("force", vmax):.4g} {self.u("force")}   '
+                                f'min {self.show("force", vmin):.4g} {self.u("force")}{note}',
                           anchor='e', font=('Helvetica', 8), fill='#7a7a7a')
 
-        c.create_text(w - margin_r, h - 6, text='s (m) along cable', anchor='e',
+        c.create_text(w - margin_r, h - 6,
+                      text=f's ({self.u("length")}) along cable', anchor='e',
                       font=('Helvetica', 7), fill='#9a9a9a')
 
     def _show_guide(self):
@@ -980,6 +1026,19 @@ class CableWebApp(tk.Frame):
                 child.pack(in_=row_frame, side='left', padx=2, pady=2)
 
     def _relayout_toolbar(self):
+        # NOTE (2026-09-06): this method, `_pack_responsive_group` and
+        # `_schedule_toolbar_relayout` were ported to `common.FlowBar` when
+        # the Truss tab hit the identical problem -- so the logic below now
+        # exists in two places, which is exactly what MANIFESTO sec 3j says
+        # will drift. Cable Web was deliberately NOT migrated in that change,
+        # to keep a Truss-tab layout fix from touching the most
+        # regression-prone tab in the project. If you are editing the wrap
+        # logic here, port the change to `common.FlowBar` as well -- or,
+        # better, do the migration: FlowBar was written to be a drop-in
+        # (`self._toolbar_flow.group()` for the local `group()`, `.relayout()`
+        # for this method, `.start()` for the bind + after_idle at the end of
+        # _build_toolbar) and it carries all three sec 3c/3d/3e lessons.
+        #
         # Responsive layout must be re-entrant safe. Changing pack/grid geometry
         # generates <Configure> events; never allow those events to recursively
         # rebuild the toolbar while it is already being rebuilt.
@@ -1171,35 +1230,51 @@ class CableWebApp(tk.Frame):
                  bg=PANEL_BG, font=('Helvetica', 11, 'bold')).grid(row=0, column=0,
                  columnspan=2, sticky='w', pady=(0, 7))
         x, y = self._world_to_m(n['x'], n['y'])
-        xv, yv = tk.DoubleVar(value=x), tk.DoubleVar(value=y)
-        fxv, fyv = tk.DoubleVar(value=n['fx']), tk.DoubleVar(value=n['fy'])
-        self._entry_row('X (m)', xv, 1)
-        self._entry_row('Y (m)', yv, 2)
+        # The inspector is rebuilt from scratch on every selection, so these
+        # boxes only have to be written in the convention chosen right now --
+        # there is no long-lived widget here to keep in step.
+        xv = tk.DoubleVar(value=self.show('length', x))
+        yv = tk.DoubleVar(value=self.show('length', y))
+        fxv = tk.DoubleVar(value=self.show('force', n['fx']))
+        fyv = tk.DoubleVar(value=self.show('force', n['fy']))
+        self._entry_row(f'X ({self.u("length")})', xv, 1)
+        self._entry_row(f'Y ({self.u("length")})', yv, 2)
         if not n['support']:
             tk.Label(self.inspector, text='Point load', bg=PANEL_BG,
                      font=('Helvetica', 10, 'bold')).grid(row=3, column=0, columnspan=2,
                      sticky='w', pady=(10, 2))
-            self._entry_row('Fx (N)', fxv, 4)
-            self._entry_row('Fy (N)', fyv, 5)
+            self._entry_row(f'Fx ({self.u("force")})', fxv, 4)
+            self._entry_row(f'Fy ({self.u("force")})', fyv, 5)
         tk.Button(self.inspector, text='Apply', command=lambda: self._apply_node(nid, xv, yv, fxv, fyv),
                   relief='flat').grid(row=6, column=0, pady=8, sticky='w')
         tk.Button(self.inspector, text='Delete', command=lambda: self._delete_node(nid),
                   relief='flat').grid(row=6, column=1, pady=8, sticky='e')
+        # A node's boundary condition (support vs. free/junction) was only
+        # ever settable ONE way: the "Support" drawing tool could turn a
+        # junction into a support, but nothing turned it back -- a
+        # misclick with that tool, or simply changing your mind about
+        # which nodes are anchored, was otherwise only undoable with
+        # Ctrl+Z. This button is the other direction.
+        convert_label = 'Convert to junction (free node)' if n['support'] else 'Convert to support'
+        tk.Button(self.inspector, text=convert_label, relief='flat',
+                  command=lambda: self._toggle_node_support(nid)).grid(
+                  row=7, column=0, columnspan=2, pady=(0, 8), sticky='w')
         if not n['support']:
             tk.Label(self.inspector, text='Cable attachments:', bg=PANEL_BG,
-                     font=('Helvetica', 10, 'bold')).grid(row=7, column=0, columnspan=2,
+                     font=('Helvetica', 10, 'bold')).grid(row=8, column=0, columnspan=2,
                      sticky='w', pady=(8, 2))
             attachment_vars=[]
             for k, (cid, s) in enumerate(n['attachments']):
-                tk.Label(self.inspector, text=f'C{cid}  s (m)', bg=PANEL_BG).grid(row=8+k, column=0, sticky='w')
-                sv=tk.DoubleVar(value=s); attachment_vars.append((cid,sv))
-                tk.Entry(self.inspector, textvariable=sv, width=12).grid(row=8+k, column=1, sticky='e')
+                tk.Label(self.inspector, text=f'C{cid}  s ({self.u("length")})',
+                         bg=PANEL_BG).grid(row=9+k, column=0, sticky='w')
+                sv=tk.DoubleVar(value=self.show('length', s)); attachment_vars.append((cid,sv))
+                tk.Entry(self.inspector, textvariable=sv, width=12).grid(row=9+k, column=1, sticky='e')
             if attachment_vars:
                 tk.Label(self.inspector, text='Edit s precisely; the junction moves on the\nselected cable and other attachment s values are\nreprojected automatically.', bg=PANEL_BG, fg=MUTED,
-                         justify='left').grid(row=8+len(attachment_vars), column=0, columnspan=2, sticky='w', pady=(5,2))
+                         justify='left').grid(row=9+len(attachment_vars), column=0, columnspan=2, sticky='w', pady=(5,2))
                 tk.Button(self.inspector, text='Apply attachment positions', relief='flat',
                           command=lambda nid=nid, av=attachment_vars: self._apply_attachment_positions(nid,av)).grid(
-                          row=9+len(attachment_vars), column=0, columnspan=2, sticky='w', pady=5)
+                          row=10+len(attachment_vars), column=0, columnspan=2, sticky='w', pady=5)
 
     def _show_cable_inspector(self, cid):
         c = self._cable(cid)
@@ -1215,21 +1290,24 @@ class CableWebApp(tk.Frame):
                  bg=PANEL_BG, fg=MUTED).grid(row=2, column=0, columnspan=2, sticky='w')
         use = tk.BooleanVar(value=c['length_override'] is not None)
         lv = tk.DoubleVar(value=c['length_override'] if use.get() is not None and c['length_override'] is not None else geom)
-        wv = tk.DoubleVar(value=c['w'])
-        self._entry_row('Prescribed length', lv, 3)
+        lv.set(self.show('length', lv.get()))
+        wv = tk.DoubleVar(value=self.show('line_load', c['w']))
+        self._entry_row(f'Prescribed length ({self.u("length")})', lv, 3)
         tk.Checkbutton(self.inspector, text='Use prescribed length', variable=use,
                        bg=PANEL_BG).grid(row=4, column=0, columnspan=2, sticky='w')
-        self._entry_row('Self-weight (N/m)', wv, 5)
-        # The field is in N/m and stays that way: relabelling it to kN/m would
-        # silently reinterpret every saved model by 1000x. A live read-out is
-        # the non-breaking half of the same convenience.
+        self._entry_row(f'Self-weight ({self.u("line_load")})', wv, 5)
+        # The stored field has always been N/m and still is; the box now shows
+        # it in whatever the selector says, and the read-out beside it gives
+        # the storage figure so nothing about a saved model is ambiguous.
         kn = tk.Label(self.inspector, text='', bg=PANEL_BG, fg=MUTED,
                       font=('Helvetica', 8))
         kn.grid(row=5, column=2, sticky='w', padx=(4, 0))
 
         def _sync_kn(*_a):
             try:
-                kn.config(text='= %.3f kN/m' % (float(wv.get()) / 1000.0))
+                kn.config(text='= %.3f %s' % (
+                    self.store('line_load', float(wv.get())),
+                    self.STORAGE_UNITS.label('line_load')))
             except (TypeError, ValueError):
                 kn.config(text='')
         wv.trace_add('write', _sync_kn)
@@ -1258,11 +1336,14 @@ class CableWebApp(tk.Frame):
             vals = [self._result_tension(eid) for eid in self._solver_edges_for_cable(cid)]
             vals = [v for v in vals if v is not None]
             if vals:
-                text = f'Tmin: {min(vals):.3g} N\nTmax: {max(vals):.3g} N'
+                F_ = self.u('force')
+                f_ = lambda v: self.show('force', v)
+                text = (f'Tmin: {f_(min(vals)):.3g} {F_}\n'
+                        f'Tmax: {f_(max(vals)):.3g} {F_}')
                 for eid in self._solver_edges_for_cable(cid):
                     try:
                         fx, fy = self.result.edge_force_components(eid)
-                        text += f'\nSeg {eid}: Fx={fx:.3g}, Fy={fy:.3g} N'
+                        text += f'\nSeg {eid}: Fx={f_(fx):.3g}, Fy={f_(fy):.3g} {F_}'
                     except Exception:
                         pass
                 tk.Label(self.inspector, text=text, bg=PANEL_BG, justify='left').grid(
@@ -1280,15 +1361,16 @@ class CableWebApp(tk.Frame):
         tk.Label(self.inspector, text='Type', bg=PANEL_BG).grid(row=2, column=0, sticky='w')
         ttk.Combobox(self.inspector, textvariable=typ, values=('Point', 'UDL', 'Variable'),
                      state='readonly', width=13).grid(row=2, column=1, sticky='ew')
-        s1 = tk.DoubleVar(value=load['s1'])
-        s2 = tk.DoubleVar(value=load['s2'])
-        mag = tk.DoubleVar(value=load['magnitude'])
+        s1 = tk.DoubleVar(value=self.show('length', load['s1']))
+        s2 = tk.DoubleVar(value=self.show('length', load['s2']))
+        mag = tk.DoubleVar(value=self.show(self._load_q(load['type']),
+                                            load['magnitude']))
         direction = tk.StringVar(value=load['direction'])
         expr = tk.StringVar(value=load.get('expression', ''))
         angle = tk.DoubleVar(value=load.get('angle_deg', -90.0))
-        self._entry_row('Start s (m)', s1, 3)
-        self._entry_row('End s (m)', s2, 4)
-        self._entry_row('Magnitude', mag, 5)
+        self._entry_row(f'Start s ({self.u("length")})', s1, 3)
+        self._entry_row(f'End s ({self.u("length")})', s2, 4)
+        self._entry_row(f'Magnitude ({self.u(self._load_q(load["type"]))})', mag, 5)
         tk.Label(self.inspector, text='Direction', bg=PANEL_BG).grid(row=6, column=0, sticky='w')
         ttk.Combobox(self.inspector, textvariable=direction,
                      values=('Vertical', 'Horizontal', 'Normal', 'Tangential', 'Custom'),
@@ -1360,6 +1442,26 @@ class CableWebApp(tk.Frame):
         else: self._show_multi_inspector()
         self._sync_tree_selection()
         self._draw()
+
+    def _load_q(self, load_type):
+        """A point load is a force; a UDL or a variable load is a force per
+        unit length. Its unit therefore follows the load's TYPE, which is why
+        the magnitude box cannot simply be registered once."""
+        return 'force' if load_type == 'Point' else 'line_load'
+
+    def _on_units_changed(self):
+        """Rebuild whatever the inspector is showing and redraw.
+
+        The inspector is constructed fresh on every selection, so re-running
+        the same construction is exactly what a repaint means here -- there is
+        no set of long-lived boxes to convert in place.
+        """
+        try:
+            if len(self.selected_items) == 1 and self.selected_kind is not None:
+                self._show_inspector_for(self.selected_kind, self.selected_id)
+            self._draw()
+        except Exception:
+            pass
 
     def _show_multi_inspector(self):
         self._clear_inspector()
@@ -1851,16 +1953,44 @@ class CableWebApp(tk.Frame):
     def _apply_node(self, nid, xv, yv, fxv, fyv):
         self._checkpoint()
         n = self._node(nid)
-        n['x'], n['y'] = xv.get() * PX_PER_M, -yv.get() * PX_PER_M
+        n['x'] = self.store('length', xv.get()) * PX_PER_M
+        n['y'] = -self.store('length', yv.get()) * PX_PER_M
         if not n['support']:
-            n['fx'], n['fy'] = fxv.get(), fyv.get()
+            n['fx'] = self.store('force', fxv.get())
+            n['fy'] = self.store('force', fyv.get())
         self._refresh_attachments_for_node(nid)
         self._invalidate('Node changed.')
         self._refresh_tree(); self._draw()
 
+    def _toggle_node_support(self, nid):
+        """Flip a node between SUPPORT (a fixed anchor) and JUNCTION (a free
+        node, optionally attached onto a cable's path) -- the boundary
+        condition this node represents. Previously the "Support" drawing
+        tool could only set this flag, never clear it, so a node marked a
+        support by mistake (or one the user simply wants a different
+        condition on) had no way back short of Ctrl+Z or deleting and
+        rebuilding it.
+
+        Converting TO a support clears any cable attachments: those are a
+        junction-only concept (a support is itself a fixed endpoint, not a
+        point riding along another cable's path), and leaving them in
+        place would silently reappear, stale, if the node were ever
+        converted back."""
+        self._checkpoint()
+        n = self._node(nid)
+        n['support'] = not n['support']
+        if n['support']:
+            n['attachments'] = []
+        self._invalidate(f"Node {nid} converted to "
+                         f"{'support' if n['support'] else 'junction'}.")
+        self._refresh_tree()
+        self._show_node_inspector(nid)
+        self._draw()
+
     def _apply_attachment_positions(self, nid, attachment_vars):
         try:
-            values=[(cid,float(var.get())) for cid,var in attachment_vars]
+            values=[(cid, self.store('length', float(var.get())))
+                    for cid, var in attachment_vars]
         except Exception:
             messagebox.showerror('Junction', 'Enter valid attachment positions.', parent=self.winfo_toplevel()); return
         if not values:
@@ -1885,8 +2015,9 @@ class CableWebApp(tk.Frame):
     def _apply_cable(self, cid, lv, use, wv):
         self._checkpoint()
         c = self._cable(cid)
-        c['w'] = max(0.0, wv.get())
-        c['length_override'] = max(1e-9, lv.get()) if use.get() else None
+        c['w'] = max(0.0, self.store('line_load', wv.get()))
+        c['length_override'] = (max(1e-9, self.store('length', lv.get()))
+                                 if use.get() else None)
         self._invalidate(f'C{cid} changed.')
         self._update_reference_result()
         self._show_cable_inspector(cid); self._draw()
@@ -1894,8 +2025,10 @@ class CableWebApp(tk.Frame):
     def _apply_load(self, lid, typ, s1, s2, mag, direction, expr, angle):
         l = self._load(lid)
         try:
-            ns1=max(0.0,float(s1.get())); ns2=max(0.0,float(s2.get()))
-            magnitude=float(mag.get()); angle_deg=float(angle.get())
+            ns1=max(0.0, self.store('length', float(s1.get())))
+            ns2=max(0.0, self.store('length', float(s2.get())))
+            magnitude=self.store(self._load_q(typ.get()), float(mag.get()))
+            angle_deg=float(angle.get())
         except Exception:
             messagebox.showerror('Load','Enter valid numeric values.',parent=self.winfo_toplevel()); return
         L=self._cable_length(l['cable'])
@@ -1913,9 +2046,23 @@ class CableWebApp(tk.Frame):
     def _delete_node(self, nid):
         self._checkpoint()
         nid = int(nid)
+        deleted_cable_ids = {c['id'] for c in self.cables if c['a'] == nid or c['b'] == nid}
         self.cables = [c for c in self.cables if c['a'] != nid and c['b'] != nid]
         self.loads = [l for l in self.loads if l['cable'] in {c['id'] for c in self.cables}]
         self.nodes = [n for n in self.nodes if n['id'] != nid]
+        # A surviving node's attachments must not go on naming a cable that
+        # just vanished with this node -- exactly the cleanup _delete_cable
+        # already does when a cable is removed directly. Without it, a
+        # junction node attached to a cable ending at the deleted node kept
+        # a dangling (cable_id, s) entry that crashed the first UI action
+        # touching it (e.g. "Apply attachment positions" -> _cable_length
+        # -> a StopIteration from looking up a cable id that no longer
+        # exists), since the solver silently ignores stale attachments but
+        # the UI does not.
+        if deleted_cable_ids:
+            for n in self.nodes:
+                n['attachments'] = [(c, s) for c, s in n['attachments']
+                                    if c not in deleted_cable_ids]
         self.selected_kind = self.selected_id = None
         self.selected_items.clear()
         self._invalidate(f'Node {nid} deleted.')
@@ -1945,19 +2092,23 @@ class CableWebApp(tk.Frame):
         L = self._cable_length(cid)
         dlg = tk.Toplevel(self); dlg.title(f'Junction on Cable C{cid}'); dlg.transient(self.winfo_toplevel())
         dlg.grab_set()
-        s_var = tk.DoubleVar(value=max(0.0, min(L, default_s)))
-        tk.Label(dlg, text=f'Cable C{cid} length: {L:.6f} m').grid(row=0, column=0, columnspan=2, padx=10, pady=(10,4), sticky='w')
-        tk.Label(dlg, text='Position s (m):').grid(row=1, column=0, padx=10, pady=5, sticky='w')
+        s_var = tk.DoubleVar(value=self.show('length', max(0.0, min(L, default_s))))
+        tk.Label(dlg, text=f'Cable C{cid} length: '
+                            f'{self.show("length", L):.6f} {self.u("length")}'
+                 ).grid(row=0, column=0, columnspan=2, padx=10, pady=(10,4), sticky='w')
+        tk.Label(dlg, text=f'Position s ({self.u("length")}):').grid(row=1, column=0, padx=10, pady=5, sticky='w')
         tk.Entry(dlg, textvariable=s_var, width=18).grid(row=1, column=1, padx=10, pady=5)
         tk.Label(dlg, text='Normalized s/L:').grid(row=2, column=0, padx=10, pady=3, sticky='w')
-        norm = tk.StringVar(value=f'{s_var.get()/L:.6f}' if L else '0')
+        norm = tk.StringVar(
+            value=f'{self.store("length", s_var.get())/L:.6f}' if L else '0')
         tk.Label(dlg, textvariable=norm).grid(row=2, column=1, padx=10, pady=3, sticky='w')
         def update_norm(*_):
-            try: norm.set(f'{max(0,min(L,s_var.get()))/L:.6f}' if L else '0')
+            try: norm.set(f'{max(0,min(L,self.store("length", s_var.get())))/L:.6f}'
+                          if L else '0')
             except Exception: pass
         s_var.trace_add('write', update_norm)
         def create():
-            try: ss=float(s_var.get())
+            try: ss=self.store('length', float(s_var.get()))
             except Exception:
                 messagebox.showerror('Junction', 'Enter a valid position s.', parent=dlg); return
             if not (0.0 <= ss <= L):
@@ -1982,14 +2133,18 @@ class CableWebApp(tk.Frame):
         dlg = tk.Toplevel(self); dlg.title(f'Load on Cable C{cid}'); dlg.transient(self.winfo_toplevel())
         dlg.grab_set()
         typ = tk.StringVar(value='Point')
-        s1 = tk.DoubleVar(value=default_s if default_s is not None else 0.0)
-        s2 = tk.DoubleVar(value=default_s if default_s is not None else self._cable_length(cid))
-        mag = tk.DoubleVar(value=10.0)
+        s1 = tk.DoubleVar(value=self.show(
+            'length', default_s if default_s is not None else 0.0))
+        s2 = tk.DoubleVar(value=self.show(
+            'length', default_s if default_s is not None else self._cable_length(cid)))
+        mag = tk.DoubleVar(value=self.show('force', 10.0))
         direction = tk.StringVar(value='Vertical')
         expr = tk.StringVar(value='')
         angle = tk.DoubleVar(value=-90.0)
-        fields = [('Type', typ), ('Start s (m)', s1), ('End s (m)', s2),
-                  ('Magnitude', mag), ('Direction', direction), ('Custom angle (deg)', angle), ('q(s)', expr)]
+        LEN = self.u('length')
+        fields = [('Type', typ), (f'Start s ({LEN})', s1), (f'End s ({LEN})', s2),
+                  ('Magnitude', mag), ('Direction', direction),
+                  ('Custom angle (deg)', angle), ('q(s)', expr)]
         for r, (lab, var) in enumerate(fields):
             tk.Label(dlg, text=lab).grid(row=r, column=0, sticky='w', padx=8, pady=4)
             if lab == 'Type':
@@ -2004,8 +2159,10 @@ class CableWebApp(tk.Frame):
         def add():
             try:
                 l = {'id': f'L{self.next_load_id}', 'cable': cid, 'type': typ.get(),
-                     's1': max(0.0, s1.get()), 's2': max(0.0, s2.get()),
-                     'magnitude': mag.get(), 'direction': direction.get(), 'angle_deg': angle.get(),
+                     's1': max(0.0, self.store('length', s1.get())),
+                     's2': max(0.0, self.store('length', s2.get())),
+                     'magnitude': self.store(self._load_q(typ.get()), mag.get()),
+                     'direction': direction.get(), 'angle_deg': angle.get(),
                      'expression': expr.get().strip()}
             except Exception:
                 messagebox.showerror('Load', 'Enter valid numeric values.', parent=dlg); return
@@ -4086,6 +4243,178 @@ class CableWebApp(tk.Frame):
                 out.append((x,y))
         return out
 
+    _SMOOTH_TIP = (
+        'Draw tension, thrust and shear as the smooth curve they actually are, '
+        'instead of one flat step per solver element.\n\n'
+        'This is not interpolation. Under vertical load the horizontal thrust '
+        'is constant along a cable and the vertical component varies linearly '
+        'with length at the rate of the applied load, so T = hypot(H, V) is '
+        'known in closed form from the load -- which the model has exactly -- '
+        'plus one anchor from the solve. It is the same statics that gives the '
+        'exact tension at an anchorage, drawn everywhere instead of at one '
+        'point, so the peak at the supports is the true peak rather than the '
+        'last element average.\n\n'
+        'A stretch whose load is not uniform along it (a partly covering UDL, '
+        'a variable load, a non-vertical one) has no such closed form and '
+        'keeps its steps, so the picture never claims resolution the solve '
+        'does not have. Off by default: the stepped band is what the solver '
+        'literally produced.')
+
+    def _on_diagram_smooth_toggled(self):
+        """Both panes plot the same quantities, so both follow the one flag --
+        two controls, one variable, no way for them to disagree."""
+        self._draw_diagrams()
+        self._draw_funicular_diagram()
+
+    def _hard_points(self, cid):
+        """s values where a cable's drawn stretch must break.
+
+        A point load is a real kink, and a junction is one too -- the cable can
+        change direction there because another cable carries force at that
+        node. Neither may be smoothed through.
+
+        One definition, used by BOTH the geometry (_display_groups) and the
+        diagrams (_diagram_curve). They have to agree about where a stretch
+        begins and ends, or the two pictures disagree about the same cable --
+        which is exactly the drift sec 3j warns about, and which the diagram
+        pane and the editing canvas already fell into once.
+        """
+        hard = [float(l['s1']) for l in self.loads
+                if l.get('type') == 'Point' and l['cable'] == cid]
+        for n in self.nodes:
+            for ac, ss in n.get('attachments', []):
+                if ac == cid:
+                    hard.append(float(ss))
+        return sorted(set(hard))
+
+    @staticmethod
+    def _analytic_diagram_value(idx, H, v0, q, sv):
+        """One of T / H / V at arc position `sv`, from the closed form.
+
+        idx follows _diagram_series' columns: 2 = T, 3 = H, 4 = V. V is
+        returned as a magnitude, matching what the diagrams plot.
+        """
+        V = v0 + q * sv
+        if idx == 3:
+            return abs(H)
+        if idx == 4:
+            return abs(V)
+        return math.hypot(H, V)
+
+    def _analytic_group_params(self, cid, eids, s0, s1, positions, seg_owner):
+        """(H, v0, q) describing T/H/V in closed form along ONE stretch, or
+        None where the closed form does not apply.
+
+        Under purely vertical load the horizontal thrust is constant along a
+        cable, and the vertical component varies LINEARLY with arc length at
+        the rate of the applied load:
+
+            H(s) = H          V(s) = v0 + q*s          T(s) = hypot(H, V)
+
+        so the entire diagram for a uniformly loaded stretch follows from q --
+        which the model knows exactly -- plus one anchor taken from the solve.
+
+        This is the same statics the exact anchorage tension already uses (see
+        _cable_end_tension), where it was measured to -0.33% against the closed
+        form 171.05 N and shown mesh-independent to 0.08%. That method
+        evaluates it at one point; this describes it everywhere.
+
+        An edge's solved value is the true value at its MIDPOINT -- consistent
+        lumping puts half of each element's load at each of its nodes -- so the
+        anchor is averaged over every edge of the stretch rather than taken
+        from one. Averaging cancels the per-edge discretisation error instead
+        of inheriting whichever edge happened to be chosen.
+
+        Returns None when the stretch is not uniformly loaded (a partly
+        covering UDL, a variable load, a non-vertical or net-upward one) --
+        the same gate Route 1 uses for the geometry. There the stepped
+        per-edge band is the honest picture and is kept.
+        """
+        q = self._group_uniform_load(cid, s0, s1)
+        if q is None:
+            return None
+        rows = []
+        for eid in eids:
+            owner = seg_owner.get(eid)
+            T = self.result.tensions.get(eid) if self.result else None
+            e = self.result.model.edges.get(eid) if self.result else None
+            if owner is None or T is None or e is None:
+                continue
+            if e.i not in positions or e.j not in positions:
+                continue
+            xi, yi = positions[e.i]
+            xj, yj = positions[e.j]
+            seg = math.hypot(xj - xi, yj - yi)
+            if seg < 1e-12:
+                continue
+            # Edges are built in increasing s (see _build_solver_model), so
+            # this is the vertical force transmitted in the +s direction,
+            # signed -- the sign is what makes the linear fit meaningful
+            # through the vertex, where V passes through zero.
+            rows.append((0.5 * (owner[1] + owner[2]),
+                         abs(T * (xj - xi) / seg),
+                         T * (yj - yi) / seg))
+        if not rows:
+            return None
+        H = sum(r[1] for r in rows) / len(rows)
+        v0 = sum(r[2] - q * r[0] for r in rows) / len(rows)
+        return H, v0, q
+
+    def _diagram_curve(self, cid, idx, samples=24):
+        """[(s, value), ...] for one cable: smooth where the closed form
+        applies, stepped where it does not.
+
+        Mixed on purpose. A cable can have one stretch that is uniformly
+        loaded and another that is not, and refusing the whole cable because
+        of one stretch would throw away a curve that is exactly right. A
+        stretch that keeps its steps is telling the truth about what the solve
+        knows there.
+        """
+        if not (self.results_current and self.result is not None
+                and self._solver_meta):
+            return []
+        seg_owner = self._solver_meta.get('seg_owner') or {}
+        positions = self.result.positions
+        by_group = []
+        for grp in self._display_groups(self.result, positions,
+                                        self._solver_meta, view='F'):
+            if grp['cid'] != cid:
+                continue
+            by_group.append(grp)
+        by_group.sort(key=lambda g: g['s0'])
+
+        out = []
+        for grp in by_group:
+            g0, g1 = grp['s0'], grp['s1']
+            params = self._analytic_group_params(cid, grp['eids'], g0, g1,
+                                                 positions, seg_owner)
+            if params is not None and g1 > g0:
+                H, v0, q = params
+                for k in range(samples + 1):
+                    sv = g0 + (g1 - g0) * k / samples
+                    out.append((sv, self._analytic_diagram_value(idx, H, v0, q, sv)))
+            else:
+                for eid in sorted(grp['eids'],
+                                  key=lambda e: seg_owner.get(e, (0, 0.0, 0.0))[1]):
+                    owner = seg_owner.get(eid)
+                    T = self.result.tensions.get(eid)
+                    e = self.result.model.edges.get(eid)
+                    if owner is None or T is None or e is None:
+                        continue
+                    if e.i not in positions or e.j not in positions:
+                        continue
+                    xi, yi = positions[e.i]
+                    xj, yj = positions[e.j]
+                    seg = math.hypot(xj - xi, yj - yi)
+                    if seg < 1e-12:
+                        continue
+                    val = (abs(T) if idx == 2
+                           else abs(T * (xj - xi) / seg) if idx == 3
+                           else abs(T * (yj - yi) / seg))
+                    out.append((owner[1], val))
+                    out.append((owner[2], val))
+        return out
+
     def _display_groups(self, result, positions, meta, view='F',
                         mirror_axis=None):
         """The display polyline for every drawn stretch, in MODEL coordinates.
@@ -4155,24 +4484,11 @@ class CableWebApp(tk.Frame):
         for eid, owner in meta['seg_owner'].items():
             by_cable.setdefault(owner[0], []).append((owner[1], owner[2], eid))
 
-        point_s = {}
-        for load in self.loads:
-            if load.get('type') == 'Point':
-                point_s.setdefault(load['cable'], []).append(float(load['s1']))
-
         for cid, edges in by_cable.items():
             edges.sort(key=lambda e: (e[0], e[1]))
             groups = []
             current = []
-            hard = sorted(point_s.get(cid, []))
-            # A real structural junction is also a hard geometric point: the
-            # cable can change direction there because another cable carries
-            # force at the node. Never smooth through a junction.
-            for n in self.nodes:
-                for ac, ss in n.get('attachments', []):
-                    if ac == cid:
-                        hard.append(float(ss))
-            hard = sorted(set(hard))
+            hard = self._hard_points(cid)
             for s0, s1, eid in edges:
                 if not current:
                     current = [(s0, eid)]
@@ -4530,6 +4846,11 @@ class CableWebApp(tk.Frame):
                  bg=PANEL_BG, bd=0, highlightthickness=0, relief='flat',
                  font=('Helvetica', 7),
                  command=lambda _v: self._draw_funicular_diagram()).pack(side='left')
+        cb = tk.Checkbutton(hdr, text='Smooth', variable=self.diagram_smooth,
+                            bg=PANEL_BG, font=('Helvetica', 8),
+                            command=self._on_diagram_smooth_toggled)
+        cb.pack(side='left', padx=(10, 0))
+        InfoTooltip(cb, self._SMOOTH_TIP)
         tk.Button(hdr, text='Hide',
                   command=lambda: (self.show_web_diagrams.set(False),
                                    self._sync_funicular_pane()),
@@ -4637,6 +4958,26 @@ class CableWebApp(tk.Frame):
             message('Nothing to plot for %s.' % q)
             return
 
+        # Closed-form parameters per stretch, when asked for and available.
+        # Always taken from the UNMIRRORED solve: a force is a property of the
+        # structure, not of which way the picture is drawn, and the pane
+        # already asserts that flipping changes no value.
+        smooth = self.diagram_smooth.get()
+        aparams = {}
+        if smooth:
+            for gi, grp in enumerate(groups):
+                pr = self._analytic_group_params(
+                    grp['cid'], grp['eids'], grp['s0'], grp['s1'],
+                    self.result.positions, self._solver_meta.get('seg_owner') or {})
+                if pr is not None:
+                    aparams[gi] = pr
+                    # The closed form peaks at the anchorage, above every edge
+                    # value, so the shared scale has to see it or the widest
+                    # band would be clipped by its own baseline.
+                    for sv in (grp['s0'], grp['s1']):
+                        vmax = max(vmax, self._analytic_diagram_value(
+                            idx, pr[0], pr[1], pr[2], sv))
+
         xs = [pt[0] for g in groups for pt in g['pts']]
         ys = [pt[1] for g in groups for pt in g['pts']]
         diag = max(math.hypot(max(xs) - min(xs), max(ys) - min(ys)), 1.0)
@@ -4674,7 +5015,7 @@ class CableWebApp(tk.Frame):
             return min(iv, key=lambda r: min(abs(sv - r[0]), abs(sv - r[1])))[2]
 
         ribbons, fitx, fity, peak = [], list(xs), list(ys), None
-        for grp in groups:
+        for gi, grp in enumerate(groups):
             pts = grp['pts']
             if len(pts) < 2:
                 continue
@@ -4706,7 +5047,13 @@ class CableWebApp(tk.Frame):
                     nx, ny = 0.0, 1.0
                 else:
                     nx, ny = -ty / tl, tx / tl
-                val = value_at(iv, grp['s0'], grp['s1'], cum[i] / total)
+                frac = cum[i] / total
+                pr = aparams.get(gi)
+                if pr is not None:
+                    sv = grp['s0'] + (grp['s1'] - grp['s0']) * frac
+                    val = self._analytic_diagram_value(idx, pr[0], pr[1], pr[2], sv)
+                else:
+                    val = value_at(iv, grp['s0'], grp['s1'], frac)
                 vals.append(val)
                 nrm.append((nx, ny))
                 outer.append((px + nx * val * band, py + ny * val * band))
@@ -4722,11 +5069,17 @@ class CableWebApp(tk.Frame):
             # rather than as the honest steps they are. One ribbon per edge
             # renders the same data as clean blocks with a radial riser
             # between them.
-            runs, start = [], 0
-            for i in range(1, len(vals) + 1):
-                if i == len(vals) or abs(vals[i] - vals[start]) > 1e-12:
-                    runs.append((start, i))
-                    start = i
+            if gi in aparams:
+                # A closed-form stretch has no steps to separate, so it is one
+                # ribbon. Splitting on every change of value -- which is what
+                # the stepped path does -- would emit one polygon per sample.
+                runs = [(0, len(vals))]
+            else:
+                runs, start = [], 0
+                for i in range(1, len(vals) + 1):
+                    if i == len(vals) or abs(vals[i] - vals[start]) > 1e-12:
+                        runs.append((start, i))
+                        start = i
             for a, b in runs:
                 # Include the boundary point so consecutive ribbons meet on the
                 # curve, and use the run's ONE value throughout -- the value is
@@ -4737,8 +5090,11 @@ class CableWebApp(tk.Frame):
                     continue
                 v = vals[a]
                 sub_pts = pts[a:hi + 1]
-                sub_out = [(pts[i][0] + nrm[i][0] * v * band,
-                            pts[i][1] + nrm[i][1] * v * band)
+                # A closed-form ribbon varies point by point; a stepped one is
+                # constant across its edge, which is what makes its riser a
+                # clean radial line.
+                sub_out = [(pts[i][0] + nrm[i][0] * (vals[i] if gi in aparams else v) * band,
+                            pts[i][1] + nrm[i][1] * (vals[i] if gi in aparams else v) * band)
                            for i in range(a, hi + 1)]
                 ribbons.append((sub_pts, sub_out, grp))
             fitx += [pt[0] for pt in outer100]
@@ -4788,12 +5144,15 @@ class CableWebApp(tk.Frame):
 
         if peak is not None:
             px, py = TP(peak[1], peak[2])
-            c.create_text(px, py - 10, text='%s max %.4g N' % (q, peak[0]),
+            c.create_text(px, py - 10,
+                          text='%s max %.4g %s' % (q, self.show('force', peak[0]),
+                                                    self.u('force')),
                           fill=colour, font=('Helvetica', 8, 'bold'))
         label = {'T': 'TENSION T', 'H': 'THRUST H (horizontal)',
                  'V': 'SHEAR V (vertical)'}[q]
-        c.create_text(10, 12, text='%s  ·  %s  ·  scale %d%%'
+        c.create_text(10, 12, text='%s  ·  %s  ·  %s  ·  scale %d%%'
                       % (label, 'antifunicular' if flipped else 'funicular',
+                         'closed form' if (smooth and aparams) else 'per solver edge',
                          int(pct * 100)),
                       anchor='w', fill=colour, font=('Helvetica', 8, 'bold'))
         c.create_text(w - 8, h - 6,

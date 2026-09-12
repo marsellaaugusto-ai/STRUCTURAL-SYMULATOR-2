@@ -1485,6 +1485,93 @@ this, and none of them could fix a formulation that had ruled the answer out.
 
 ---
 
+### ac. A stepped diagram is not just uglier than a smooth one -- it is a whole order of accuracy worse
+
+The request was cosmetic: the T/H/V bands, and the funicular's own band, look
+like a staircase, and the user asked for a smooth reading behind a toggle, in
+the same idiom as the geometry's Route 1/Route 2 switch. What it turned into
+is a correctness improvement, and the reason is worth keeping.
+
+**Why the staircase is there.** Consistent (trapezoidal) load lumping puts an
+edge's true value at its **midpoint**, not at its ends. A band drawn at one
+value per edge is therefore not a coarse drawing of the right answer -- it is
+the right answer sampled only where the peak is not. On a cable the peak
+tension is at the anchorage, which is exactly the place no edge midpoint ever
+lands, so the staircase is guaranteed to under-report the number you size the
+cable with.
+
+**The closed form was already available**, the same way it was for the
+geometry (sec 3y). Under vertical load on a uniformly loaded stretch,
+
+    H(s) = H          V(s) = v0 + q*s          T(s) = hypot(H, V)
+
+with `q` read from the load and `H`, `v0` recovered by least squares from the
+edges the solve already produced. No new physics, no second solve.
+`_analytic_group_params` returns `None` wherever `_group_uniform_load`
+refuses -- variable loads, partly covering UDLs, non-vertical, net upward --
+and that stretch keeps its steps. **A smooth curve where the solve has no
+closed form would be a picture claiming resolution the numbers do not have**,
+which is the one thing a diagram must never do.
+
+**What the measurement showed, on real solves.** Four spans, `solve_analysis`
+run for real, peak tension against `q*a*cosh(span/2a)`:
+
+| case | stepped | smooth |
+|---|---|---|
+| 20 m span / 22 m arc | -5.33% | **-0.34%** |
+| 20 m / 26 m (deep sag) | -9.16% | **-0.10%** |
+| 30 m / 31 m (taut, heavy) | -2.66% | **-0.58%** |
+| 12 m / 18 m (very deep sag) | -10.63% | **-0.04%** |
+
+Every stepped reading is low, never high, which is the trapezoidal sampling
+showing through and is the dangerous direction for sizing.
+
+**The smooth reading does not land exactly on the closed form, and the reason
+matters.** It is recovered from edge **chords**, so it inherits the mesh's own
+discretisation error -- not the smoothing's. Refining settles it:
+
+| edges | H err | Tmax smooth err | Tmax stepped err |
+|---|---|---|---|
+| 8 | -0.6997% | -0.5772% | -2.66% |
+| 16 | -0.1745% | -0.1441% | -1.21% |
+| 32 | -0.0436% | -0.0360% | -0.57% |
+| 64 | -0.0109% | -0.0090% | -0.28% |
+
+Ratios 4.01, 4.00, 4.00 -- **second order**. The stepped column's ratios are
+2.20, 2.10, 2.05 -- **first order**. So the two readings are not two
+renderings of one number: refining the mesh buys four times as much from the
+smooth one as from the stepped one. That is the finding. A drawing choice
+turned out to set the convergence rate of the number being read.
+
+**Two things this cost, both self-inflicted and both instructive.**
+
+1. **The readout's minimum kept coming from the old series.** The curve was
+   drawn from the closed form while the "min" label still read the stepped
+   values, so V's label said 13.7 N beside a curve visibly touching zero. It
+   was found by *looking at the render*, not by any test -- sec 2 again. When
+   a display gains a second data source, **every number beside it is a second
+   consumer that has to be moved too**.
+2. **The first test I wrote asserted the wrong thing.** It demanded the
+   recovered `H` equal the exact continuous `H`; it cannot, for the chord
+   reason above. The test was rewritten to assert exact *identities* (V zero
+   at the vertex, T equal to H there, V at each anchorage equal to half the
+   weight, H constant) plus *second-order convergence*. **When a quantity is
+   recovered from a discretisation, assert its identities exactly and its
+   error's rate -- never its value against the continuum.**
+
+Off by default: the stepped band is what the solve literally produced, and the
+toggle exists to add a reading, not to replace one.
+
+**One unrelated fix rode along, because nothing could be verified without it.**
+Windows Smart App Control was blocking NumPy's `_multiarray_umath` DLL, and a
+module-level `import numpy` in `common.py` made the whole app unimportable --
+including the ~100 tests that never touch NumPy. It is now imported lazily,
+behind `_require_numpy()`, whose error names Smart App Control. **A hard
+dependency at import time makes every unrelated test share that dependency's
+fate.**
+
+---
+
 ## 4. Known, accepted performance characteristic (not a bug)
 
 All three provided `cableweb_report*.xlsx` cases share the same topology

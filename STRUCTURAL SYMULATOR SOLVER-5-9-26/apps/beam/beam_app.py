@@ -9,12 +9,15 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import math, os, sys, subprocess
 
+import units
+
 from common import (
     _ensure_openpyxl,
     PANEL_W, INIT_CW, INIT_CH, INIT_DH,
+    ScrollPanel, WrapBar,
     _beam_gauss_solve, _GAUSS5_NODES, _GAUSS5_WEIGHTS,
     _nice_ticks, _find_diagram_maxima, make_shape_fn,
-    draw_moment_arrow,
+    draw_moment_arrow, LoadScale, declutter_text,
 )
 
 class BeamModel:
@@ -27,20 +30,65 @@ class BeamModel:
         self.nonuniform_loads = []  # [{'fn': q(x)->N/m (+down), 'x1':, 'x2':}]
         self.EI = None         # N*m^2
 
+    def _on_beam(self, x, what):
+        """Reject a station that is not on the beam.
+
+        Nothing used to check these against the beam's own length, so a support
+        or load at x = 99 on a 6 m beam was accepted and silently EXTENDED the
+        mesh to 99 m while self.L stayed 6.0 -- the analysed structure was not
+        the one the user described, and a 10 kN load came back as a 155 kN
+        reaction with no warning (2026-09-05 finding B-5).
+        """
+        tol = 1e-9 * max(1.0, abs(self.L))
+        if not (-tol <= x <= self.L + tol):
+            raise ValueError(
+                f"{what} at x = {x:g} m is not on the beam, which spans 0 to "
+                f"{self.L:g} m. Move it onto the beam, or set the beam length "
+                f"first.")
+        return min(max(x, 0.0), self.L)
+
     def add_support(self, x, type_):
-        self.supports.append({'x': x, 'type': type_})
+        self.supports.append({'x': self._on_beam(x, 'Support'), 'type': type_})
 
     def add_point_load(self, x, P):
-        self.point_loads.append({'x': x, 'P': P})
+        self.point_loads.append({'x': self._on_beam(x, 'Point load'), 'P': P})
 
     def add_moment(self, x, M):
-        self.moments.append({'x': x, 'M': M})
+        self.moments.append({'x': self._on_beam(x, 'Applied moment'), 'M': M})
 
     def add_dload(self, x1, x2, w1, w2):
+        # Normalise a right-to-left entry. q() tests `x1 <= x <= x2`, which is
+        # unsatisfiable when x1 > x2, so a reversed segment used to contribute
+        # NOTHING at all -- zero reactions, zero moment, no warning (finding
+        # B-4). The intensities travel with their own ends, or the ramp would
+        # come out flipped. The Perforated Beam tab normalises the same way.
+        x1 = self._on_beam(x1, 'Distributed load start')
+        x2 = self._on_beam(x2, 'Distributed load end')
+        if x2 < x1:
+            x1, x2, w1, w2 = x2, x1, w2, w1
         self.dloads.append({'x1': x1, 'x2': x2, 'w1': w1, 'w2': w2})
 
     def add_nonuniform_load(self, fn, x1, x2):
+        x1 = self._on_beam(x1, 'Non-uniform load start')
+        x2 = self._on_beam(x2, 'Non-uniform load end')
+        if x2 < x1:
+            x1, x2 = x2, x1
         self.nonuniform_loads.append({'fn': fn, 'x1': x1, 'x2': x2})
+
+    # Longest element allowed, as a fraction of the modelled span. A mesh made
+    # only of the load/support discontinuities can be too coarse to solve at
+    # all: a fixed-fixed beam under a full-span UDL has exactly two nodes, all
+    # four of its DOF are restrained, and solve() rejected it as "fully
+    # constrained" even though it is the most common indeterminate case in any
+    # textbook (2026-09-05 diagnosis, finding B-1). Guaranteeing a minimum mesh
+    # removes that whole class of failure.
+    #
+    # This changes no result. Cubic-Hermite elements with consistent load
+    # vectors are nodally exact for the load types this model supports, so the
+    # extra nodes only make the deflection integration marginally finer -- and
+    # the cost is bounded: subdividing every gap to at most span/4 adds at most
+    # four elements in total, whatever the load layout.
+    MAX_ELEM_FRACTION = 0.25
 
     def _node_positions(self):
         xs = {0.0, round(self.L, 9)}
@@ -51,7 +99,34 @@ class BeamModel:
             xs.add(round(d['x1'], 9)); xs.add(round(d['x2'], 9))
         for d in self.nonuniform_loads:
             xs.add(round(d['x1'], 9)); xs.add(round(d['x2'], 9))
-        return sorted(xs)
+        return self._refine(sorted(xs))
+
+    def _refine(self, stations):
+        """Split any gap longer than MAX_ELEM_FRACTION of the modelled span.
+
+        The cap is taken from the span the stations actually cover, not from
+        self.L, so a coordinate lying outside the beam cannot make the mesh
+        explode -- the added element count stays bounded either way.
+        """
+        if len(stations) < 2:
+            return stations
+        max_len = (stations[-1] - stations[0]) * self.MAX_ELEM_FRACTION
+        if max_len <= 0:
+            return stations
+        out = [stations[0]]
+        for a, b in zip(stations, stations[1:]):
+            seg = b - a
+            n_sub = max(1, int(math.ceil(seg / max_len - 1e-9)))
+            for k in range(1, n_sub):
+                out.append(round(a + seg * k / n_sub, 9))
+            out.append(b)
+        # A rounded interior point can land on the station that follows it when
+        # a gap is degenerate; keep the mesh strictly increasing.
+        uniq = [out[0]]
+        for v in out[1:]:
+            if v > uniq[-1] + 1e-12:
+                uniq.append(v)
+        return uniq
 
     def q(self, x):
         """Total distributed load (N/m, +down convention) at x, summing the
@@ -303,7 +378,7 @@ class BeamResult:
         (post-jump) value, producing a visible zigzag/overshoot right at
         the discontinuity instead of a clean diagonal-jump-diagonal shape.
         """
-        xs_out, Vs, Ms, defl = [], [], [], []
+        xs_out, Vs, Ms = [], [], []
         for (n1, n2, x1, x2, Le) in self.elements:
             for k in range(n_per_element + 1):
                 x = x1 + Le * k / n_per_element
@@ -316,8 +391,7 @@ class BeamResult:
                 side = 'left' if k == n_per_element else 'right'
                 V = self.shear_at(x, side=side)
                 M = self.moment_at(x, side=side)
-                v = self.deflection(x)
-                xs_out.append(x); Vs.append(V); Ms.append(M); defl.append(v)
+                xs_out.append(x); Vs.append(V); Ms.append(M)
 
         # The right end of the beam (x = L) has no following element to
         # supply the closing side='right' "just after the final reaction"
@@ -329,9 +403,54 @@ class BeamResult:
             xs_out.append(xL)
             Vs.append(self.shear_at(xL, side='right'))
             Ms.append(self.moment_at(xL, side='right'))
-            defl.append(self.deflection(xL))
 
+        # Deflection along the SAME stations, integrated forward in one pass
+        # rather than by calling deflection(x) per station. That method
+        # (_theta_v_at) re-integrates the moment diagram from x = 0 every time
+        # it is called, and each of its 30 sub-steps per element is an
+        # O(loads) moment_at -- so sampling the curve station by station cost
+        # O(stations * elements * loads), cubic in the model size (a 40-load
+        # beam took 5.4 s, and this was the single biggest reason the test
+        # suite ran over an hour). The moment values are already sampled just
+        # above; integrating them forward once, with the same Simpson (for the
+        # rotation) then trapezoid (for the deflection) rule _theta_v_at uses,
+        # reproduces the same curve at a fraction of the cost. The point-query
+        # deflection(x) is deliberately left untouched, so its closed-form
+        # accuracy tests still bind and this fast path is checked against them.
+        defl = self._integrate_deflection(xs_out, Ms)
         return {'x': xs_out, 'V': Vs, 'M': Ms, 'v': defl}
+
+    def _integrate_deflection(self, xs, Ms):
+        """Deflection at each station in `xs`, from the moment samples `Ms`.
+
+        One cumulative sweep: rotation theta from integrating M/EI, deflection
+        v from integrating theta, seeded at x = 0 from the left node's own
+        solved DOF exactly as `_theta_v_at` seeds them. A zero-width interval
+        (the twin before/after points that draw a shear or moment jump) leaves
+        theta and v unchanged, which is correct -- slope and deflection are
+        continuous across a jump in V or M. Only the sub-interval midpoint
+        moment is evaluated fresh; the endpoints reuse the already-sampled
+        `Ms`, whose side choice (pre-jump at an element's end, post-jump at the
+        next element's start) is exactly the interior value each interval
+        needs.
+        """
+        i0 = self.idx_of[round(0.0, 9)]
+        v = self.d[2 * i0]
+        th = self.d[2 * i0 + 1]
+        EI = self.EI
+        out = [v]
+        for i in range(1, len(xs)):
+            h = xs[i] - xs[i - 1]
+            if h <= 1e-12:
+                out.append(v)                 # zero-width twin point
+                continue
+            Mm = self.moment_at(0.5 * (xs[i - 1] + xs[i]), side='right')
+            dth = h / 6.0 * (Ms[i - 1] + 4.0 * Mm + Ms[i]) / EI
+            th_new = th + dth
+            v = v + h / 2.0 * (th + th_new)
+            th = th_new
+            out.append(v)
+        return out
 
 def _adaptive_vector_integral(vfn, a, b, dim, tol=1e-7, max_depth=20):
     """Same adaptive-refinement scheme as `_adaptive_integral`, but for a
@@ -445,7 +564,7 @@ def export_beam_excel(state, path, result=None, model=None):
         row += 1
     row += 1
 
-    ws.cell(row=row, column=1, value='[DLOADS]'); row += 1
+    ws.cell(row=row, column=1, value='[DISTRIBUTED_LOADS]'); row += 1
     for col, lbl in enumerate(['x1_m', 'x2_m', 'w1_kNm', 'w2_kNm'], 1):
         ws.cell(row=row, column=col, value=lbl)
     row += 1
@@ -580,7 +699,11 @@ def import_beam_excel(path):
             moments.append({'x': float(r['x_m']), 'M': float(r['M_kNm'])})
 
     dloads = []
-    di = find_section('[DLOADS]')
+    # Accept the pre-2026-09-07 name too, so workbooks already on disk
+    # still import. New exports use [DISTRIBUTED_LOADS], matching Cable.
+    di = find_section('[DISTRIBUTED_LOADS]')
+    if di < 0:
+        di = find_section('[DLOADS]')
     if di >= 0:
         for r in read_table(di):
             dloads.append({'x1': float(r['x1_m']), 'x2': float(r['x2_m']),
@@ -635,13 +758,20 @@ class BeamApp(tk.Frame):
         self.model = None
         self._build_ui()
         self._draw_schematic()
+        # Nothing in the model changes when the convention does -- only how it
+        # is written -- so the whole tab is simply repainted. Held as an
+        # attribute so the listener can be removed if this tab is ever
+        # destroyed and rebuilt, which would otherwise leave a dead callback
+        # repainting a widget that no longer exists.
+        self._units_listener = units.on_change(lambda _sys: self._on_units_changed())
+
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
         tb = tk.Frame(self, bg='#ebebea')
         tb.pack(fill='x', padx=6, pady=(6, 0))
-        tk.Label(tb, text='Beam length (m):', bg='#ebebea', font=('Helvetica', 11)).pack(side='left', padx=(4, 2))
-        self.len_var = tk.DoubleVar(value=self.length)
+        tk.Label(tb, text=f'Beam length ({units.label("length")}):', bg='#ebebea', font=('Helvetica', 11)).pack(side='left', padx=(4, 2))
+        self.len_var = tk.DoubleVar(value=self._shown('x', self.length))
         tk.Entry(tb, textvariable=self.len_var, width=7, font=('Helvetica', 11)).pack(side='left')
         tk.Button(tb, text='Set length', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica', 11), command=self._set_length).pack(side='left', padx=4)
@@ -667,6 +797,17 @@ class BeamApp(tk.Frame):
         main = tk.Frame(self, bg='#f5f5f3')
         main.pack(fill='both', expand=True, padx=6, pady=6)
 
+        # Right panel FIRST, expanding content SECOND. Tk's pack hands each
+        # slave a parcel in packing order, so the previous order (content
+        # first, expand=True) left the panel whatever the content did not
+        # want -- which at narrow widths was nothing, and the panel was
+        # unmapped entirely with no scrollbar and no error. ScrollPanel also
+        # scrolls horizontally, so a row wider than the panel stays reachable
+        # instead of being clipped mid-widget.
+        self.panel_outer = ScrollPanel(main, width=PANEL_W + 105, bg='#f0f0ee',
+                                        bd=1, relief='solid')
+        self.panel_outer.pack(side='right', fill='y', padx=(6, 0))
+
         left = tk.Frame(main, bg='#f5f5f3')
         left.pack(side='left', fill='both', expand=True)
 
@@ -687,34 +828,37 @@ class BeamApp(tk.Frame):
         self.diag_canvas.pack(fill='both', expand=True)
         self.diag_canvas.bind('<Configure>', lambda e: self._draw_diagrams())
 
-        panel_outer = tk.Frame(main, width=PANEL_W + 105, bg='#f0f0ee', bd=1, relief='solid')
-        panel_outer.pack(side='right', fill='y', padx=(6, 0))
-        panel_outer.pack_propagate(False)
-        panel_canvas = tk.Canvas(panel_outer, bg='#f0f0ee', highlightthickness=0, width=PANEL_W + 105)
-        panel_sb = tk.Scrollbar(panel_outer, orient='vertical', command=panel_canvas.yview)
-        panel_canvas.configure(yscrollcommand=panel_sb.set)
-        panel_sb.pack(side='right', fill='y')
-        panel_canvas.pack(side='left', fill='both', expand=True)
-        panel = tk.Frame(panel_canvas, width=PANEL_W + 105, bg='#f0f0ee')
-        panel_canvas.create_window((0, 0), window=panel, anchor='nw', width=PANEL_W + 105)
+        self._build_panel(self.panel_outer.interior)
+        # Adopt whatever width the panel's own content needs, so nothing
+        # starts life behind the horizontal scrollbar.
+        self.panel_outer.fit_to_content()
 
-        def _on_cfg(event):
-            panel_canvas.configure(scrollregion=panel_canvas.bbox('all'))
-        panel.bind('<Configure>', _on_cfg)
+        # The toolbar was one long row of pack(side='left') calls, so its tail
+        # ran off the right edge. WrapBar flows those same widgets across as
+        # many rows as the width needs, without restructuring how they were
+        # built. The same <Configure> drives the panel width, so the two can
+        # never disagree about how wide the window currently is.
+        self.toolbar_wrap = WrapBar(tb)
+        self.toolbar_wrap.start()
+        self.bind('<Configure>', self._on_root_configure, add='+')
+        self.after_idle(lambda: self._on_root_configure(None))
 
-        def _wheel(event):
-            panel_canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
-        panel_canvas.bind('<Enter>', lambda e: panel_canvas.bind_all('<MouseWheel>', _wheel))
-        panel_canvas.bind('<Leave>', lambda e: panel_canvas.unbind_all('<MouseWheel>'))
-
-        self._build_panel(panel)
+    def _on_root_configure(self, _event=None):
+        """Resize the right panel to match the window. Content that no longer
+        fits stays reachable through ScrollPanel's horizontal scrollbar, so
+        this can never hide a control -- unlike the previous fixed-width
+        panel, which was simply dropped."""
+        try:
+            self.panel_outer.apply_responsive_width(self.winfo_width())
+        except Exception:
+            pass
 
     def _build_panel(self, panel):
         pad = dict(padx=8, pady=(8, 2))
 
         tk.Label(panel, text='SUPPORTS', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
         self.sup_tree = ttk.Treeview(panel, columns=('x', 'type'), show='headings', height=4)
-        self.sup_tree.heading('x', text='x (m)'); self.sup_tree.column('x', width=70)
+        self.sup_tree.heading('x', text=f'x ({self._u("x")})'); self.sup_tree.column('x', width=70)
         self.sup_tree.heading('type', text='Type'); self.sup_tree.column('type', width=100)
         self.sup_tree.pack(fill='x', padx=8)
         sf = tk.Frame(panel, bg='#f0f0ee'); sf.pack(fill='x', padx=8, pady=(2, 8))
@@ -723,8 +867,8 @@ class BeamApp(tk.Frame):
 
         tk.Label(panel, text='POINT LOADS (+down, kN)', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
         self.pl_tree = ttk.Treeview(panel, columns=('x', 'P'), show='headings', height=3)
-        self.pl_tree.heading('x', text='x (m)'); self.pl_tree.column('x', width=70)
-        self.pl_tree.heading('P', text='P (kN)'); self.pl_tree.column('P', width=100)
+        self.pl_tree.heading('x', text=f'x ({self._u("x")})'); self.pl_tree.column('x', width=70)
+        self.pl_tree.heading('P', text=f'P ({self._u("P")})'); self.pl_tree.column('P', width=100)
         self.pl_tree.pack(fill='x', padx=8)
         pf = tk.Frame(panel, bg='#f0f0ee'); pf.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(pf, text='Add', command=self._add_pointload).pack(side='left', padx=2)
@@ -732,8 +876,8 @@ class BeamApp(tk.Frame):
 
         tk.Label(panel, text='POINT MOMENTS (+CCW, kN·m)', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
         self.mm_tree = ttk.Treeview(panel, columns=('x', 'M'), show='headings', height=2)
-        self.mm_tree.heading('x', text='x (m)'); self.mm_tree.column('x', width=70)
-        self.mm_tree.heading('M', text='M (kN·m)'); self.mm_tree.column('M', width=100)
+        self.mm_tree.heading('x', text=f'x ({self._u("x")})'); self.mm_tree.column('x', width=70)
+        self.mm_tree.heading('M', text=f'M ({self._u("M")})'); self.mm_tree.column('M', width=100)
         self.mm_tree.pack(fill='x', padx=8)
         mf = tk.Frame(panel, bg='#f0f0ee'); mf.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(mf, text='Add', command=self._add_moment).pack(side='left', padx=2)
@@ -764,12 +908,21 @@ class BeamApp(tk.Frame):
         tk.Label(panel, text='CROSS-SECTION / MATERIAL', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
         sec = tk.Frame(panel, bg='#f0f0ee'); sec.pack(fill='x', padx=8)
         self.sec_vars = {}
-        fields = [('E', 'E (GPa)'), ('I', 'I (cm⁴)'), ('c', 'c (cm, extreme fiber)'),
-                  ('A', 'Shear area (cm²)'), ('allow_bend', 'Allow. bending σ (kN/cm²)'),
-                  ('allow_shear', 'Allow. shear τ (kN/cm²)')]
-        for i, (key, label) in enumerate(fields):
-            tk.Label(sec, text=label, bg='#f0f0ee', font=('Helvetica', 9)).grid(row=i, column=0, sticky='w', pady=1)
-            v = tk.DoubleVar(value=self.profile[key])
+        def _sec_fields():
+            u = units.label
+            return [('E', f'E ({u("modulus")})'), ('I', f'I ({u("inertia")})'),
+                    ('c', f'c ({u("section_length")}, extreme fiber)'),
+                    ('A', f'Shear area ({u("area")})'),
+                    ('allow_bend', f'Allow. bending σ ({u("stress")})'),
+                    ('allow_shear', f'Allow. shear τ ({u("stress")})')]
+
+        self._sec_fields = _sec_fields
+        self._sec_labels = {}
+        for i, (key, label) in enumerate(_sec_fields()):
+            lb = tk.Label(sec, text=label, bg='#f0f0ee', font=('Helvetica', 9))
+            lb.grid(row=i, column=0, sticky='w', pady=1)
+            self._sec_labels[key] = lb
+            v = tk.DoubleVar(value=self._sec_shown(key, self.profile[key]))
             self.sec_vars[key] = v
             tk.Entry(sec, textvariable=v, width=8, font=('Helvetica', 9)).grid(row=i, column=1, pady=1, padx=4)
 
@@ -786,6 +939,64 @@ class BeamApp(tk.Frame):
         del data_list[idx]
         self._refresh_tables()
 
+    # Which physical quantity each model field is, so one table-refresh can
+    # convert every column without a per-column special case. Fields that are
+    # not numbers (a support type, a q(x) expression) map to None and are
+    # passed through untouched.
+    _FIELD_Q = {'x': 'length', 'x1': 'length', 'x2': 'length',
+                'P': 'force', 'M': 'moment',
+                'w1': 'line_load', 'w2': 'line_load',
+                'type': None, 'expr': None}
+
+    _SECTION_Q = {'E': 'modulus', 'I': 'inertia', 'c': 'section_length',
+                  'A': 'area', 'allow_bend': 'stress', 'allow_shear': 'stress'}
+
+    def _shown(self, field, stored):
+        """A stored model value as the current unit convention writes it."""
+        q = self._FIELD_Q.get(field)
+        if q is None or not isinstance(stored, (int, float)):
+            return stored
+        return units.to_display(q, stored)
+
+    def _stored(self, field, shown):
+        """The inverse of `_shown`, for a number the user typed."""
+        q = self._FIELD_Q.get(field)
+        if q is None or not isinstance(shown, (int, float)):
+            return shown
+        return units.from_display(q, shown)
+
+    def _on_units_changed(self):
+        """Repaint every place a unit is written or a number is shown."""
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+        self.len_var.set(self._shown('x', self.length))
+        for key, lb in getattr(self, '_sec_labels', {}).items():
+            lb.config(text=dict(self._sec_fields())[key])
+            self.sec_vars[key].set(self._sec_shown(key, self.profile[key]))
+        self.sup_tree.heading('x', text=f'x ({self._u("x")})')
+        self.pl_tree.heading('x', text=f'x ({self._u("x")})')
+        self.pl_tree.heading('P', text=f'P ({self._u("P")})')
+        self.mm_tree.heading('x', text=f'x ({self._u("x")})')
+        self.mm_tree.heading('M', text=f'M ({self._u("M")})')
+        self._refresh_tables()
+        if self.result is not None:
+            self._show_results()
+            self._draw_diagrams()
+
+    def _sec_shown(self, key, stored):
+        return units.to_display(self._SECTION_Q[key], stored)
+
+    def _sec_stored(self, key, shown):
+        return units.from_display(self._SECTION_Q[key], shown)
+
+    def _u(self, field):
+        """Label for the unit a field is currently shown in."""
+        q = self._FIELD_Q.get(field)
+        return units.label(q) if q else ''
+
     def _refresh_tables(self):
         for tree, rows, cols in [
             (self.sup_tree, self.supports, ('x', 'type')),
@@ -796,7 +1007,11 @@ class BeamApp(tk.Frame):
         ]:
             tree.delete(*tree.get_children())
             for r in rows:
-                tree.insert('', 'end', values=tuple(r[c] for c in cols))
+                vals = []
+                for c in cols:
+                    v = self._shown(c, r[c])
+                    vals.append(f'{v:g}' if isinstance(v, float) else v)
+                tree.insert('', 'end', values=tuple(vals))
         self._draw_schematic()
 
     def _ask(self, title, fields):
@@ -824,23 +1039,67 @@ class BeamApp(tk.Frame):
         win.wait_window()
         return result if result else None
 
+    def _on_beam(self, r, *keys):
+        """True if every named coordinate in a dialog result is on the beam.
+
+        The dialogs took whatever was typed and appended it unchecked, so a
+        mistyped station silently changed the structure being analysed
+        (finding B-5). BeamModel refuses these too; catching it here means the
+        user is told while the number is still in front of them, rather than
+        at Analyze.
+        """
+        if not r:
+            return False
+        for k in keys:
+            x = r.get(k)
+            if x is None:
+                continue
+            if not (0.0 <= x <= self.length):
+                messagebox.showwarning(
+                    'Off the beam',
+                    f'{k} = {x:g} m is not on the beam, which spans 0 to '
+                    f'{self.length:g} m.\n\nNothing was added. Move it onto the '
+                    f'beam, or set the beam length first.')
+                return False
+        return True
+
     def _add_support(self):
-        r = self._ask('Add support', [('x', 'x (m)', self.length / 2), ('type', 'Type', 'pin')])
-        if r: self.supports.append(r); self._refresh_tables()
+        r = self._ask('Add support',
+                      [('x', f'x ({self._u("x")})',
+                        self._shown('x', self.length / 2)), ('type', 'Type', 'pin')])
+        if r:
+            r['x'] = self._stored('x', r['x'])
+        if self._on_beam(r, 'x'): self.supports.append(r); self._refresh_tables()
 
     def _add_pointload(self):
-        r = self._ask('Add point load', [('x', 'x (m)', self.length / 2), ('P', 'P (kN, +down)', 10.0)])
-        if r: self.point_loads.append(r); self._refresh_tables()
+        r = self._ask('Add point load',
+                      [('x', f'x ({self._u("x")})', self._shown('x', self.length / 2)),
+                       ('P', f'P ({self._u("P")}, +down)', self._shown('P', 10.0))])
+        if r:
+            r['x'] = self._stored('x', r['x']); r['P'] = self._stored('P', r['P'])
+        if self._on_beam(r, 'x'): self.point_loads.append(r); self._refresh_tables()
 
     def _add_moment(self):
-        r = self._ask('Add point moment', [('x', 'x (m)', self.length / 2), ('M', 'M (kN·m, +CCW)', 10.0)])
-        if r: self.moments.append(r); self._refresh_tables()
+        r = self._ask('Add point moment',
+                      [('x', f'x ({self._u("x")})', self._shown('x', self.length / 2)),
+                       ('M', f'M ({self._u("M")}, +CCW)', self._shown('M', 10.0))])
+        if r:
+            r['x'] = self._stored('x', r['x']); r['M'] = self._stored('M', r['M'])
+        if self._on_beam(r, 'x'): self.moments.append(r); self._refresh_tables()
 
     def _add_dload(self):
         r = self._ask('Add distributed load', [
-            ('x1', 'x1 (m)', 0.0), ('x2', 'x2 (m)', self.length),
-            ('w1', 'w1 (kN/m, +down)', 5.0), ('w2', 'w2 (kN/m, +down)', 5.0)])
-        if r: self.dloads.append(r); self._refresh_tables()
+            ('x1', f'x1 ({self._u("x1")})', 0.0),
+            ('x2', f'x2 ({self._u("x2")})', self._shown('x2', self.length)),
+            ('w1', f'w1 ({self._u("w1")}, +down)', self._shown('w1', 5.0)),
+            ('w2', f'w2 ({self._u("w2")}, +down)', self._shown('w2', 5.0))])
+        if r:
+            for k in ('x1', 'x2', 'w1', 'w2'):
+                r[k] = self._stored(k, r[k])
+        if self._on_beam(r, 'x1', 'x2'):
+            if r['x2'] < r['x1']:      # entered right-to-left; the intensities
+                r = dict(r, x1=r['x2'], x2=r['x1'], w1=r['w2'], w2=r['w1'])
+            self.dloads.append(r); self._refresh_tables()
 
     def _add_nonuniform_load(self):
         win = tk.Toplevel(self); win.title('Add non-uniform distributed load'); win.grab_set()
@@ -866,7 +1125,7 @@ class BeamApp(tk.Frame):
         def ok():
             expr = expr_var.get().strip()
             try:
-                ctx = {'L': self.len_var.get()}
+                ctx = {'L': self._stored('x', self.len_var.get())}
                 x1_, x2_ = x1_var.get(), x2_var.get()
                 x_mid = (min(x1_, x2_) + max(x1_, x2_)) / 2
                 make_shape_fn(expr, ctx)(x_mid)   # validate it compiles & evaluates
@@ -885,7 +1144,7 @@ class BeamApp(tk.Frame):
             self._refresh_tables()
 
     def _set_length(self):
-        self.length = self.len_var.get()
+        self.length = self._stored('x', self.len_var.get())
         self._draw_schematic()
 
     def _clear_all(self):
@@ -899,11 +1158,12 @@ class BeamApp(tk.Frame):
     # ── Excel export / import ────────────────────────────────────────────────
     def _current_state(self):
         return {
-            'length': self.len_var.get(),
+            'length': self._stored('x', self.len_var.get()),
             'supports': self.supports, 'point_loads': self.point_loads,
             'moments': self.moments, 'dloads': self.dloads,
             'nonuniform_loads': self.nonuniform_loads,
-            'profile': {k: v.get() for k, v in self.sec_vars.items()},
+            'profile': {k: self._sec_stored(k, v.get())
+                        for k, v in self.sec_vars.items()},
         }
 
     def _export_excel(self):
@@ -954,7 +1214,7 @@ class BeamApp(tk.Frame):
             messagebox.showerror('Import failed', str(e)); return
 
         self._clear_all()
-        self.length = st['length']; self.len_var.set(st['length'])
+        self.length = st['length']; self.len_var.set(self._shown('x', st['length']))
         self.supports = st['supports']
         self.point_loads = st['point_loads']
         self.moments = st['moments']
@@ -962,7 +1222,7 @@ class BeamApp(tk.Frame):
         self.nonuniform_loads = st['nonuniform_loads']
         for k, v in st['profile'].items():
             if k in self.sec_vars:
-                self.sec_vars[k].set(v)
+                self.sec_vars[k].set(self._sec_shown(k, v))
                 self.profile[k] = v
         self._refresh_tables()
         self._draw_schematic()
@@ -970,21 +1230,21 @@ class BeamApp(tk.Frame):
     # ── examples ─────────────────────────────────────────────────────────────
     def _load_example_cantilever(self):
         self._clear_all()
-        self.length = 4.0; self.len_var.set(4.0)
+        self.length = 4.0; self.len_var.set(self._shown('x', 4.0))
         self.supports = [{'x': 0.0, 'type': 'fixed'}]
         self.point_loads = [{'x': 4.0, 'P': 15.0}]
         self._refresh_tables()
 
     def _load_example_overhang(self):
         self._clear_all()
-        self.length = 10.0; self.len_var.set(10.0)
+        self.length = 10.0; self.len_var.set(self._shown('x', 10.0))
         self.supports = [{'x': 2.0, 'type': 'pin'}, {'x': 8.0, 'type': 'roller'}]
         self.dloads = [{'x1': 0.0, 'x2': 10.0, 'w1': 6.0, 'w2': 6.0}]
         self._refresh_tables()
 
     def _load_example_continuous(self):
         self._clear_all()
-        self.length = 10.0; self.len_var.set(10.0)
+        self.length = 10.0; self.len_var.set(self._shown('x', 10.0))
         self.supports = [{'x': 0.0, 'type': 'pin'}, {'x': 5.0, 'type': 'roller'},
                          {'x': 10.0, 'type': 'roller'}]
         self.dloads = [{'x1': 0.0, 'x2': 10.0, 'w1': 8.0, 'w2': 8.0}]
@@ -993,11 +1253,11 @@ class BeamApp(tk.Frame):
     # ── analysis ─────────────────────────────────────────────────────────────
     def _analyze(self):
         try:
-            self.length = self.len_var.get()
+            self.length = self._stored('x', self.len_var.get())
             if not self.supports:
                 messagebox.showwarning('Analyze', 'Add at least one support.'); return
             for k in self.sec_vars:
-                self.profile[k] = self.sec_vars[k].get()
+                self.profile[k] = self._sec_stored(k, self.sec_vars[k].get())
 
             E_Pa = self.profile['E'] * 1e9
             I_m4 = self.profile['I'] * 1e-8
@@ -1058,18 +1318,32 @@ class BeamApp(tk.Frame):
                 # of its adjacent element) — negate here so this value is
                 # directly comparable to the moment diagram.
                 Mr = -Mr
-            lines.append(f"  x={s['x']:.2f} m ({s['type']:<7}): "
-                          f"Ry={Fy/1e3:+8.2f} kN   M={Mr/1e3:+8.2f} kN·m")
-        lines += ['', f'Max |V|  = {abs(Vmax)/1e3:8.2f} kN',
-                  f'Max |M|  = {abs(Mmax)/1e3:8.2f} kN·m',
-                  f'Max |defl| = {abs(vmax)*1000:8.3f} mm', '', 'STRESS CHECK']
+            # r.reaction_at / the diagram are in SI; the model's own state is
+            # in STORAGE units. Both are written in the convention the user
+            # picked, which is the only thing the selector changes.
+            lines.append(
+                f"  x={self._shown('x', s['x']):.2f} {self._u('x')} "
+                f"({s['type']:<7}): "
+                f"Ry={units.from_si('force', Fy):+8.2f} {units.label('force')}   "
+                f"M={units.from_si('moment', Mr):+8.2f} {units.label('moment')}")
+        lines += ['',
+                  f"Max |V|  = {units.from_si('force', abs(Vmax)):8.2f} {units.label('force')}",
+                  f"Max |M|  = {units.from_si('moment', abs(Mmax)):8.2f} {units.label('moment')}",
+                  f"Max |defl| = {units.from_si('deflection', abs(vmax)):8.3f} "
+                  f"{units.label('deflection')}",
+                  '', 'STRESS CHECK']
         bend_ratio = sigma_kncm2 / self.profile['allow_bend'] if self.profile['allow_bend'] else 0
         shear_ratio = tau_kncm2 / self.profile['allow_shear'] if self.profile['allow_shear'] else 0
-        lines.append(f'  Bending sigma = M*c/I = {sigma_kncm2:6.3f} kN/cm2')
-        lines.append(f'    allowable = {self.profile["allow_bend"]:.3f} kN/cm2 '
+        su = units.label('stress')
+        lines.append(f'  Bending sigma = M*c/I = '
+                      f'{self._sec_shown("allow_bend", sigma_kncm2):6.3f} {su}')
+        lines.append(f'    allowable = '
+                      f'{self._sec_shown("allow_bend", self.profile["allow_bend"]):.3f} {su} '
                       f'  ({"OK" if bend_ratio <= 1.0 else "FAIL"}, ratio {bend_ratio:.2f})')
-        lines.append(f'  Shear tau = V/A   = {tau_kncm2:6.3f} kN/cm2')
-        lines.append(f'    allowable = {self.profile["allow_shear"]:.3f} kN/cm2 '
+        lines.append(f'  Shear tau = V/A   = '
+                      f'{self._sec_shown("allow_shear", tau_kncm2):6.3f} {su}')
+        lines.append(f'    allowable = '
+                      f'{self._sec_shown("allow_shear", self.profile["allow_shear"]):.3f} {su} '
                       f'  ({"OK" if shear_ratio <= 1.0 else "FAIL"}, ratio {shear_ratio:.2f})')
 
         self.res_text.delete('1.0', 'end')
@@ -1103,50 +1377,126 @@ class BeamApp(tk.Frame):
                     c.create_line(x, y0 + k * 5, x - 8, y0 + k * 5 + 8, fill=self.CSUP)
             elif t == 'guided':
                 c.create_rectangle(x - 10, y0 + 2, x + 10, y0 + 14, outline=self.CSUP)
-            c.create_text(x, y0 + 34, text=f"{s['x']:.2f} m", font=('Helvetica', 8), fill='#555')
+            c.create_text(x, y0 + 34,
+                          text=f"{self._shown('x', s['x']):.2f} {self._u('x')}",
+                          font=('Helvetica', 8), fill='#555')
+
+        # Distributed loads are drawn TO SCALE against the largest intensity in
+        # the model, and the chord above them follows the real q(x). Every
+        # arrow used to be a fixed 30 px whatever the load, so a 0 -> 60 kN/m
+        # triangular load was drawn exactly like a uniform one and the
+        # non-uniform branch computed its own shape function and then threw it
+        # away (2026-09-05 finding B-3). The load picture is the check an
+        # engineer makes before pressing Analyze; it has to show the shape.
+        DL_H = 34.0     # px at the largest intensity in the model
+        DL_MIN = 5.0    # px floor, so a tiny ordinate still reads as a load
+        N_SAMPLES = 20
+
+        def _q_profile(d):
+            """[(x_world, intensity_kNm), ...] for one distributed load, or
+            None if a user expression will not evaluate."""
+            a, b = min(d['x1'], d['x2']), max(d['x1'], d['x2'])
+            if 'expr' in d:
+                try:
+                    fn = make_shape_fn(d['expr'], {'L': self.length})
+                except Exception:
+                    return None
+                pts = []
+                for k in range(N_SAMPLES + 1):
+                    # sample strictly inside (a, b): the expression may be
+                    # singular exactly at its own domain edge
+                    t = (k + 0.5) / (N_SAMPLES + 1)
+                    xv = a + (b - a) * t
+                    try:
+                        pts.append((xv, fn(xv)))
+                    except Exception:
+                        return None
+                return pts
+            return [(a + (b - a) * k / N_SAMPLES,
+                     d['w1'] + (d['w2'] - d['w1']) * (k / N_SAMPLES))
+                    for k in range(N_SAMPLES + 1)]
+
+        profiles = []
+        for d in list(self.dloads) + list(self.nonuniform_loads):
+            pts = _q_profile(d)
+            if pts:
+                profiles.append((d, pts))
+        # Same compressed relative scale as the point loads and moments above,
+        # but normalised against an INTENSITY of its own: two distributed loads
+        # of equal intensity must draw at equal height whatever length each
+        # covers, which a scale shared with the point loads would break.
+        q_scale = LoadScale.of((q for _, pts in profiles for _, q in pts),
+                               DL_MIN, DL_H)
+
+        def _height(q):
+            # A genuinely zero ordinate sits on the beam line, so the start of a
+            # triangular load reads as zero rather than as a small load.
+            if abs(q) <= 1e-12:
+                return 0.0
+            return q_scale(q)
+
+        load_labels = []          # decluttered together at the end of the paint
+
+        # Tallest ordinate actually drawn above the beam. Point-load arrows and
+        # moment arcs are laid over this band, so their LABELS are lifted clear
+        # of it -- the arrows themselves still run to the beam at their true
+        # scaled length, which a shifted arrow would falsify.
+        dl_top = max((_height(q) for _, pts in profiles for _, q in pts if q > 0),
+                     default=0.0)
+
+        for d, pts in profiles:
+            # +q is downward, so it is drawn above the beam; an uplift ordinate
+            # hangs below it, and a load that changes sign crosses the beam line.
+            tops = [(X(xv), y0 - _height(q) if q >= 0 else y0 + _height(q))
+                    for xv, q in pts]
+            kw = {'dash': (3, 2)} if 'expr' in d else {}
+            c.create_line(*[v for pt in tops for v in pt],
+                          fill=self.CDLOAD, width=2, **kw)
+            step = max(1, len(tops) // 12)
+            for i in range(0, len(tops), step):
+                xx, yy = tops[i]
+                c.create_line(xx, yy, xx, y0, arrow='last', fill=self.CDLOAD)
+            label = (f"q(x) = {d['expr']}" if 'expr' in d
+                     else f"{self._shown('w1', d['w1']):.1f}→"
+                          f"{self._shown('w2', d['w2']):.1f} {self._u('w1')}")
+            load_labels.append(c.create_text(
+                (tops[0][0] + tops[-1][0]) / 2,
+                min(y0 - DL_H, min(y for _, y in tops)) - 10,
+                text=label, font=('Helvetica', 8, 'bold'), fill=self.CDLOAD))
+
+        # Every load glyph is sized RELATIVE to the largest of its own kind on
+        # the beam, square-root compressed. See common.LoadScale for why the
+        # three families are scaled separately and why the mapping is not
+        # linear. Point-load arrows used to be a flat 45 px and moment arcs a
+        # flat 12 px radius, so a 500 kN load and a 5 kN load drew identically.
+        p_scale = LoadScale.of((p['P'] for p in self.point_loads), 10.0, 48.0)
+        m_scale = LoadScale.of((mm['M'] for mm in self.moments), 7.0, 17.0)
 
         for p in self.point_loads:
             x = X(p['x'])
-            top = y0 - 45 if p['P'] >= 0 else y0 + 45
+            h = p_scale(p['P'])
+            top = y0 - h if p['P'] >= 0 else y0 + h
             c.create_line(x, top, x, y0, arrow='last', fill=self.CLOAD, width=2)
-            c.create_text(x, top - 8, text=f"{p['P']:.1f} kN", font=('Helvetica', 8, 'bold'), fill=self.CLOAD)
+            label_y = (min(top, y0 - dl_top) - 8 if p['P'] >= 0
+                       else max(top, y0 + dl_top) + 8)
+            load_labels.append(c.create_text(
+                x, label_y,
+                text=f"{self._shown('P', p['P']):.1f} {self._u('P')}",
+                font=('Helvetica', 8, 'bold'), fill=self.CLOAD))
 
         for mm in self.moments:
             x = X(mm['x'])
             ccw = mm['M'] >= 0  # sign convention for this tab: +M = CCW
-            draw_moment_arrow(c, x, y0, 12, ccw, self.CMOM, width=2)
-            c.create_text(x, y0 - 26, text=f"{mm['M']:.1f} kN·m", font=('Helvetica', 8, 'bold'), fill=self.CMOM)
+            r = m_scale(mm['M'])
+            draw_moment_arrow(c, x, y0, r, ccw, self.CMOM, width=2)
+            load_labels.append(c.create_text(
+                x, min(y0 - r, y0 - dl_top) - 14,
+                text=f"{self._shown('M', mm['M']):.1f} {self._u('M')}",
+                font=('Helvetica', 8, 'bold'), fill=self.CMOM))
 
-        for d in self.dloads:
-            x1, x2 = X(d['x1']), X(d['x2'])
-            top = y0 - 30
-            c.create_line(x1, top, x2, top, fill=self.CDLOAD, width=2)
-            n_arrows = max(3, int((x2 - x1) // 20))
-            for k in range(n_arrows + 1):
-                xx = x1 + (x2 - x1) * k / n_arrows
-                c.create_line(xx, top, xx, y0, arrow='last', fill=self.CDLOAD)
-            c.create_text((x1 + x2) / 2, top - 10, text=f"{d['w1']:.1f}→{d['w2']:.1f} kN/m",
-                          font=('Helvetica', 8, 'bold'), fill=self.CDLOAD)
-
-        for d in self.nonuniform_loads:
-            try:
-                qfn = make_shape_fn(d['expr'], {'L': self.length})
-            except Exception:
-                continue
-            x1w, x2w = min(d['x1'], d['x2']), max(d['x1'], d['x2'])
-            n_arrows = 10
-            top = y0 - 30
-            xs1, xs2 = X(x1w), X(x2w)
-            c.create_line(xs1, top, xs2, top, fill=self.CDLOAD, width=2, dash=(3, 2))
-            for k in range(n_arrows + 1):
-                # sample strictly inside (x1w, x2w): the expression may be
-                # singular exactly at its own domain edge
-                t = (k + 0.5) / (n_arrows + 1)
-                xv = x1w + (x2w - x1w) * t
-                xx = X(xv)
-                c.create_line(xx, top, xx, y0, arrow='last', fill=self.CDLOAD)
-            c.create_text((xs1 + xs2) / 2, top - 10, text=f"q(x) = {d['expr']}",
-                          font=('Helvetica', 8, 'bold'), fill=self.CDLOAD)
+        # Two loads at the same station put their labels in the same place; lift
+        # whichever was drawn later until nothing overlaps.
+        declutter_text(c, load_labels)
 
     def _draw_diagrams(self):
         c = self.diag_canvas
@@ -1162,16 +1512,20 @@ class BeamApp(tk.Frame):
         scale_x = (w - 2 * margin) / L
         band_h = (h - 40) / 3
 
-        M_vals = [mv / 1e3 for mv in diag['M']]
+        M_vals = [units.from_si('moment', mv) for mv in diag['M']]
         if self.reverse_bmd_var.get():
             M_vals = [-v for v in M_vals]
-            M_label = 'MOMENT M (kN·m) — sagging plotted DOWN, hogging plotted UP'
+            M_label = (f'MOMENT M ({units.label("moment")}) — sagging plotted DOWN,'
+                        ' hogging plotted UP')
         else:
-            M_label = 'MOMENT M (kN·m) — sagging (+) plotted UP, hogging (−) plotted DOWN'
+            M_label = (f'MOMENT M ({units.label("moment")}) — sagging (+) plotted UP,'
+                        ' hogging (−) plotted DOWN')
 
-        bands = [('SHEAR V (kN) — positive plotted UP', [v / 1e3 for v in diag['V']], self.CV_, 0),
+        bands = [(f'SHEAR V ({units.label("force")}) — positive plotted UP',
+                  [units.from_si('force', v) for v in diag['V']], self.CV_, 0),
                  (M_label, M_vals, self.CM_, 1),
-                 ('DEFLECTION (mm) — negative = downward', [vv * 1000 for vv in diag['v']], self.CDEFL, 2)]
+                 (f'DEFLECTION ({units.label("deflection")}) — negative = downward',
+                  [units.from_si('deflection', vv) for vv in diag['v']], self.CDEFL, 2)]
 
         last_band_idx = len(bands) - 1
         for label, ys, color, bidx in bands:

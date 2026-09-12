@@ -243,17 +243,38 @@ def test_double_channel_rejects_overlapping_channels():
         pass
 
 
-def test_beamconfig_rejects_openings_on_non_rolled_section():
+def test_beamconfig_accepts_openings_on_any_drawable_section():
+    """SUPERSEDED 2026-09-06. This used to assert the opposite: openings
+    were refused on anything but a RolledSection, because the net-section
+    maths needed that shape's `tf`/`tw` directly.
+
+    They are now computed by clipping the section's own polygons instead
+    (general_net_section.py, cross-checked against the closed form to
+    ~1e-13), so any section that can say what shape it is may be
+    perforated -- a double channel here, and a welded two-profile box in
+    test_general_net_section.py. The restriction that remains is the real
+    one: a section with no geometry at all is still refused, because there
+    is nothing to clip."""
     ch = pbm.CHANNEL_CATALOG['UPN 180']
     dc = pbm.BuiltUpDoubleChannelSection(ch, overall_width=300.0)
     op = pbm.OpeningInstance(1000.0, pbm.opening_circle(100.0), 'H1')
-    try:
-        pbm.BeamConfig(L=4000.0, section=dc, material=pbm.STEEL_A36, openings=[op])
-        assert False, 'expected ValueError for openings on a non-RolledSection'
-    except ValueError:
-        pass
-    # the same section with NO openings must be fine
+    beam = pbm.BeamConfig(L=4000.0, section=dc, material=pbm.STEEL_A36, openings=[op])
+    assert len(beam.openings) == 1
+    # and it analyses, rather than merely being accepted
+    assert pbm.net_I_at(beam, 1000.0) < dc.I
+    # the same section with NO openings must still be fine
     pbm.BeamConfig(L=4000.0, section=dc, material=pbm.STEEL_A36)
+
+
+def test_beamconfig_still_rejects_openings_on_a_shapeless_section():
+    class Mystery:
+        name, A, I, S, d = 'mystery', 1000.0, 1e6, 1e4, 100.0
+    op = pbm.OpeningInstance(1000.0, pbm.opening_circle(40.0), 'H1')
+    try:
+        pbm.BeamConfig(L=4000.0, section=Mystery(), material=pbm.STEEL_A36, openings=[op])
+        assert False, 'expected ValueError for a section with no geometry'
+    except ValueError as ex:
+        assert 'no outline' in str(ex)
 
 
 def test_double_channel_beam_analyze_combined_runs():
@@ -604,3 +625,56 @@ def test_builtup_double_section_two_different_bases_end_to_end():
     report = pbm.analyze_beam(beam)
     assert report['combined'] is not None
     assert 'not evaluated' in report['combined'].note
+
+
+def test_a_deep_opening_warns_on_a_ROLLED_section_too():
+    """The caution must not depend on which section type was picked.
+
+    `general_net_section.tees_at` has raised this since it was written;
+    the closed-form path every rolled catalog section takes -- the
+    commonest case by far -- never did. A 75% hole through an IPE got no
+    caution at all, while the same hole through a drawn profile got one
+    at every station."""
+    sec = pbm.SECTION_CATALOG['IPE 400']
+    res = pbm.net_section_at(sec, 50.0, 350.0)          # 300/400 = 75%
+    assert res['valid']
+    assert res['warning'] is not None
+    assert '75%' in res['warning']
+    assert 'local buckling of the tee' in res['warning']
+
+
+def test_a_shallow_opening_on_a_rolled_section_stays_quiet():
+    sec = pbm.SECTION_CATALOG['IPE 400']
+    res = pbm.net_section_at(sec, 150.0, 250.0)         # 100/400 = 25%
+    assert res['valid']
+    assert res['warning'] is None
+
+
+def test_the_flange_warning_still_wins_over_the_depth_one():
+    """An opening cutting into a flange is a modelling error, not a
+    caution about model range, and it must not be masked."""
+    sec = pbm.SECTION_CATALOG['IPE 400']
+    res = pbm.net_section_at(sec, 5.0, 395.0)
+    assert not res['valid']
+    assert 'extends into a flange' in res['warning']
+
+
+def test_both_net_section_paths_agree_on_when_to_warn():
+    """The two implementations must draw the line in the same place, or
+    the same beam cautions differently depending on how its section was
+    built."""
+    from apps.perforated_beam import general_net_section as gns
+    sec = pbm.SECTION_CATALOG['IPE 400']
+    drawn = pbm.CustomProfileSection('same', shapes_polygon_of(sec))
+    for lo, hi in ((150.0, 250.0), (50.0, 350.0), (60.0, 340.0)):
+        a = pbm.net_section_at(sec, lo, hi)['warning']
+        b = gns.tees_at(drawn, lo, hi)['warning']
+        assert (a is None) == (b is None), (lo, hi, a, b)
+
+
+def shapes_polygon_of(sec):
+    from apps.perforated_beam import section_shapes as shapes
+    pieces = shapes.section_pieces(sec)
+    ext = shapes.section_extents(pieces)
+    # back into the bottom-fibre frame the tee functions use
+    return [(x, y - ext[1]) for x, y in pieces[0].outline]

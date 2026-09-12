@@ -5,10 +5,12 @@ The project is organized by application so that each structural tool can be main
 ```text
 main.py                         application entry point
 common.py                       shared constants, widgets and numerical utilities
+cirsoc_301.py                   shared design-code layer (CIRSOC 301-2018)
 apps/
   truss/
     truss_app.py                Truss UI/controller
     truss_math.py               Truss/Vierendeel calculations
+    truss_plates.py             gusset / shear-panel design checks
     truss_reports.py            Excel/report support
   beam/
     beam_app.py                 Beam UI/controller
@@ -48,6 +50,14 @@ from apps.truss.truss_app import TrussApp
 ```
 
 Application-internal modules use relative imports, for example the Truss UI imports `.truss_math` and `.truss_reports`, while shared utilities continue to come from the root-level `common.py`.
+
+**No tab imports another tab.** Anything two tabs both need is promoted to a
+root-level module instead. `cirsoc_301.py` is the second such module: it began
+inside `apps/perforated_beam/` and moved to the root on 2026-09-06, when the
+Truss plate feature needed the same weld, shear and stress checks. Copying it
+would have been the other option, and the wrong one — two copies of a
+design-code layer drift, and a stale resistance factor is not a bug you notice
+by reading the output.
 
 The root directory containing `main.py` must therefore be the working directory when launching the application directly with:
 

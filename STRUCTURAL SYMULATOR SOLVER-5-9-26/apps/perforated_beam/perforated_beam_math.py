@@ -9,8 +9,7 @@ independently, as already established in this codebase; mixing units
 *within* a module is what actually causes errors, not differing
 conventions *between* tabs.
 
-Scope (single-span, simply supported, forked-end beam only -- see
-MANIFESTO "Known limitations"):
+Scope (see MANIFESTO "Known limitations"):
   - global statics (V, M, T) for an arbitrary combination of point loads,
     point moments, point torques, trapezoidal distributed loads/torques,
     and load-eccentricity-induced torque, by closed-form superposition;
@@ -20,6 +19,22 @@ MANIFESTO "Known limitations"):
   - web-post shear/buckling check between adjacent openings;
   - combined bending + torsion check with automatic doubler-plate sizing.
 
+SUPPORTS. The closed-form path above models a DETERMINATE 2-support beam
+(overhangs fine). Passing `support_specs` instead routes the beam through
+hyperstatic_math's stiffness solver, which takes any number of supports,
+each pin/roller or fixed -- continuous multi-span, propped cantilever,
+fixed-fixed, cantilever. The two paths agree to machine precision on the
+cases both can express (pinned in tests/test_hyperstatic_math.py); the
+indeterminate path additionally accounts for the openings' reduced I(x)
+when distributing the redundant reactions, which is a real effect the
+determinate path is right to ignore.
+
+SECTIONS. `CustomProfileSection` accepts `holes` (hollow tubes, drilled
+plates). `welded_section_math.CompoundSection` combines several profiles
+at arbitrary (dx, dy) offsets and checks the welds that hold them
+together; `BuiltUpDoubleSection` remains the equal-height side-by-side
+special case.
+
 No Tkinter, Excel, or drawing dependencies live here -- this is the
 apps/beam-style "stateful UI vs. deterministic calculation" boundary
 described in REPORTS AND GUIDES/MODULAR_ARCHITECTURE.md, so this module
@@ -27,6 +42,13 @@ is the intended reuse/port boundary if a future non-Python port happens.
 """
 import math
 from dataclasses import dataclass, field
+
+# One-way dependency: hyperstatic_math imports nothing from this module,
+# so there is no cycle. It owns the stiffness solve used when the support
+# arrangement is richer than the closed-form kernel here can express.
+from apps.perforated_beam import hyperstatic_math as hym
+import cirsoc_301 as cirsoc
+from apps.perforated_beam.hyperstatic_math import SupportSpec, PIN, ROLLER, FIXED
 
 # ─────────────────────────────────────────────────────────────────────────
 # 1. Material & rolled-section catalog
@@ -60,6 +82,34 @@ class RolledSection:
     bf: float
     tf: float
     tw: float
+
+    def __post_init__(self):
+        """Refuse geometry that isn't an I-section at all.
+
+        Every property below is an algebraic formula that happily returns
+        a number for impossible input: d = 0 used to yield I = 427 500
+        mm^4 (a zero-depth section with a real inertia), and flanges
+        thicker than half the depth -- overlapping through the web --
+        produced a plausible-looking I with no complaint (diagnosis P-4).
+        The class knows its own geometry, so it should say so."""
+        bad = [f'{n} = {v:g} mm' for n, v in
+               (('d', self.d), ('bf', self.bf), ('tf', self.tf), ('tw', self.tw)) if v <= 0]
+        if bad:
+            raise ValueError(
+                f'{self.name}: every I-section dimension must be positive; got '
+                + ', '.join(bad) + '.')
+        if self.d <= 2 * self.tf:
+            raise ValueError(
+                f'{self.name}: total depth d ({self.d:g} mm) must exceed both flange '
+                f'thicknesses together (2*tf = {2 * self.tf:g} mm) -- otherwise the '
+                'flanges overlap through the web and there is no web left to define. '
+                'Check whether d was entered as the CLEAR depth between flanges '
+                'instead of the total depth.')
+        if self.bf <= self.tw:
+            raise ValueError(
+                f'{self.name}: flange width bf ({self.bf:g} mm) must exceed web '
+                f'thickness tw ({self.tw:g} mm) -- a flange no wider than the web it '
+                'sits on is not an I-section. Check bf and tw are not swapped.')
 
     @property
     def A(self):
@@ -125,12 +175,19 @@ STEEL_A992 = Material(Fy=345.0, Fu=450.0, name='A992 / F36 approx')
 # OPTIONAL -- if absent, the combined bending+shear+torsion check
 # (`analyze_combined`) automatically degrades to a bending-only check
 # and says so in its result, rather than fabricating a shear/torsion
-# property for a shape it can't infer one from. Web-opening perforation
-# support (`net_section_at`, Vierendeel, web-post checks) is RolledSection-
-# specific and is explicitly rejected for any other section type in
-# `BeamConfig.__post_init__` -- seeing an opening's true effect on an
-# arbitrary or built-up shape needs shape-specific net-section logic this
-# module does not attempt to generalize (see MANIFESTO limitations).
+# property for a shape it can't infer one from.
+#
+# WEB OPENINGS, updated 2026-09-06. This used to say that perforation
+# support was RolledSection-specific and rejected for everything else,
+# because "seeing an opening's true effect on an arbitrary shape needs
+# shape-specific net-section logic". That turned out to be the wrong
+# framing: what it needs is the shape's GEOMETRY, and once a section can
+# report its own polygons (section_shapes.py) the netted tees are just
+# that geometry clipped by a half-plane -- no per-shape logic at all.
+# `general_net_section.py` does exactly that and agrees with the rolled
+# closed form to ~1e-13. Openings are therefore available on any section
+# that can say what shape it is; only a shape-less one is refused, and
+# `net_section_at` remains the (exact, faster) path a RolledSection takes.
 # ─────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -565,75 +622,142 @@ class BuiltUpDoubleSection:
         return max(self.gap, 1e-6) * max(clear_height, 1e-6)
 
 
+def _loop_integrals(pts):
+    """Area moments of ONE closed polygon loop about the ORIGIN, by
+    Green's theorem: (A, Sx, Sy, Ixx, Iyy) where Sx = int(y dA),
+    Sy = int(x dA), Ixx = int(y^2 dA), Iyy = int(x^2 dA).
+
+    Every one of these integrals flips sign with the winding direction,
+    so they are all normalised here to the CCW sense. That makes the
+    result winding-independent for the caller, which matters because a
+    hand-drawn outline can come back either way round, and because holes
+    are combined with the outline by SUBTRACTION -- a job that only works
+    if both loops have been put in the same orientation first."""
+    n = len(pts)
+    a2 = 0.0
+    sx = sy = 0.0
+    ixx = iyy = 0.0
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        cross = x1 * y2 - x2 * y1
+        a2 += cross
+        sy += (x1 + x2) * cross
+        sx += (y1 + y2) * cross
+        ixx += (y1 ** 2 + y1 * y2 + y2 ** 2) * cross
+        iyy += (x1 ** 2 + x1 * x2 + x2 ** 2) * cross
+    A = a2 / 2.0
+    s = 1.0 if A >= 0 else -1.0
+    return (abs(A), s * sx / 6.0, s * sy / 6.0, s * ixx / 12.0, s * iyy / 12.0)
+
+
+def _point_in_polygon(pt, poly):
+    """Standard crossing-number test. Used only to validate that a hole
+    actually lies inside the outline it is cut from."""
+    x, y = pt
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        if (y1 > y) != (y2 > y):
+            xin = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            if x < xin:
+                inside = not inside
+    return inside
+
+
 @dataclass
 class CustomProfileSection:
     """A general cross-section defined by its own closed outline (a list
     of (x, y) vertices in mm, arcs already discretized into short segments
-    by whoever built the outline -- see section_profile_ui.py). Section
-    properties (A, centroid, Ix, top/bottom section moduli) are computed
-    numerically by polygon integration (2D Green's-theorem area moments),
-    so ANY simple (non-self-intersecting) closed shape is supported --
-    channels, angles, tees, plates, or a hand-drawn built-up shape.
+    by whoever built the outline -- see section_profile_ui.py), optionally
+    with `holes`: a list of closed loops cut OUT of that outline.
+
+    Section properties (A, centroid, Ix, Iy, top/bottom section moduli)
+    are computed numerically by polygon integration (2D Green's-theorem
+    area moments), so ANY simple (non-self-intersecting) closed shape is
+    supported -- channels, angles, tees, plates, a hand-drawn built-up
+    shape, or (with holes) a hollow tube, a box girder, or a plate with
+    bolt holes deducted.
+
+    Holes are handled by subtracting each loop's area moments about the
+    SAME origin before the parallel-axis shift to the centroid. That is
+    exact, not an approximation, and it is why the loops must first be
+    normalised to a common winding (see `_loop_integrals`): a hole drawn
+    clockwise and one drawn counter-clockwise must remove the same
+    material.
 
     Deliberately does NOT expose `Aweb`/`J`: there is no general way to
     infer "the web" or a meaningful open-section torsion constant from an
     arbitrary outline, so `analyze_combined` correctly falls back to a
-    bending-only check for this section type rather than guessing."""
+    bending-only check for this section type rather than guessing. (A
+    closed hollow shape drawn with holes would have a far LARGER torsion
+    constant than the open-section formula would give, so guessing here
+    would be unconservative, not merely imprecise.)"""
     name: str
     outline: list  # [(x, y), ...] mm, absolute, not repeating the first point
+    holes: list = field(default_factory=list)  # [[(x, y), ...], ...]
 
     def __post_init__(self):
-        area = self._signed_area()
-        if abs(area) < 1e-9:
+        A_out = abs(_loop_integrals(self.outline)[0]) if len(self.outline) >= 3 else 0.0
+        if A_out < 1e-9:
             raise ValueError('Custom profile outline has zero area -- check the '
                               'points describe a real closed shape.')
+        for k, h in enumerate(self.holes, 1):
+            if len(h) < 3:
+                raise ValueError(f'Hole {k} of profile "{self.name}" has fewer than 3 '
+                                  'points, so it encloses nothing.')
+            A_h = _loop_integrals(h)[0]
+            if A_h < 1e-9:
+                raise ValueError(f'Hole {k} of profile "{self.name}" has zero area.')
+            if not all(_point_in_polygon(p, self.outline) for p in h):
+                raise ValueError(
+                    f'Hole {k} of profile "{self.name}" is not fully inside the outline. '
+                    'A void has to be cut from material that is actually there -- move '
+                    'the hole inside the profile, or make it part of the outline itself '
+                    'if it was meant to be a notch in the edge.')
+        if self._net[0] <= 1e-9:
+            raise ValueError(
+                f'Profile "{self.name}": the holes remove as much area as the outline '
+                'encloses (or more), leaving nothing behind. Check for overlapping '
+                'holes -- they are subtracted independently, so two holes that overlap '
+                'each other remove their shared region twice.')
+
+    @property
+    def _net(self):
+        """(A, Sx, Sy, Ixx, Iyy) about the origin, outline less holes."""
+        A, sx, sy, ixx, iyy = _loop_integrals(self.outline)
+        for h in self.holes:
+            hA, hsx, hsy, hixx, hiyy = _loop_integrals(h)
+            A -= hA
+            sx -= hsx
+            sy -= hsy
+            ixx -= hixx
+            iyy -= hiyy
+        return A, sx, sy, ixx, iyy
 
     def _signed_area(self):
-        pts = self.outline
-        n = len(pts)
-        a = 0.0
-        for i in range(n):
-            x1, y1 = pts[i]
-            x2, y2 = pts[(i + 1) % n]
-            a += x1 * y2 - x2 * y1
-        return a / 2.0
+        """Kept for backward compatibility with callers that predate holes.
+        Reports the NET area, positive."""
+        return self._net[0]
 
     @property
     def A(self):
-        return abs(self._signed_area())
+        return self._net[0]
 
     @property
     def centroid(self):
         """(cx, cy) in the outline's own coordinate frame."""
-        pts = self.outline
-        n = len(pts)
-        a = self._signed_area()
-        cx = cy = 0.0
-        for i in range(n):
-            x1, y1 = pts[i]
-            x2, y2 = pts[(i + 1) % n]
-            cross = x1 * y2 - x2 * y1
-            cx += (x1 + x2) * cross
-            cy += (y1 + y2) * cross
-        return cx / (6 * a), cy / (6 * a)
+        A, sx, sy, _, _ = self._net
+        return sy / A, sx / A
 
     @property
     def I(self):
         """Ix about the horizontal centroidal axis."""
-        pts = self.outline
-        n = len(pts)
-        a = self._signed_area()
-        _, cy = self.centroid
-        Ix_origin = 0.0
-        for i in range(n):
-            x1, y1 = pts[i]
-            x2, y2 = pts[(i + 1) % n]
-            cross = x1 * y2 - x2 * y1
-            Ix_origin += (y1 ** 2 + y1 * y2 + y2 ** 2) * cross
-        Ix_origin /= 12.0
-        # Ix_origin is about the x-axis of whatever frame `outline` was
-        # given in (y=0, not necessarily the centroid) -- shift it.
-        return abs(Ix_origin) - self.A * cy ** 2
+        A, sx, _, ixx, _ = self._net
+        cy = sx / A
+        return ixx - A * cy ** 2
 
     @property
     def Iy(self):
@@ -641,18 +765,9 @@ class CustomProfileSection:
         approach as `I`, with x and y swapped. Needed by OrientedSection
         to support rotating a custom profile 90 degrees relative to
         gravity."""
-        pts = self.outline
-        n = len(pts)
-        a = self._signed_area()
-        cx, _ = self.centroid
-        Iy_origin = 0.0
-        for i in range(n):
-            x1, y1 = pts[i]
-            x2, y2 = pts[(i + 1) % n]
-            cross = x1 * y2 - x2 * y1
-            Iy_origin += (x1 ** 2 + x1 * x2 + x2 ** 2) * cross
-        Iy_origin /= 12.0
-        return abs(Iy_origin) - self.A * cx ** 2
+        A, _, sy, _, iyy = self._net
+        cx = sy / A
+        return iyy - A * cx ** 2
 
     @property
     def d(self):
@@ -661,6 +776,9 @@ class CustomProfileSection:
 
     @property
     def y_extent(self):
+        """Extreme fibers. Taken from the OUTLINE only: an internal void
+        cannot extend the material beyond the boundary that contains it,
+        so the outline is always what sets the extreme fiber."""
         ys = [p[1] for p in self.outline]
         return min(ys), max(ys)
 
@@ -904,6 +1022,21 @@ def net_section_at(section: RolledSection, y_hole_bot, y_hole_top):
                    'height or eccentricity, or increase section depth')
         y_hole_top = min(y_hole_top, d - tf)
         y_hole_bot = max(y_hole_bot, tf)
+    else:
+        # THE DEEP-OPENING CAUTION MUST NOT DEPEND ON WHICH SECTION TYPE
+        # WAS PICKED. `general_net_section.tees_at` has raised it since it
+        # was written, and this closed-form path -- the one every rolled
+        # catalog section takes, which is the commonest case by far --
+        # never did. A 75% hole through an IPE got no caution at all,
+        # while the same hole through a drawn profile got one at every
+        # station.
+        ratio = (y_hole_top - y_hole_bot) / max(d, 1e-9)
+        if ratio > _gns().DEEP_OPENING_RATIO:
+            warning = (f'opening is {ratio:.0%} of the section depth, beyond the '
+                       f'~{_gns().DEEP_OPENING_RATIO:.0%} the Vierendeel model is '
+                       'normally used within. The tees left behind are shallow; local '
+                       'buckling of the tee, which this module does not check, is '
+                       'likely to govern before these stresses do.')
 
     h_top_web = max((d - tf) - y_hole_top, 0.0)
     A_t, ybar_t, I_t = _rect_pair_tee(tw, h_top_web, y_hole_top, bf, tf, d - tf)
@@ -931,18 +1064,30 @@ class PointLoad:
     x: float
     P: float          # +down, N
     e: float = 0.0    # eccentricity from shear center, mm (+e -> +torque = P*e)
+    # Load case for the combination factors, 'D' or 'L'. Defaults to
+    # 'L' because 1.6 > 1.2: an unclassified load is over-factored
+    # rather than under-factored. See load_combinations.py.
+    case: str = 'L'
 
 
 @dataclass
 class PointMoment:
     x: float
     M: float          # +CCW, N*mm
+    # Load case for the combination factors, 'D' or 'L'. Defaults to
+    # 'L' because 1.6 > 1.2: an unclassified load is over-factored
+    # rather than under-factored. See load_combinations.py.
+    case: str = 'L'
 
 
 @dataclass
 class PointTorque:
     x: float
     T: float          # N*mm, applied directly (independent of any load eccentricity)
+    # Load case for the combination factors, 'D' or 'L'. Defaults to
+    # 'L' because 1.6 > 1.2: an unclassified load is over-factored
+    # rather than under-factored. See load_combinations.py.
+    case: str = 'L'
 
 
 @dataclass
@@ -952,6 +1097,25 @@ class DistLoad:
     w1: float         # N/mm, +down
     w2: float
     e: float = 0.0    # eccentricity, mm
+    # Load case for the combination factors, 'D' or 'L'. Defaults to
+    # 'L' because 1.6 > 1.2: an unclassified load is over-factored
+    # rather than under-factored. See load_combinations.py.
+    case: str = 'L'
+
+    def __post_init__(self):
+        """Normalise a right-to-left entry (x1 > x2).
+
+        Left alone, a reversed span is not merely cosmetic: `x2 - x1` goes
+        negative, which flips the sign of the resultant and of every
+        reaction derived from it, AND mis-places the loaded region
+        relative to the station being evaluated -- so a plain typo
+        silently becomes an uplift load of the wrong magnitude
+        (diagnosis P-3). Swapping the ends together with their
+        intensities describes exactly the same physical load, so this
+        normalises rather than rejects."""
+        if self.x1 > self.x2:
+            self.x1, self.x2 = self.x2, self.x1
+            self.w1, self.w2 = self.w2, self.w1
 
 
 @dataclass
@@ -960,6 +1124,25 @@ class DistTorque:
     x2: float
     t1: float         # N*mm/mm
     t2: float
+    # Load case for the combination factors, 'D' or 'L'. Defaults to
+    # 'L' because 1.6 > 1.2: an unclassified load is over-factored
+    # rather than under-factored. See load_combinations.py.
+    case: str = 'L'
+
+    def __post_init__(self):
+        """Normalise a right-to-left entry (x1 > x2).
+
+        Left alone, a reversed span is not merely cosmetic: `x2 - x1` goes
+        negative, which flips the sign of the resultant and of every
+        reaction derived from it, AND mis-places the loaded region
+        relative to the station being evaluated -- so a plain typo
+        silently becomes an uplift load of the wrong magnitude
+        (diagnosis P-3). Swapping the ends together with their
+        intensities describes exactly the same physical load, so this
+        normalises rather than rejects."""
+        if self.x1 > self.x2:
+            self.x1, self.x2 = self.x2, self.x1
+            self.t1, self.t2 = self.t2, self.t1
 
 
 @dataclass
@@ -974,24 +1157,240 @@ class BeamConfig:
     dist_loads: list = field(default_factory=list)
     dist_torques: list = field(default_factory=list)
     supports: tuple = None  # (xA, xB); None -> defaults to (0, L), i.e. supports at both ends
+    support_specs: list = None  # [hyperstatic_math.SupportSpec, ...]; see below
+    # Transverse stiffener spacing along the beam, mm. None = unstiffened,
+    # which is what G.2.1(b)'s kv = 5 assumes. Declaring the real spacing
+    # raises kv (G.2.6) and can double the shear buckling capacity, so
+    # leaving it None is the conservative default rather than a guess.
+    stiffener_spacing: float = None
+    Lb: float = 0.0     # unbraced length of the compression flange, mm.
+                        # 0 = continuously braced (a floor beam under a
+                        # slab), which is the usual case and the default;
+                        # see cirsoc_301.flexural_strength, which says so
+                        # in its result rather than assuming it silently.
+    Cb: float = 1.0     # CIRSOC F.1(3) moment-gradient factor. 1.0 is the
+                        # explicitly permitted conservative value.
+    load_on_top_flange: bool = False   # picks Lp per F.2.5b instead of F.2.5a
 
     def __post_init__(self):
-        if self.supports is None:
-            self.supports = (0.0, self.L)
-        xA, xB = self.supports
-        if not (0.0 <= xA < xB <= self.L + 1e-9):
-            raise ValueError(f'Supports must satisfy 0 <= xA < xB <= L; got xA={xA:.0f}, '
-                              f'xB={xB:.0f}, L={self.L:.0f}. This module models a determinate '
-                              '2-support beam only (no more than 2 supports, no fixed ends) -- '
-                              'overhangs are fine, additional/redundant supports are not.')
-        if self.openings and not isinstance(self.section, RolledSection):
+        if self.support_specs:
+            # HYPERSTATIC PATH. Any number of supports, each pin/roller or
+            # fixed, resolved by the stiffness solve in hyperstatic_math
+            # instead of the closed-form superposition kernel below. The
+            # 2-tuple `supports` is still populated -- as the outermost
+            # support extent -- because report rendering and plotting read
+            # it, but NOTHING in the hyperstatic path uses it to compute a
+            # result; `support_specs` is the single source of truth there.
+            self.support_specs = hym.normalize_supports(self.support_specs, self.L)
+            xs = [s.x for s in self.support_specs]
+            lo, hi = min(xs), max(xs)
+            if hi - lo < 1e-9:      # lone fixed support (cantilever)
+                lo, hi = 0.0, self.L
+            self.supports = (lo, hi)
+        else:
+            if self.supports is None:
+                self.supports = (0.0, self.L)
+            xA, xB = self.supports
+            if not (0.0 <= xA < xB <= self.L + 1e-9):
+                raise ValueError(f'Supports must satisfy 0 <= xA < xB <= L; got xA={xA:.0f}, '
+                                  f'xB={xB:.0f}, L={self.L:.0f}. The closed-form path models a '
+                                  'determinate 2-support beam (overhangs are fine). For more '
+                                  'than 2 supports, or a fixed/built-in end, pass '
+                                  '`support_specs=[SupportSpec(...), ...]` instead, which '
+                                  'routes the beam through the hyperstatic stiffness solver.')
+        self._hyper_cache = None
+        if self.openings and not _section_can_be_perforated(self.section):
             raise ValueError(
-                'Web openings (perforations) are only supported for a standard '
-                'RolledSection (doubly-symmetric I/W shape) -- the net-section, '
-                'Vierendeel, and web-post checks are built around that specific '
-                'flange/web geometry and do not generalize to a channel, '
-                'built-up, or custom-drawn section. Remove the openings, or use '
-                'a RolledSection for a perforated design.')
+                'Web openings need a section this module can describe geometrically, '
+                'and this one reports no outline. A rolled I/W, channel, drawn '
+                'profile, or any welded compound of those will work; remove the '
+                'openings, or build the section from a shape with known geometry.')
+
+    @property
+    def is_hyperstatic(self):
+        """True when this beam is solved by the stiffness path. Note that a
+        `support_specs` list describing a plain 2-pin beam also takes that
+        path (and reproduces the closed form exactly); use
+        `hyperstatic_math.degree_of_indeterminacy` to ask whether the beam
+        is genuinely redundant."""
+        return bool(self.support_specs)
+
+    def _load_signature(self):
+        """Everything a stiffness solve depends on, in one comparable
+        tuple -- used to invalidate the memoized solution."""
+        return (self.L, self.material.E, self.material.G, id(self.section),
+                tuple((s.x, s.kind, s.torsion_restrained) for s in self.support_specs or ()),
+                tuple((p.x, p.P, p.e) for p in self.point_loads),
+                tuple((p.x, p.M) for p in self.point_moments),
+                tuple((p.x, p.T) for p in self.point_torques),
+                tuple((d.x1, d.x2, d.w1, d.w2, d.e) for d in self.dist_loads),
+                tuple((d.x1, d.x2, d.t1, d.t2) for d in self.dist_torques),
+                tuple(id(o) for o in self.openings))
+
+    def hyperstatic_solution(self):
+        """This beam's stiffness solution, solved once and memoized.
+
+        Memoized against a signature of every load and support rather than
+        solved eagerly in `__post_init__`, because the normal build order
+        in perforated_beam_app.py constructs the BeamConfig FIRST and then
+        appends loads to it -- an eager solve would quietly describe an
+        unloaded beam. The signature makes a stale cache impossible rather
+        than merely unlikely."""
+        if not self.support_specs:
+            raise ValueError(
+                'This beam has no `support_specs`, so it is solved in closed form; '
+                'there is no stiffness solution to return.')
+        sig = self._load_signature()
+        if self._hyper_cache is None or self._hyper_cache[0] != sig:
+            self._hyper_cache = (sig, hym.solve_bending(self, self.support_specs,
+                                                        net_I_fn=net_I_at))
+        return self._hyper_cache[1]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 3b. Equilibrium recovery for the hyperstatic path
+#
+# Once the stiffness solve has produced every reaction the beam is
+# statically determinate, so V(x)/M(x)/T(x) follow from a plain
+# equilibrium sweep from the left end -- exact and mesh-independent,
+# unlike reading element end-forces back out of the FE model.
+#
+# These use the RIGHT-hand limit at a station (an action at exactly x is
+# included), where the closed-form kernel below uses the left-hand limit.
+# The difference shows only AT a load or support station, and the right
+# limit is the one worth having here: it is what makes M(0) report the
+# built-in moment of a fixed end instead of zero.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _passed(x, a):
+    """True when station x is at or past action station a."""
+    return x >= a - 1e-9
+
+
+def _dist_left_of(x, x1, x2, w1, w2):
+    """Resultant of the part of the ramp w1..w2 lying left of x, and that
+    part's moment about x. Division-free throughout, for the reasons
+    given in `_trapezoid_resultant`."""
+    if x <= x1:
+        return 0.0, 0.0
+    if x >= x2:
+        W, Mom_x1 = _trapezoid_resultant(x1, x2, w1, w2, x1)   # Mom_x1 = W*(xbar - x1)
+        return W, W * (x - x1) - Mom_x1
+    xi = x - x1
+    Lseg = x2 - x1
+    wx = w1 + (w2 - w1) * xi / Lseg if Lseg > 1e-12 else w1
+    W = (w1 + wx) / 2.0 * xi
+    return W, xi ** 2 * (2 * w1 + wx) / 6.0
+
+
+def _hyper_V_M(beam: BeamConfig, x):
+    sol = beam.hyperstatic_solution()
+    V = M = 0.0
+    for xs, R_up, MR in sol.reactions:
+        if _passed(x, xs):
+            V += R_up
+            M += R_up * (x - xs) + MR
+    for pm in beam.point_moments:
+        if _passed(x, pm.x):
+            M += pm.M
+    for pl in beam.point_loads:
+        if _passed(x, pl.x):
+            V -= pl.P
+            M -= pl.P * (x - pl.x)
+    for dl in beam.dist_loads:
+        W, Mom = _dist_left_of(x, dl.x1, dl.x2, dl.w1, dl.w2)
+        V -= W
+        M -= Mom
+    return V, M
+
+
+def _hyper_T(beam: BeamConfig, x):
+    """Torque diagram for the hyperstatic path.
+
+    Falls back to the closed-form 2-restraint kernel when the section
+    exposes no usable J (a custom-drawn profile), rather than inventing a
+    torsion constant -- the same graceful degrade `analyze_combined`
+    already makes."""
+    sol = beam.hyperstatic_solution()
+    if not sol.torsion_solved:
+        return _closed_form_T(beam, x, *beam.supports)
+    T = 0.0
+    for xs, Ts in sol.torque_reactions:
+        if _passed(x, xs):
+            T += Ts
+    for pt in beam.point_torques:
+        if _passed(x, pt.x):
+            T -= pt.T
+    for pl in beam.point_loads:
+        if pl.e and _passed(x, pl.x):
+            T -= pl.P * pl.e
+    for dt in beam.dist_torques:
+        W, _ = _dist_left_of(x, dt.x1, dt.x2, dt.t1, dt.t2)
+        T -= W
+    for dl in beam.dist_loads:
+        if dl.e:
+            W, _ = _dist_left_of(x, dl.x1, dl.x2, dl.w1 * dl.e, dl.w2 * dl.e)
+            T -= W
+    return T
+
+
+def support_reactions(beam: BeamConfig):
+    """Every support reaction as [(x, R_up, M_ccw), ...] -- the general
+    form that works for both paths. `M_ccw` is 0 at any support that does
+    not restrain rotation. Prefer this over `reactions()`, which can only
+    describe the 2-support case."""
+    if beam.support_specs:
+        return list(beam.hyperstatic_solution().reactions)
+    xA, xB = beam.supports
+    RA, RB = reactions(beam)
+    return [(xA, RA, 0.0), (xB, RB, 0.0)]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Openings on a general section
+#
+# `net_section_at` above is exact and fast for a RolledSection and stays
+# the path that type takes. Everything else goes through
+# general_net_section, which clips the section's own polygons at the
+# opening edges -- the same integral by a different route, agreeing with
+# the closed form to ~1e-13 (test_general_net_section.py).
+#
+# The import is deliberately LAZY: general_net_section imports this module
+# (for TeeProps and the polygon integrals) and section_shapes, which also
+# imports this module. Importing it at module scope here would close that
+# loop. Doing it inside the functions keeps the dependency one-way at
+# import time while still letting the two halves cooperate at call time.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _gns():
+    from apps.perforated_beam import general_net_section
+    return general_net_section
+
+
+def _section_can_be_perforated(section):
+    if isinstance(section, RolledSection):
+        return True
+    try:
+        return _gns().supports_openings(section)
+    except Exception:
+        return False
+
+
+def net_section_general(section, y_hole_bot, y_hole_top):
+    """Tee properties at an opening, by whichever route the section
+    supports. Same return shape either way."""
+    if isinstance(section, RolledSection):
+        return net_section_at(section, y_hole_bot, y_hole_top)
+    return _gns().tees_at(section, y_hole_bot, y_hole_top)
+
+
+def web_thickness_at(section, y_from_bottom):
+    """Material thickness at a height -- `tw` for a rolled section, and
+    the summed thickness of every web for anything else (20 mm for a
+    two-channel welded box, which no single `tw` could have expressed)."""
+    if isinstance(section, RolledSection):
+        return section.tw
+    return _gns().material_width_at(section, y_from_bottom)
 
 
 def _point_diagram(x, a, Q, xA, xB):
@@ -1021,20 +1420,37 @@ def _moment_diagram(x, a, M0, xA, xB):
     return V, M
 
 
+def _trapezoid_resultant(x1, x2, w1, w2, xA):
+    """Resultant `W` of the trapezoidal ramp w1..w2 over [x1, x2], and its
+    first moment `Mom` about xA -- both in DIVISION-FREE closed form.
+
+    The textbook route locates the load centroid `xbar` and multiplies by
+    W, but `xbar` is genuinely undefined when w1 + w2 == 0, and guarding
+    that division away silently DISCARDS a real contribution: a w1 = -w2
+    ramp has zero resultant but a perfectly well-defined moment about the
+    supports, so it must produce equal and opposite reactions, not none.
+    Expanding W * (xbar - xA) cancels the (w1 + w2) denominator outright:
+
+        W * (xbar - xA) == d * ( (w1 + w2)/2 * (x1 - xA) + d * (2*w2 + w1)/6 )
+
+    with d = x2 - x1. That form needs no guard and no division, and is
+    exact for every sign combination -- including w1 + w2 == 0, where the
+    old guarded branch returned zero (diagnosis P-2)."""
+    d = x2 - x1
+    W = (w1 + w2) / 2.0 * d
+    Mom = d * ((w1 + w2) / 2.0 * (x1 - xA) + d * (2 * w2 + w1) / 6.0)
+    return W, Mom
+
+
 def _dist_diagram(x, x1, x2, w1, w2, xA, xB):
     """Trapezoidal distributed action w1..w2 over [x1, x2], same
     determinate 2-support (possibly overhanging) span as _point_diagram.
     Reused for both distributed transverse loads (-> V, M) and
     distributed torques (-> T)."""
     span = xB - xA
-    Wtot = (w1 + w2) / 2.0 * (x2 - x1)
-    xbar = (x1 + x2) / 2.0  # safe default; refined below when Wtot is meaningful
-    if abs(Wtot) < 1e-12:
-        RA = RB = 0.0
-    else:
-        xbar = x1 + (x2 - x1) * (2 * w2 + w1) / (3 * (w1 + w2))
-        RA = Wtot * (xB - xbar) / span
-        RB = Wtot - RA
+    Wtot, Mom_A = _trapezoid_resultant(x1, x2, w1, w2, xA)
+    RB = Mom_A / span
+    RA = Wtot - RB
     reaction_V = (RA if x > xA else 0.0) + (RB if x > xB else 0.0)
     reaction_M = (RA * (x - xA) if x > xA else 0.0) + (RB * (x - xB) if x > xB else 0.0)
     if x <= x1:
@@ -1044,20 +1460,31 @@ def _dist_diagram(x, x1, x2, w1, w2, xA, xB):
         Lseg = x2 - x1
         wx = w1 + (w2 - w1) * xi / Lseg if Lseg > 1e-12 else w1
         applied = (w1 + wx) / 2.0 * xi
-        if (w1 + wx) > 1e-12:
-            xibar = xi * (2 * wx + w1) / (3 * (w1 + wx))
-        else:
-            xibar = xi / 2.0
         V = reaction_V - applied
-        M = reaction_M - applied * (xi - xibar)
+        # The moment of the partial ramp about the station: the centroid
+        # form `applied * (xi - xibar)` expands to xi^2 * (2*w1 + wx) / 6,
+        # which has no division and so no degenerate branch. The old
+        # `if (w1 + wx) > 1e-12` test (no abs()) sent every NEGATIVE ramp
+        # down a uniform-strip fallback and corrupted M outright -- see
+        # diagnosis P-1.
+        M = reaction_M - xi ** 2 * (2 * w1 + wx) / 6.0
         return V, M
     else:
-        return reaction_V - Wtot, reaction_M - Wtot * (x - xbar)
+        # Wtot * (x - xbar) == Wtot * (x - xA) - Wtot * (xbar - xA)
+        return reaction_V - Wtot, reaction_M - (Wtot * (x - xA) - Mom_A)
 
 
 def global_V_M(beam: BeamConfig, x):
-    """Global shear V(x) and bending moment M(x) via linear superposition
-    of every load on the beam. Exact closed-form (no discretization)."""
+    """Global shear V(x) and bending moment M(x).
+
+    Closed-form superposition (exact, no discretization) for a determinate
+    2-support beam; equilibrium recovery from the stiffness-solved
+    reactions when `support_specs` puts the beam on the hyperstatic path.
+    Both are exact in V and M -- see hyperstatic_math's module docstring
+    for why the indeterminate case is still free of discretization error
+    in the diagrams themselves."""
+    if beam.support_specs:
+        return _hyper_V_M(beam, x)
     xA, xB = beam.supports
     V = M = 0.0
     for pl in beam.point_loads:
@@ -1073,12 +1500,21 @@ def global_V_M(beam: BeamConfig, x):
 
 
 def global_T(beam: BeamConfig, x):
-    """Global torque T(x). Direct applied torques superpose with the
-    torque induced by any eccentric transverse load, using the same
-    reaction-split kernel as the shear diagram (see MANIFESTO §3 for the
-    equal-form-to-shear-diagram derivation for a uniform-GJ span with
-    twist-restrained/forked ends)."""
-    xA, xB = beam.supports
+    """Global torque T(x). Dispatches to the stiffness path when the beam
+    has `support_specs` (which lets INTERMEDIATE supports fork the section
+    against twist, something the 2-restraint closed form cannot express),
+    and to the closed form otherwise."""
+    if beam.support_specs:
+        return _hyper_T(beam, x)
+    return _closed_form_T(beam, x, *beam.supports)
+
+
+def _closed_form_T(beam: BeamConfig, x, xA, xB):
+    """Direct applied torques superposed with the torque induced by any
+    eccentric transverse load, using the same reaction-split kernel as the
+    shear diagram (see MANIFESTO §3 for the equal-form-to-shear-diagram
+    derivation for a uniform-GJ span with twist-restrained/forked ends).
+    Assumes exactly two torsional restraints, at xA and xB."""
     T = 0.0
     for pl in beam.point_loads:
         if pl.e:
@@ -1100,7 +1536,22 @@ def global_T(beam: BeamConfig, x):
 def reactions(beam: BeamConfig):
     """Vertical reactions (RA at xA, RB at xB) -- a determinate 2-support
     beam; xA/xB default to the beam's own ends (0, L) but may be inset
-    to create overhangs (see BeamConfig.supports)."""
+    to create overhangs (see BeamConfig.supports).
+
+    Kept as the 2-support API it always was. A beam with more than two
+    supports, or with a fixed end, has no faithful (RA, RB) form, so it is
+    refused here rather than silently truncated -- use
+    `support_reactions()`, which describes both paths."""
+    if beam.support_specs:
+        specs = beam.support_specs
+        if len(specs) != 2 or any(s.restrains_rotation for s in specs):
+            raise ValueError(
+                f'This beam has {len(specs)} support(s), '
+                f'{sum(1 for s in specs if s.restrains_rotation)} of them fixed, so its '
+                'reactions do not fit the (RA, RB) pair this function returns. Call '
+                '`support_reactions(beam)` instead -- it returns [(x, R_up, M_ccw), ...] '
+                'for any support arrangement, including this one.')
+        return tuple(r[1] for r in beam.hyperstatic_solution().reactions)
     xA, xB = beam.supports
     span = xB - xA
     P_total = sum(pl.P for pl in beam.point_loads) + sum((dl.w1 + dl.w2) / 2.0 * (dl.x2 - dl.x1) for dl in beam.dist_loads)
@@ -1110,10 +1561,12 @@ def reactions(beam: BeamConfig):
     for pm in beam.point_moments:
         RB += pm.M / span
     for dl in beam.dist_loads:
-        Wtot = (dl.w1 + dl.w2) / 2.0 * (dl.x2 - dl.x1)
-        if abs(Wtot) > 1e-12:
-            xbar = dl.x1 + (dl.x2 - dl.x1) * (2 * dl.w2 + dl.w1) / (3 * (dl.w1 + dl.w2))
-            RB += Wtot * (xbar - xA) / span
+        # Division-free first moment about xA -- see _trapezoid_resultant.
+        # The old guarded centroid form returned nothing at all for a
+        # zero-resultant ramp (w1 = -w2), making reactions discontinuous
+        # across that crossing (diagnosis P-2).
+        _, Mom_A = _trapezoid_resultant(dl.x1, dl.x2, dl.w1, dl.w2, xA)
+        RB += Mom_A / span
     RA = P_total - RB
     return RA, RB
 
@@ -1130,22 +1583,43 @@ def net_I_at(beam: BeamConfig, x):
             if span is None:
                 continue
             y_bot, y_top = span
-            net = net_section_at(sec, y_bot, y_top)
+            net = net_section_general(sec, y_bot, y_top)
             t, b = net['top'], net['bottom']
-            y_na = sec.d / 2.0
+            # Neutral axis measured from the bottom fibre. Mid-depth is only
+            # right for a doubly symmetric shape; a drawn or welded section
+            # can have its centroid well off centre (the two-C box with
+            # unequal lips sits 29 mm low), and using d/2 there would put
+            # the parallel-axis terms on the wrong axis.
+            if isinstance(sec, RolledSection):
+                y_na = sec.d / 2.0
+            else:
+                y_na = _gns().section_bottom_offset(sec)
             return (t.I + t.A * (t.y_bar - y_na) ** 2) + (b.I + b.A * (b.y_bar - y_na) ** 2)
     return sec.I
 
 
 def deflection_profile(beam: BeamConfig, n=161):
-    """Simplified deflection estimate: double integration of M(x)/(E*I_net(x))
+    """Deflection along the beam, POSITIVE DOWNWARD, as (xs, v).
+
+    Simplified deflection estimate: double integration of M(x)/(E*I_net(x))
     on a fine grid, with v=0 enforced at the two support positions
     (beam.supports -- defaults to the beam's own ends, but may be inset
     to model overhangs). This uses the true netted I(x) at opening
     stations, but does NOT add the extra local (Vierendeel-mechanism)
     flexibility beyond what the reduced I already implies -- see
     MANIFESTO limitations; treat as informational, not a governing
-    serviceability check."""
+    serviceability check.
+
+    On the hyperstatic path the stiffness solve has ALREADY produced the
+    deflected shape (with the same netted I(x) and with every support
+    condition satisfied by construction, including the zero-slope
+    condition at a fixed end that this double-integration cannot impose),
+    so that shape is returned directly rather than re-derived here."""
+    if beam.support_specs:
+        sol = beam.hyperstatic_solution()
+        L = beam.L
+        xs = [i * L / (n - 1) for i in range(n)]
+        return xs, [sol.deflection_at(x) for x in xs]
     L = beam.L
     xA, xB = beam.supports
     xs = [i * L / (n - 1) for i in range(n)]
@@ -1180,7 +1654,17 @@ def deflection_profile(beam: BeamConfig, n=161):
     C1 = (dA - dB) / (xB - xA)
     C2 = -dA - C1 * xA
     v = [defl_raw[i] + C1 * xs[i] + C2 for i in range(n)]
-    return xs, v
+    # SIGN. The integration above is of EI*v'' = M, which is the
+    # Euler-Bernoulli relation with v measured UPWARD -- so it returns a
+    # sagging beam as NEGATIVE. The stiffness path returns the same beam
+    # as positive, because it works throughout in a +down frame. The two
+    # therefore disagreed in sign for the same physical beam, which is a
+    # real defect and not a convention worth preserving: it made the
+    # deflection diagram point up or down according to which support mode
+    # the user happened to pick. Negating here settles both paths on
+    # POSITIVE = DOWNWARD, the convention the docstrings, the report and
+    # the diagrams all already assumed.
+    return xs, [-vi for vi in v]
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1203,7 +1687,8 @@ class StationResult:
     warning: str = None
 
 
-def analyze_opening(beam: BeamConfig, opening: OpeningInstance, n_stations=9):
+def analyze_opening(beam: BeamConfig, opening: OpeningInstance, n_stations=9,
+                    section=None):
     """Vierendeel check across one opening. The point of contraflexure of
     each tee's local (secondary) bending is taken at the opening's
     geometric mid-length -- the standard simplifying assumption used for
@@ -1214,7 +1699,13 @@ def analyze_opening(beam: BeamConfig, opening: OpeningInstance, n_stations=9):
     formula. Returns per-station results plus the governing (max
     utilization) station.
     """
-    sec, mat = beam.section, beam.material
+    # `section` overrides ONLY the geometry used for net-section
+    # properties, leaving the statics on the beam as built. That is what
+    # lets opening_reinforcement.py evaluate a doubler-plated opening
+    # without re-solving the whole beam for a section that differs from
+    # it only locally -- and without a second copy of this station loop.
+    sec = section if section is not None else beam.section
+    mat = beam.material
     x0, x1 = opening.x_span()
     x_mid = (x0 + x1) / 2.0
     eps = (x1 - x0) * 1e-3 if x1 > x0 else 1e-3
@@ -1227,8 +1718,9 @@ def analyze_opening(beam: BeamConfig, opening: OpeningInstance, n_stations=9):
         if span is None:
             continue
         y_bot, y_top = span
-        net = net_section_at(sec, y_bot, y_top)
+        net = net_section_general(sec, y_bot, y_top)
         top, bot = net['top'], net['bottom']
+        tw_here = web_thickness_at(sec, (y_bot + y_top) / 2.0)
         V, M = global_V_M(beam, x)
         Itot = top.I + bot.I
         ratio_top = top.I / Itot if Itot > 1e-9 else 0.5
@@ -1241,19 +1733,38 @@ def analyze_opening(beam: BeamConfig, opening: OpeningInstance, n_stations=9):
 
         s_top = abs(F_axial) / max(top.A, 1e-6) + abs(Mv_top) / max(top.S_hole, 1e-6)
         s_bot = abs(F_axial) / max(bot.A, 1e-6) + abs(Mv_bot) / max(bot.S_hole, 1e-6)
-        tau_top = abs(V_top) / max(sec.tw * top.h, 1e-6)
-        tau_bot = abs(V_bot) / max(sec.tw * bot.h, 1e-6)
+        tau_top = abs(V_top) / max(tw_here * top.h, 1e-6)
+        tau_bot = abs(V_bot) / max(tw_here * bot.h, 1e-6)
 
-        util_top = math.sqrt(s_top ** 2 + 3 * tau_top ** 2) / mat.Fy
-        util_bot = math.sqrt(s_bot ** 2 + 3 * tau_bot ** 2) / mat.Fy
+        # CIRSOC 301 H.3.3: normal and shear stresses checked separately,
+        # against phi*Fy (H.3.4) and 0.6*phi*Fy (H.3.5). The tee above and
+        # below the opening are each a "non-tubular member under combined
+        # torsion, shear, flexure and axial load" in exactly the sense
+        # H.3.3 describes, evaluated from an elastic sectional analysis --
+        # which is what the Vierendeel stresses above are.
+        util_top = cirsoc.stress_check(s_top, tau_top, mat.Fy).util
+        util_bot = cirsoc.stress_check(s_bot, tau_bot, mat.Fy).util
 
         results.append(StationResult(x, V_top, V_bot, Mv_top, Mv_bot, s_top, s_bot,
                                       tau_top, tau_bot, util_top, util_bot, net['warning']))
 
     if not results:
-        return {'opening': opening, 'stations': [], 'governing': None}
+        return {'opening': opening, 'stations': [], 'governing': None, 'warnings': []}
     governing = max(results, key=lambda r: max(r.util_top, r.util_bot))
-    return {'opening': opening, 'stations': results, 'governing': governing}
+    # Warnings are collected across EVERY station, not read off the
+    # governing one. They are geometric ("this opening is too deep for the
+    # model"), and the deepest station is rarely the most highly stressed
+    # one -- for a circular opening the governing station sits off-centre,
+    # where the hole is shallower and does not warn at all. Reporting only
+    # the governing station's warning therefore hid the single most
+    # important caveat about a 0.75d opening.
+    seen, warnings = set(), []
+    for r in results:
+        if r.warning and r.warning not in seen:
+            seen.add(r.warning)
+            warnings.append(r.warning)
+    return {'opening': opening, 'stations': results, 'governing': governing,
+            'warnings': warnings}
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1284,7 +1795,19 @@ def analyze_webpost(beam: BeamConfig, opening_a: OpeningInstance, opening_b: Ope
     _, xa1 = opening_a.x_span()
     xb0, _ = opening_b.x_span()
     width = xb0 - xa1
-    h = sec.d - 2 * sec.tf
+    # Panel height and thickness of the post. For a rolled shape the clear
+    # web depth between flanges is the established choice; a drawn or
+    # welded section has no flanges to measure between, so the height of
+    # the interruption itself -- the opening -- is the honest analogue.
+    # The thickness is summed over every web (20 mm for a two-C box).
+    y_span_a = polygon_y_span_at_x(opening_a.vertices_abs(sec.d), opening_a.x_center)
+    op_h = (y_span_a[1] - y_span_a[0]) if y_span_a else sec.d / 2.0
+    y_mid = (y_span_a[0] + y_span_a[1]) / 2.0 if y_span_a else sec.d / 2.0
+    if isinstance(sec, RolledSection):
+        h = sec.d - 2 * sec.tf
+    else:
+        h = op_h
+    tw_post = web_thickness_at(sec, y_mid)
     warning = None
     if width <= 0:
         return WebPostResult(xa1, xb0, width, 0.0, 0.0, float('inf'),
@@ -1294,13 +1817,23 @@ def analyze_webpost(beam: BeamConfig, opening_a: OpeningInstance, opening_b: Ope
     # the post width and take the largest magnitude.
     xs = [xa1 + i * width / (n_probe - 1) for i in range(n_probe)] if n_probe > 1 else [(xa1 + xb0) / 2.0]
     Vmax = max(abs(global_V_M(beam, x)[0]) for x in xs)
-    tau_demand = Vmax / (width * sec.tw)
+    tau_demand = Vmax / max(width * tw_post, 1e-9)
 
     aspect = width / h if h > 0 else 1.0
     k = 5.34 + 4.0 * aspect ** 2 if aspect <= 1.0 else 4.0 + 5.34 * aspect ** 2
-    Fcr_elastic = k * (math.pi ** 2 * mat.E) / (12.0 * (1 - 0.3 ** 2)) * (sec.tw / width) ** 2
-    Fcr = min(Fcr_elastic, mat.Fy / math.sqrt(3))  # cap at shear yield
-    util = tau_demand / Fcr if Fcr > 1e-9 else float('inf')
+    Fcr_elastic = k * (math.pi ** 2 * mat.E) / (12.0 * (1 - 0.3 ** 2)) * (tw_post / width) ** 2
+    shear_yield = mat.Fy / math.sqrt(3)
+    Fcr = min(Fcr_elastic, shear_yield)  # cap at shear yield
+    # Which CIRSOC clause applies depends on which limit state actually
+    # governs the post. If the elastic plate stress exceeds shear yield the
+    # post yields rather than buckles, so H.3.5 governs (phi = 0.90 on
+    # 0.6*Fy); otherwise it is a buckling limit state and H.3.6 applies
+    # (phi_c = 0.85 on Fcr). Applying phi_c to a yielding case, or no phi
+    # at all as before, would both be wrong.
+    if Fcr_elastic >= shear_yield:
+        util = cirsoc.stress_check(0.0, tau_demand, mat.Fy).util_shear
+    else:
+        util = cirsoc.buckling_stress_check(tau_demand, Fcr)
     if aspect < 0.25:
         warning = 'web post very narrow (width < 0.25*web depth) -- result is a low-confidence extrapolation, verify by other means'
     return WebPostResult(xa1, xb0, width, tau_demand, Fcr, util, warning)
@@ -1339,7 +1872,9 @@ def _combined_util(section, mat: Material, M, V, T, extra_tw=0.0):
     sigma = abs(M) / section.S
     has_shear_torsion = hasattr(section, 'Aweb') and hasattr(section, 'J') and hasattr(section, 'd')
     if not has_shear_torsion:
-        util = sigma / mat.Fy
+        # CIRSOC 301 H.3.4: fun <= phi*Fy, phi = 0.90. Previously this was
+        # sigma/Fy with no resistance factor at all.
+        util = cirsoc.stress_check(sigma, 0.0, mat.Fy).util
         return util, sigma, 0.0, 0.0, False
 
     if isinstance(section, RolledSection) and extra_tw:
@@ -1351,9 +1886,25 @@ def _combined_util(section, mat: Material, M, V, T, extra_tw=0.0):
         Aweb, J = section.Aweb, section.J
         t_max = max(getattr(section, 'tf', section.d / 20.0), getattr(section, 'tw', section.d / 40.0))
     tau_v = abs(V) / max(Aweb, 1e-6)
-    tau_t = abs(T) * t_max / max(J, 1e-6)
+    # A section that knows how it is assembled computes its own torsional
+    # shear: a closed cell needs Bredt's T/(2*Am*t), and the open-section
+    # T*t/J below would report a near-zero stress for it. Only the section
+    # knows which it is, so it is asked rather than assumed.
+    if hasattr(section, 'torsion_shear_stress'):
+        try:
+            tau_t = section.torsion_shear_stress(T)
+        except AttributeError:
+            tau_t = abs(T) * t_max / max(J, 1e-6)
+    else:
+        tau_t = abs(T) * t_max / max(J, 1e-6)
     tau_total = tau_v + tau_t
-    util = math.sqrt(sigma ** 2 + 3 * tau_total ** 2) / mat.Fy
+    # CIRSOC 301 H.3.3: the normal and shear stresses are checked
+    # SEPARATELY against phi*Fy (H.3.4) and 0.6*phi*Fy (H.3.5) -- there is
+    # no von Mises interaction in the clause. The von Mises value this
+    # module used to report is still computed inside `stress_check` and
+    # surfaced by `analyze_combined`, because it can exceed both in a
+    # strongly combined state and a preliminary check should see that.
+    util = cirsoc.stress_check(sigma, tau_total, mat.Fy).util
     return util, sigma, tau_v, tau_t, True
 
 
@@ -1399,11 +1950,145 @@ def analyze_combined(beam: BeamConfig, x, max_doubler=25.0, step=2.0):
 # 8. Top-level orchestrator
 # ─────────────────────────────────────────────────────────────────────────
 
+@dataclass
+class MemberCheck:
+    """Member-level flexure and shear against CIRSOC Chapters F and G --
+    the check on the GROSS section, distinct from the local
+    net-section/Vierendeel checks at the openings. Both are needed: a
+    cellular beam can be fine at every opening and still fail the plain
+    member check, or the reverse."""
+    Mu: float
+    x_Mu: float
+    Vu: float
+    x_Vu: float
+    flexure: object          # cirsoc_301.FlexureResult
+    shear: object            # cirsoc_301.ShearResult
+    util_flexure: float
+    util_shear: float
+    util: float
+    governing: str
+
+
+def effective_torsion_constant(beam: BeamConfig):
+    """J of a closed cell, reduced for the openings that interrupt it.
+
+    Bredt's J assumes an UNBROKEN shear-flow loop around the cell. Web
+    openings cut that loop over most of the span, and a torsion constant
+    computed as if they were not there is unconservative wherever J
+    enters a stability check -- which for a box is exactly where it
+    matters, since F7's Lp and Lr both scale with sqrt(J).
+
+    The reduction used is the web-post-to-pitch ratio S0/p: the fraction
+    of the span where the cell is actually continuous. This is a RULE OF
+    THUMB from cellular-beam practice, not a CIRSOC or AISC formula, and
+    it is applied because the alternative -- using the gross J -- is
+    wrong in the unsafe direction. Returns None when there is nothing to
+    reduce, so the caller keeps the section's own J."""
+    J = getattr(beam.section, 'J', None)
+    if not isinstance(J, (int, float)) or J <= 0 or len(beam.openings) < 2:
+        return None
+    ordered = sorted(beam.openings, key=lambda o: o.x_center)
+    pitch = min(b.x_center - a.x_center for a, b in zip(ordered, ordered[1:]))
+    if pitch <= 0:
+        return None
+    widest = max(o.x_span()[1] - o.x_span()[0] for o in ordered)
+    post = pitch - widest
+    if post <= 0:
+        return None
+    return J * min(1.0, post / pitch)
+
+
+def _sp():
+    """Lazy import, for the same reason `_gns` is lazy: section_plastic
+    reaches section_shapes, which imports this module."""
+    from apps.perforated_beam import section_plastic
+    return section_plastic
+
+
+def member_check(beam: BeamConfig, n=241, code=cirsoc.CIRSOC_301):
+    """Mu/(phi_b*Mn) and Vu/(phi_v*Vn) at the worst station of each.
+
+    Runs on ANY section that can report its geometry, not only a
+    RolledSection. It used to return None for everything else, on the
+    argument that Chapter F needs Zx and Chapter G needs an identifiable
+    web -- both true, and both now recoverable from the polygons
+    (`section_plastic`). That guard silently removed the entire member
+    check from every built-up section this tab exists to model.
+
+    Which clause applies is decided by `flexural_family`:
+
+      * a rolled I  -> Chapter F2, unchanged, closed-form Zpl and all;
+      * a declared closed cell -> Chapter F7, because F2's Lr runs through
+        the warping identity Cw = Iy*h0^2/4, which a box does not have;
+      * anything else -> plastification plus a conservative LTB bound,
+        with what was NOT evaluated stated in the result's note.
+
+    Still returns None when the section reports no geometry at all -- the
+    same graceful degrade as before, now for a much smaller set."""
+    sec = beam.section
+    Mu = Vu = 0.0
+    x_Mu = x_Vu = 0.0
+    for i in range(n):
+        x = beam.L * i / (n - 1)
+        V, M = global_V_M(beam, x)
+        if abs(M) > abs(Mu):
+            Mu, x_Mu = M, x
+        if abs(V) > abs(Vu):
+            Vu, x_Vu = V, x
+
+    Fy, E = beam.material.Fy, beam.material.E
+    if isinstance(sec, RolledSection):
+        fx = cirsoc.flexural_strength(sec, Fy, Lb=beam.Lb, Cb=beam.Cb, code=code,
+                                       E=E, G=beam.material.G,
+                                       load_on_top_flange=beam.load_on_top_flange)
+        sh = cirsoc.shear_strength(sec, Fy, code=code, E=E)
+    else:
+        sp = _sp()
+        try:
+            Zx = sp.plastic_modulus(sec)
+            web = sp.web_properties(sec)
+        except (ValueError, AttributeError, ZeroDivisionError):
+            return None                     # no usable geometry: as before
+        kv, kv_note = cirsoc.web_shear_buckling_coefficient(
+            beam.stiffener_spacing, web.h, web.h_tw)
+        sh = cirsoc.shear_strength_from_web(
+            web.Aw, web.h_tw, Fy, code=code, E=E, kv=kv,
+            extra_note=' '.join(x for x in (web.note, kv_note) if x))
+        family = sp.flexural_family(sec)
+        try:
+            if family == sp.BOX:
+                flange = sp.flange_properties(sec)
+                fx = cirsoc.flexural_strength_box(
+                    sec, Fy, Zx, Lb=beam.Lb, Cb=beam.Cb, code=code, E=E,
+                    G=beam.material.G,
+                    b_t=None if flange.note else flange.b_t, h_tw=web.h_tw,
+                    J_eff=effective_torsion_constant(beam))
+            else:
+                fx = cirsoc.flexural_strength_general(
+                    sec, Fy, Zx, Lb=beam.Lb, Cb=beam.Cb, code=code, E=E,
+                    G=beam.material.G)
+        except (ValueError, AttributeError, ZeroDivisionError):
+            return None
+
+    uf = abs(Mu) / fx.Md if fx.Md > 1e-9 else float('inf')
+    us = abs(Vu) / sh.Vd if sh.Vd > 1e-9 else float('inf')
+    governing = 'flexure (Cap. F)' if uf >= us else 'shear (Cap. G)'
+    return MemberCheck(Mu=Mu, x_Mu=x_Mu, Vu=Vu, x_Vu=x_Vu, flexure=fx, shear=sh,
+                       util_flexure=uf, util_shear=us, util=max(uf, us),
+                       governing=governing)
+
+
 def analyze_beam(beam: BeamConfig, n_stations_per_opening=9):
     """Run every check and assemble a full report. Returns a dict with
     'openings' (per-opening Vierendeel results), 'webposts' (per-gap
     results), 'combined' (combined check at the governing station),
-    'governing_opening', 'governing_webpost', and 'reactions'."""
+    'governing_opening', 'governing_webpost', 'support_reactions' and
+    'reactions'.
+
+    'support_reactions' is [(x, R_up, M_ccw), ...] and is always present.
+    'reactions' is the legacy (RA, RB) pair, kept for callers that predate
+    the hyperstatic path -- it is None when the support arrangement has no
+    faithful 2-value form, rather than a silently truncated pair."""
     ordered = sorted(beam.openings, key=lambda o: o.x_center)
 
     opening_reports = [analyze_opening(beam, op, n_stations_per_opening) for op in ordered]
@@ -1420,8 +2105,18 @@ def analyze_beam(beam: BeamConfig, n_stations_per_opening=9):
         x_check = (beam.supports[0] + beam.supports[1]) / 2.0
     combined = analyze_combined(beam, x_check)
 
+    try:
+        legacy_pair = reactions(beam)
+    except ValueError:
+        legacy_pair = None      # >2 supports or a fixed end: no faithful pair
+
     return {
-        'reactions': reactions(beam),
+        'reactions': legacy_pair,
+        'member': member_check(beam),
+        'code': cirsoc.CIRSOC_301,
+        'support_reactions': support_reactions(beam),
+        'indeterminacy': hym.degree_of_indeterminacy(beam.support_specs)
+                         if beam.support_specs else 0,
         'openings': opening_reports,
         'webposts': webpost_reports,
         'governing_opening': governing_opening,

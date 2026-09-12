@@ -203,7 +203,178 @@ def compute_fiber_stress(rod, rod_res_entry, Ms):
     return sigma_neg, sigma_pos
 
 
-def analyze(nodes, rods, loads, supports):
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Shear panels (plates)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# A plate welded continuously into a truss bay or a Vierendeel panel, carrying
+# that panel's shear as a membrane. This is the classic stressed-skin ("shear
+# panel", Kuhn) idealisation: the plate carries CONSTANT shear flow
+# q = G*t*gamma and no direct stress, and the surrounding rods carry the
+# axial force, exactly as they already do.
+#
+# WHAT THIS ELEMENT IS NOT, and must not be read as:
+#   * It is NOT a meshed plate. One panel has one shear flow and one tau.
+#     There is no stress field, and no sigma_x/sigma_y.
+#   * It has NO rotational DOF -- a membrane never does. So a panel does not
+#     restrain joint rotation, and `compute_node_moments` is unaffected by
+#     plates. For a plate welded all round, modelling its SHEAR contribution
+#     and nothing else is the accepted idealisation; it is not a substitute
+#     for a meshed plate if local stress is what you actually want.
+#   * Post-buckling (tension-field) strength is NOT included. A thin panel
+#     buckles in shear long before it yields, so a tau on its own is not a
+#     verdict -- see truss_plates.panel_checks, which pairs every panel with
+#     its buckling check for exactly this reason.
+#
+# THE FORMULATION. The average engineering shear strain over the polygon is
+# taken exactly from its BOUNDARY, by the divergence theorem, with u and v
+# varying linearly along each edge:
+#
+#     gamma * A = closed_integral (u*n_y + v*n_x) ds
+#               = sum over edges [ -u_bar_i * dx_i + v_bar_i * dy_i ]
+#
+# where edge i runs node i -> node i+1, dx_i = x_{i+1} - x_i, and
+# u_bar_i = (u_i + u_{i+1})/2. Strain energy U = 1/2 * G * t * A * gamma^2, so
+#
+#     K = G*t*A * B^T B      B[2i]   = -(dx_{i-1} + dx_i) / (2A)
+#                            B[2i+1] = +(dy_{i-1} + dy_i) / (2A)
+#
+# a rank-1 8x8 matrix (6x6 for a triangle). Being exact on the boundary, it
+# needs no Jacobian, no quadrature and no shape functions, and it is exact for
+# triangles, rectangles, parallelograms and general simple quadrilaterals
+# alike. The rank-1 deficiency is not a defect here: the panel is only ever
+# asked to carry shear, and the bay's remaining stiffness comes from the rods
+# around it. Verified by patch test -- see tests/test_truss_plates.py.
+#
+# COORDINATE FRAME. Everything below works in METRES in the canvas frame
+# (x right, y DOWN), the same frame `analyze` assembles in, so the corner
+# forces drop straight into the global DOF with no conversion. The loop is
+# normalised to a positive signed area in that frame, which fixes the sign of
+# gamma and therefore of the reported shear flow: positive q is the shear flow
+# running in the direction of the (normalised) node loop.
+
+
+def plate_node_loop(nodes, plate):
+    """The plate's node indices as an ordered, orientation-normalised loop, or
+    None if the loop is not a usable polygon.
+
+    Returns None -- rather than a plausible-looking stiffness -- for a loop
+    that is degenerate (repeated nodes, zero area) or self-intersecting (a
+    "bowtie" quad, which a valid rod cycle can still produce if the geometry
+    crosses). A wrong-but-believable panel stiffness is far worse than a
+    panel the UI reports as invalid.
+    """
+    idx = list(plate.get('nodes', []))
+    if len(idx) not in (3, 4):
+        return None
+    if len(set(idx)) != len(idx):
+        return None
+    if any(i < 0 or i >= len(nodes) for i in idx):
+        return None
+
+    pts = [(nodes[i][0] / PX_PER_M, nodes[i][1] / PX_PER_M) for i in idx]
+    if _polygon_self_intersects(pts):
+        return None
+    area2 = _shoelace2(pts)
+    if abs(area2) < 1e-9:
+        return None
+    if area2 < 0:
+        idx = list(reversed(idx))
+    return idx
+
+
+def _shoelace2(pts):
+    """Twice the signed area of the polygon (positive for a loop that runs
+    counter-clockwise in the frame the points are given in)."""
+    total = 0.0
+    n = len(pts)
+    for i in range(n):
+        x0, y0 = pts[i]
+        x1, y1 = pts[(i + 1) % n]
+        total += x0 * y1 - x1 * y0
+    return total
+
+
+def _seg_proper_intersect(p1, p2, p3, p4):
+    """True when segment p1p2 and segment p3p4 cross at an interior point."""
+    def cross(o, a, b):
+        return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
+    d1 = cross(p3, p4, p1)
+    d2 = cross(p3, p4, p2)
+    d3 = cross(p1, p2, p3)
+    d4 = cross(p1, p2, p4)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+
+def _polygon_self_intersects(pts):
+    """Only the two non-adjacent edge pairs of a quad can cross; a triangle
+    never can."""
+    n = len(pts)
+    if n < 4:
+        return False
+    for i in range(n):
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue          # adjacent through the wrap-around
+            if _seg_proper_intersect(pts[i], pts[(i+1) % n],
+                                     pts[j], pts[(j+1) % n]):
+                return True
+    return False
+
+
+def plate_geometry(nodes, plate):
+    """(ordered node indices, points in metres, area m^2, B row) or None.
+
+    `B` is the strain-displacement row for gamma, ordered
+    [ux_0, uy_0, ux_1, uy_1, ...] to match the loop.
+    """
+    idx = plate_node_loop(nodes, plate)
+    if idx is None:
+        return None
+    pts = [(nodes[i][0] / PX_PER_M, nodes[i][1] / PX_PER_M) for i in idx]
+    area = _shoelace2(pts) / 2.0
+    n = len(pts)
+    B = [0.0] * (2 * n)
+    for i in range(n):
+        x0, y0 = pts[i]
+        x1, y1 = pts[(i + 1) % n]
+        dx, dy = x1 - x0, y1 - y0
+        # edge i contributes -(u_i + u_{i+1})/2 * dx + (v_i + v_{i+1})/2 * dy
+        for k in (i, (i + 1) % n):
+            B[2 * k] += -dx / 2.0
+            B[2 * k + 1] += dy / 2.0
+    B = [b / area for b in B]
+    return idx, pts, area, B
+
+
+def plate_stiffness(area, B, G_Pa, t_m):
+    """The panel's stiffness block, K = G*t*A * B^T B (N/m)."""
+    scale = G_Pa * t_m * abs(area)
+    n = len(B)
+    return [[scale * B[i] * B[j] for j in range(n)] for i in range(n)]
+
+
+def plate_material(plate):
+    """(G in Pa, t in metres) from a plate record.
+
+    G defaults to the isotropic value E/(2(1+nu)) when it is not given
+    explicitly, so a plate only has to carry E and nu if that is more
+    convenient. Thickness is stored in mm because that is how plate is
+    specified and ordered; every other length in this module is metres.
+    """
+    t_m = float(plate.get('thickness_mm', 0.0)) / 1000.0
+    if plate.get('G_GPa') is not None:
+        G_Pa = float(plate['G_GPa']) * 1e9
+    else:
+        E = float(plate.get('E_GPa', 200.0)) * 1e9
+        nu = float(plate.get('nu', 0.3))
+        G_Pa = E / (2.0 * (1.0 + nu))
+    return G_Pa, t_m
+
+
+def analyze(nodes, rods, loads, supports, plates=None):
     """
     Generalized 2D truss/frame solver. Each rod is independently either:
       - 'pin'   (default): pure axial bar, exactly the original truss
@@ -229,8 +400,36 @@ def analyze(nodes, rods, loads, supports):
     least one 'rigid' rod touches it, or a 'fixed' support sits there.
     A model with every rod left 'pin' and no udl reduces EXACTLY to the
     classic pin-jointed truss (same K, same results, bit-for-bit).
+
+    `plates` is optional and defaults to None, so every existing caller is
+    unaffected. Entries with kind == 'panel' are shear panels (see
+    plate_geometry above) and contribute an in-plane shear stiffness on the
+    ux/uy DOF their corner nodes ALREADY have -- a membrane has no rotational
+    DOF, so `needs_theta` is deliberately not consulted for plates and a
+    pin-only model with panels still gains no rotational DOF anywhere.
+    Entries with kind == 'gusset' are connection-design annotations and are
+    skipped here entirely: they never reach the stiffness matrix.
     """
     N = len(nodes)
+    plates = plates or []
+
+    # Every support must reference a real node and a recognized type BEFORE
+    # anything below reads sp['node']/sp['type'] -- otherwise an invalid
+    # entry (reachable only via a hand-edited or corrupted Excel import;
+    # the UI's own combobox is readonly) either raises an uncaught
+    # IndexError at dof_of[sp['node']] below, or a type that matches none
+    # of the four branches at the boundary-condition step silently
+    # contributes ZERO constraints, so the node reports as unrestrained
+    # with no error at all -- the worst kind of wrong answer. See
+    # REPORTS AND GUIDES/REMAINING_BUGS_TRUSS_2026-09-10.md.
+    valid_types = ('pin', 'rollerX', 'rollerY', 'fixed')
+    for sp in supports:
+        if not (0 <= sp.get('node', -1) < N):
+            return None, (f"Support references node {sp.get('node')}, but the "
+                          f"model has {N} nodes.")
+        if sp.get('type') not in valid_types:
+            return None, (f"Support at node {sp['node']} has unrecognized type "
+                          f"{sp.get('type')!r}; expected one of {valid_types}.")
 
     needs_theta = [False] * N
     for rod in rods:
@@ -352,6 +551,31 @@ def analyze(nodes, rods, loads, supports):
                     # load correctly enters the global RHS as +down.
                     fixed_end.setdefault('_global_contrib', []).append((K_row, -Fgl[i]))
 
+    # ── shear panels ──────────────────────────────────────────────────────
+    # Assembled onto the corner nodes' existing ux/uy DOF. `plate_dofs` keeps
+    # each panel's resolved geometry so the recovery pass below does not have
+    # to redo it (and cannot disagree with what was assembled).
+    plate_dofs = {}
+    for pi, plate in enumerate(plates):
+        if plate.get('kind') != 'panel':
+            continue
+        geom = plate_geometry(nodes, plate)
+        if geom is None:
+            continue          # invalid loop: reported by the UI, not solved
+        idx_loop, pts, area, B = geom
+        G_Pa, t_m = plate_material(plate)
+        if G_Pa <= 0.0 or t_m <= 0.0:
+            continue
+        kp = plate_stiffness(area, B, G_Pa, t_m)
+        gdof = []
+        for ni in idx_loop:
+            ux_i, uy_i, _ = dof_of[ni]
+            gdof += [ux_i, uy_i]
+        for i in range(len(gdof)):
+            for j in range(len(gdof)):
+                K[gdof[i]][gdof[j]] += kp[i][j]
+        plate_dofs[pi] = (idx_loop, pts, area, B, G_Pa, t_m, gdof)
+
     F = [0.0] * dof
     for ld in loads:
         ux_i, uy_i, _ = dof_of[ld['node']]
@@ -406,9 +630,16 @@ def analyze(nodes, rods, loads, supports):
 
         if conn != 'rigid':
             deform = ((Uf[bx_i]-Uf[ax_i])*c + (Uf[by_i]-Uf[ay_i])*s)
-            rod_res.append({'force': rod['E']*1e9*rod['A']*1e-4/Lm*deform/1e3,
+            Nax = rod['E']*1e9*rod['A']*1e-4/Lm*deform
+            # `floc` is the element's LOCAL nodal action 6-vector
+            # [Na, Va, Ma, Nb, Vb, Mb] in N and N*m, kept so that
+            # compute_node_design_actions can recover the COMPLETE force a
+            # member delivers to a joint. A pin bar has only axial terms.
+            rod_res.append({'force': Nax/1e3,
                              'V': 0.0, 'Ma': 0.0, 'Mb': 0.0, 'conn': 'pin',
-                             'w_t': 0.0, 'length_m': Lm})
+                             'w_t': 0.0, 'length_m': Lm,
+                             'floc': [-Nax, 0.0, 0.0, Nax, 0.0, 0.0],
+                             'cos': c, 'sin': s})
         else:
             EA_L = rod['E']*1e9*rod['A']*1e-4/Lm
             EI = rod['E']*1e9*rod.get('I', 8000.0)*1e-8
@@ -460,7 +691,8 @@ def analyze(nodes, rods, loads, supports):
             rod_res.append({'force': floc[3]/1e3, 'V': -floc[1]/1e3,
                              'Ma': floc[2]/1e3, 'Mb': floc[5]/1e3, 'conn': 'rigid',
                              'w_t': w_t_kn, 'point_loads_local': point_local,
-                             'length_m': Lm})
+                             'length_m': Lm,
+                             'floc': list(floc), 'cos': c, 'sin': s})
 
     reactions = {}
     KU = [sum(K[i][j]*Uf[j] for j in range(dof)) for i in range(dof)]
@@ -475,18 +707,73 @@ def analyze(nodes, rods, loads, supports):
         if sp['type'] == 'fixed' and th_i is not None:
             rxn['m'] = (KU[th_i] - F[th_i]) / 1e3
 
-    node_vectors = compute_node_force_vectors(nodes, rods, rod_res)
+    # ── shear panel recovery ──────────────────────────────────────────────
+    # One shear flow per panel, and the corner forces the panel pushes into
+    # the surrounding members. Those corner forces are what makes joint
+    # equilibrium close once a panel is present, so they are handed to
+    # compute_node_force_vectors below rather than recomputed there.
+    plate_res = []
+    for pi, plate in enumerate(plates):
+        if plate.get('kind') != 'panel':
+            plate_res.append(None)
+            continue
+        entry = plate_dofs.get(pi)
+        if entry is None:
+            plate_res.append({'valid': False, 'nodes': list(plate.get('nodes', [])),
+                              'reason': 'degenerate or self-intersecting panel'})
+            continue
+        idx_loop, pts, area, B, G_Pa, t_m, gdof = entry
+        d = [Uf[g] for g in gdof]
+        gamma = sum(B[i] * d[i] for i in range(len(B)))
+        q_N_per_m = G_Pa * t_m * gamma            # shear flow, N/m
+        tau_Pa = G_Pa * gamma                     # = q/t
+        # Corner forces the panel exerts ON its nodes, kN, canvas frame
+        # (y down). K*d = G*t*A*gamma*B is the element's nodal ACTION vector;
+        # global equilibrium reads sum(K*d) = F_external at each node, so what
+        # the panel applies to the node is its NEGATIVE -- the same convention
+        # the rod path uses. Getting this backwards leaves the panel
+        # self-equilibrating (its four corner forces still sum to zero, so an
+        # element-level check passes happily) while every joint it touches is
+        # out of balance by twice the corner force. That is why the sign is
+        # pinned by a joint-equilibrium test and not by an element test.
+        scale = -G_Pa * t_m * abs(area) * gamma
+        corner = []
+        for i, ni in enumerate(idx_loop):
+            corner.append({'node': ni,
+                           'Fx': scale * B[2*i] / 1e3,
+                           'Fy': scale * B[2*i+1] / 1e3})
+        plate_res.append({
+            'valid': True, 'nodes': list(idx_loop), 'pts_m': pts,
+            'area_m2': abs(area), 'gamma': gamma,
+            'q': q_N_per_m / 1e3,                 # kN/m
+            'tau_MPa': tau_Pa / 1e6,
+            't_mm': t_m * 1000.0, 'G_GPa': G_Pa / 1e9,
+            'corner_forces': corner,              # kN, canvas frame (y down)
+        })
+
+    node_vectors = compute_node_force_vectors(nodes, rods, rod_res, plate_res)
     node_moments = compute_node_moments(nodes, rods, rod_res)
 
     return {'node_res': node_res, 'rod_res': rod_res, 'reactions': reactions,
+            'plate_res': plate_res,
             'node_vectors': node_vectors, 'node_moments': node_moments}, None
 
 
-def compute_node_force_vectors(nodes, rods, rod_res):
+def compute_node_force_vectors(nodes, rods, rod_res, plate_res=None):
     """
     For every node, compute the individual force vector that each connected
     rod applies to that node — this is exactly the set of forces that must be
     resisted by a welded gusset/node plate.
+
+    Shear panels contribute here too, and MUST: a panel pushes its shear flow
+    into the surrounding members as four corner forces, so with a panel
+    present the rod forces alone no longer balance the applied load at a
+    joint. Omitting them would leave the free-body diagrams wrong and the
+    method-of-joints residual non-zero — which is precisely what
+    tests/test_truss_plates.py checks, deliberately, because this is the
+    easiest place in the whole plate feature to be silently wrong.
+    A panel entry is tagged kind='plate' so a caller can tell a membrane
+    contribution from a bar's.
 
     Convention (matches the rest of the app's CAD readouts — coordinates,
     ruler, polar angle): global X→ positive to the right, global Y↑ positive
@@ -534,7 +821,125 @@ def compute_node_force_vectors(nodes, rods, rod_res):
             'Fx': FxB, 'Fy': FyB, 'magnitude': abs(f),
             'angle_deg': math.degrees(math.atan2(FyB, FxB)) % 360,
         })
+
+    # Shear panel corner forces. `analyze` computes them in the canvas frame
+    # (y DOWN); this function reports y-UP, so Fy flips sign here — the same
+    # conversion the rod loop above does via `uy = -dy/L`.
+    for pi, pr in enumerate(plate_res or []):
+        if not pr or not pr.get('valid'):
+            continue
+        for cf in pr.get('corner_forces', []):
+            ni = cf['node']
+            if not (0 <= ni < len(nodes)):
+                continue
+            Fx, Fy = cf['Fx'], -cf['Fy']
+            node_vectors[ni].append({
+                'plate': pi, 'rod': None, 'other': None,
+                'force': pr.get('q', 0.0), 'kind': 'plate',
+                'Fx': Fx, 'Fy': Fy, 'magnitude': math.hypot(Fx, Fy),
+                'angle_deg': math.degrees(math.atan2(Fy, Fx)) % 360,
+            })
     return node_vectors
+
+
+def compute_node_design_actions(nodes, rods, rod_res, plate_res=None):
+    """The COMPLETE set of actions every member and panel delivers to each
+    node: force components AND moment. This is what a gusset plate at that
+    joint actually has to resist.
+
+    WHY THIS EXISTS SEPARATELY FROM `compute_node_force_vectors`.
+    That function reports each rod's AXIAL force only. For a pin-jointed
+    truss that is the whole story, and its free-body diagrams are complete.
+    At a RIGID (Vierendeel) joint it is not: the members also deliver shear
+    and end moment, and leaving them out understates what the connection
+    carries. Found 2026-09-06 while adding plates, by asking a plated
+    Vierendeel frame to satisfy joint equilibrium through the reported
+    vectors -- it did not, and could not.
+
+    `compute_node_force_vectors` is deliberately left as it is, because its
+    output feeds the existing Node Force Vectors report and its Excel export,
+    and silently changing what those draw is a bigger decision than this
+    feature needs to make. Design checks use THIS function instead.
+
+    Convention: global X -> right, Y ^ up (the same y-up frame
+    `compute_node_force_vectors` reports in, and the one the CAD readouts
+    use), moments counter-clockwise positive, forces in kN, moments in kN*m.
+
+    Returns:
+        { node_idx: {'members': [ {rod, other, conn, Fx, Fy, M, N, kind,
+                                   magnitude, angle_deg}, ... ],
+                      'plates':  [ {plate, Fx, Fy, magnitude, angle_deg}, ...],
+                      'Fx', 'Fy', 'M',        # resultant ON the joint
+                      'resultant', 'angle_deg'} }
+
+    `Fx`/`Fy`/`M` per member are the COMPLETE action (axial + shear + end
+    moment, resolved globally); `N` is the axial part alone, and `kind` is
+    'T'/'C'/'0' from its sign. For a pin bar the two coincide.
+    """
+    out = {i: {'members': [], 'plates': [], 'Fx': 0.0, 'Fy': 0.0, 'M': 0.0}
+           for i in range(len(nodes))}
+
+    for ri, rod in enumerate(rods):
+        if ri >= len(rod_res):
+            continue
+        rr = rod_res[ri]
+        floc = rr.get('floc')
+        if floc is None:
+            continue
+        c, s = rr.get('cos', 1.0), rr.get('sin', 0.0)
+        for end, (a_idx, other_idx) in enumerate(((rod['a'], rod['b']),
+                                                   (rod['b'], rod['a']))):
+            o = 3 * end
+            # local -> global (canvas frame, y down), then negate: `floc` is
+            # the element's nodal action vector k*d, and equilibrium reads
+            # sum(k*d) = F_external at each node, so the force the ELEMENT
+            # exerts ON the NODE is its negative. Cross-checked against the
+            # existing axial convention: for a pin bar in tension this
+            # reproduces "pulls the node toward the far end" exactly.
+            fx_c = -(c * floc[o] - s * floc[o + 1]) / 1e3
+            fy_c = -(s * floc[o] + c * floc[o + 1]) / 1e3
+            mz = -floc[o + 2] / 1e3
+            # canvas y-down -> reported y-up flips Fy, and with it the sense
+            # of a moment about z
+            Fx, Fy, M = fx_c, -fy_c, -mz
+            # `N` and `kind` carry the AXIAL part alongside the complete
+            # vector, so a report can show both "what this member pulls with"
+            # and "what the connection actually sees". For a pin bar they are
+            # the same thing; at a rigid joint they are not, and showing only
+            # the axial part is what understated Vierendeel connections
+            # before compute_node_design_actions existed.
+            N = float(rr.get('force', 0.0))
+            out[a_idx]['members'].append({
+                'rod': ri, 'other': other_idx, 'conn': rr.get('conn', 'pin'),
+                'Fx': Fx, 'Fy': Fy, 'M': M, 'N': N,
+                'kind': 'T' if N > 0.01 else ('C' if N < -0.01 else '0'),
+                'magnitude': math.hypot(Fx, Fy),
+                'angle_deg': math.degrees(math.atan2(Fy, Fx)) % 360,
+            })
+            out[a_idx]['Fx'] += Fx
+            out[a_idx]['Fy'] += Fy
+            out[a_idx]['M'] += M
+
+    for pi, pr in enumerate(plate_res or []):
+        if not pr or not pr.get('valid'):
+            continue
+        for cf in pr.get('corner_forces', []):
+            ni = cf['node']
+            if not (0 <= ni < len(nodes)):
+                continue
+            Fx, Fy = cf['Fx'], -cf['Fy']        # canvas y-down -> y-up
+            out[ni]['plates'].append({
+                'plate': pi, 'Fx': Fx, 'Fy': Fy,
+                'magnitude': math.hypot(Fx, Fy),
+                'angle_deg': math.degrees(math.atan2(Fy, Fx)) % 360,
+            })
+            out[ni]['Fx'] += Fx
+            out[ni]['Fy'] += Fy
+
+    for ni, data in out.items():
+        data['resultant'] = math.hypot(data['Fx'], data['Fy'])
+        data['angle_deg'] = math.degrees(math.atan2(data['Fy'], data['Fx'])) % 360
+    return out
 
 
 def compute_node_moments(nodes, rods, rod_res):

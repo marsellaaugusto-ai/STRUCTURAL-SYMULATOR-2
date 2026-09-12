@@ -1,6 +1,6 @@
 """Excel reports and static report drawings for the Truss/Vierendeel tab."""
-import math, os, sys, subprocess
-from common import (PX_PER_M, CT, CC, CZ, CL, CR, _ensure_openpyxl, _ensure_matplotlib, render_math)
+import math
+from common import PX_PER_M
 from .truss_math import compute_diagrams
 
 def _get_ttf_font(size):
@@ -126,14 +126,38 @@ def _pil_to_xlsx_buf(pil_img):
     buf.seek(0)
     return buf
 
-def export_excel(nodes, rods, loads, supports, results, path, profiles=None):
-    import openpyxl
+def export_excel(nodes, rods, loads, supports, results, path, profiles=None,
+                  plates=None, guides=None):
     from openpyxl import Workbook
     from openpyxl.styles import (Font, PatternFill, Alignment,
                                   Border, Side)
     from openpyxl.utils import get_column_letter
 
     wb = Workbook()
+
+    # A model with no analysis yet is still worth exporting: the Model sheet
+    # is the whole point of the round trip, and geometry is complete without
+    # results. Before this, Export Excel raised AttributeError on `results`
+    # being None and the tab reported "Export failed" -- so the one workflow
+    # the feature exists for (save the model, reopen it later) was the one
+    # that did not work before you had pressed Analyze. The Beam tab already
+    # allowed this and says so in its own export dialog.
+    if results is None:
+        wb.remove(wb.active)
+        _write_model_sheet(wb, nodes, rods, loads, supports,
+                            profiles or {'Default': {'E': 200.0, 'A': 10.0}},
+                            plates, guides)
+        ws0 = wb['Model']
+        ws0.insert_rows(2)
+        note0 = ws0.cell(row=2, column=1,
+            value='Model only -- no analysis had been run when this was '
+                  'exported, so the Nodes / Rods / Summary / Node Force '
+                  'Vectors / Rod Calculations sheets are absent. Import '
+                  'rebuilds the model from this sheet regardless.')
+        note0.font = Font(italic=True, size=9, color='555555')
+        wb.save(path)
+        return
+
     reactions = results.get('reactions', {})
     node_res  = results['node_res']
     rod_res   = results['rod_res']
@@ -420,7 +444,24 @@ def export_excel(nodes, rods, loads, supports, results, path, profiles=None):
     # ══════════════════════════════════════════════════════════════════════════
     #  Sheet 4 – NODE FORCE VECTORS  (for gusset / node-plate design)
     # ══════════════════════════════════════════════════════════════════════════
-    node_vectors = results.get('node_vectors', {})
+    # COMPLETE joint actions, not the axial-only vectors: at a rigid
+    # (Vierendeel) joint the members also deliver shear and an end moment, and
+    # a shear panel delivers corner forces. Reporting only the axial part
+    # understated exactly the connections this sheet exists to size, and left
+    # the equilibrium row below unable to close. Matches the on-screen Node
+    # Force Vectors report.
+    from .truss_math import compute_node_design_actions
+    actions = compute_node_design_actions(nodes, rods, rod_res,
+                                           results.get('plate_res', []))
+
+    def _fbd_vectors(ni):
+        """One node's vectors in the shape pil_draw_node_fbd expects: the
+        complete member actions plus any shear-panel corner forces. The
+        drawings and the table are fed from the same place so they cannot
+        disagree about what the joint carries."""
+        a_ = actions.get(ni, {'members': [], 'plates': []})
+        return list(a_['members']) + [
+            dict(pv, kind='plate', rod=None, other=None) for pv in a_['plates']]
     ws4 = wb.create_sheet('Node Force Vectors')
     ws4.freeze_panes = 'A3'
     ws4.row_dimensions[1].height = 28
@@ -435,21 +476,26 @@ def export_excel(nodes, rods, loads, supports, results, path, profiles=None):
 
     note = ws4.cell(row=2, column=1,
         value='Convention: global X-> right, Y-up positive, angle CCW from +X. '
-              'Vector = force the rod exerts ON the node (tension pulls, compression pushes).')
-    ws4.merge_cells('A2:H2')
+              'Vector = the COMPLETE force that member exerts ON the node: axial N '
+              'plus, at a rigid joint, its shear. M is that member end moment. '
+              'Shear panels contribute their corner force. Sum must close to ~0.')
+    ws4.merge_cells('A2:J2')
     note.font = Font(name='Arial', italic=True, size=9, color='555555')
     note.alignment = Alignment(horizontal='left', vertical='center')
 
-    nv_subs   = ['Node','Rod','-> Node','Type','|F| (kN)','Fx (kN)','Fy (kN)','Angle (deg)']
-    nv_widths = [7, 6, 8, 7, 10, 10, 10, 12]
+    nv_subs   = ['Node','Rod','-> Node','Type','N axial (kN)','|F| (kN)',
+                  'Fx (kN)','Fy (kN)','M (kN.m)','Angle (deg)']
+    nv_widths = [7, 6, 8, 7, 12, 10, 10, 10, 11, 12]
     for col, (lbl, w) in enumerate(zip(nv_subs, nv_widths), 1):
         sub(ws4, 3, col, lbl)
         ws4.column_dimensions[get_column_letter(col)].width = w
 
     row = 4
     for ni in range(len(nodes)):
-        vecs = node_vectors.get(ni, [])
-        if not vecs:
+        act = actions.get(ni, {'members': [], 'plates': [],
+                                'Fx': 0.0, 'Fy': 0.0, 'M': 0.0})
+        vecs = act['members']
+        if not vecs and not act['plates']:
             continue
         first = True
         for v in vecs:
@@ -458,23 +504,38 @@ def export_excel(nodes, rods, loads, supports, results, path, profiles=None):
             cell(ws4, row, 2, v['rod'], fill=rfill)
             cell(ws4, row, 3, v['other'], fill=rfill)
             cell(ws4, row, 4, v['kind'], fill=rfill)
-            cell(ws4, row, 5, v['magnitude'], num2, fill=rfill)
-            cell(ws4, row, 6, v['Fx'], num2, fill=rfill)
-            cell(ws4, row, 7, v['Fy'], num2, fill=rfill)
-            cell(ws4, row, 8, v['angle_deg'], num1, fill=rfill)
+            cell(ws4, row, 5, v['N'], num2, fill=rfill)
+            cell(ws4, row, 6, v['magnitude'], num2, fill=rfill)
+            cell(ws4, row, 7, v['Fx'], num2, fill=rfill)
+            cell(ws4, row, 8, v['Fy'], num2, fill=rfill)
+            cell(ws4, row, 9, v['M'], num2, fill=rfill)
+            cell(ws4, row, 10, v['angle_deg'], num1, fill=rfill)
             row += 1
             first = False
-        # equilibrium check row: sum(rod vectors) + load + reaction ~= 0
-        sum_fx = sum(v['Fx'] for v in vecs)
-        sum_fy = sum(v['Fy'] for v in vecs)
+        for pv in act['plates']:
+            cell(ws4, row, 1, ni if first else '', fill=ZERO_FILL, bold=first)
+            cell(ws4, row, 2, 'panel %d' % pv['plate'], fill=ZERO_FILL)
+            cell(ws4, row, 4, 'P', fill=ZERO_FILL)
+            cell(ws4, row, 6, pv['magnitude'], num2, fill=ZERO_FILL)
+            cell(ws4, row, 7, pv['Fx'], num2, fill=ZERO_FILL)
+            cell(ws4, row, 8, pv['Fy'], num2, fill=ZERO_FILL)
+            cell(ws4, row, 10, pv['angle_deg'], num1, fill=ZERO_FILL)
+            row += 1
+            first = False
+        # Equilibrium: members + panels + load + reaction must close to ~0.
+        # The reaction moment is stored in the solver's canvas frame (y DOWN)
+        # while every action above is y-UP, so it is SUBTRACTED, not added --
+        # adding it left the moment check reading 2*m at every fixed support.
         ld  = next((l for l in loads if l['node']==ni), None)
         rxn = reactions.get(ni)
-        chk_fx = sum_fx + (ld['fx'] if ld else 0.0) + (rxn.get('rx',0.0) if rxn else 0.0)
-        chk_fy = sum_fy + (-ld['fy'] if ld else 0.0) + (-rxn.get('ry',0.0) if rxn else 0.0)
+        chk_fx = act['Fx'] + (ld['fx'] if ld else 0.0) + (rxn.get('rx',0.0) if rxn else 0.0)
+        chk_fy = act['Fy'] + (-ld['fy'] if ld else 0.0) + (-rxn.get('ry',0.0) if rxn else 0.0)
+        chk_m  = act['M'] - (rxn.get('m', 0.0) if rxn else 0.0)
         cell(ws4, row, 1, '', bold=True)
-        cell(ws4, row, 4, 'Sum F+load+rxn', bold=True)
-        cell(ws4, row, 6, chk_fx, num3, fill=SUB_FILL, bold=True)
-        cell(ws4, row, 7, chk_fy, num3, fill=SUB_FILL, bold=True)
+        cell(ws4, row, 4, 'Sum + load + rxn', bold=True)
+        cell(ws4, row, 7, chk_fx, num3, fill=SUB_FILL, bold=True)
+        cell(ws4, row, 8, chk_fy, num3, fill=SUB_FILL, bold=True)
+        cell(ws4, row, 9, chk_m, num3, fill=SUB_FILL, bold=True)
         row += 1
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -519,10 +580,10 @@ def export_excel(nodes, rods, loads, supports, results, path, profiles=None):
 
             img_row = hdr_row + 1
             ctx_img = pil_draw_rod_context(nodes, rods, ri, rod_res, size=IMG_PX)
-            fbd_a   = pil_draw_node_fbd(node_vectors.get(a, []),
+            fbd_a   = pil_draw_node_fbd(_fbd_vectors(a),
                           next((l for l in loads if l['node']==a), None),
                           reactions.get(a), size=IMG_PX)
-            fbd_b   = pil_draw_node_fbd(node_vectors.get(b, []),
+            fbd_b   = pil_draw_node_fbd(_fbd_vectors(b),
                           next((l for l in loads if l['node']==b), None),
                           reactions.get(b), size=IMG_PX)
 
@@ -542,12 +603,15 @@ def export_excel(nodes, rods, loads, supports, results, path, profiles=None):
     #  Sheet 6 – MODEL  (machine-parseable — lets "Import from Excel" rebuild
     #  this exact truss, loads included)
     # ══════════════════════════════════════════════════════════════════════════
-    _write_model_sheet(wb, nodes, rods, loads, supports, profiles or {'Default':{'E':200.0,'A':10.0}})
+    _write_model_sheet(wb, nodes, rods, loads, supports,
+                        profiles or {'Default':{'E':200.0,'A':10.0}}, plates,
+                        guides)
 
     wb.save(path)
 
 
-def _write_model_sheet(wb, nodes, rods, loads, supports, profiles):
+def _write_model_sheet(wb, nodes, rods, loads, supports, profiles, plates=None,
+                        guides=None):
     """
     Writes a plain, machine-parseable 'Model' sheet containing everything
     needed to rebuild this exact truss (nodes, rods incl. profile, supports,
@@ -605,7 +669,7 @@ def _write_model_sheet(wb, nodes, rods, loads, supports, profiles):
     row += 1
 
     ws.cell(row=row, column=1, value='[POINT_LOADS]'); row += 1
-    for col, lbl in enumerate(['rod','P_kN','t_from_A','angle_deg'], 1):
+    for col, lbl in enumerate(['rod','P_kN','t_frac_from_A','angle_deg'], 1):
         ws.cell(row=row, column=col, value=lbl)
     row += 1
     for ri, r in enumerate(rods):
@@ -625,7 +689,7 @@ def _write_model_sheet(wb, nodes, rods, loads, supports, profiles):
         row += 1
     row += 1
 
-    ws.cell(row=row, column=1, value='[LOADS]'); row += 1
+    ws.cell(row=row, column=1, value='[NODE_LOADS]'); row += 1
     for col, lbl in enumerate(['node','fx_kN','fy_kN'], 1):
         ws.cell(row=row, column=col, value=lbl)
     row += 1
@@ -634,8 +698,97 @@ def _write_model_sheet(wb, nodes, rods, loads, supports, profiles):
         ws.cell(row=row, column=2, value=l['fx'])
         ws.cell(row=row, column=3, value=l['fy'])
         row += 1
+    row += 1
 
-    for col in range(1, 7):
+    # Plates. One section for both kinds, discriminated by `kind`; a panel
+    # stores its node loop as a hyphen-joined string so the table stays one
+    # row per plate. A workbook written before plates existed simply has no
+    # [PLATES] section, and `read_table` returns [] for a missing one, so
+    # round-tripping an older model is unaffected in both directions.
+    ws.cell(row=row, column=1, value='[PLATES]'); row += 1
+    for col, lbl in enumerate(['kind', 'nodes', 't_mm', 'Fy_MPa', 'Fexx_MPa',
+                                'G_GPa', 'weld_lines', 'landing_m',
+                                'conn_type', 'bolt_d_mm', 'bolt_rows',
+                                'bolt_cols', 'pitch_mm', 'gauge_mm',
+                                'end_mm', 'edge_mm', 'Fu_MPa'], 1):
+        ws.cell(row=row, column=col, value=lbl)
+    row += 1
+    for pl in (plates or []):
+        kind = pl.get('kind', 'panel')
+        ids = ([pl.get('node')] if kind == 'gusset' else list(pl.get('nodes', [])))
+        ws.cell(row=row, column=1, value=kind)
+        ws.cell(row=row, column=2, value='-'.join(str(int(i)) for i in ids))
+        ws.cell(row=row, column=3, value=float(pl.get('thickness_mm', 8.0)))
+        ws.cell(row=row, column=4, value=float(pl.get('Fy', 235.0)))
+        ws.cell(row=row, column=5, value=float(pl.get('Fexx', 480.0)))
+        ws.cell(row=row, column=6, value=float(pl.get('G_GPa', 80.0)))
+        ws.cell(row=row, column=7, value=int(pl.get('weld_lines', 2)))
+        ws.cell(row=row, column=8, value=float(pl.get('landing_m', 0.30)))
+        ws.cell(row=row, column=9, value=str(pl.get('conn_type', 'welded')))
+        ws.cell(row=row, column=10, value=float(pl.get('bolt_d_mm', 16.0)))
+        ws.cell(row=row, column=11, value=int(pl.get('bolt_rows', 2)))
+        ws.cell(row=row, column=12, value=int(pl.get('bolt_cols', 2)))
+        ws.cell(row=row, column=13, value=float(pl.get('pitch_mm', 60.0)))
+        ws.cell(row=row, column=14, value=float(pl.get('gauge_mm', 60.0)))
+        ws.cell(row=row, column=15, value=float(pl.get('end_mm', 40.0)))
+        ws.cell(row=row, column=16, value=float(pl.get('edge_mm', 35.0)))
+        ws.cell(row=row, column=17, value=float(pl.get('Fu', 360.0)))
+        row += 1
+
+    row += 1
+
+    # Construction geometry. Guides are drawing aids, never structure, but
+    # they ARE design intent -- reopening a model without the curve it was
+    # laid out on loses the reason the nodes are where they are. Stored as
+    # one row per guide with the fields each kind uses and blanks elsewhere;
+    # a workbook with no [GUIDES] section imports as a model with no guides.
+    ws.cell(row=row, column=1, value='[GUIDES]'); row += 1
+    for col, lbl in enumerate(['kind', 'expr', 'params', 'x0_m', 'y0_m',
+                                'x1_m', 'y1_m', 'r_m', 'a0_deg', 'a1_deg',
+                                'family', 'set_by', 'value_m', 'flip',
+                                'branch', 'pts_m'], 1):
+        ws.cell(row=row, column=col, value=lbl)
+    row += 1
+    for gd in (guides or []):
+        k = gd.get('kind', 'func')
+        ws.cell(row=row, column=1, value=k)
+        if k == 'func':
+            ws.cell(row=row, column=2, value=str(gd.get('expr', '')))
+            ws.cell(row=row, column=3, value=', '.join(
+                '%s=%g' % (kk, vv) for kk, vv in (gd.get('params') or {}).items()))
+            ws.cell(row=row, column=4, value=float(gd.get('x0', 0.0)))
+            ws.cell(row=row, column=6, value=float(gd.get('x1', 0.0)))
+        elif k == 'line':
+            ws.cell(row=row, column=4, value=float(gd['p0'][0]))
+            ws.cell(row=row, column=5, value=float(gd['p0'][1]))
+            ws.cell(row=row, column=6, value=float(gd['p1'][0]))
+            ws.cell(row=row, column=7, value=float(gd['p1'][1]))
+        elif k == 'fit':
+            # A fitted guide stores its CONSTRAINTS, so those are what has to
+            # survive the round trip -- saving the solved coefficients would
+            # reopen as a curve that no longer re-fits when a point moves.
+            ws.cell(row=row, column=4, value=float(gd['p0'][0]))
+            ws.cell(row=row, column=5, value=float(gd['p0'][1]))
+            ws.cell(row=row, column=6, value=float(gd['p1'][0]))
+            ws.cell(row=row, column=7, value=float(gd['p1'][1]))
+            ws.cell(row=row, column=11, value=str(gd.get('family', '')))
+            ws.cell(row=row, column=12, value=str(gd.get('by', '')))
+            ws.cell(row=row, column=13, value=float(gd.get('value', 0.0)))
+            ws.cell(row=row, column=14, value=int(bool(gd.get('flip', False))))
+        elif k == 'conic5':
+            ws.cell(row=row, column=15, value=int(gd.get('branch', 0)))
+            ws.cell(row=row, column=16, value='; '.join(
+                '%g,%g' % (float(q[0]), float(q[1]))
+                for q in gd.get('pts', [])))
+        else:
+            ws.cell(row=row, column=4, value=float(gd['c'][0]))
+            ws.cell(row=row, column=5, value=float(gd['c'][1]))
+            ws.cell(row=row, column=8, value=float(gd.get('r', 0.0)))
+            ws.cell(row=row, column=9, value=float(gd.get('a0', 0.0)))
+            ws.cell(row=row, column=10, value=float(gd.get('a1', 360.0)))
+        row += 1
+
+    for col in range(1, 19):
         ws.column_dimensions[get_column_letter(col)].width = 12
 
 
@@ -711,7 +864,11 @@ def import_excel_model(path):
             if 0 <= ri0 < len(rods):
                 rods[ri0].setdefault('point_loads', []).append({
                     'P': float(r.get('P_kN') or 0.0),
-                    't': float(r.get('t_from_A') or 0.5),
+                    # t_frac_from_A since 2026-09-07: it is a 0..1 fraction along the
+                    # rod, not a length, and the old name did not say so.
+                    # t_from_A is still read, for workbooks already saved.
+                    't': float(r.get('t_frac_from_A')
+                                or r.get('t_from_A') or 0.5),
                     'angle_deg': float(r.get('angle_deg') or 90.0)
                 })
 
@@ -722,10 +879,107 @@ def import_excel_model(path):
             supports.append({'node': int(r['node']), 'type': str(r['type'])})
 
     loads = []
-    li = find_section('[LOADS]')
+    # [NODE_LOADS] since 2026-09-07; [LOADS] was ambiguous next to
+    # this sheet's own [POINT_LOADS], which holds loads applied ALONG
+    # a rod rather than at a node. The old name is still accepted.
+    li = find_section('[NODE_LOADS]')
+    if li < 0:
+        li = find_section('[LOADS]')
     if li >= 0:
         for r in read_table(li):
             loads.append({'node': int(r['node']), 'fx': float(r['fx_kN']), 'fy': float(r['fy_kN'])})
 
-    return nodes, rods, loads, supports, profiles
+    plates = []
+    pli = find_section('[PLATES]')
+    if pli >= 0:
+        for r in read_table(pli):
+            kind = str(r.get('kind') or 'panel').strip()
+            raw = str(r.get('nodes') or '').strip()
+            if not raw:
+                continue
+            try:
+                ids = [int(v) for v in raw.split('-') if v != '']
+            except ValueError:
+                continue
+            if not ids:
+                continue
+            pl = {'kind': kind,
+                  'thickness_mm': float(r.get('t_mm') or 8.0),
+                  'Fy': float(r.get('Fy_MPa') or 235.0),
+                  'Fexx': float(r.get('Fexx_MPa') or 480.0),
+                  'weld_lines': int(r.get('weld_lines') or 2)}
+            if kind == 'gusset':
+                pl['node'] = ids[0]
+                pl['landing_m'] = float(r.get('landing_m') or 0.30)
+                pl['Fu'] = float(r.get('Fu_MPa') or 360.0)
+                pl['conn_type'] = str(r.get('conn_type') or 'welded')
+                pl['bolt_d_mm'] = float(r.get('bolt_d_mm') or 16.0)
+                pl['bolt_rows'] = int(r.get('bolt_rows') or 2)
+                pl['bolt_cols'] = int(r.get('bolt_cols') or 2)
+                pl['pitch_mm'] = float(r.get('pitch_mm') or 60.0)
+                pl['gauge_mm'] = float(r.get('gauge_mm') or 60.0)
+                pl['end_mm'] = float(r.get('end_mm') or 40.0)
+                pl['edge_mm'] = float(r.get('edge_mm') or 35.0)
+            else:
+                pl['nodes'] = ids
+                pl['G_GPa'] = float(r.get('G_GPa') or 80.0)
+                pl['E_GPa'] = 200.0
+                pl['nu'] = 0.3
+            plates.append(pl)
+
+    guides = []
+    gi = find_section('[GUIDES]')
+    if gi >= 0:
+        for r in read_table(gi):
+            k = str(r.get('kind') or 'func').strip()
+            try:
+                if k == 'func':
+                    params = {}
+                    raw = str(r.get('params') or '').strip()
+                    for part in raw.replace(';', ',').split(','):
+                        if '=' in part:
+                            kk, vv = part.split('=')
+                            params[kk.strip()] = float(vv)
+                    guides.append({'kind': 'func',
+                                    'expr': str(r.get('expr') or ''),
+                                    'x0': float(r.get('x0_m') or 0.0),
+                                    'x1': float(r.get('x1_m') or 0.0),
+                                    'params': params})
+                elif k == 'fit':
+                    guides.append({'kind': 'fit',
+                                    'family': str(r.get('family') or 'parabola'),
+                                    'p0': (float(r.get('x0_m') or 0.0),
+                                           float(r.get('y0_m') or 0.0)),
+                                    'p1': (float(r.get('x1_m') or 0.0),
+                                           float(r.get('y1_m') or 0.0)),
+                                    'by': str(r.get('set_by') or 'rise'),
+                                    'value': float(r.get('value_m') or 0.0),
+                                    'flip': bool(int(r.get('flip') or 0))})
+                elif k == 'conic5':
+                    raw = str(r.get('pts_m') or '')
+                    pts = []
+                    for chunk in raw.split(';'):
+                        if ',' not in chunk:
+                            continue
+                        xs, ys = chunk.split(',')[:2]
+                        pts.append((float(xs), float(ys)))
+                    guides.append({'kind': 'conic5', 'pts': pts,
+                                    'branch': int(r.get('branch') or 0)})
+                elif k == 'line':
+                    guides.append({'kind': 'line',
+                                    'p0': (float(r.get('x0_m') or 0.0),
+                                           float(r.get('y0_m') or 0.0)),
+                                    'p1': (float(r.get('x1_m') or 0.0),
+                                           float(r.get('y1_m') or 0.0))})
+                else:
+                    guides.append({'kind': 'circle',
+                                    'c': (float(r.get('x0_m') or 0.0),
+                                          float(r.get('y0_m') or 0.0)),
+                                    'r': float(r.get('r_m') or 0.0),
+                                    'a0': float(r.get('a0_deg') or 0.0),
+                                    'a1': float(r.get('a1_deg') or 360.0)})
+            except (TypeError, ValueError):
+                continue
+
+    return nodes, rods, loads, supports, profiles, plates, guides
 

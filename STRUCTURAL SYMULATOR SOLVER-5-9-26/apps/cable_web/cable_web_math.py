@@ -70,8 +70,33 @@ node positions and reactions to tight numerical tolerance. See
 test_cable_web_math.py.
 """
 import math
-import numpy as np
-from common import _beam_gauss_solve
+from common import _beam_gauss_solve, _require_numpy
+
+
+class _LazyNumpy:
+    """numpy, imported on first attribute access rather than at import time.
+
+    Every call site below still reads `np.asarray(...)` and behaves
+    identically; what changes is WHEN the import happens. numpy is only
+    reached from inside the sparse and Levenberg-Marquardt solve paths, which
+    already require SciPy, so importing it up here made a module that merely
+    DESCRIBES cable statics unloadable without it -- and with it, the whole
+    app, since every tab imports through this chain.
+
+    Measured 2026-09-09 on a machine where Smart App Control blocked numpy's
+    compiled extension: the app would not start at all, the entire test suite
+    failed at collection, and nothing said which package was at fault. Now the
+    app starts, and only a solve that genuinely needs numpy raises -- with a
+    message that names it. See common._require_numpy, which is the single
+    place that raise is written.
+    """
+    __slots__ = ()
+
+    def __getattr__(self, name):
+        return getattr(_require_numpy(), name)
+
+
+np = _LazyNumpy()
 
 G = 9.80665  # m/s^2, for weight-per-length given as mass-per-length; not
              # used directly (weights are specified as force/length in N/m)

@@ -445,6 +445,25 @@ def self_weight_loads(nodes, members, unit_weight_kN_m3=DEFAULT_STEEL_UNIT_WEIGH
     return [{'node': n, 'fx': 0.0, 'fy': 0.0, 'fz': -w} for n, w in totals.items()]
 
 
+def area_load_to_nodal_loads(load_nodes, q_kN_m2, direction=(0.0, 0.0, -1.0)):
+    """Convert a uniform pressure q (kN/m², e.g. snow/dead roof load) into
+    nodal loads, using the exact/converged tributary areas a geometry
+    generator returns as its `load_nodes` dict (node_idx -> area_m2; see
+    stereo_geometry.py). `direction` is a unit-ish vector (normalized here,
+    so the caller need not pre-normalize); the default -z matches
+    `self_weight_loads`'s downward convention."""
+    dx, dy, dz = direction
+    norm = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if norm < 1e-12:
+        raise ValueError('direction must be a nonzero vector')
+    dx, dy, dz = dx / norm, dy / norm, dz / norm
+    loads = []
+    for node, area in load_nodes.items():
+        P = q_kN_m2 * area
+        loads.append({'node': node, 'fx': P * dx, 'fy': P * dy, 'fz': P * dz})
+    return loads
+
+
 def combine_loads(*load_lists):
     """Merge several load lists (e.g. applied loads + self_weight_loads)
     into one, summing contributions that land on the same node instead of

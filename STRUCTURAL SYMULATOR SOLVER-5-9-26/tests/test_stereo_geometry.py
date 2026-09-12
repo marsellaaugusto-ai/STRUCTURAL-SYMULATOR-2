@@ -174,3 +174,102 @@ def test_generated_mesh_solves_under_self_weight_when_fully_pinned(gen, kwargs):
     total_load_z = sum(ld['fz'] for ld in loads)
     total_rxn_z = sum(r.get('Fz', 0.0) for r in res['reactions'].values())
     assert total_rxn_z == pytest.approx(-total_load_z, rel=1e-6)
+
+
+# ── area-load tributary areas (load_nodes) ──────────────────────────────────
+# Both flat_grid and barrel_vault are locally flat/cylindrical (developable
+# surfaces), so their lumped tributary split has NO curvature error: the
+# areas must sum to the true surface area exactly, not approximately. A
+# dome's sphere is not developable, so its version is a midpoint-rule
+# discretization that only CONVERGES to the true area as the mesh refines
+# -- tested separately, for convergence rather than exact equality.
+
+@pytest.mark.parametrize('offset', [True, False])
+def test_flat_grid_tributary_areas_sum_to_the_plan_area(offset):
+    mesh = sg.flat_grid(span_x=13.0, span_y=7.0, depth=1.0, module=2.5, offset=offset)
+    total = sum(mesh['load_nodes'].values())
+    assert total == pytest.approx(13.0 * 7.0, rel=1e-9)
+
+
+def test_flat_grid_tributary_areas_are_all_on_the_top_layer_and_positive():
+    mesh = sg.flat_grid(span_x=9.0, span_y=9.0, depth=1.5, module=3.0, offset=True)
+    nodes = mesh['nodes']
+    for node, area in mesh['load_nodes'].items():
+        assert area > 0.0
+        assert nodes[node][2] == pytest.approx(1.5)   # z == depth, the top layer
+
+
+@pytest.mark.parametrize('double_layer', [True, False])
+def test_barrel_vault_tributary_areas_sum_to_the_shell_area(double_layer):
+    span, rise, length = 10.0, 2.5, 15.0
+    mesh = sg.barrel_vault(span=span, rise=rise, length=length, n_arch=6, n_bays=5,
+                            double_layer=double_layer, depth=0.5)
+    R = rise / 2.0 + span ** 2 / (8.0 * rise)
+    half_angle = math.asin(min(1.0, (span / 2.0) / R))
+    expected_shell_area = length * (R * 2.0 * half_angle)
+    total = sum(mesh['load_nodes'].values())
+    assert total == pytest.approx(expected_shell_area, rel=1e-9)
+
+
+def test_barrel_vault_tributary_areas_are_all_on_the_outer_layer():
+    mesh = sg.barrel_vault(span=8.0, rise=2.0, length=6.0, n_arch=6, n_bays=3,
+                            double_layer=True, depth=0.4)
+    outer_nodes = set()
+    for m in mesh['members']:
+        if m.get('role') in ('outer_rib', 'purlin'):
+            outer_nodes.add(m['a']); outer_nodes.add(m['b'])
+    for node, area in mesh['load_nodes'].items():
+        assert area > 0.0
+        assert node in outer_nodes, f'load node {node} is not on the outer shell'
+
+
+def _dome_cap_area(base_radius, rise):
+    R = (base_radius ** 2 + rise ** 2) / (2.0 * rise)
+    phi_max = math.asin(min(1.0, base_radius / R))
+    return 2.0 * math.pi * R ** 2 * (1.0 - math.cos(phi_max))
+
+
+def test_dome_tributary_areas_converge_to_the_cap_area_as_the_mesh_refines():
+    base_radius, rise = 10.0, 3.0
+    exact = _dome_cap_area(base_radius, rise)
+    errors = []
+    for n_rings in (2, 8, 32):
+        mesh = sg.dome(base_radius=base_radius, rise=rise, n_rings=n_rings, n_sectors=24)
+        total = sum(mesh['load_nodes'].values())
+        errors.append(abs(total - exact) / exact)
+    # a coarse mesh is already within a few percent, and refining strictly
+    # tightens it -- the signature of a convergent (not just approximately
+    # right) discretization.
+    assert errors[0] < 0.08
+    assert errors[1] < errors[0]
+    assert errors[2] < errors[1]
+    assert errors[2] < 1e-3
+
+
+def test_dome_tributary_areas_include_the_apex_and_are_all_positive():
+    mesh = sg.dome(base_radius=6.0, rise=2.0, n_rings=3, n_sectors=10)
+    apex = 0   # dome() always adds the apex first
+    assert apex in mesh['load_nodes']
+    for area in mesh['load_nodes'].values():
+        assert area > 0.0
+
+
+def test_area_load_to_nodal_loads_distributes_pressure_by_area():
+    load_nodes = {0: 4.0, 1: 6.0}
+    loads = sm.area_load_to_nodal_loads(load_nodes, q_kN_m2=2.0)
+    by_node = {ld['node']: ld for ld in loads}
+    assert by_node[0]['fz'] == pytest.approx(-8.0)     # 2.0 kN/m2 * 4.0 m2, downward
+    assert by_node[1]['fz'] == pytest.approx(-12.0)
+    assert by_node[0]['fx'] == pytest.approx(0.0)
+    assert by_node[0]['fy'] == pytest.approx(0.0)
+
+
+def test_area_load_to_nodal_loads_honors_a_custom_direction():
+    loads = sm.area_load_to_nodal_loads({0: 10.0}, q_kN_m2=1.0, direction=(1.0, 0.0, 0.0))
+    assert loads[0]['fx'] == pytest.approx(10.0)
+    assert loads[0]['fz'] == pytest.approx(0.0)
+
+
+def test_area_load_to_nodal_loads_rejects_a_zero_direction():
+    with pytest.raises(ValueError):
+        sm.area_load_to_nodal_loads({0: 1.0}, q_kN_m2=1.0, direction=(0.0, 0.0, 0.0))

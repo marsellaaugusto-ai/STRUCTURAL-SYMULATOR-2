@@ -12,14 +12,25 @@ Every generator returns a plain dict:
 
     {'nodes': [(x, y, z), ...],        # metres, world coordinates
      'members': [{'a': i, 'b': j, 'conn': 'pin', 'role': '...'}, ...],
-     'support_candidates': [node_idx, ...]}   # a sensible default support
+     'support_candidates': [node_idx, ...],   # a sensible default support
                                                # set -- NOT a restriction.
+     'load_nodes': {node_idx: tributary_area_m2, ...}}  # the roof/shell
+                                               # surface, for an area load.
 
 `support_candidates` is only a suggestion the UI pre-selects with a 'pin'
 preset; the whole point of the boundary-condition system in stereo_math.py
 is that ANY node, not just these, can be given ANY combination of
 restrained translations/rotations. Nothing here or in stereo_math.py ever
 restricts which nodes may carry a support.
+
+`load_nodes` is the exact (flat_grid, barrel_vault) or closed-form
+midpoint-rule (dome -- see its own docstring) lumped tributary plan/shell
+area belonging to each node of the load-bearing surface, in m². Multiplying
+by a pressure q (kN/m²) gives that node's share of a uniform area load
+directly -- see stereo_math.area_load_to_nodal_loads. For flat_grid and
+barrel_vault the areas sum EXACTLY to the modeled surface's true area
+(both are locally flat/cylindrical, so the tributary split has no
+curvature error); tests/test_stereo_geometry.py checks this.
 
 Node identity is a plain list index, exactly like truss_math.py. Members
 default to 'pin' (axial-only, ball-jointed) connectivity, which is the
@@ -186,7 +197,32 @@ def flat_grid(span_x, span_y, depth, module, offset=True):
     perimeter = sorted({bottom[(i, j)] for j in range(ny + 1) for i in range(nx + 1)
                          if i in (0, nx) or j in (0, ny)})
 
-    return {'nodes': bank.nodes, 'members': members, 'support_candidates': perimeter}
+    # Tributary area for a roof (area) load, lumped onto the TOP layer --
+    # the higher, +z surface, i.e. the one facing the load. Each top node
+    # "owns" a dx*dy cell centered on itself; a perimeter node's cell is
+    # clipped by the model boundary, so it gets half (edge) or a quarter
+    # (corner) of a full cell. This is the standard lumped-tributary-area
+    # rule, and it is EXACT here (no curvature): the areas always sum to
+    # exactly span_x*span_y, proven in the module docstring and pinned by
+    # test_flat_grid_tributary_areas_sum_to_the_plan_area.
+    load_nodes = {}
+    if offset:
+        # every top node already sits at a cell centre with a full,
+        # unclipped dx*dy cell (the offset inset by half a module on every
+        # side is exactly what makes this tile the whole span with no
+        # partial cells at all).
+        for j in range(ny):
+            for i in range(nx):
+                load_nodes[top[(i, j)]] = dx * dy
+    else:
+        for j in range(ny + 1):
+            fy = dy if 0 < j < ny else dy / 2.0
+            for i in range(nx + 1):
+                fx = dx if 0 < i < nx else dx / 2.0
+                load_nodes[top[(i, j)]] = fx * fy
+
+    return {'nodes': bank.nodes, 'members': members, 'support_candidates': perimeter,
+            'load_nodes': load_nodes}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -287,7 +323,24 @@ def barrel_vault(span, rise, length, n_arch=8, n_bays=8, double_layer=True,
                                      | set(inner[(0, ai)] for ai in range(n_arch + 1))
                                      | set(inner[(n_bays, ai)] for ai in range(n_arch + 1)))
 
-    return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates}
+    # Tributary area for a roof (area) load, lumped onto the OUTER shell
+    # (the one facing outward/upward, whether single- or double-layer).
+    # The arc is a true circle, so the arc-length per segment (ds = R *
+    # the constant angular step) is the same at every station -- no
+    # curvature error the way a dome's spherical tributary area has, since
+    # a cylinder is developable (locally flat when unrolled). Areas sum
+    # EXACTLY to the modeled shell's true surface area (arc_length *
+    # length); see test_barrel_vault_tributary_areas_sum_to_the_shell_area.
+    ds = R * (2.0 * half_angle / n_arch)
+    load_nodes = {}
+    for bi in range(n_bays + 1):
+        f_long = bay_dx if 0 < bi < n_bays else bay_dx / 2.0
+        for ai in range(n_arch + 1):
+            f_arc = ds if 0 < ai < n_arch else ds / 2.0
+            load_nodes[outer[(bi, ai)]] = f_long * f_arc
+
+    return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
+            'load_nodes': load_nodes}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -376,7 +429,39 @@ def dome(base_radius, rise, n_rings=4, n_sectors=12):
         prev_ring = ring
 
     support_candidates = list(rings[-1])
-    return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates}
+
+    # Tributary area for a roof (area) load, lumped over the whole dome
+    # surface (apex + every ring node). Unlike flat_grid/barrel_vault, a
+    # sphere is NOT developable: "half the meridian arc-step times the
+    # hoop circumference at this node's own latitude" is a MIDPOINT-RULE
+    # discretization of the exact zone-area integral 2*pi*R^2*sin(phi)*dphi,
+    # not an identity. It converges to the true spherical-cap area as
+    # n_rings grows (tested for convergence, not exact equality, in
+    # test_dome_tributary_areas_converge_to_the_cap_area) and is the same
+    # lumping convention any FE tool uses for a curved shell, so the error
+    # at ordinary mesh densities is small and always on the side of the
+    # true curvature (a coarse dome very slightly overstates area near the
+    # equator and understates it near the apex -- sin(phi) is concave here).
+    phi_step = phi_max / n_rings
+    load_nodes = {}
+    apex_cap_half_angle = phi_step / 2.0
+    load_nodes[apex] = 2.0 * math.pi * R ** 2 * (1.0 - math.cos(apex_cap_half_angle))
+    for k in range(1, n_rings + 1):
+        phi_k = phi_max * k / n_rings
+        # R * phi_step, NOT bare phi_step: phi_step is an ANGLE (radians),
+        # and the area element needs the actual meridian ARC LENGTH
+        # (R * dphi) to pair with the hoop's arc length below -- omitting
+        # R here understated every ring's area by a factor of R (~18x for
+        # a typical dome), caught by
+        # test_dome_tributary_areas_converge_to_the_cap_area_as_the_mesh_refines.
+        meridian_factor = R * phi_step * (1.0 if k < n_rings else 0.5)
+        hoop_factor = R * math.sin(phi_k) * (2.0 * math.pi / n_sectors)
+        area = meridian_factor * hoop_factor
+        for node in rings[k - 1]:
+            load_nodes[node] = area
+
+    return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
+            'load_nodes': load_nodes}
 
 
 GENERATORS = {

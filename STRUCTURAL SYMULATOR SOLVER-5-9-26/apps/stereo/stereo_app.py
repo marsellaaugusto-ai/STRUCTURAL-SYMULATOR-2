@@ -20,9 +20,12 @@ other tab, per the 2026-09-12 request that this tab's left panel and
 legibility match "the standard of the others" instead of its own
 hand-rolled layout.
 
-The 3D view is orbited/panned/zoomed with the MOUSE ONLY (left-drag orbit,
+The 3D view is orbited/panned/zoomed with the MOUSE ONLY (right-drag orbit,
 wheel zoom, middle-drag pan) -- there is deliberately no toolbar button for
-any of the three, per that same request.
+any of the three, per that same request. Left-drag is reserved for a
+Truss-style rubber-band LASSO that multi-selects nodes (a plain left-click
+still single-selects), per the 2026-09-12 request to select supports "with
+a laso function like in the truss app".
 """
 import math
 import copy
@@ -30,7 +33,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 import units
-from common import ZoomCanvas, FlowBar, ScrollPanel, UnitsMixin, declutter_text
+from common import ZoomCanvas, FlowBar, ScrollPanel, UnitsMixin, declutter_text, LoadScale
 
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
@@ -54,10 +57,17 @@ COMPRESSION_LOW = '#c9dcf5'
 COMPRESSION_HIGH = '#17458c'
 GAMMA = 0.6   # perceptual compression, same idiom as common.LoadScale's gamma
 UNDO_LIMIT = 60
+LOAD_COLOR = '#e07b1f'
+SUPPORT_BOX_HALF_PX = 7
+LASSO_DRAG_THRESHOLD_PX = 4
 
 DOF_LABELS = (('ux', 'Ux'), ('uy', 'Uy'), ('uz', 'Uz'),
               ('rx', 'Rx'), ('ry', 'Ry'), ('rz', 'Rz'))
 PRESET_NAMES = ('free', 'pin', 'fixed', 'rollerX', 'rollerY', 'rollerZ', 'custom')
+GRID_PATTERNS = (('square', 'Square (grid-aligned chords)'),
+                 ('diagonal', 'Diagonal (diagonal-on-diagonal chords)'))
+PATTERN_KEY = {label: key for key, label in GRID_PATTERNS}
+PATTERN_LABEL = {key: label for key, label in GRID_PATTERNS}
 
 GRID_FAMILIES = (('flat_grid', 'Flat double-layer grid'),
                  ('barrel_vault', 'Barrel vault'),
@@ -71,7 +81,7 @@ FAMILY_LABEL = {key: label for key, label in GRID_FAMILIES}
 # together). A role not listed here defaults to the web section, which is
 # always the more numerous and lighter-loaded member family in practice.
 CHORD_ROLES = {'bottom_chord', 'top_chord', 'outer_rib', 'inner_rib', 'purlin',
-              'hoop', 'meridian'}
+              'hoop', 'meridian', 'reinf_chord'}
 
 QUICK_SUPPORT_CUSTOM = 'Custom (edit per node below)'
 QUICK_SUPPORT_PIN = 'All suggested nodes: pinned'
@@ -123,14 +133,18 @@ class StereoApp(UnitsMixin):
         self.results = None
         self.member_checks = None
         self.err = None
-        self.selected_node = None
+        self.selected_nodes = set()
         self._support_candidates = []
         self._load_nodes = {}
+        self._load_glyphs = {}
 
         self.azimuth = 35.0
         self.elevation = 22.0
-        self._drag_start = None
-        self._dragged = False
+        self._orbit_start = None
+        self._orbit_dragged = False
+        self._lasso_press = None
+        self._lasso_dragging = False
+        self._lasso_cur = None
 
         self.grid_family = tk.StringVar(value=FAMILY_LABEL['flat_grid'])
 
@@ -140,6 +154,18 @@ class StereoApp(UnitsMixin):
         self._build_ui()
         self.init_units(repaint=self._on_units_changed)
         self._generate(push_undo=False)
+
+    @property
+    def selected_node(self):
+        """The single selected node, for the many single-node code paths
+        (the selection panel, the typed node fields' auto-sync) that
+        predate multi-select -- None whenever zero or more than one node
+        is selected, since neither has one unambiguous "the" node.
+        `selected_nodes` (a set) is the real, multi-select-capable state;
+        this is a read-only convenience view over it."""
+        if len(self.selected_nodes) == 1:
+            return next(iter(self.selected_nodes))
+        return None
 
     # ── model snapshot / undo-redo (same shape as truss_app.py) ─────────────
     def _model_snapshot(self):
@@ -212,6 +238,18 @@ class StereoApp(UnitsMixin):
 
         self.toolbar_flow.separator()
         g = self.toolbar_flow.group()
+        self.show_node_labels = tk.BooleanVar(value=True)
+        tk.Checkbutton(g, text='Node #', variable=self.show_node_labels, bg=BG,
+                       command=self._draw).pack(side='left')
+        self.show_member_labels = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Member #', variable=self.show_member_labels, bg=BG,
+                       command=self._draw).pack(side='left', padx=(6, 0))
+        self.show_loads = tk.BooleanVar(value=True)
+        tk.Checkbutton(g, text='Load arrows', variable=self.show_loads, bg=BG,
+                       command=self._draw).pack(side='left', padx=(6, 0))
+
+        self.toolbar_flow.separator()
+        g = self.toolbar_flow.group()
         tk.Button(g, text='Undo', command=self._undo).pack(side='left', padx=1)
         tk.Button(g, text='Redo', command=self._redo).pack(side='left', padx=1)
 
@@ -254,16 +292,21 @@ class StereoApp(UnitsMixin):
         # but nothing ever overrides a view the user deliberately set up.
         self._view_touched = False
         self.canvas.bind('<Configure>', self._on_canvas_configure)
-        # Left-drag orbits the camera; wheel zoom and middle-drag pan are
+        # Left-drag is a Truss-style rubber-band LASSO that multi-selects
+        # nodes; a plain left-click (no drag) still single-selects the
+        # nearest node -- distinguished from a lasso drag by a small pixel
+        # threshold in _on_canvas_motion, so neither gesture steals the
+        # other. Orbit moves to RIGHT-drag so it no longer competes with
+        # the lasso for the same button. Wheel zoom and middle-drag pan are
         # already wired by ZoomCanvas itself -- chained (add='+') rather
         # than replaced, purely to flag that the user has now taken control
-        # of the view. A plain click (no drag) still selects the nearest
-        # node -- distinguished from an orbit drag by a small pixel
-        # threshold in _on_canvas_motion, so neither gesture steals the
-        # other.
+        # of the view.
         self.canvas.bind('<ButtonPress-1>', self._on_canvas_press)
         self.canvas.bind('<B1-Motion>', self._on_canvas_motion)
         self.canvas.bind('<ButtonRelease-1>', self._on_canvas_release)
+        self.canvas.bind('<ButtonPress-3>', self._on_orbit_press)
+        self.canvas.bind('<B3-Motion>', self._on_orbit_motion)
+        self.canvas.bind('<ButtonRelease-3>', self._on_orbit_release)
         for seq in ('<ButtonPress-2>', '<MouseWheel>', '<Button-4>', '<Button-5>'):
             self.canvas.bind(seq, self._mark_view_touched, add='+')
 
@@ -292,6 +335,7 @@ class StereoApp(UnitsMixin):
         self._build_section_panel(parent, 'chord', 'Chord section (top/bottom)')
         self._build_section_panel(parent, 'web', 'Web section (diagonals)')
         self._build_selection_panel(parent)
+        self._build_addons_panel(parent)
         self._build_results_panel(parent)
         self._on_connectivity_change()   # hide I/J unless Rigid is selected
 
@@ -305,6 +349,7 @@ class StereoApp(UnitsMixin):
         self.fg_module = tk.DoubleVar(value=3.0)
         self.fg_depth = tk.DoubleVar(value=1.5)
         self.fg_offset = tk.BooleanVar(value=True)
+        self.fg_pattern = tk.StringVar(value=PATTERN_LABEL['square'])
         self.frame_flat_grid = tk.Frame(box, bg=BG)
         self._labeled_entry(self.frame_flat_grid, 'Modules X (nx):', self.fg_nx)
         self._labeled_entry(self.frame_flat_grid, 'Modules Y (ny):', self.fg_ny)
@@ -313,6 +358,13 @@ class StereoApp(UnitsMixin):
         tk.Checkbutton(self.frame_flat_grid, text='Offset top layer (square-on-square offset)',
                        variable=self.fg_offset, bg=BG, font=('Helvetica', 8)
                       ).pack(anchor='w', padx=6, pady=(2, 4))
+        pat_row = tk.Frame(self.frame_flat_grid, bg=BG)
+        pat_row.pack(fill='x', padx=6, pady=(0, 4))
+        tk.Label(pat_row, text='Chord pattern:', bg=BG, font=('Helvetica', 9)
+                ).pack(side='left')
+        pat_box = ttk.Combobox(pat_row, textvariable=self.fg_pattern, state='readonly',
+                               width=26, values=[label for _key, label in GRID_PATTERNS])
+        pat_box.pack(side='left', padx=(4, 0))
 
         self.bv_span = tk.DoubleVar(value=10.0)
         self.bv_rise = tk.DoubleVar(value=2.5)
@@ -504,9 +556,122 @@ class StereoApp(UnitsMixin):
     def _build_selection_panel(self, parent):
         box = tk.LabelFrame(parent, text='Selected node', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=4)
-        self.sel_label = tk.Label(box, text='(click a node in the view)', bg=BG, fg='#666',
-                                  font=('Helvetica', 9), wraplength=PANEL_W - 24, justify='left')
+        self.sel_label = tk.Label(box, text='(click, or drag a box, to select node(s))',
+                                  bg=BG, fg='#666', font=('Helvetica', 9),
+                                  wraplength=PANEL_W - 24, justify='left')
         self.sel_label.pack(anchor='w', padx=6, pady=4)
+
+    # ── add-on features: column (capital + shaft) and reinforcement beam ────
+    def _build_addons_panel(self, parent):
+        box = tk.LabelFrame(parent, text='Add-ons', bg=BG, font=('Helvetica', 10, 'bold'))
+        box.pack(fill='x', padx=6, pady=4)
+
+        col = tk.LabelFrame(box, text='Column (shaft + capital)', bg=BG,
+                            font=('Helvetica', 8, 'bold'))
+        col.pack(fill='x', padx=6, pady=(4, 4))
+        tk.Label(col, text='Select ONE node in the view, then:', bg=BG,
+                font=('Helvetica', 8), fg='#666').pack(anchor='w', padx=4, pady=(2, 0))
+        self.col_height = tk.DoubleVar(value=3.0)
+        self.col_legs = tk.IntVar(value=4)
+        self._labeled_entry(col, 'Shaft height (m):', self.col_height)
+        self._labeled_entry(col, 'Capital legs:', self.col_legs)
+        tk.Button(col, text='Add column at selected node', command=self._add_column
+                 ).pack(padx=4, pady=(2, 4), anchor='w')
+
+        beam = tk.LabelFrame(box, text='Reinforcement beam', bg=BG,
+                             font=('Helvetica', 8, 'bold'))
+        beam.pack(fill='x', padx=6, pady=(0, 6))
+        tk.Label(beam, text='Select an edge run of >=2 nodes in the view, then:', bg=BG,
+                font=('Helvetica', 8), fg='#666').pack(anchor='w', padx=4, pady=(2, 0))
+        self.beam_depth = tk.DoubleVar(value=1.0)
+        self.beam_dir = tk.StringVar(value='Down (-Z)')
+        self._labeled_entry(beam, 'Offset depth (m):', self.beam_depth)
+        row = tk.Frame(beam, bg=BG)
+        row.pack(fill='x', padx=6, pady=1)
+        tk.Label(row, text='Direction:', bg=BG, width=16, anchor='w',
+                font=('Helvetica', 9)).pack(side='left')
+        ttk.Combobox(row, textvariable=self.beam_dir, state='readonly', width=14,
+                    values=list(self.BEAM_DIRECTIONS)).pack(side='left')
+        tk.Button(beam, text='Add reinforcement beam along selected nodes',
+                 command=self._add_reinforcement_beam).pack(padx=4, pady=(2, 4), anchor='w')
+
+    # Only the two OUT-OF-SURFACE directions are offered: reinforcing an
+    # edge by hanging/raising a truss beam below/above it (offset
+    # perpendicular to the roof plane) is both the realistic use case and
+    # the one verified rigid for every edge length in
+    # tests/test_stereo_geometry.py. An in-plane offset (e.g. sideways off
+    # a flat_grid edge, still within its own z=0 surface) was tested and
+    # found to leave a soft/singular mode for this triangulation, so it is
+    # deliberately not exposed here even though reinforcement_beam() itself
+    # accepts any non-edge-parallel direction for callers who need it.
+    BEAM_DIRECTIONS = {'Down (-Z)': (0.0, 0.0, -1.0), 'Up (+Z)': (0.0, 0.0, 1.0)}
+
+    def _add_column(self):
+        node = self.selected_node
+        if node is None:
+            messagebox.showerror('Column', 'Select exactly ONE node in the view first.')
+            return
+        try:
+            height = float(self.col_height.get())
+            n_legs = int(self.col_legs.get())
+        except (tk.TclError, ValueError):
+            messagebox.showerror('Column', 'Enter a valid height and leg count.')
+            return
+        try:
+            nodes, members, base, head = sg.add_column(self.nodes, self.members, node,
+                                                        height, n_legs=n_legs)
+        except ValueError as exc:
+            messagebox.showerror('Column', str(exc))
+            return
+        self._push_undo('add column')
+        self.nodes, self.members = nodes, members
+        self._support_candidates = list(self._support_candidates) + [base]
+        self.supports = [s for s in self.supports if s['node'] != base]
+        self.supports.append({'node': base, 'type': 'pin'})
+        self._apply_sections(members=self.members, redraw=False)
+        self.selected_nodes = {base}
+        self.results = None
+        self.member_checks = None
+        self._refresh_all()
+
+    def _ordered_selection_along_line(self):
+        """The current selection, ordered along whichever axis it spans the
+        most -- so a lasso box dragged across a straight edge of the grid
+        (the usual way to pick "this row of nodes") comes back in walking
+        order along that edge rather than by raw node index."""
+        ids = sorted(self.selected_nodes)
+        if len(ids) < 2:
+            return ids
+        pts = [self.nodes[i] for i in ids]
+        spans = [max(p[k] for p in pts) - min(p[k] for p in pts) for k in range(3)]
+        axis = spans.index(max(spans))
+        return sorted(ids, key=lambda i: self.nodes[i][axis])
+
+    def _add_reinforcement_beam(self):
+        edge_nodes = self._ordered_selection_along_line()
+        if len(edge_nodes) < 2:
+            messagebox.showerror('Reinforcement beam',
+                                 'Select at least 2 nodes (a lasso box over an edge) first.')
+            return
+        try:
+            depth = float(self.beam_depth.get())
+        except (tk.TclError, ValueError):
+            messagebox.showerror('Reinforcement beam', 'Enter a valid offset depth.')
+            return
+        direction = self.BEAM_DIRECTIONS[self.beam_dir.get()]
+        try:
+            nodes, members, bottom = sg.reinforcement_beam(self.nodes, self.members,
+                                                            edge_nodes, depth, direction)
+        except ValueError as exc:
+            messagebox.showerror('Reinforcement beam', str(exc))
+            return
+        self._push_undo('add reinforcement beam')
+        self.nodes, self.members = nodes, members
+        self._apply_sections(members=self.members, redraw=False)
+        self.selected_nodes = set(bottom)
+        self.results = None
+        self.member_checks = None
+        self._refresh_all()
 
     def _build_results_panel(self, parent):
         box = tk.LabelFrame(parent, text='Results', bg=BG, font=('Helvetica', 10, 'bold'))
@@ -528,8 +693,9 @@ class StereoApp(UnitsMixin):
             if key == 'flat_grid':
                 nx, ny = int(self.fg_nx.get()), int(self.fg_ny.get())
                 module = self.fg_module.get()
+                pattern = PATTERN_KEY[self.fg_pattern.get()]
                 mesh = sg.flat_grid(nx * module, ny * module, self.fg_depth.get(),
-                                    module, offset=self.fg_offset.get())
+                                    module, offset=self.fg_offset.get(), pattern=pattern)
             elif key == 'barrel_vault':
                 mesh = sg.barrel_vault(self.bv_span.get(), self.bv_rise.get(),
                                        self.bv_length.get(), int(self.bv_n_arch.get()),
@@ -554,7 +720,7 @@ class StereoApp(UnitsMixin):
         self.loads = []
         self.results = None
         self.member_checks = None
-        self.selected_node = None
+        self.selected_nodes = set()
         self._reset_view(redraw=False)
         self._refresh_all()
 
@@ -601,37 +767,56 @@ class StereoApp(UnitsMixin):
         for d, _ in DOF_LABELS:
             self.dof_vars[d].set(bool(restraints.get(d, False)))
 
-    def _apply_support(self):
+    def _target_nodes(self, var):
+        """The node(s) an Apply/Remove/Add button acts on: every lasso- or
+        click-selected node when there is at least one (so a box-selected
+        group of supports can be edited in one shot -- the multi-select
+        half of the "select supports with a lasso" request), falling back
+        to the single typed node index otherwise, exactly as before
+        multi-select existed. Returns None (not []) for an outright
+        invalid typed index, so callers can tell "nothing selected AND
+        the field is garbage" apart from "an empty, valid selection"."""
+        if self.selected_nodes:
+            return sorted(self.selected_nodes)
         try:
-            node = int(self.sup_node_var.get())
+            return [int(var.get())]
         except (tk.TclError, ValueError):
-            messagebox.showerror('Boundary condition', 'Enter a valid node index.')
+            return None
+
+    def _apply_support(self):
+        nodes = self._target_nodes(self.sup_node_var)
+        if not nodes:
+            messagebox.showerror('Boundary condition',
+                                 'Enter a valid node index, or select node(s) in the view.')
             return
-        if not (0 <= node < len(self.nodes)):
-            messagebox.showerror('Boundary condition', f'Node {node} does not exist.')
+        bad = [n for n in nodes if not (0 <= n < len(self.nodes))]
+        if bad:
+            messagebox.showerror('Boundary condition', f'Node {bad[0]} does not exist.')
             return
         self._push_undo('apply support')
         self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
         dofs = {d: v.get() for d, v in self.dof_vars.items()}
         preset = self.sup_preset_var.get()
-        entry = {'node': node, 'dofs': dofs}
-        if preset != 'custom':
-            entry['type'] = preset
-        self.supports = [s for s in self.supports if s['node'] != node]
-        self.supports.append(entry)
+        target = set(nodes)
+        self.supports = [s for s in self.supports if s['node'] not in target]
+        for node in nodes:
+            entry = {'node': node, 'dofs': dict(dofs)}
+            if preset != 'custom':
+                entry['type'] = preset
+            self.supports.append(entry)
         self.results = None
         self.member_checks = None
         self._refresh_all()
 
     def _remove_support(self):
-        try:
-            node = int(self.sup_node_var.get())
-        except (tk.TclError, ValueError):
+        nodes = self._target_nodes(self.sup_node_var)
+        if not nodes:
             return
+        target = set(nodes)
         before = len(self.supports)
         self._push_undo('remove support')
         self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
-        self.supports = [s for s in self.supports if s['node'] != node]
+        self.supports = [s for s in self.supports if s['node'] not in target]
         if len(self.supports) == before:
             self._undo_stack.pop()   # nothing changed; do not clutter the stack
             return
@@ -652,32 +837,33 @@ class StereoApp(UnitsMixin):
 
     # ── loads ────────────────────────────────────────────────────────────────
     def _apply_load(self):
-        try:
-            node = int(self.ld_node_var.get())
-        except (tk.TclError, ValueError):
-            messagebox.showerror('Load', 'Enter a valid node index.')
+        nodes = self._target_nodes(self.ld_node_var)
+        if not nodes:
+            messagebox.showerror('Load', 'Enter a valid node index, or select node(s) in the view.')
             return
-        if not (0 <= node < len(self.nodes)):
-            messagebox.showerror('Load', f'Node {node} does not exist.')
+        bad = [n for n in nodes if not (0 <= n < len(self.nodes))]
+        if bad:
+            messagebox.showerror('Load', f'Node {bad[0]} does not exist.')
             return
         self._push_undo('apply load')
-        entry = {'node': node, 'fx': self.ld_fx.get(), 'fy': self.ld_fy.get(),
-                 'fz': self.ld_fz.get(), 'mx': self.ld_mx.get(), 'my': self.ld_my.get(),
-                 'mz': self.ld_mz.get()}
-        self.loads = [ld for ld in self.loads if ld['node'] != node]
-        self.loads.append(entry)
+        target = set(nodes)
+        self.loads = [ld for ld in self.loads if ld['node'] not in target]
+        for node in nodes:
+            self.loads.append({'node': node, 'fx': self.ld_fx.get(), 'fy': self.ld_fy.get(),
+                               'fz': self.ld_fz.get(), 'mx': self.ld_mx.get(),
+                               'my': self.ld_my.get(), 'mz': self.ld_mz.get()})
         self.results = None
         self.member_checks = None
         self._refresh_all()
 
     def _remove_load(self):
-        try:
-            node = int(self.ld_node_var.get())
-        except (tk.TclError, ValueError):
+        nodes = self._target_nodes(self.ld_node_var)
+        if not nodes:
             return
+        target = set(nodes)
         before = len(self.loads)
         self._push_undo('remove load')
-        self.loads = [ld for ld in self.loads if ld['node'] != node]
+        self.loads = [ld for ld in self.loads if ld['node'] not in target]
         if len(self.loads) == before:
             self._undo_stack.pop()
             return
@@ -713,7 +899,7 @@ class StereoApp(UnitsMixin):
             self.member_checks = sc.check_all_members(self.nodes, self.members, res['member_res'])
         self._refresh_all()
 
-    # ── camera (mouse-only: left-drag orbit, wheel zoom, middle-drag pan) ────
+    # ── camera (mouse-only: right-drag orbit, wheel zoom, middle-drag pan) ───
     DRAG_THRESHOLD_PX = 3
     DEG_PER_PX = 0.4
 
@@ -746,29 +932,61 @@ class StereoApp(UnitsMixin):
         if redraw:
             self._draw()
 
-    def _on_canvas_press(self, event):
-        self._drag_start = (event.x, event.y, self.azimuth, self.elevation)
-        self._dragged = False
+    def _on_orbit_press(self, event):
+        self._orbit_start = (event.x, event.y, self.azimuth, self.elevation)
+        self._orbit_dragged = False
 
-    def _on_canvas_motion(self, event):
-        if self._drag_start is None:
+    def _on_orbit_motion(self, event):
+        if self._orbit_start is None:
             return
-        x0, y0, az0, el0 = self._drag_start
+        x0, y0, az0, el0 = self._orbit_start
         dx, dy = event.x - x0, event.y - y0
-        if not self._dragged and (abs(dx) > self.DRAG_THRESHOLD_PX
-                                  or abs(dy) > self.DRAG_THRESHOLD_PX):
-            self._dragged = True
+        if not self._orbit_dragged and (abs(dx) > self.DRAG_THRESHOLD_PX
+                                        or abs(dy) > self.DRAG_THRESHOLD_PX):
+            self._orbit_dragged = True
             self._view_touched = True
-        if self._dragged:
+        if self._orbit_dragged:
             self.azimuth = (az0 + dx * self.DEG_PER_PX) % 360.0
             self.elevation = max(-89.0, min(89.0, el0 - dy * self.DEG_PER_PX))
             self._draw()
 
+    def _on_orbit_release(self, event):
+        self._orbit_start = None
+        self._orbit_dragged = False
+
+    # ── lasso (rubber-band) multi-select, mirroring truss_app.py's own
+    # _on_press/_on_drag_motion/_on_release box-select ──────────────────────
+    def _on_canvas_press(self, event):
+        self._lasso_press = (event.x, event.y)
+        self._lasso_dragging = False
+        self._lasso_cur = None
+
+    def _on_canvas_motion(self, event):
+        if self._lasso_press is None:
+            return
+        x0, y0 = self._lasso_press
+        dx, dy = event.x - x0, event.y - y0
+        if not self._lasso_dragging and (abs(dx) > LASSO_DRAG_THRESHOLD_PX
+                                         or abs(dy) > LASSO_DRAG_THRESHOLD_PX):
+            self._lasso_dragging = True
+        if self._lasso_dragging:
+            self._lasso_cur = (event.x, event.y)
+            self._draw()
+
     def _on_canvas_release(self, event):
-        if self._drag_start is not None and not self._dragged:
-            self._select_node_at(event.x, event.y)
-        self._drag_start = None
-        self._dragged = False
+        additive = bool(event.state & 0x0001)   # Shift held: add to selection
+        if self._lasso_dragging and self._lasso_cur is not None:
+            x0, y0 = self._lasso_press
+            x1, y1 = self._lasso_cur
+            found = set(self._nodes_in_screen_box(x0, y0, x1, y1))
+            self.selected_nodes = (self.selected_nodes | found) if additive else found
+            self._sync_selection_fields()
+        else:
+            self._select_node_at(event.x, event.y, additive=additive)
+        self._lasso_press = None
+        self._lasso_dragging = False
+        self._lasso_cur = None
+        self._draw()
 
     def _project(self, x, y, z):
         """Rotating orthographic projection: azimuth about the global Z
@@ -852,21 +1070,87 @@ class StereoApp(UnitsMixin):
                          if any(sm.support_restraints(s).values())}
         for i, (px, py, _) in enumerate(proj):
             sx, sy = to_screen(px, py)
-            r = 5 if i == self.selected_node else 4
-            color = NODE_SEL_COLOR if i == self.selected_node else (
+            sel = i in self.selected_nodes
+            r = 5 if sel else 4
+            color = NODE_SEL_COLOR if sel else (
                 SUPPORT_COLOR if i in support_nodes else NODE_COLOR)
             c.create_oval(sx - r, sy - r, sx + r, sy + r, fill=color, outline='',
                          tags=('node', f'node{i}'))
+            # A small box drawn AROUND a supported node -- the "box that
+            # symbolises the support" asked for, instead of relying on
+            # dot-color alone (which a selection highlight would otherwise
+            # override/obscure).
+            if i in support_nodes:
+                h = SUPPORT_BOX_HALF_PX
+                c.create_rectangle(sx - h, sy - h, sx + h, sy + h, outline=SUPPORT_COLOR,
+                                   width=2, tags=('node', f'node{i}'))
 
-        labels = []
-        for i, (px, py, _) in enumerate(proj):
-            sx, sy = to_screen(px, py)
-            labels.append(c.create_text(sx + 8, sy - 8, text=str(i), anchor='w',
-                                       font=('Helvetica', 7), fill='#555'))
-        declutter_text(c, labels)
+        if self.show_node_labels.get():
+            labels = []
+            for i, (px, py, _) in enumerate(proj):
+                sx, sy = to_screen(px, py)
+                labels.append(c.create_text(sx + 8, sy - 8, text=str(i), anchor='w',
+                                           font=('Helvetica', 7), fill='#555'))
+            declutter_text(c, labels)
+
+        if self.show_member_labels.get():
+            mlabels = []
+            for i, m in enumerate(self.members):
+                ax, ay, _ = proj[m['a']]
+                bx, by, _ = proj[m['b']]
+                sx0, sy0 = to_screen(ax, ay)
+                sx1, sy1 = to_screen(bx, by)
+                mlabels.append(c.create_text((sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0,
+                                            text=str(i), font=('Helvetica', 7, 'italic'),
+                                            fill='#8a5a00'))
+            declutter_text(c, mlabels)
+
+        if self.show_loads.get():
+            self._draw_load_arrows(c, to_screen)
+
+        if self._lasso_dragging and self._lasso_cur is not None:
+            x0, y0 = self._lasso_press
+            x1, y1 = self._lasso_cur
+            c.create_rectangle(x0, y0, x1, y1, outline='#333333', dash=(5, 3),
+                               stipple='gray12', fill='#333333', tags='lasso')
 
         self._draw_legend(c, by_force)
         self._to_screen_cache = to_screen   # for hit-testing on click
+
+    def _draw_load_arrows(self, c, to_screen):
+        """Arrows for every node currently carrying nonzero net load (point
+        loads + area load + self-weight, whichever are enabled -- the same
+        combined recipe _all_loads() feeds to the solver), sized with
+        common.LoadScale exactly the way every other tab draws a load
+        glyph, so a model with loads spanning orders of magnitude still
+        shows visible contrast at every node instead of one huge arrow and
+        a field of invisible stubs."""
+        if not self._load_glyphs:
+            return
+        mags = [math.sqrt(fx * fx + fy * fy + fz * fz)
+               for fx, fy, fz in self._load_glyphs.values()]
+        scale = LoadScale.of(mags, 14.0, 50.0)
+        eps = 1e-3
+        for i, (fx, fy, fz) in self._load_glyphs.items():
+            mag = math.sqrt(fx * fx + fy * fy + fz * fz)
+            if mag < 1e-9 or not (0 <= i < len(self.nodes)):
+                continue
+            x, y, z = self.nodes[i]
+            ux_, uy_, uz_ = fx / mag, fy / mag, fz / mag
+            px0, py0, _ = self._project(x, y, z)
+            px1, py1, _ = self._project(x + ux_ * eps, y + uy_ * eps, z + uz_ * eps)
+            sx0, sy0 = to_screen(px0, py0)
+            sx1, sy1 = to_screen(px1, py1)
+            ddx, ddy = sx1 - sx0, sy1 - sy0
+            d = math.hypot(ddx, ddy)
+            if d < 1e-9:
+                continue
+            length = scale(mag)
+            ddx, ddy = ddx / d * length, ddy / d * length
+            # Arrowhead points AT the node (the load acts ON it); the tail
+            # trails away in the load's own direction.
+            c.create_line(sx0 - ddx, sy0 - ddy, sx0, sy0, fill=LOAD_COLOR, width=2,
+                         arrow=tk.LAST, arrowshape=(9, 11, 4), tags='load')
 
     def _draw_legend(self, c, by_force):
         x0, y0 = 10, 10
@@ -883,26 +1167,43 @@ class StereoApp(UnitsMixin):
             c.create_text(x0 + 24, y, text=text, anchor='w', font=('Helvetica', 8), fill='#444')
         hint_y = y0 + len(lines) * 15 + 6
         c.create_text(x0, hint_y, anchor='nw', font=('Helvetica', 8), fill='#888',
-                     text='left-drag: orbit  ·  wheel: zoom  ·  middle-drag: pan')
+                     text='left-drag: lasso select (+Shift: add)  ·  right-drag: orbit\n'
+                          'wheel: zoom  ·  middle-drag: pan  ·  □ box = support')
 
-    def _select_node_at(self, ex, ey):
-        if not self.nodes:
-            return
+    def _screen_positions(self):
+        """Every node's current on-screen (sx, sy), in the exact same
+        projection+centering _draw() uses -- shared by click-select,
+        lasso box-select and _draw() itself so all three agree on where a
+        node actually is."""
         display_nodes = self._display_nodes()
         proj = [self._project(x, y, z) for x, y, z in display_nodes]
         xs = [p[0] for p in proj]; ys = [p[1] for p in proj]
         cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
-        best, best_d = None, 12.0
-        for i, (px, py, _) in enumerate(proj):
+        out = []
+        for px, py, _ in proj:
             wx = (px - cx) * self.PX_PER_M
             wy = (py - cy) * self.PX_PER_M
-            sx, sy = self.zc.w2s(wx, wy)
-            d = math.hypot(sx - ex, sy - ey)
-            if d < best_d:
-                best, best_d = i, d
+            out.append(self.zc.w2s(wx, wy))
+        return out
+
+    def _nodes_in_screen_box(self, sx0, sy0, sx1, sy1):
+        xlo, xhi = sorted((sx0, sx1))
+        ylo, yhi = sorted((sy0, sy1))
+        return [i for i, (sx, sy) in enumerate(self._screen_positions())
+                if xlo <= sx <= xhi and ylo <= sy <= yhi]
+
+    def _sync_selection_fields(self):
+        """Push the current single-node selection (if exactly one node is
+        selected) into the typed node fields and the selection/BC panels --
+        the same sync a click always did, now shared with the lasso path
+        too so a one-node lasso box behaves identically to a plain click."""
+        best = self.selected_node
         if best is None:
+            if len(self.selected_nodes) > 1:
+                self.sel_label.config(text=f'{len(self.selected_nodes)} nodes selected.')
+            else:
+                self.sel_label.config(text='(click, or drag a box, to select node(s))')
             return
-        self.selected_node = best
         self.sup_node_var.set(best)
         self.ld_node_var.set(best)
         x, y, z = self.nodes[best]
@@ -913,14 +1214,53 @@ class StereoApp(UnitsMixin):
             self.sup_preset_var.set(existing.get('type') or 'custom')
             for d, _ in DOF_LABELS:
                 self.dof_vars[d].set(r[d])
+
+    def _select_node_at(self, ex, ey, additive=False):
+        if not self.nodes:
+            return
+        best, best_d = None, 12.0
+        for i, (sx, sy) in enumerate(self._screen_positions()):
+            d = math.hypot(sx - ex, sy - ey)
+            if d < best_d:
+                best, best_d = i, d
+        if best is None:
+            if not additive:
+                self.selected_nodes = set()
+                self._sync_selection_fields()
+                self._draw()
+            return
+        if additive:
+            self.selected_nodes.symmetric_difference_update({best})
+        else:
+            self.selected_nodes = {best}
+        self._sync_selection_fields()
         self._draw()
 
     # ── refresh / lists / results text ──────────────────────────────────────
     def _refresh_all(self):
+        self._load_glyphs = self._combined_loads_by_node()
         self._refresh_support_list()
         self._refresh_load_list()
         self._refresh_results_text()
+        self._sync_selection_fields()
         self._draw()
+
+    def _combined_loads_by_node(self):
+        """Every node's net (fx, fy, fz) from _all_loads() -- point loads
+        plus, when enabled, the area load and self-weight -- collapsed to
+        one vector per node so _draw_load_arrows can draw a single glyph
+        per node rather than one per load entry. Computed here (only on
+        the discrete events that actually change loads or geometry) and
+        cached in self._load_glyphs, NOT inside _draw() itself, since
+        _draw() also runs on every mouse-move frame while orbiting/panning/
+        zooming and self-weight recomputes over every member."""
+        by_node = {}
+        for ld in self._all_loads():
+            n = ld['node']
+            cx, cy, cz = by_node.get(n, (0.0, 0.0, 0.0))
+            by_node[n] = (cx + ld.get('fx', 0.0), cy + ld.get('fy', 0.0),
+                         cz + ld.get('fz', 0.0))
+        return by_node
 
     def _refresh_support_list(self):
         self.sup_list.delete(0, tk.END)
@@ -1024,7 +1364,7 @@ class StereoApp(UnitsMixin):
         self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
         self.results = None
         self.member_checks = None
-        self.selected_node = None
+        self.selected_nodes = set()
         self._refresh_all()
 
     # ── units ────────────────────────────────────────────────────────────────

@@ -38,11 +38,49 @@ def _assert_mesh_is_sane(mesh):
 # ── flat double-layer grid ──────────────────────────────────────────────────
 
 @pytest.mark.parametrize('offset', [True, False])
-def test_flat_grid_produces_a_sane_mesh(offset):
-    mesh = sg.flat_grid(span_x=12.0, span_y=9.0, depth=1.0, module=3.0, offset=offset)
+@pytest.mark.parametrize('pattern', ['square', 'diagonal'])
+def test_flat_grid_produces_a_sane_mesh(offset, pattern):
+    mesh = sg.flat_grid(span_x=12.0, span_y=9.0, depth=1.0, module=3.0,
+                        offset=offset, pattern=pattern)
     _assert_mesh_is_sane(mesh)
     zs = sorted({round(z, 6) for _, _, z in mesh['nodes']})
     assert zs == [0.0, 1.0]
+
+
+def test_flat_grid_rejects_an_unknown_pattern():
+    with pytest.raises(ValueError):
+        sg.flat_grid(span_x=9.0, span_y=9.0, depth=1.0, module=3.0, pattern='hexagonal')
+
+
+def test_flat_grid_aligned_webs_are_pyramidal_not_vertical():
+    """Regression for a real mechanism: an aligned (offset=False) layer's
+    web used to connect each bottom node straight up to the top node
+    directly above it -- a purely vertical member with zero horizontal
+    stiffness, and (found by eigenanalysis) insufficient even to stop an
+    interior bottom/top pair drifting together in Z. Every web must now
+    run between DIFFERENT (i,j) positions, i.e. have a nonzero horizontal
+    projection."""
+    mesh = sg.flat_grid(span_x=9.0, span_y=9.0, depth=1.5, module=3.0, offset=False)
+    nodes = mesh['nodes']
+    webs = [m for m in mesh['members'] if m.get('role') == 'web']
+    assert webs
+    for m in webs:
+        ax, ay, _ = nodes[m['a']]
+        bx, by, _ = nodes[m['b']]
+        assert (ax, ay) != (bx, by), 'a web is purely vertical (zero horizontal stiffness)'
+
+
+def test_diagonal_pattern_chords_run_corner_to_corner_not_edge_to_edge():
+    mesh = sg.flat_grid(span_x=9.0, span_y=9.0, depth=1.5, module=3.0,
+                        offset=True, pattern='diagonal')
+    nodes = mesh['nodes']
+    chords = [m for m in mesh['members'] if m.get('role') in ('bottom_chord', 'top_chord')]
+    assert chords
+    for m in chords:
+        ax, ay, _ = nodes[m['a']]
+        bx, by, _ = nodes[m['b']]
+        assert abs(ax - bx) > 1e-9 and abs(ay - by) > 1e-9, (
+            'a diagonal-pattern chord is axis-aligned, not diagonal')
 
 
 def test_flat_grid_bottom_nodes_are_the_full_bounding_rectangle():
@@ -82,12 +120,76 @@ def test_barrel_vault_produces_a_sane_mesh(double_layer):
 
 
 def test_barrel_vault_arch_nodes_span_the_stated_rise_and_span():
+    # Z is vertical everywhere in this module (flat_grid, dome, the
+    # solver's gravity direction and the Stereo view's camera all treat
+    # +Z as up), so the rise belongs on Z and the cross-section coordinate
+    # on Y -- the other way around was the "vault stands on its side" bug
+    # fixed 2026-09-12.
     mesh = sg.barrel_vault(span=8.0, rise=2.0, length=5.0, n_arch=10, n_bays=1,
                             double_layer=False)
     ys = [y for x, y, z in mesh['nodes']]
     zs = [z for x, y, z in mesh['nodes']]
-    assert max(ys) - min(ys) == pytest.approx(2.0, abs=1e-6)   # the rise
-    assert max(zs) - min(zs) == pytest.approx(8.0, abs=1e-6)   # the span
+    assert max(ys) - min(ys) == pytest.approx(8.0, abs=1e-6)   # the span
+    assert max(zs) - min(zs) == pytest.approx(2.0, abs=1e-6)   # the rise
+
+
+@pytest.mark.parametrize('n_arch', [2, 3, 6, 10])
+@pytest.mark.parametrize('n_bays', [2, 3, 5])
+def test_single_layer_barrel_vault_analyzes_at_every_size(n_arch, n_bays):
+    """Regression for a real mechanism at every INTERIOR bay's springing
+    line: y and z depend only on `ai` here, so a rib or brace stepping by
+    the same delta-ai has the identical (y, z) projection no matter which
+    bay it is in -- every member touching a springing node (ai=0 or
+    ai=n_arch) was parallel to every other, leaving the direction radial
+    to the shell completely unbraced at any bay that was not itself a
+    support. every() member's elongation under the mechanism mode was
+    exactly zero (not just small), confirming a true missing direction,
+    not merely a stiff-but-flexible joint."""
+    mesh = sg.barrel_vault(span=8.0, rise=2.0, length=6.0, n_arch=n_arch,
+                           n_bays=n_bays, double_layer=False)
+    nodes, members = mesh['nodes'], mesh['members']
+    for m in members:
+        m.update(E=200.0, A=10.0, Fy=250.0, r_gyr=2.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(nodes, members)
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None, f'n_arch={n_arch} n_bays={n_bays}: {err}'
+
+
+@pytest.mark.parametrize('n_arch', [2, 3, 6, 10])
+@pytest.mark.parametrize('n_bays', [2, 3, 5])
+@pytest.mark.parametrize('depth', [0.3, 0.8])
+def test_double_layer_barrel_vault_analyzes_at_every_size(n_arch, n_bays, depth):
+    """Regression for the same class of springing-line mechanism as the
+    single-layer sweep above, this time surfacing only at the coarsest
+    allowed arc resolution (n_arch=2) even with a full double layer and
+    its web_diag bracing -- an interior bay's springing nodes still had
+    only one independent in-arc-plane direction. Both layers now get the
+    same 'brace two stations in' fix."""
+    mesh = sg.barrel_vault(span=8.0, rise=2.0, length=6.0, n_arch=n_arch,
+                           n_bays=n_bays, double_layer=True, depth=depth)
+    nodes, members = mesh['nodes'], mesh['members']
+    for m in members:
+        m.update(E=200.0, A=10.0, Fy=250.0, r_gyr=2.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(nodes, members)
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None, f'n_arch={n_arch} n_bays={n_bays} depth={depth}: {err}'
+
+
+def test_barrel_vault_crown_is_higher_in_z_than_its_springing():
+    """The arch's own highest point (the crown, t=0) must be the highest Z
+    at that bay station -- not merely at some extreme of Y or any other
+    axis -- since Z is this module's one consistent "up" everywhere else
+    (flat_grid's top layer, the dome's apex, gravity itself)."""
+    mesh = sg.barrel_vault(span=10.0, rise=3.0, length=4.0, n_arch=8, n_bays=1,
+                            double_layer=False)
+    nodes = mesh['nodes']
+    at_x0 = [(y, z) for x, y, z in nodes if abs(x) < 1e-9]
+    crown = max(at_x0, key=lambda yz: yz[1])   # z is the second element
+    springing = [yz for yz in at_x0 if abs(yz[0]) == max(abs(v[0]) for v in at_x0)]
+    for y, z in springing:
+        assert crown[1] > z
 
 
 def test_barrel_vault_support_candidates_are_on_the_two_end_arches():
@@ -102,6 +204,23 @@ def test_barrel_vault_support_candidates_are_on_the_two_end_arches():
 
 
 # ── dome ─────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('n_rings', [1, 2, 3, 5, 8])
+@pytest.mark.parametrize('n_sectors', [3, 6, 8, 12, 20])
+def test_dome_analyzes_at_every_size(n_rings, n_sectors):
+    """Same class of check as the flat_grid/barrel_vault sweeps above: a
+    mesh with no zero-length or duplicate members can still be a
+    mechanism, so every (n_rings, n_sectors) combination a user can pick
+    gets an actual solve, not just a structural sanity check."""
+    mesh = sg.dome(base_radius=10.0, rise=3.0, n_rings=n_rings, n_sectors=n_sectors)
+    nodes, members = mesh['nodes'], mesh['members']
+    for m in members:
+        m.update(E=200.0, A=10.0, Fy=250.0, r_gyr=2.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(nodes, members)
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None, f'n_rings={n_rings} n_sectors={n_sectors}: {err}'
+
 
 def test_dome_produces_a_sane_mesh():
     mesh = sg.dome(base_radius=10.0, rise=3.0, n_rings=4, n_sectors=12)
@@ -156,9 +275,21 @@ def test_generators_table_names_match_the_functions():
 # ── a generated mesh must actually analyze ──────────────────────────────────
 
 @pytest.mark.parametrize('gen,kwargs', [
-    ('flat_grid', dict(span_x=9.0, span_y=9.0, depth=1.2, module=3.0, offset=True)),
+    # All four flat_grid combinations are exercised here on purpose: the
+    # offset=False path was a real, undetected mechanism (see
+    # test_flat_grid_aligned_webs_are_pyramidal_not_vertical below) until
+    # only offset=True was ever run through an actual solve -- a mesh can
+    # look sane (no zero-length/duplicate members) while still being a
+    # singular structure, so "does it analyze" has to be checked for every
+    # combination a user can actually pick, not just the default.
+    ('flat_grid', dict(span_x=9.0, span_y=9.0, depth=1.2, module=3.0, offset=True, pattern='square')),
+    ('flat_grid', dict(span_x=9.0, span_y=9.0, depth=1.2, module=3.0, offset=True, pattern='diagonal')),
+    ('flat_grid', dict(span_x=9.0, span_y=9.0, depth=1.2, module=3.0, offset=False, pattern='square')),
+    ('flat_grid', dict(span_x=9.0, span_y=9.0, depth=1.2, module=3.0, offset=False, pattern='diagonal')),
     ('barrel_vault', dict(span=8.0, rise=2.0, length=6.0, n_arch=6, n_bays=3,
                           double_layer=True, depth=0.5)),
+    ('barrel_vault', dict(span=8.0, rise=2.0, length=6.0, n_arch=6, n_bays=3,
+                          double_layer=False)),
     ('dome', dict(base_radius=8.0, rise=2.5, n_rings=3, n_sectors=10)),
 ])
 def test_generated_mesh_solves_under_self_weight_when_fully_pinned(gen, kwargs):
@@ -273,3 +404,166 @@ def test_area_load_to_nodal_loads_honors_a_custom_direction():
 def test_area_load_to_nodal_loads_rejects_a_zero_direction():
     with pytest.raises(ValueError):
         sm.area_load_to_nodal_loads({0: 1.0}, q_kN_m2=1.0, direction=(0.0, 0.0, 0.0))
+
+
+# ── add-on features: column (shaft + capital) and reinforcement beam ────────
+
+def _flat_grid_with_degrees():
+    # 24x24 (nx=ny=8, 9 nodes per row) so a straight-edge test can safely
+    # pick up to 6-7 colinear nodes from one boundary row without running
+    # into the next row's differently-positioned nodes.
+    mesh = sg.flat_grid(24.0, 24.0, 1.5, 3.0, offset=True)
+    degree = {}
+    for m in mesh['members']:
+        degree[m['a']] = degree.get(m['a'], 0) + 1
+        degree[m['b']] = degree.get(m['b'], 0) + 1
+    return mesh, degree
+
+
+def test_add_column_creates_a_shaft_and_a_capital_fanning_to_nearest_neighbours():
+    mesh, degree = _flat_grid_with_degrees()
+    target = max(degree, key=degree.get)
+    n0, m0 = len(mesh['nodes']), len(mesh['members'])
+    nodes, members, base, head = sg.add_column(mesh['nodes'], mesh['members'], target,
+                                                height=3.0, n_legs=4)
+    assert len(nodes) == n0 + 2
+    shaft = [m for m in members if m.get('role') == 'column_shaft']
+    capital = [m for m in members if m.get('role') == 'capital']
+    assert len(shaft) == 1 and {shaft[0]['a'], shaft[0]['b']} == {base, head}
+    assert len(capital) == 4
+    assert all(head in (m['a'], m['b']) for m in capital)
+    assert len(members) == m0 + 1 + 4
+    # the base is strictly below the head, which is strictly below the
+    # target's own elevation -- a genuine, non-degenerate shaft + capital
+    assert nodes[base][2] < nodes[head][2] < mesh['nodes'][target][2]
+
+
+def test_add_column_rejects_a_target_node_that_does_not_exist():
+    mesh, _ = _flat_grid_with_degrees()
+    with pytest.raises(ValueError):
+        sg.add_column(mesh['nodes'], mesh['members'], len(mesh['nodes']) + 5, height=3.0)
+
+
+def test_add_column_rejects_a_nonpositive_height():
+    mesh, degree = _flat_grid_with_degrees()
+    target = max(degree, key=degree.get)
+    with pytest.raises(ValueError):
+        sg.add_column(mesh['nodes'], mesh['members'], target, height=0.0)
+
+
+def test_add_column_rejects_too_few_legs_for_the_requested_capital():
+    mesh, degree = _flat_grid_with_degrees()
+    # a corner node has very few mesh neighbours -- not enough for a big capital
+    corner = min(mesh['support_candidates'])
+    with pytest.raises(ValueError):
+        sg.add_column(mesh['nodes'], mesh['members'], corner, height=3.0, n_legs=8)
+
+
+def test_add_column_does_not_mutate_the_caller_s_lists():
+    mesh, degree = _flat_grid_with_degrees()
+    target = max(degree, key=degree.get)
+    nodes_before = list(mesh['nodes'])
+    members_before = [dict(m) for m in mesh['members']]
+    sg.add_column(mesh['nodes'], mesh['members'], target, height=3.0)
+    assert mesh['nodes'] == nodes_before
+    assert mesh['members'] == members_before
+
+
+def test_mesh_with_a_column_still_analyzes_once_the_base_is_pinned():
+    mesh, degree = _flat_grid_with_degrees()
+    target = max(degree, key=degree.get)
+    nodes, members, base, _head = sg.add_column(mesh['nodes'], mesh['members'], target,
+                                                height=3.0, n_legs=4)
+    for m in members:
+        m.setdefault('E', 200e3); m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    supports.append({'node': base, 'type': 'pin'})
+    loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None
+
+
+def test_reinforcement_beam_builds_a_triangulated_left_right_chord_pair():
+    mesh, _ = _flat_grid_with_degrees()
+    edge = sorted(mesh['support_candidates'])[:4]   # a straight, colinear boundary row
+    n0, m0 = len(mesh['nodes']), len(mesh['members'])
+    nodes, members, new_ids = sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge,
+                                                     depth=1.0, direction=(0.0, 0.0, -1.0))
+    n = len(edge)
+    assert len(new_ids) == 2 * n
+    assert len(nodes) == n0 + 2 * n
+    new_chord = [m for m in members if m.get('role') == 'reinf_chord']
+    new_web = [m for m in members if m.get('role') == 'reinf_web']
+    assert len(new_chord) == 2 * (n - 1)          # a left chord + a right chord
+    assert len(new_web) == 3 * n + 2 * (n - 1)    # n rings of 3 + crossed bay braces
+    assert len(members) == m0 + len(new_chord) + len(new_web)
+
+    left, right = new_ids[:n], new_ids[n:]
+    for j, l, r in zip(edge, left, right):
+        x, y, z = mesh['nodes'][j]
+        assert nodes[l][2] == pytest.approx(z - 1.0)
+        assert nodes[r][2] == pytest.approx(z - 1.0)
+        # left and right straddle the edge, on opposite sides of it
+        assert nodes[l][1] != pytest.approx(nodes[r][1])
+        midpoint_y = (nodes[l][1] + nodes[r][1]) / 2.0
+        assert midpoint_y == pytest.approx(y)
+
+
+def test_reinforcement_beam_honors_a_custom_direction_and_width():
+    mesh, _ = _flat_grid_with_degrees()
+    edge = sorted(mesh['support_candidates'])[:2]
+    nodes, _members, new_ids = sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge,
+                                                      depth=2.0, direction=(0.0, 1.0, 0.0),
+                                                      width=1.0)
+    n = len(edge)
+    left, right = new_ids[0], new_ids[n]   # new_ids is left-chord then right-chord
+    x0, y0, z0 = mesh['nodes'][edge[0]]
+    # offset by depth along +Y, then split +-0.5 (half of width=1.0) apart
+    assert nodes[left][1] == pytest.approx(y0 + 2.0)
+    assert nodes[right][1] == pytest.approx(y0 + 2.0)
+    assert nodes[left][2] != pytest.approx(nodes[right][2])
+    assert math.dist(nodes[left], nodes[right]) == pytest.approx(1.0)
+
+
+def test_reinforcement_beam_rejects_fewer_than_two_edge_nodes():
+    mesh, _ = _flat_grid_with_degrees()
+    with pytest.raises(ValueError):
+        sg.reinforcement_beam(mesh['nodes'], mesh['members'], [mesh['support_candidates'][0]],
+                              depth=1.0)
+
+
+def test_reinforcement_beam_rejects_a_zero_direction():
+    mesh, _ = _flat_grid_with_degrees()
+    edge = sorted(mesh['support_candidates'])[:2]
+    with pytest.raises(ValueError):
+        sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge, depth=1.0,
+                              direction=(0.0, 0.0, 0.0))
+
+
+def test_reinforcement_beam_rejects_a_direction_parallel_to_the_edge():
+    mesh, _ = _flat_grid_with_degrees()
+    edge = sorted(mesh['support_candidates'])[:4]   # runs along +X
+    with pytest.raises(ValueError):
+        sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge, depth=1.0,
+                              direction=(1.0, 0.0, 0.0))
+
+
+def test_reinforcement_beam_rejects_an_edge_node_that_does_not_exist():
+    mesh, _ = _flat_grid_with_degrees()
+    with pytest.raises(ValueError):
+        sg.reinforcement_beam(mesh['nodes'], mesh['members'],
+                              [mesh['support_candidates'][0], len(mesh['nodes']) + 9], depth=1.0)
+
+
+@pytest.mark.parametrize('n_edge', [2, 3, 4, 6])
+def test_reinforced_edge_still_analyzes_under_self_weight(n_edge):
+    mesh, _ = _flat_grid_with_degrees()
+    edge = list(range(n_edge))   # the straight y=0 boundary row, guaranteed colinear
+    nodes, members, _new_ids = sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge,
+                                                      depth=1.0)
+    for m in members:
+        m.setdefault('E', 200e3); m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None

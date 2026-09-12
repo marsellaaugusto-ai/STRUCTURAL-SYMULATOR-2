@@ -74,9 +74,10 @@ def app(tk_root):
 
 
 class FakeEvent:
-    def __init__(self, x, y, width=None, height=None):
+    def __init__(self, x, y, width=None, height=None, state=0):
         self.x = x
         self.y = y
+        self.state = state
         if width is not None:
             self.width = width
         if height is not None:
@@ -293,39 +294,63 @@ def test_applying_rigid_connectivity_reaches_every_member(app):
     assert all(m['conn'] == 'rigid' for m in app.members)
 
 
-# ── mouse-only camera: orbit drag vs click-select, wheel/pan untouched ──────
+# ── mouse: left-drag lasso select vs click-select; right-drag orbit ────────
 
-def test_a_small_movement_is_treated_as_a_click_not_an_orbit(app):
+def test_a_small_movement_is_treated_as_a_click_not_a_lasso(app):
     sx, sy = _screen_pos_of(app, 0)
     az0, el0 = app.azimuth, app.elevation
     app._on_canvas_press(FakeEvent(sx, sy))
     app._on_canvas_motion(FakeEvent(sx + 1, sy + 1))   # below the drag threshold
-    app._on_canvas_release(FakeEvent(sx + 1, sy + 1))
+    app._on_canvas_release(FakeEvent(sx + 1, sy + 1, state=0))
     assert app.azimuth == az0 and app.elevation == el0
     assert app.selected_node == 0
 
 
-def test_a_real_drag_orbits_the_camera_and_does_not_select_a_node(app):
+def test_a_real_left_drag_lasso_selects_nodes_in_the_box_and_does_not_orbit(app):
     az0, el0 = app.azimuth, app.elevation
-    app.selected_node = None
-    app._on_canvas_press(FakeEvent(400, 300))
-    app._on_canvas_motion(FakeEvent(460, 260))   # well past the drag threshold
+    app.selected_nodes = set()
+    positions = [_screen_pos_of(app, i) for i in range(len(app.nodes))]
+    xs = [p[0] for p in positions]; ys = [p[1] for p in positions]
+    x0, y0 = min(xs) - 20, min(ys) - 20
+    x1, y1 = max(xs) + 20, max(ys) + 20
+    app._on_canvas_press(FakeEvent(x0, y0))
+    app._on_canvas_motion(FakeEvent(x1, y1))   # well past the drag threshold
+    assert app.azimuth == az0 and app.elevation == el0   # left-drag never orbits
+    app._on_canvas_release(FakeEvent(x1, y1, state=0))
+    assert app.selected_nodes == set(range(len(app.nodes)))
+
+
+def test_shift_held_lasso_adds_to_the_existing_selection(app):
+    app.selected_nodes = {0}
+    sx, sy = _screen_pos_of(app, 1)
+    app._on_canvas_press(FakeEvent(sx - 10, sy - 10))
+    app._on_canvas_motion(FakeEvent(sx + 10, sy + 10))
+    app._on_canvas_release(FakeEvent(sx + 10, sy + 10, state=0x0001))   # Shift
+    assert {0, 1} <= app.selected_nodes
+
+
+def test_a_real_right_drag_orbits_the_camera_and_does_not_touch_selection(app):
+    az0, el0 = app.azimuth, app.elevation
+    app.selected_nodes = set()
+    app._on_orbit_press(FakeEvent(400, 300))
+    app._on_orbit_motion(FakeEvent(460, 260))   # well past the drag threshold
     assert app.azimuth != az0 or app.elevation != el0
-    app._on_canvas_release(FakeEvent(460, 260))
+    app._on_orbit_release(FakeEvent(460, 260))
+    assert app.selected_nodes == set()
     assert app.selected_node is None
 
 
 def test_orbit_drag_clamps_elevation_to_plus_minus_89_degrees(app):
-    app._on_canvas_press(FakeEvent(0, 0))
-    app._on_canvas_motion(FakeEvent(0, -10000))   # an absurdly large drag
+    app._on_orbit_press(FakeEvent(0, 0))
+    app._on_orbit_motion(FakeEvent(0, -10000))   # an absurdly large drag
     assert -89.0 <= app.elevation <= 89.0
-    app._on_canvas_release(FakeEvent(0, -10000))
+    app._on_orbit_release(FakeEvent(0, -10000))
 
 
 def test_reset_view_recenters_and_restores_the_default_angle(app):
-    app._on_canvas_press(FakeEvent(0, 0))
-    app._on_canvas_motion(FakeEvent(200, 200))
-    app._on_canvas_release(FakeEvent(200, 200))
+    app._on_orbit_press(FakeEvent(0, 0))
+    app._on_orbit_motion(FakeEvent(200, 200))
+    app._on_orbit_release(FakeEvent(200, 200))
     assert (app.azimuth, app.elevation) != (35.0, 22.0)
 
     app._reset_view()
@@ -333,6 +358,28 @@ def test_reset_view_recenters_and_restores_the_default_angle(app):
     w, h = app.canvas.winfo_width(), app.canvas.winfo_height()
     assert app.zc.pan_x == pytest.approx(w / 2.0)
     assert app.zc.pan_y == pytest.approx(h / 2.0)
+
+
+# ── multi-select applying to supports/loads in one shot ─────────────────────
+
+def test_lasso_selecting_every_node_then_applying_a_support_reaches_them_all(app):
+    app.selected_nodes = set(range(len(app.nodes)))
+    app.sup_preset_var.set('fixed')
+    app._preset_to_checkboxes()
+    app._apply_support()
+    assert {s['node'] for s in app.supports} == set(range(len(app.nodes)))
+    assert all(all(sm.support_restraints(s).values()) for s in app.supports)
+
+
+def test_with_no_selection_apply_support_falls_back_to_the_typed_node_field(app):
+    node = app.supports[0]['node']
+    app.selected_nodes = set()
+    app.sup_node_var.set(node)
+    app.sup_preset_var.set('pin')
+    app._preset_to_checkboxes()
+    app._apply_support()
+    entry = next(s for s in app.supports if s['node'] == node)
+    assert sm.support_restraints(entry) == sm.support_restraints({'type': 'pin'})
 
 
 def test_the_model_is_centered_in_the_canvas_after_generate(app):
@@ -345,6 +392,71 @@ def test_the_model_is_centered_in_the_canvas_after_generate(app):
     w, h = app.canvas.winfo_width(), app.canvas.winfo_height()
     assert app.zc.pan_x == pytest.approx(w / 2.0, abs=1.0)
     assert app.zc.pan_y == pytest.approx(h / 2.0, abs=1.0)
+
+
+# ── flat_grid chord pattern selector ─────────────────────────────────────────
+
+def test_diagonal_pattern_selector_reaches_the_generator(app):
+    from apps.stereo.stereo_app import PATTERN_LABEL
+    app.grid_family.set(FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_pattern.set(PATTERN_LABEL['diagonal'])
+    app.fg_nx.set(3); app.fg_ny.set(3)
+    app._generate()
+    app._analyze()
+    assert app.err is None
+    # a diagonal-pattern chord never runs parallel to a grid axis
+    role_members = [m for m in app.members if m.get('role') in ('bottom_chord', 'top_chord')]
+    assert role_members
+    for m in role_members:
+        ax, ay, _ = app.nodes[m['a']]
+        bx, by, _ = app.nodes[m['b']]
+        assert abs(ax - bx) > 1e-9 and abs(ay - by) > 1e-9
+
+
+# ── support glyph, label toggles, load arrows ───────────────────────────────
+
+def test_supported_nodes_are_drawn_with_a_small_box_glyph(app):
+    app._draw()
+    node = app.supports[0]['node']
+    items = app.canvas.find_withtag(f'node{node}')
+    shapes = {app.canvas.type(i) for i in items}
+    assert 'rectangle' in shapes
+
+
+def test_node_label_toggle_shows_and_hides_node_text(app):
+    app.show_node_labels.set(True)
+    app._draw()
+    with_labels = len(app.canvas.find_withtag('all'))
+    app.show_node_labels.set(False)
+    app._draw()
+    without_labels = len(app.canvas.find_withtag('all'))
+    assert without_labels < with_labels
+
+
+def test_member_label_toggle_is_off_by_default_and_can_be_turned_on(app):
+    assert app.show_member_labels.get() is False
+    app._draw()
+    before = len(app.canvas.find_withtag('all'))
+    app.show_member_labels.set(True)
+    app._draw()
+    after = len(app.canvas.find_withtag('all'))
+    assert after > before
+
+
+def test_load_arrows_are_drawn_for_a_point_load_and_hidden_by_the_toggle(app):
+    app.area_load_on.set(False)
+    app.self_weight_on.set(False)
+    app.ld_node_var.set(0)
+    app.ld_fz.set(-40.0)
+    app._apply_load()
+    app.show_loads.set(True)
+    app._draw()
+    assert len(app.canvas.find_withtag('load')) > 0
+
+    app.show_loads.set(False)
+    app._draw()
+    assert len(app.canvas.find_withtag('load')) == 0
 
 
 # ── force gradient coloring ──────────────────────────────────────────────────
@@ -417,6 +529,72 @@ def test_member_report_opens_a_populated_table(app):
     tv = trees[0]
     assert len(tv.get_children()) == len(app.members)
     win.destroy()
+
+
+# ── add-on features: column (capital + shaft) and reinforcement beam ────────
+
+def test_add_column_requires_exactly_one_selected_node(app):
+    app.selected_nodes = set()
+    app._add_column()   # must not raise; dialogs fixture records the error
+    n_before = len(app.nodes)
+    app.selected_nodes = {app._support_candidates[0], app._support_candidates[1]}
+    app._add_column()
+    assert len(app.nodes) == n_before
+
+
+def test_add_column_adds_a_shaft_and_a_fanned_out_capital(app):
+    from collections import Counter
+    degree = Counter()
+    for m in app.members:
+        degree[m['a']] += 1
+        degree[m['b']] += 1
+    target = max(degree, key=degree.get)   # a node with plenty of mesh neighbours
+    app.selected_nodes = {target}
+    app.col_height.set(3.0)
+    app.col_legs.set(4)
+    n_nodes_before = len(app.nodes)
+    n_members_before = len(app.members)
+    app._add_column()
+
+    assert len(app.nodes) == n_nodes_before + 2   # base + head
+    shaft = [m for m in app.members if m.get('role') == 'column_shaft']
+    capital = [m for m in app.members if m.get('role') == 'capital']
+    assert len(shaft) == 1
+    assert len(capital) == 4
+    assert len(app.members) == n_members_before + 1 + 4
+    base = shaft[0]['a']
+    assert any(s['node'] == base for s in app.supports)
+
+    app._analyze()
+    assert app.err is None
+
+
+def test_add_reinforcement_beam_requires_at_least_two_selected_nodes(app):
+    app.selected_nodes = {app._support_candidates[0]}
+    n_before = len(app.nodes)
+    app._add_reinforcement_beam()
+    assert len(app.nodes) == n_before
+
+
+def test_add_reinforcement_beam_triangulates_a_new_chord_pair(app):
+    edge = sorted(app._support_candidates)[:3]
+    app.selected_nodes = set(edge)
+    app.beam_depth.set(1.2)
+    app.beam_dir.set('Down (-Z)')
+    n_nodes_before = len(app.nodes)
+    n_members_before = len(app.members)
+    app._add_reinforcement_beam()
+
+    n = len(edge)
+    assert len(app.nodes) == n_nodes_before + 2 * n
+    new_chord = [m for m in app.members if m.get('role') == 'reinf_chord']
+    new_web = [m for m in app.members if m.get('role') == 'reinf_web']
+    assert len(new_chord) == 2 * (n - 1)
+    assert len(new_web) == 3 * n + 2 * (n - 1)
+    assert len(app.members) == n_members_before + len(new_chord) + len(new_web)
+
+    app._analyze()
+    assert app.err is None
 
 
 # ── analysis error handling ──────────────────────────────────────────────────

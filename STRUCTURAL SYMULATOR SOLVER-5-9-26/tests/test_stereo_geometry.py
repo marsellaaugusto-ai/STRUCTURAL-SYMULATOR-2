@@ -881,3 +881,82 @@ def test_sphere_shell_tributary_areas_converge_to_the_full_surface_area():
 def test_sphere_shell_rejects_nonpositive_radius():
     with pytest.raises(ValueError):
         sg.sphere_shell(0.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Multi-tier capitals and multi-layer reinforcement beams
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_add_column_2tier_capital_fans_through_an_intermediate_ring():
+    mesh, _ = _flat_grid_with_degrees()
+    # a 3x3 block of one bottom-chord corner (9 nodes: 3 rows x 3 columns,
+    # module=3 -> row stride 9 for this 24x24 mesh)
+    targets = [0, 1, 2, 9, 10, 11, 18, 19, 20]
+    n0, m0 = len(mesh['nodes']), len(mesh['members'])
+    nodes, members, base, head = sg.add_column(mesh['nodes'], mesh['members'], targets,
+                                               height=3.0, tiers=2)
+    assert len(nodes) == n0 + 2 + 4         # base + head + 4 intermediates (4 quadrants)
+    capital = [m for m in members if m.get('role') == 'capital']
+    ring = [m for m in members if m.get('role') == 'capital_ring']
+    assert len(capital) == 4 + len(targets)  # head-to-intermediate + intermediate-to-target
+    assert len(ring) == 4                    # one tie per adjacent intermediate pair
+    assert len(members) == m0 + 1 + len(capital) + len(ring)
+
+    for m in members:
+        m.setdefault('E', 200e3); m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    supports.append({'node': base, 'type': 'pin'})
+    loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None
+
+
+def test_add_column_rejects_2tier_capital_with_too_few_nodes_per_quadrant():
+    mesh, _ = _flat_grid_with_degrees()
+    # one module -- exactly 1 node per quadrant, not enough for a 2nd tier
+    targets = [0, 1, 9, 10]
+    with pytest.raises(ValueError):
+        sg.add_column(mesh['nodes'], mesh['members'], targets, height=3.0, tiers=2)
+
+
+def test_add_column_rejects_an_unknown_tier_count():
+    mesh, degree = _flat_grid_with_degrees()
+    top = sorted(degree, key=degree.get, reverse=True)[:4]
+    with pytest.raises(ValueError):
+        sg.add_column(mesh['nodes'], mesh['members'], top, height=3.0, tiers=3)
+
+
+@pytest.mark.parametrize('tiers', [1, 2, 3])
+def test_reinforcement_beam_multilayer_analyzes_cleanly(tiers):
+    mesh, _ = _flat_grid_with_degrees()
+    edge_a, edge_b = _two_adjacent_rows(mesh, 4)
+    nodes, members, apex_ids = sg.reinforcement_beam(mesh['nodes'], mesh['members'],
+                                                      edge_a, edge_b, depth=1.2, tiers=tiers)
+    assert len(apex_ids) == tiers * len(edge_a)
+    for m in members:
+        m.setdefault('E', 200e3); m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None, f'tiers={tiers}: {err}'
+
+
+def test_reinforcement_beam_tiers_are_stacked_at_increasing_depth():
+    mesh, _ = _flat_grid_with_degrees()
+    edge_a, edge_b = _two_adjacent_rows(mesh, 3)
+    nodes, _members, apex_ids = sg.reinforcement_beam(mesh['nodes'], mesh['members'],
+                                                       edge_a, edge_b, depth=3.0, tiers=3,
+                                                       direction=(0.0, 0.0, -1.0))
+    n = len(edge_a)
+    tier1, tier2, tier3 = apex_ids[:n], apex_ids[n:2 * n], apex_ids[2 * n:]
+    for k in range(n):
+        z1, z2, z3 = nodes[tier1[k]][2], nodes[tier2[k]][2], nodes[tier3[k]][2]
+        assert z1 > z2 > z3   # each tier further along -direction (deeper)
+
+
+def test_reinforcement_beam_rejects_a_nonpositive_tier_count():
+    mesh, _ = _flat_grid_with_degrees()
+    edge_a, edge_b = _two_adjacent_rows(mesh, 2)
+    with pytest.raises(ValueError):
+        sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge_a, edge_b, depth=1.0,
+                              tiers=0)

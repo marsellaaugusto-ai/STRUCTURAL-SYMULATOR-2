@@ -562,6 +562,81 @@ def test_show_deformed_is_a_no_op_before_analysis(app):
     assert len(app.canvas.find_withtag('deform')) == 0
 
 
+def test_deformed_only_hides_the_reference_structure(app):
+    app._analyze()
+    app.show_deformed.set(True)
+    app.deform_scale.set(200)
+
+    app.deformed_only.set(False)
+    app._draw()
+    assert len(app.canvas.find_withtag('member')) > 0
+    assert len(app.canvas.find_withtag('deform')) > 0
+
+    app.deformed_only.set(True)
+    app._draw()
+    assert len(app.canvas.find_withtag('member')) == 0
+    assert len(app.canvas.find_withtag('deform')) > 0
+
+
+def test_deform_color_mode_toggles_between_spectrum_and_force(app):
+    app._analyze()
+    app.show_deformed.set(True)
+    app.deform_scale.set(200)
+
+    app.deform_color_mode.set('Displacement')
+    app._draw()
+    spectrum_colors = {app.canvas.itemcget(i, 'fill')
+                      for i in app.canvas.find_withtag('deform')
+                      if app.canvas.type(i) == 'line'}
+
+    app.deform_color_mode.set('Axial force')
+    app._draw()
+    force_colors = {app.canvas.itemcget(i, 'fill')
+                   for i in app.canvas.find_withtag('deform')
+                   if app.canvas.type(i) == 'line'}
+    # different colouring scheme -> a different set of colours used
+    assert spectrum_colors != force_colors
+
+
+def test_reference_shade_changes_the_reference_structure_s_colour(app):
+    app._analyze()
+    app.show_deformed.set(True)
+    app.reference_shade.set(10)
+    app._draw()
+    dark = {app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')}
+    app.reference_shade.set(95)
+    app._draw()
+    light = {app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')}
+    assert dark != light
+    # every reference member is a shade of grey (r==g==b), not force-coloured
+    for hexcolor in light:
+        r, g, b = (int(hexcolor[i:i + 2], 16) for i in (1, 3, 5))
+        assert r == g == b
+
+
+def test_reference_shade_is_ignored_when_deformed_is_not_shown(app):
+    app._analyze()
+    app.show_deformed.set(False)
+    app.reference_shade.set(10)
+    app._draw()
+    colors_a = {app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')}
+    app.reference_shade.set(95)
+    app._draw()
+    colors_b = {app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')}
+    assert colors_a == colors_b
+
+
+def test_legend_explains_the_dashed_over_capacity_line(app):
+    app.chord_A.set(0.01)
+    app.web_A.set(0.01)
+    app._apply_sections()
+    app._analyze()
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any('over capacity' in t and 'utilisation' in t for t in texts)
+
+
 # ── member report dialog ─────────────────────────────────────────────────────
 
 def test_member_report_requires_analysis_first(app):
@@ -661,6 +736,36 @@ def test_add_reinforcement_beam_triangulates_an_apex_over_two_rows(app):
     assert len(new_web) == 2 * n + 4 * (n - 1)
     assert len(app.members) == n_members_before + len(new_chord) + len(new_web)
 
+    app._analyze()
+    assert app.err is None
+
+
+def test_add_column_2tier_capital_via_the_ui(app):
+    # a 3x3 block (9 nodes, module=3, row stride 11 for the default 10x10
+    # mesh) -- a genuine multi-module footprint, needed for tiers=2
+    targets = {0, 1, 2, 11, 12, 13, 22, 23, 24}
+    app.selected_nodes = set(targets)
+    app.col_height.set(3.0)
+    app.col_tiers.set(2)
+    n_nodes_before = len(app.nodes)
+    app._add_column()
+
+    assert len(app.nodes) == n_nodes_before + 2 + 4   # base + head + 4 intermediates
+    assert any(m.get('role') == 'capital_ring' for m in app.members)
+    app._analyze()
+    assert app.err is None
+
+
+def test_add_reinforcement_beam_multilayer_via_the_ui(app):
+    edge_a, edge_b = [0, 1, 2], [11, 12, 13]
+    app.selected_nodes = set(edge_a + edge_b)
+    app.beam_depth.set(1.2)
+    app.beam_dir.set('Down (-Z)')
+    app.beam_tiers.set(3)
+    n_nodes_before = len(app.nodes)
+    app._add_reinforcement_beam()
+
+    assert len(app.nodes) == n_nodes_before + 3 * len(edge_a)
     app._analyze()
     assert app.err is None
 

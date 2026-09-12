@@ -63,6 +63,9 @@ LASSO_DRAG_THRESHOLD_PX = 4
 DEFORM_LOW = '#eaf6ee'    # pale green -- legible, deliberately not pure white
 DEFORM_HIGH = '#0e7a3d'   # saturated green -- the largest displacement present
 DEFORM_GAMMA = 0.6
+DEFORM_MODE_DISPLACEMENT = 'Displacement'
+DEFORM_MODE_FORCE = 'Axial force'
+DEFORM_MODES = (DEFORM_MODE_DISPLACEMENT, DEFORM_MODE_FORCE)
 
 DOF_LABELS = (('ux', 'Ux'), ('uy', 'Uy'), ('uz', 'Uz'),
               ('rx', 'Rx'), ('ry', 'Ry'), ('rz', 'Rz'))
@@ -260,6 +263,25 @@ class StereoApp(UnitsMixin):
         self.deform_scale = tk.IntVar(value=50)
         tk.Scale(g, from_=1, to=500, orient='horizontal', variable=self.deform_scale,
                 length=90, showvalue=True, command=lambda _v: self._draw()
+                ).pack(side='left')
+        self.deformed_only = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Deformed only', variable=self.deformed_only, bg=BG,
+                       command=self._draw).pack(side='left', padx=(8, 0))
+
+        self.toolbar_flow.separator()
+        g = self.toolbar_flow.group()
+        tk.Label(g, text='Deformed colour:', bg=BG, font=('Helvetica', 9)
+                ).pack(side='left', padx=(0, 2))
+        self.deform_color_mode = tk.StringVar(value=DEFORM_MODE_DISPLACEMENT)
+        deform_mode_box = ttk.Combobox(g, textvariable=self.deform_color_mode, state='readonly',
+                                       width=16, values=DEFORM_MODES)
+        deform_mode_box.pack(side='left')
+        deform_mode_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
+        tk.Label(g, text='Reference shade:', bg=BG, font=('Helvetica', 9)
+                ).pack(side='left', padx=(8, 2))
+        self.reference_shade = tk.IntVar(value=78)
+        tk.Scale(g, from_=0, to=100, orient='horizontal', variable=self.reference_shade,
+                length=80, showvalue=False, command=lambda _v: self._draw()
                 ).pack(side='left')
 
         self.toolbar_flow.separator()
@@ -733,6 +755,15 @@ class StereoApp(UnitsMixin):
                 wraplength=PANEL_W - 40, justify='left').pack(anchor='w', padx=4, pady=(2, 0))
         self.col_height = tk.DoubleVar(value=3.0)
         self._labeled_entry(col, 'Shaft height (m):', self.col_height)
+        self.col_tiers = tk.IntVar(value=1)
+        tier_row = tk.Frame(col, bg=BG)
+        tier_row.pack(fill='x', padx=6, pady=(2, 0))
+        tk.Label(tier_row, text='Capital:', bg=BG, width=16, anchor='w',
+                font=('Helvetica', 9)).pack(side='left')
+        tk.Radiobutton(tier_row, text='1 module', value=1, variable=self.col_tiers,
+                      bg=BG, font=('Helvetica', 8)).pack(side='left')
+        tk.Radiobutton(tier_row, text='2 modules thick', value=2, variable=self.col_tiers,
+                      bg=BG, font=('Helvetica', 8)).pack(side='left')
         tk.Button(col, text='Add column at selected nodes', command=self._add_column
                  ).pack(padx=4, pady=(2, 4), anchor='w')
 
@@ -745,6 +776,7 @@ class StereoApp(UnitsMixin):
                ).pack(anchor='w', padx=4, pady=(2, 0))
         self.beam_depth = tk.DoubleVar(value=1.0)
         self.beam_dir = tk.StringVar(value='Down (-Z)')
+        self.beam_tiers = tk.IntVar(value=1)
         self._labeled_entry(beam, 'Offset depth (m):', self.beam_depth)
         row = tk.Frame(beam, bg=BG)
         row.pack(fill='x', padx=6, pady=1)
@@ -752,6 +784,7 @@ class StereoApp(UnitsMixin):
                 font=('Helvetica', 9)).pack(side='left')
         ttk.Combobox(row, textvariable=self.beam_dir, state='readonly', width=14,
                     values=list(self.BEAM_DIRECTIONS)).pack(side='left')
+        self._labeled_entry(beam, 'Layers (tiers):', self.beam_tiers)
         tk.Button(beam, text='Add reinforcement beam over selected rows',
                  command=self._add_reinforcement_beam).pack(padx=4, pady=(2, 4), anchor='w')
 
@@ -776,12 +809,13 @@ class StereoApp(UnitsMixin):
             return
         try:
             height = float(self.col_height.get())
+            tiers = int(self.col_tiers.get())
         except (tk.TclError, ValueError):
             messagebox.showerror('Column', 'Enter a valid shaft height.')
             return
         try:
             nodes, members, base, head = sg.add_column(self.nodes, self.members, targets,
-                                                        height)
+                                                        height, tiers=tiers)
         except ValueError as exc:
             messagebox.showerror('Column', str(exc))
             return
@@ -834,13 +868,15 @@ class StereoApp(UnitsMixin):
             return
         try:
             depth = float(self.beam_depth.get())
+            tiers = int(self.beam_tiers.get())
         except (tk.TclError, ValueError):
             messagebox.showerror('Reinforcement beam', 'Enter a valid offset depth.')
             return
         direction = self.BEAM_DIRECTIONS[self.beam_dir.get()]
         try:
             nodes, members, apex = sg.reinforcement_beam(self.nodes, self.members,
-                                                          edge_a, edge_b, depth, direction)
+                                                          edge_a, edge_b, depth, direction,
+                                                          tiers=tiers)
         except ValueError as exc:
             messagebox.showerror('Reinforcement beam', str(exc))
             return
@@ -1264,9 +1300,12 @@ class StereoApp(UnitsMixin):
             return self.zc.w2s(wx, wy)
 
         # Drawn FIRST (underneath), same convention as truss_app.py's own
-        # "Show deformed": the real, normally-colored structure then draws
-        # on top of it.
+        # "Show deformed": the real structure then draws on top of it --
+        # UNLESS "Deformed only" asks to see the deformed shape by itself,
+        # in which case the reference structure (and everything keyed to
+        # it -- labels, load arrows) is skipped entirely below.
         show_def = self.show_deformed.get() and self.results is not None
+        deformed_only = show_def and self.deformed_only.get()
         if show_def:
             self._draw_deformed_overlay(c, to_screen)
 
@@ -1275,71 +1314,82 @@ class StereoApp(UnitsMixin):
         if by_force:
             max_abs_N = max((abs(mr['N']) for mr in self.results['member_res']), default=0.0)
 
-        order = sorted(range(len(self.members)), key=lambda i: -(
-            proj[self.members[i]['a']][2] + proj[self.members[i]['b']][2]))
-        for i in order:
-            m = self.members[i]
-            ax, ay, _ = proj[m['a']]
-            bx, by, _ = proj[m['b']]
-            sx0, sy0 = to_screen(ax, ay)
-            sx1, sy1 = to_screen(bx, by)
-            over = False
-            if by_force:
-                N = self.results['member_res'][i]['N']
-                color = force_color(N, max_abs_N)
-            else:
-                color = MEMBER_RIGID_COLOR if m.get('conn') == 'rigid' else MEMBER_PIN_COLOR
-            width = 2
-            if self.member_checks and i < len(self.member_checks) and \
-               self.member_checks[i].get('checked') and self.member_checks[i]['util'] > 1.0:
-                over = True
-                width = 3
-            kw = {'fill': color, 'width': width, 'tags': 'member'}
-            if over:
-                kw['dash'] = (5, 3)
-            c.create_line(sx0, sy0, sx1, sy1, **kw)
+        if not deformed_only:
+            # While comparing against the deformed overlay, the reference
+            # structure fades to a single adjustable grey (rather than its
+            # usual force/pin-rigid colours) so it reads as a faint
+            # backdrop instead of competing with the overlay for attention.
+            ref_grey = self._reference_grey() if show_def else None
 
-        support_nodes = {s['node'] for s in self.supports
-                         if any(sm.support_restraints(s).values())}
-        for i, (px, py, _) in enumerate(proj):
-            sx, sy = to_screen(px, py)
-            sel = i in self.selected_nodes
-            r = 5 if sel else 4
-            color = NODE_SEL_COLOR if sel else (
-                SUPPORT_COLOR if i in support_nodes else NODE_COLOR)
-            c.create_oval(sx - r, sy - r, sx + r, sy + r, fill=color, outline='',
-                         tags=('node', f'node{i}'))
-            # A small box drawn AROUND a supported node -- the "box that
-            # symbolises the support" asked for, instead of relying on
-            # dot-color alone (which a selection highlight would otherwise
-            # override/obscure).
-            if i in support_nodes:
-                h = SUPPORT_BOX_HALF_PX
-                c.create_rectangle(sx - h, sy - h, sx + h, sy + h, outline=SUPPORT_COLOR,
-                                   width=2, tags=('node', f'node{i}'))
-
-        if self.show_node_labels.get():
-            labels = []
-            for i, (px, py, _) in enumerate(proj):
-                sx, sy = to_screen(px, py)
-                labels.append(c.create_text(sx + 8, sy - 8, text=str(i), anchor='w',
-                                           font=('Helvetica', 7), fill='#555'))
-            declutter_text(c, labels)
-
-        if self.show_member_labels.get():
-            mlabels = []
-            for i, m in enumerate(self.members):
+            order = sorted(range(len(self.members)), key=lambda i: -(
+                proj[self.members[i]['a']][2] + proj[self.members[i]['b']][2]))
+            for i in order:
+                m = self.members[i]
                 ax, ay, _ = proj[m['a']]
                 bx, by, _ = proj[m['b']]
                 sx0, sy0 = to_screen(ax, ay)
                 sx1, sy1 = to_screen(bx, by)
-                mlabels.append(c.create_text((sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0,
-                                            text=str(i), font=('Helvetica', 7, 'italic'),
-                                            fill='#8a5a00'))
-            declutter_text(c, mlabels)
+                over = False
+                if ref_grey is not None:
+                    color = ref_grey
+                elif by_force:
+                    N = self.results['member_res'][i]['N']
+                    color = force_color(N, max_abs_N)
+                else:
+                    color = MEMBER_RIGID_COLOR if m.get('conn') == 'rigid' else MEMBER_PIN_COLOR
+                width = 2
+                if self.member_checks and i < len(self.member_checks) and \
+                   self.member_checks[i].get('checked') and self.member_checks[i]['util'] > 1.0:
+                    over = True
+                    width = 3
+                kw = {'fill': color, 'width': width, 'tags': 'member'}
+                if over:
+                    kw['dash'] = (5, 3)
+                c.create_line(sx0, sy0, sx1, sy1, **kw)
 
-        if self.show_loads.get():
-            self._draw_load_arrows(c, to_screen)
+            support_nodes = {s['node'] for s in self.supports
+                             if any(sm.support_restraints(s).values())}
+            for i, (px, py, _) in enumerate(proj):
+                sx, sy = to_screen(px, py)
+                sel = i in self.selected_nodes
+                r = 5 if sel else 4
+                color = NODE_SEL_COLOR if sel else (
+                    ref_grey if ref_grey is not None else (
+                    SUPPORT_COLOR if i in support_nodes else NODE_COLOR))
+                c.create_oval(sx - r, sy - r, sx + r, sy + r, fill=color, outline='',
+                             tags=('node', f'node{i}'))
+                # A small box drawn AROUND a supported node -- the "box
+                # that symbolises the support" asked for, instead of
+                # relying on dot-color alone (which a selection highlight
+                # would otherwise override/obscure).
+                if i in support_nodes:
+                    h = SUPPORT_BOX_HALF_PX
+                    box_color = ref_grey if ref_grey is not None else SUPPORT_COLOR
+                    c.create_rectangle(sx - h, sy - h, sx + h, sy + h, outline=box_color,
+                                       width=2, tags=('node', f'node{i}'))
+
+            if self.show_node_labels.get():
+                labels = []
+                for i, (px, py, _) in enumerate(proj):
+                    sx, sy = to_screen(px, py)
+                    labels.append(c.create_text(sx + 8, sy - 8, text=str(i), anchor='w',
+                                               font=('Helvetica', 7), fill='#555'))
+                declutter_text(c, labels)
+
+            if self.show_member_labels.get():
+                mlabels = []
+                for i, m in enumerate(self.members):
+                    ax, ay, _ = proj[m['a']]
+                    bx, by, _ = proj[m['b']]
+                    sx0, sy0 = to_screen(ax, ay)
+                    sx1, sy1 = to_screen(bx, by)
+                    mlabels.append(c.create_text((sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0,
+                                                text=str(i), font=('Helvetica', 7, 'italic'),
+                                                fill='#8a5a00'))
+                declutter_text(c, mlabels)
+
+            if self.show_loads.get():
+                self._draw_load_arrows(c, to_screen)
 
         if self._lasso_dragging and self._lasso_cur is not None:
             x0, y0 = self._lasso_press
@@ -1347,37 +1397,72 @@ class StereoApp(UnitsMixin):
             c.create_rectangle(x0, y0, x1, y1, outline='#333333', dash=(5, 3),
                                stipple='gray12', fill='#333333', tags='lasso')
 
-        self._draw_legend(c, by_force, show_def)
+        self._draw_legend(c, by_force, show_def, deformed_only)
         self._to_screen_cache = to_screen   # for hit-testing on click
 
+    def _reference_grey(self):
+        """The reference (rest) structure's adjustable grey shade, used
+        instead of its usual force/pin-rigid colouring whenever the
+        deformed overlay is also on screen, so the reference reads as a
+        faint backdrop rather than competing with the overlay for
+        attention. 0 = black, 100 = near-white (never pure white, so it
+        stays visible against the canvas background)."""
+        v = max(0, min(100, self.reference_shade.get()))
+        level = int(round(v / 100.0 * 235))
+        return f'#{level:02x}{level:02x}{level:02x}'
+
     def _draw_deformed_overlay(self, c, to_screen):
-        """A green wireframe copy of the structure, offset by the solved
+        """A wireframe copy of the structure, offset by the solved
         displacement (times the scale slider) and drawn through the SAME
         `to_screen` closure the rest structure uses -- so it deforms "in
         parallel to the at-rest structure and in the same place" rather
         than being independently re-centered (which would visually hide
-        the very offset it is meant to show). Each member/node is colored
-        along a white-to-green spectrum by how much it actually moved
-        (deform_color), not a single flat green, so the AMOUNT of
-        displacement is visible at a glance and not just its direction --
-        mirroring truss_app.py's green deformed-shape overlay, with that
-        added per-element spectrum."""
+        the very offset it is meant to show). Colour mode is a toggle:
+        DEFORM_MODE_DISPLACEMENT colors each member/node along a white-to-
+        green spectrum by how much it actually moved (deform_color), so
+        the AMOUNT of displacement is visible at a glance and not just its
+        direction -- mirroring truss_app.py's green deformed-shape
+        overlay, with that added per-element spectrum; DEFORM_MODE_FORCE
+        instead colors each member by its own axial force (the same red/
+        blue force_color every other view in this app uses), so the
+        deformed shape can be read together with which members are in
+        tension vs compression. Support nodes get the same small box
+        glyph the reference structure uses, so a support's (typically
+        zero) displacement reads clearly even with the reference hidden
+        ("Deformed only")."""
         deformed, disp_mm = self._deformed_nodes_and_disp()
         proj_def = [self._project(x, y, z) for x, y, z in deformed]
         max_disp = max(disp_mm, default=0.0)
-        for m in self.members:
+        by_force_mode = self.deform_color_mode.get() == DEFORM_MODE_FORCE
+        max_abs_N = 0.0
+        if by_force_mode:
+            max_abs_N = max((abs(mr['N']) for mr in self.results['member_res']), default=0.0)
+
+        for i, m in enumerate(self.members):
             a, b = m['a'], m['b']
             ax, ay, _ = proj_def[a]
             bx, by, _ = proj_def[b]
             sx0, sy0 = to_screen(ax, ay)
             sx1, sy1 = to_screen(bx, by)
-            mag = (disp_mm[a] + disp_mm[b]) / 2.0
-            c.create_line(sx0, sy0, sx1, sy1, fill=deform_color(mag, max_disp),
-                         width=2, tags='deform')
+            if by_force_mode:
+                color = force_color(self.results['member_res'][i]['N'], max_abs_N)
+            else:
+                color = deform_color((disp_mm[a] + disp_mm[b]) / 2.0, max_disp)
+            c.create_line(sx0, sy0, sx1, sy1, fill=color, width=2, tags='deform')
+
         for i, (px, py, _) in enumerate(proj_def):
             sx, sy = to_screen(px, py)
-            c.create_oval(sx - 3, sy - 3, sx + 3, sy + 3,
-                         fill=deform_color(disp_mm[i], max_disp), outline='', tags='deform')
+            color = '#333333' if by_force_mode else deform_color(disp_mm[i], max_disp)
+            c.create_oval(sx - 3, sy - 3, sx + 3, sy + 3, fill=color, outline='', tags='deform')
+
+        support_nodes = {s['node'] for s in self.supports
+                         if any(sm.support_restraints(s).values())}
+        for i in support_nodes:
+            px, py, _ = proj_def[i]
+            sx, sy = to_screen(px, py)
+            h = SUPPORT_BOX_HALF_PX
+            c.create_rectangle(sx - h, sy - h, sx + h, sy + h, outline=SUPPORT_COLOR,
+                               width=2, tags='deform')
 
     def _draw_load_arrows(self, c, to_screen):
         """Arrows for every node currently carrying nonzero net load (point
@@ -1414,31 +1499,50 @@ class StereoApp(UnitsMixin):
             c.create_line(sx0 - ddx, sy0 - ddy, sx0, sy0, fill=LOAD_COLOR, width=1.5,
                          arrow=tk.LAST, arrowshape=(5, 6, 2), tags='load')
 
-    def _draw_legend(self, c, by_force, show_def=False):
+    def _draw_legend(self, c, by_force, show_def=False, deformed_only=False):
         x0, y0 = 10, 10
-        lines = []
-        if by_force:
-            lines = [(TENSION_HIGH, 'tension'), (COMPRESSION_HIGH, 'compression'),
-                    (NEAR_ZERO_COLOR, '~0 (or over capacity: dashed)')]
-        else:
-            lines = [(MEMBER_PIN_COLOR, 'pin'), (MEMBER_RIGID_COLOR, 'rigid'),
-                    (NEAR_ZERO_COLOR, 'over capacity: dashed')]
-        for i, (color, text) in enumerate(lines):
-            y = y0 + i * 15
-            c.create_line(x0, y, x0 + 18, y, fill=color, width=3)
+        y = y0
+
+        def row(color, text, dashed=False):
+            nonlocal y
+            kw = {'fill': color, 'width': 3}
+            if dashed:
+                kw['dash'] = (5, 3)
+            c.create_line(x0, y, x0 + 18, y, **kw)
             c.create_text(x0 + 24, y, text=text, anchor='w', font=('Helvetica', 8), fill='#444')
-        y_next = y0 + len(lines) * 15
+            y += 15
+
+        if not deformed_only:
+            if by_force:
+                row(TENSION_HIGH, 'tension')
+                row(COMPRESSION_HIGH, 'compression')
+                row(NEAR_ZERO_COLOR, '~0 force')
+            else:
+                row(MEMBER_PIN_COLOR, 'pin connection')
+                row(MEMBER_RIGID_COLOR, 'rigid connection')
+            # Its own row, with an ACTUAL dashed swatch: dashed members
+            # were previously folded into the "~0" colour row's text,
+            # which never explained what the dashes themselves meant (a
+            # point of real confusion -- e.g. supporting only two opposite
+            # edges of a grid concentrates force until many members go
+            # over capacity and turn dashed, with no visible link back to
+            # this line otherwise).
+            row('#555555', 'dashed = over capacity (utilisation > 1.0)', dashed=True)
 
         if show_def:
-            _deformed, disp_mm = self._deformed_nodes_and_disp()
-            max_disp = max(disp_mm, default=0.0)
-            c.create_line(x0, y_next, x0 + 18, y_next, fill=DEFORM_LOW, width=3)
-            c.create_line(x0 + 18, y_next, x0 + 36, y_next, fill=DEFORM_HIGH, width=3)
-            c.create_text(x0 + 42, y_next, anchor='w', font=('Helvetica', 8), fill='#444',
-                         text=f'deformed shape (white→green: 0–{max_disp:.1f} mm)')
-            y_next += 15
+            if self.deform_color_mode.get() == DEFORM_MODE_FORCE:
+                row(TENSION_HIGH, 'deformed shape: tension')
+                row(COMPRESSION_HIGH, 'deformed shape: compression')
+            else:
+                _deformed, disp_mm = self._deformed_nodes_and_disp()
+                max_disp = max(disp_mm, default=0.0)
+                c.create_line(x0, y, x0 + 18, y, fill=DEFORM_LOW, width=3)
+                c.create_line(x0 + 18, y, x0 + 36, y, fill=DEFORM_HIGH, width=3)
+                c.create_text(x0 + 42, y, anchor='w', font=('Helvetica', 8), fill='#444',
+                             text=f'deformed shape (white→green: 0–{max_disp:.1f} mm)')
+                y += 15
 
-        hint_y = y_next + 6
+        hint_y = y + 6
         c.create_text(x0, hint_y, anchor='nw', font=('Helvetica', 8), fill='#888',
                      text='left-drag: lasso select (+Shift: add)  ·  right-drag: orbit\n'
                           'wheel: zoom  ·  middle-drag: pan  ·  □ box = support')

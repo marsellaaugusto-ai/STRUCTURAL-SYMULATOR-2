@@ -73,8 +73,16 @@ PATTERN_KEY = {label: key for key, label in GRID_PATTERNS}
 PATTERN_LABEL = {key: label for key, label in GRID_PATTERNS}
 
 GRID_FAMILIES = (('flat_grid', 'Flat double-layer grid'),
-                 ('barrel_vault', 'Barrel vault'),
-                 ('dome', 'Dome (Schwedler ribs)'))
+                 ('hypar_shell', 'Hyperbolic paraboloid (hypar) shell'),
+                 ('hip_roof_grid', 'Hip (pyramidal) roof grid'),
+                 ('circular_flat_grid', 'Circular flat grid'),
+                 ('barrel_vault', 'Barrel vault (circular arch)'),
+                 ('parabolic_vault', 'Parabolic vault'),
+                 ('elliptic_vault', 'Elliptic vault'),
+                 ('dome', 'Dome (Schwedler ribs)'),
+                 ('paraboloid_dish', 'Paraboloid dish (antenna)'),
+                 ('elliptic_dome', 'Elliptic dome'),
+                 ('sphere_shell', 'Full sphere'))
 FAMILY_KEY = {label: key for key, label in GRID_FAMILIES}
 FAMILY_LABEL = {key: label for key, label in GRID_FAMILIES}
 
@@ -228,7 +236,7 @@ class StereoApp(UnitsMixin):
 
         g = self.toolbar_flow.group()
         tk.Label(g, text='Grid family:', bg=BG).pack(side='left', padx=(4, 2))
-        fam_box = ttk.Combobox(g, textvariable=self.grid_family, state='readonly', width=22,
+        fam_box = ttk.Combobox(g, textvariable=self.grid_family, state='readonly', width=34,
                                values=[label for _key, label in GRID_FAMILIES])
         fam_box.pack(side='left')
         fam_box.bind('<<ComboboxSelected>>', lambda e: self._on_generator_change())
@@ -401,6 +409,54 @@ class StereoApp(UnitsMixin):
                        bg=BG, font=('Helvetica', 8)).pack(anchor='w', padx=6, pady=(2, 0))
         self._labeled_entry(self.frame_barrel_vault, 'Layer depth (m):', self.bv_depth)
 
+        self.hp_nx = tk.IntVar(value=10)
+        self.hp_ny = tk.IntVar(value=10)
+        self.hp_module = tk.DoubleVar(value=3.0)
+        self.hp_depth = tk.DoubleVar(value=1.5)
+        self.hp_rise = tk.DoubleVar(value=2.0)
+        self.hp_offset = tk.BooleanVar(value=True)
+        self.hp_pattern = tk.StringVar(value=PATTERN_LABEL['square'])
+        self.frame_hypar_shell = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_hypar_shell, 'Modules X (nx):', self.hp_nx)
+        self._labeled_entry(self.frame_hypar_shell, 'Modules Y (ny):', self.hp_ny)
+        self._labeled_entry(self.frame_hypar_shell, 'Module size (m):', self.hp_module)
+        self._labeled_entry(self.frame_hypar_shell, 'Depth (m):', self.hp_depth)
+        self._labeled_entry(self.frame_hypar_shell, 'Corner rise (m):', self.hp_rise)
+        tk.Checkbutton(self.frame_hypar_shell, text='Offset top layer', variable=self.hp_offset,
+                       bg=BG, font=('Helvetica', 8)).pack(anchor='w', padx=6, pady=(2, 4))
+        self._pattern_row(self.frame_hypar_shell, self.hp_pattern)
+
+        self.hr_nx = tk.IntVar(value=10)
+        self.hr_ny = tk.IntVar(value=10)
+        self.hr_module = tk.DoubleVar(value=3.0)
+        self.hr_depth = tk.DoubleVar(value=1.5)
+        self.hr_rise = tk.DoubleVar(value=3.0)
+        self.hr_offset = tk.BooleanVar(value=True)
+        self.hr_pattern = tk.StringVar(value=PATTERN_LABEL['square'])
+        self.frame_hip_roof_grid = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_hip_roof_grid, 'Modules X (nx):', self.hr_nx)
+        self._labeled_entry(self.frame_hip_roof_grid, 'Modules Y (ny):', self.hr_ny)
+        self._labeled_entry(self.frame_hip_roof_grid, 'Module size (m):', self.hr_module)
+        self._labeled_entry(self.frame_hip_roof_grid, 'Depth (m):', self.hr_depth)
+        self._labeled_entry(self.frame_hip_roof_grid, 'Ridge rise (m):', self.hr_rise)
+        tk.Checkbutton(self.frame_hip_roof_grid, text='Offset top layer', variable=self.hr_offset,
+                       bg=BG, font=('Helvetica', 8)).pack(anchor='w', padx=6, pady=(2, 4))
+        self._pattern_row(self.frame_hip_roof_grid, self.hr_pattern)
+
+        self.cg_radius = tk.DoubleVar(value=10.0)
+        self.cg_depth = tk.DoubleVar(value=1.5)
+        self.cg_n_rings = tk.IntVar(value=4)
+        self.cg_n_sectors = tk.IntVar(value=12)
+        self.cg_offset = tk.BooleanVar(value=True)
+        self.frame_circular_flat_grid = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_circular_flat_grid, 'Outer radius (m):', self.cg_radius)
+        self._labeled_entry(self.frame_circular_flat_grid, 'Depth (m):', self.cg_depth)
+        self._labeled_entry(self.frame_circular_flat_grid, 'Rings:', self.cg_n_rings)
+        self._labeled_entry(self.frame_circular_flat_grid, 'Sectors:', self.cg_n_sectors)
+        tk.Checkbutton(self.frame_circular_flat_grid, text='Offset top layer',
+                       variable=self.cg_offset, bg=BG, font=('Helvetica', 8)
+                      ).pack(anchor='w', padx=6, pady=(2, 4))
+
         self.dm_radius = tk.DoubleVar(value=10.0)
         self.dm_rise = tk.DoubleVar(value=3.0)
         self.dm_n_rings = tk.IntVar(value=4)
@@ -411,9 +467,89 @@ class StereoApp(UnitsMixin):
         self._labeled_entry(self.frame_dome, 'Rings:', self.dm_n_rings)
         self._labeled_entry(self.frame_dome, 'Sectors:', self.dm_n_sectors)
 
+        self.pv_span = tk.DoubleVar(value=10.0)
+        self.pv_rise = tk.DoubleVar(value=2.5)
+        self.pv_length = tk.DoubleVar(value=15.0)
+        self.pv_depth = tk.DoubleVar(value=0.6)
+        self.pv_n_arch = tk.IntVar(value=8)
+        self.pv_n_bays = tk.IntVar(value=8)
+        self.pv_double = tk.BooleanVar(value=True)
+        self.frame_parabolic_vault = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_parabolic_vault, 'Span (m):', self.pv_span)
+        self._labeled_entry(self.frame_parabolic_vault, 'Rise (m):', self.pv_rise)
+        self._labeled_entry(self.frame_parabolic_vault, 'Length (m):', self.pv_length)
+        self._labeled_entry(self.frame_parabolic_vault, 'Arch segments:', self.pv_n_arch)
+        self._labeled_entry(self.frame_parabolic_vault, 'Bays:', self.pv_n_bays)
+        tk.Checkbutton(self.frame_parabolic_vault, text='Double layer', variable=self.pv_double,
+                       bg=BG, font=('Helvetica', 8)).pack(anchor='w', padx=6, pady=(2, 0))
+        self._labeled_entry(self.frame_parabolic_vault, 'Layer depth (m):', self.pv_depth)
+
+        self.ev_span = tk.DoubleVar(value=10.0)
+        self.ev_rise = tk.DoubleVar(value=3.5)
+        self.ev_length = tk.DoubleVar(value=15.0)
+        self.ev_depth = tk.DoubleVar(value=0.6)
+        self.ev_n_arch = tk.IntVar(value=8)
+        self.ev_n_bays = tk.IntVar(value=8)
+        self.ev_double = tk.BooleanVar(value=True)
+        self.frame_elliptic_vault = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_elliptic_vault, 'Span (m):', self.ev_span)
+        self._labeled_entry(self.frame_elliptic_vault, 'Rise (m):', self.ev_rise)
+        self._labeled_entry(self.frame_elliptic_vault, 'Length (m):', self.ev_length)
+        self._labeled_entry(self.frame_elliptic_vault, 'Arch segments:', self.ev_n_arch)
+        self._labeled_entry(self.frame_elliptic_vault, 'Bays:', self.ev_n_bays)
+        tk.Checkbutton(self.frame_elliptic_vault, text='Double layer', variable=self.ev_double,
+                       bg=BG, font=('Helvetica', 8)).pack(anchor='w', padx=6, pady=(2, 0))
+        self._labeled_entry(self.frame_elliptic_vault, 'Layer depth (m):', self.ev_depth)
+
+        self.pd_radius = tk.DoubleVar(value=10.0)
+        self.pd_rise = tk.DoubleVar(value=3.0)
+        self.pd_n_rings = tk.IntVar(value=4)
+        self.pd_n_sectors = tk.IntVar(value=12)
+        self.frame_paraboloid_dish = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_paraboloid_dish, 'Rim radius (m):', self.pd_radius)
+        self._labeled_entry(self.frame_paraboloid_dish, 'Rise (m):', self.pd_rise)
+        self._labeled_entry(self.frame_paraboloid_dish, 'Rings:', self.pd_n_rings)
+        self._labeled_entry(self.frame_paraboloid_dish, 'Sectors:', self.pd_n_sectors)
+
+        self.ed_radius_x = tk.DoubleVar(value=10.0)
+        self.ed_radius_y = tk.DoubleVar(value=6.0)
+        self.ed_rise = tk.DoubleVar(value=3.0)
+        self.ed_n_rings = tk.IntVar(value=4)
+        self.ed_n_sectors = tk.IntVar(value=12)
+        self.frame_elliptic_dome = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_elliptic_dome, 'Base radius X (m):', self.ed_radius_x)
+        self._labeled_entry(self.frame_elliptic_dome, 'Base radius Y (m):', self.ed_radius_y)
+        self._labeled_entry(self.frame_elliptic_dome, 'Rise (m):', self.ed_rise)
+        self._labeled_entry(self.frame_elliptic_dome, 'Rings:', self.ed_n_rings)
+        self._labeled_entry(self.frame_elliptic_dome, 'Sectors:', self.ed_n_sectors)
+
+        self.sp_radius = tk.DoubleVar(value=5.0)
+        self.sp_n_rings = tk.IntVar(value=4)
+        self.sp_n_sectors = tk.IntVar(value=12)
+        self.frame_sphere_shell = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_sphere_shell, 'Radius (m):', self.sp_radius)
+        self._labeled_entry(self.frame_sphere_shell, 'Rings per hemisphere:', self.sp_n_rings)
+        self._labeled_entry(self.frame_sphere_shell, 'Sectors:', self.sp_n_sectors)
+
         self._param_frames = {'flat_grid': self.frame_flat_grid,
+                              'hypar_shell': self.frame_hypar_shell,
+                              'hip_roof_grid': self.frame_hip_roof_grid,
+                              'circular_flat_grid': self.frame_circular_flat_grid,
                               'barrel_vault': self.frame_barrel_vault,
-                              'dome': self.frame_dome}
+                              'parabolic_vault': self.frame_parabolic_vault,
+                              'elliptic_vault': self.frame_elliptic_vault,
+                              'dome': self.frame_dome,
+                              'paraboloid_dish': self.frame_paraboloid_dish,
+                              'elliptic_dome': self.frame_elliptic_dome,
+                              'sphere_shell': self.frame_sphere_shell}
+
+    def _pattern_row(self, parent, var):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill='x', padx=6, pady=(0, 4))
+        tk.Label(row, text='Chord pattern:', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        box = ttk.Combobox(row, textvariable=var, state='readonly', width=26,
+                           values=[label for _key, label in GRID_PATTERNS])
+        box.pack(side='left', padx=(4, 0))
 
     # ── Supports ─────────────────────────────────────────────────────────────
     def _build_supports_panel(self, parent):
@@ -739,14 +875,54 @@ class StereoApp(UnitsMixin):
                 pattern = PATTERN_KEY[self.fg_pattern.get()]
                 mesh = sg.flat_grid(nx * module, ny * module, self.fg_depth.get(),
                                     module, offset=self.fg_offset.get(), pattern=pattern)
+            elif key == 'hypar_shell':
+                nx, ny = int(self.hp_nx.get()), int(self.hp_ny.get())
+                module = self.hp_module.get()
+                pattern = PATTERN_KEY[self.hp_pattern.get()]
+                mesh = sg.hypar_shell(nx * module, ny * module, self.hp_depth.get(), module,
+                                      rise=self.hp_rise.get(), offset=self.hp_offset.get(),
+                                      pattern=pattern)
+            elif key == 'hip_roof_grid':
+                nx, ny = int(self.hr_nx.get()), int(self.hr_ny.get())
+                module = self.hr_module.get()
+                pattern = PATTERN_KEY[self.hr_pattern.get()]
+                mesh = sg.hip_roof_grid(nx * module, ny * module, self.hr_depth.get(), module,
+                                        rise=self.hr_rise.get(), offset=self.hr_offset.get(),
+                                        pattern=pattern)
+            elif key == 'circular_flat_grid':
+                mesh = sg.circular_flat_grid(self.cg_radius.get(), self.cg_depth.get(),
+                                             int(self.cg_n_rings.get()),
+                                             int(self.cg_n_sectors.get()),
+                                             offset=self.cg_offset.get())
             elif key == 'barrel_vault':
                 mesh = sg.barrel_vault(self.bv_span.get(), self.bv_rise.get(),
                                        self.bv_length.get(), int(self.bv_n_arch.get()),
                                        int(self.bv_n_bays.get()), self.bv_double.get(),
                                        self.bv_depth.get())
-            else:
+            elif key == 'parabolic_vault':
+                mesh = sg.parabolic_vault(self.pv_span.get(), self.pv_rise.get(),
+                                          self.pv_length.get(), int(self.pv_n_arch.get()),
+                                          int(self.pv_n_bays.get()), self.pv_double.get(),
+                                          self.pv_depth.get())
+            elif key == 'elliptic_vault':
+                mesh = sg.elliptic_vault(self.ev_span.get(), self.ev_rise.get(),
+                                         self.ev_length.get(), int(self.ev_n_arch.get()),
+                                         int(self.ev_n_bays.get()), self.ev_double.get(),
+                                         self.ev_depth.get())
+            elif key == 'dome':
                 mesh = sg.dome(self.dm_radius.get(), self.dm_rise.get(),
                                int(self.dm_n_rings.get()), int(self.dm_n_sectors.get()))
+            elif key == 'paraboloid_dish':
+                mesh = sg.paraboloid_dish(self.pd_radius.get(), self.pd_rise.get(),
+                                          int(self.pd_n_rings.get()),
+                                          int(self.pd_n_sectors.get()))
+            elif key == 'elliptic_dome':
+                mesh = sg.elliptic_dome(self.ed_radius_x.get(), self.ed_radius_y.get(),
+                                        self.ed_rise.get(), int(self.ed_n_rings.get()),
+                                        int(self.ed_n_sectors.get()))
+            else:
+                mesh = sg.sphere_shell(self.sp_radius.get(), int(self.sp_n_rings.get()),
+                                       int(self.sp_n_sectors.get()))
         except (tk.TclError, ValueError) as exc:
             messagebox.showerror('Generator error', str(exc))
             return

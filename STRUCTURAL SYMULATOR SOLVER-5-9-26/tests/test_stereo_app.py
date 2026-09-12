@@ -136,7 +136,10 @@ def test_switching_grid_family_rebuilds_a_different_but_valid_mesh(app):
     assert app.err is None
 
 
-@pytest.mark.parametrize('key', ['flat_grid', 'barrel_vault', 'dome'])
+@pytest.mark.parametrize('key', ['flat_grid', 'hypar_shell', 'hip_roof_grid',
+                                 'circular_flat_grid', 'barrel_vault', 'parabolic_vault',
+                                 'elliptic_vault', 'dome', 'paraboloid_dish', 'elliptic_dome',
+                                 'sphere_shell'])
 def test_every_grid_family_produces_a_mesh_that_analyzes_cleanly(app, key):
     app.grid_family.set(FAMILY_LABEL[key])
     app._on_generator_change()

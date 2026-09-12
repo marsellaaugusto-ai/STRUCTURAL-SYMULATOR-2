@@ -1,12 +1,35 @@
 """Geometry generators for the Stereo (3D space-structure) tab.
 
-"Estructura estéreo" covers several real-world families of bolted/welded
-space structures that are otherwise built as separate, incompatible
-programs: flat double-layer space grids (MERO/Nodus-type roofs), barrel
-vaults, and ribbed (Schwedler-type) domes. The point of this module is to
-generate all of them through ONE shared node/member representation so the
-Stereo tab can offer a single generator panel that simply changes which
-function is called, rather than one app per typology.
+"Estructura estéreo" covers real-world families of bolted/welded space
+structures that are otherwise built as separate, incompatible programs.
+The point of this module is to generate all of them through ONE shared
+node/member representation so the Stereo tab can offer a single generator
+panel that simply changes which function is called, rather than one app
+per typology. Three families of surface are covered, each built on a
+shared internal engine so a new typology is usually just a different
+height/radius/arch PROFILE fed into already-validated bracing:
+
+  - Rectangular double-layer grids, all sharing flat_grid's own pyramidal-
+    web bracing: flat_grid (flat), hip_roof_grid (pyramidal roof),
+    hypar_shell (hyperbolic-paraboloid saddle).
+  - Extruded-arch vaults, all sharing barrel_vault's own station/rib/
+    purlin/edge-brace bracing: barrel_vault (circular arch),
+    parabolic_vault, elliptic_vault.
+  - Axisymmetric ribbed shells, all sharing dome's own apex+rings+
+    Schwedler-diagonal bracing: dome (spherical cap), paraboloid_dish
+    (antenna/reflector), elliptic_dome (ellipsoid cap), sphere_shell (a
+    full sphere, two poles).
+  - circular_flat_grid (a round-plan flat double-layer grid) stands alone,
+    with its own polar pyramidal-web bracing.
+
+Every one of the non-trivial typologies above was actually run through
+stereo_math.analyze() under self-weight across a range of mesh densities
+before being accepted, the same discipline barrel_vault's own springing-
+line fix and flat_grid's own aligned-web fix were found under: a mesh can
+look structurally sane (no zero-length or duplicate members) while still
+being a mechanism, so "does it actually analyze" is checked, not assumed,
+for every new shape and every new bracing scheme -- see
+tests/test_stereo_geometry.py.
 
 Every generator returns a plain dict:
 
@@ -116,10 +139,10 @@ def _add_member(members, seen, a, b, **props):
 #  1 · Flat double-layer space grid
 # ═══════════════════════════════════════════════════════════════════════
 
-def flat_grid(span_x, span_y, depth, module, offset=True, pattern='square'):
-    """A rectangular double-layer flat space grid (the classic MERO/Nodus
-    roof lattice): a bottom chord layer on a square grid at z=0, a top
-    chord layer at z=depth, and diagonal webs between them.
+def flat_grid(span_x, span_y, depth, module, offset=True, pattern='square', height_fn=None):
+    """A rectangular double-layer space grid (the classic MERO/Nodus roof
+    lattice): a bottom chord layer, a top chord layer `depth` above it,
+    and diagonal webs between them.
 
     span_x, span_y : plan dimensions (m).
     depth          : the vertical distance between the two layers (m).
@@ -151,9 +174,28 @@ def flat_grid(span_x, span_y, depth, module, offset=True, pattern='square'):
                      identical either way; only which already-placed
                      nodes the chords connect changes), giving four
                      typologies from one function.
+    height_fn      : optional callable (x, y) -> z (m), the plan-view
+                     grid's own height above a flat z=0 datum -- lets this
+                     one function generate a flat roof (the default,
+                     height_fn=None, z=0 everywhere) OR a curved SHELL on
+                     the exact same rectangular plan and bracing scheme:
+                     hypar_shell and hip_roof_grid below are both just this
+                     function called with a different height_fn. Both
+                     layers use it (the top layer at its OWN, possibly
+                     offset, (x, y) plus `depth`), so the two layers stay a
+                     near-constant `depth` apart everywhere, the same way a
+                     real curved double-layer grid shell is built. The
+                     web/chord CONNECTIVITY above depends only on the (i,j)
+                     grid topology, never on height_fn's actual values, so
+                     it is exactly as validated for a curved height_fn as
+                     for the flat default.
 
     Returns the shared {'nodes','members','support_candidates'} dict.
-    `support_candidates` is every bottom-layer perimeter node.
+    `support_candidates` is every bottom-layer perimeter node. `load_nodes`
+    areas are the PLAN projection (dx*dy per cell, exact for a flat roof);
+    for a curved height_fn this slightly understates the true, sloped
+    surface area, the same kind of small, curvature-side approximation
+    dome()'s own tributary areas document.
     """
     span_x = float(span_x); span_y = float(span_y)
     depth = float(depth); module = float(module)
@@ -161,6 +203,8 @@ def flat_grid(span_x, span_y, depth, module, offset=True, pattern='square'):
         raise ValueError('span_x, span_y and module must all be positive')
     if pattern not in ('square', 'diagonal'):
         raise ValueError(f"pattern must be 'square' or 'diagonal', got {pattern!r}")
+    if height_fn is None:
+        height_fn = lambda x, y: 0.0
 
     nx = max(1, round(span_x / module))
     ny = max(1, round(span_y / module))
@@ -174,7 +218,8 @@ def flat_grid(span_x, span_y, depth, module, offset=True, pattern='square'):
     bottom = {}
     for j in range(ny + 1):
         for i in range(nx + 1):
-            bottom[(i, j)] = bank.add(i * dx, j * dy, 0.0)
+            x, y = i * dx, j * dy
+            bottom[(i, j)] = bank.add(x, y, height_fn(x, y))
 
     top = {}
     if offset:
@@ -182,11 +227,12 @@ def flat_grid(span_x, span_y, depth, module, offset=True, pattern='square'):
             for i in range(nx):
                 x = (i + 0.5) * dx
                 y = (j + 0.5) * dy
-                top[(i, j)] = bank.add(x, y, depth)
+                top[(i, j)] = bank.add(x, y, height_fn(x, y) + depth)
     else:
         for j in range(ny + 1):
             for i in range(nx + 1):
-                top[(i, j)] = bank.add(i * dx, j * dy, depth)
+                x, y = i * dx, j * dy
+                top[(i, j)] = bank.add(x, y, height_fn(x, y) + depth)
 
     # bottom chords
     _add_chords(members, seen, bottom, nx, ny, 'bottom_chord', pattern)
@@ -267,8 +313,61 @@ def flat_grid(span_x, span_y, depth, module, offset=True, pattern='square'):
             'load_nodes': load_nodes}
 
 
+def hypar_shell(span_x, span_y, depth, module, rise, offset=True, pattern='square'):
+    """A hyperbolic-paraboloid ("hypar") double-layer shell: a saddle
+    surface z = rise * ((x-cx)/a) * ((y-cy)/b) over the same rectangular
+    plan/bracing scheme as flat_grid -- two diagonally-opposite corners
+    rise by `rise` above the mean plane, the other two dip by `rise`
+    below it. A hypar is the doubly-ruled surface classic to shell and
+    grid-shell roofs (each straight grid line is already a generator of
+    the surface), built here simply as flat_grid with a saddle height_fn.
+
+    rise : height (m) of the "up" corners above the mean (z=0) plane; the
+           "down" corners sit `rise` below it. Amplitude only -- the saddle
+           is centred on the plan rectangle regardless of span_x/span_y.
+
+    Returns the shared {'nodes','members','support_candidates'} dict.
+    """
+    rise = float(rise)
+    cx, cy = float(span_x) / 2.0, float(span_y) / 2.0
+    ax = cx if cx > 0 else 1.0
+    ay = cy if cy > 0 else 1.0
+
+    def height_fn(x, y):
+        return rise * ((x - cx) / ax) * ((y - cy) / ay)
+
+    return flat_grid(span_x, span_y, depth, module, offset=offset, pattern=pattern,
+                     height_fn=height_fn)
+
+
+def hip_roof_grid(span_x, span_y, depth, module, rise, offset=True, pattern='square'):
+    """A hip (pyramidal) roof double-layer grid: both layers rise linearly
+    from z=0 at every eave to z=`rise` along the ridge/apex at the plan
+    centre -- the classic four-hip-plane roof, built as flat_grid with a
+    piecewise-linear height_fn (each of the four triangular hip planes,
+    split by the plan diagonals, is individually flat).
+
+    rise : ridge/apex height (m) above the eaves.
+
+    Returns the shared {'nodes','members','support_candidates'} dict.
+    """
+    rise = float(rise)
+    cx, cy = float(span_x) / 2.0, float(span_y) / 2.0
+    ax = cx if cx > 0 else 1.0
+    ay = cy if cy > 0 else 1.0
+
+    def height_fn(x, y):
+        fx = abs(x - cx) / ax
+        fy = abs(y - cy) / ay
+        return rise * (1.0 - max(fx, fy))
+
+    return flat_grid(span_x, span_y, depth, module, offset=offset, pattern=pattern,
+                     height_fn=height_fn)
+
+
 # ═══════════════════════════════════════════════════════════════════════
-#  2 · Barrel vault (single or double layer)
+#  2 · Extruded-arch vaults (single or double layer): circular
+#      (barrel_vault), parabolic, and elliptic profiles
 # ═══════════════════════════════════════════════════════════════════════
 
 def barrel_vault(span, rise, length, n_arch=8, n_bays=8, double_layer=True,
@@ -434,9 +533,215 @@ def barrel_vault(span, rise, length, n_arch=8, n_bays=8, double_layer=True,
             'load_nodes': load_nodes}
 
 
+def _extruded_arch_grid(arch_point, length, n_arch, n_bays, double_layer, depth):
+    """Shared engine for parabolic_vault/elliptic_vault: an arbitrary arch
+    profile `arch_point(t) -> (y, z)` for t in [-1, 1], extruded along
+    `length` in `n_bays` bays -- exactly barrel_vault()'s own station/rib/
+    purlin/edge-brace/web bracing (see its comments for the springing-line
+    mechanism that bracing avoids), generalized to any arch shape since
+    that bracing is purely topological and never references the arc being
+    a true circle. The double-layer inner arc is `arch_point` itself
+    offset by -depth in z (a simple vertical offset, not a true normal
+    offset -- the same simplification flat_grid's height_fn-based shells
+    use, reasonable for the shallow-to-moderate arches these are meant for).
+
+    Returns (bank, members, outer, inner, support_candidates, bay_dx).
+    """
+    n_arch = max(2, int(n_arch)); n_bays = max(1, int(n_bays))
+    if length <= 0:
+        raise ValueError('length must be positive')
+
+    bank = _NodeBank()
+    members = []
+    seen = set()
+
+    outer = {}
+    inner = {}
+    bay_dx = length / n_bays
+    for bi in range(n_bays + 1):
+        x = bi * bay_dx
+        for ai in range(n_arch + 1):
+            t = -1.0 + 2.0 * ai / n_arch
+            y, z = arch_point(t)
+            outer[(bi, ai)] = bank.add(x, y, z)
+            if double_layer and depth > 0:
+                inner[(bi, ai)] = bank.add(x, y, z - depth)
+
+    for bi in range(n_bays + 1):
+        for ai in range(n_arch):
+            _add_member(members, seen, outer[(bi, ai)], outer[(bi, ai + 1)], role='outer_rib')
+            if double_layer and depth > 0:
+                _add_member(members, seen, inner[(bi, ai)], inner[(bi, ai + 1)], role='inner_rib')
+
+    for ai in range(n_arch + 1):
+        for bi in range(n_bays):
+            _add_member(members, seen, outer[(bi, ai)], outer[(bi + 1, ai)], role='purlin')
+            if double_layer and depth > 0:
+                _add_member(members, seen, inner[(bi, ai)], inner[(bi + 1, ai)], role='purlin')
+
+    def _edge_brace(layer):
+        for bi in range(n_bays):
+            for ai_edge, ai_far in ((0, min(2, n_arch)), (n_arch, max(n_arch - 2, 0))):
+                _add_member(members, seen, layer[(bi, ai_edge)], layer[(bi + 1, ai_far)],
+                           role='edge_brace')
+                _add_member(members, seen, layer[(bi + 1, ai_edge)], layer[(bi, ai_far)],
+                           role='edge_brace')
+
+    if double_layer and depth > 0:
+        for bi in range(n_bays + 1):
+            for ai in range(n_arch + 1):
+                _add_member(members, seen, outer[(bi, ai)], inner[(bi, ai)], role='web')
+        for bi in range(n_bays):
+            for ai in range(n_arch):
+                _add_member(members, seen, outer[(bi, ai)], inner[(bi + 1, ai + 1)], role='web_diag')
+                _add_member(members, seen, outer[(bi + 1, ai)], inner[(bi, ai + 1)], role='web_diag')
+        _edge_brace(outer)
+        _edge_brace(inner)
+    else:
+        for bi in range(n_bays):
+            for ai in range(n_arch):
+                _add_member(members, seen, outer[(bi, ai)], outer[(bi + 1, ai + 1)], role='brace')
+                _add_member(members, seen, outer[(bi + 1, ai)], outer[(bi, ai + 1)], role='brace')
+        _edge_brace(outer)
+
+    support_candidates = sorted(set(outer[(0, ai)] for ai in range(n_arch + 1))
+                                 | set(outer[(n_bays, ai)] for ai in range(n_arch + 1)))
+    if double_layer and depth > 0:
+        support_candidates = sorted(set(support_candidates)
+                                     | set(inner[(0, ai)] for ai in range(n_arch + 1))
+                                     | set(inner[(n_bays, ai)] for ai in range(n_arch + 1)))
+
+    return bank, members, outer, inner, support_candidates, bay_dx
+
+
+def _secant_arc_load_nodes(arch_point, n_arch, n_bays, bay_dx, outer):
+    """Tributary area for an extruded arch shell's outer layer via secant
+    (straight-line) arc-length segments -- used for arch profiles with no
+    circle-simple closed-form arc length (a parabola or an ellipse), the
+    same kind of midpoint-rule approximation dome()'s own tributary area
+    documents for a non-developable surface."""
+    pts = [arch_point(-1.0 + 2.0 * ai / n_arch) for ai in range(n_arch + 1)]
+    seg = [0.0] * (n_arch + 1)   # seg[ai]: distance from station ai-1 to ai
+    for ai in range(1, n_arch + 1):
+        seg[ai] = math.dist(pts[ai - 1], pts[ai])
+    load_nodes = {}
+    for bi in range(n_bays + 1):
+        f_long = bay_dx if 0 < bi < n_bays else bay_dx / 2.0
+        for ai in range(n_arch + 1):
+            f_arc = ((seg[ai] if ai > 0 else 0.0) + (seg[ai + 1] if ai < n_arch else 0.0)) / 2.0
+            load_nodes[outer[(bi, ai)]] = f_long * f_arc
+    return load_nodes
+
+
+def parabolic_vault(span, rise, length, n_arch=8, n_bays=8, double_layer=True, depth=0.0):
+    """A parabolic-arch barrel vault: the same station/rib/purlin/bracing
+    scheme as barrel_vault(), on a PARABOLIC arch profile instead of a
+    circular one -- z = rise * (1 - t**2), y = (span/2) * t for t in
+    [-1, 1] -- a shallower-crowned, steeper-springing shape than the
+    circular arc of the same span/rise.
+
+    span, rise, length, n_arch, n_bays, double_layer, depth : as in
+    barrel_vault().
+
+    Returns the shared {'nodes','members','support_candidates'} dict, with
+    every node on the two end arches offered as support candidates.
+    """
+    span = float(span); rise = float(rise)
+    if span <= 0 or rise <= 0:
+        raise ValueError('span and rise must both be positive')
+
+    def arch_point(t):
+        return (span / 2.0) * t, rise * (1.0 - t * t)
+
+    bank, members, outer, _inner, support_candidates, bay_dx = _extruded_arch_grid(
+        arch_point, length, n_arch, n_bays, double_layer, depth)
+    n_arch = max(2, int(n_arch)); n_bays = max(1, int(n_bays))
+    load_nodes = _secant_arc_load_nodes(arch_point, n_arch, n_bays, bay_dx, outer)
+
+    return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
+            'load_nodes': load_nodes}
+
+
+def elliptic_vault(span, rise, length, n_arch=8, n_bays=8, double_layer=True, depth=0.0):
+    """An elliptic-arch barrel vault: the same station/rib/purlin/bracing
+    scheme as barrel_vault(), on an ELLIPTICAL arch profile with
+    independent half-span and rise -- y = (span/2)*sin(t*pi/2),
+    z = rise*cos(t*pi/2) for t in [-1, 1] (a circular arch of radius
+    span/2 is the special case rise = span/2).
+
+    span, rise, length, n_arch, n_bays, double_layer, depth : as in
+    barrel_vault() -- span and rise are now independent semi-axes rather
+    than jointly fixing a single circle radius.
+
+    Returns the shared {'nodes','members','support_candidates'} dict, with
+    every node on the two end arches offered as support candidates.
+    """
+    span = float(span); rise = float(rise)
+    if span <= 0 or rise <= 0:
+        raise ValueError('span and rise must both be positive')
+    a, b = span / 2.0, rise
+
+    def arch_point(t):
+        ang = t * (math.pi / 2.0)
+        return a * math.sin(ang), b * math.cos(ang)
+
+    bank, members, outer, _inner, support_candidates, bay_dx = _extruded_arch_grid(
+        arch_point, length, n_arch, n_bays, double_layer, depth)
+    n_arch = max(2, int(n_arch)); n_bays = max(1, int(n_bays))
+    load_nodes = _secant_arc_load_nodes(arch_point, n_arch, n_bays, bay_dx, outer)
+
+    return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
+            'load_nodes': load_nodes}
+
+
 # ═══════════════════════════════════════════════════════════════════════
-#  3 · Ribbed (Schwedler-type) dome
+#  3 · Ribbed (Schwedler-type) axisymmetric shells: dome, paraboloid dish,
+#      elliptic dome, full sphere -- one apex, `n_rings` hoop rings, and
+#      one Schwedler diagonal per panel, exactly as a Schwedler dome is
+#      built, generalized to any ring PROFILE (the connectivity is purely
+#      topological -- it never references the actual ring coordinates --
+#      so the same bracing dome() already validated across n_rings x
+#      n_sectors sweeps applies unchanged to a differently-shaped profile).
 # ═══════════════════════════════════════════════════════════════════════
+
+def _add_apex_ribbed_shell(members, seen, apex, rings, n_sectors):
+    """Meridian ribs (apex to ring 0, then ring to ring), hoop rings, and
+    one Schwedler diagonal per panel (alternating direction ring to ring
+    so consecutive rings brace against opposite racking senses) -- the
+    exact connectivity a Schwedler dome uses, shared by every apex-topped
+    axisymmetric shell in this module. Takes node ids only, never
+    coordinates, so it is correct for ANY ring profile, not just a sphere."""
+    n_rings = len(rings)
+    for s in range(n_sectors):
+        _add_member(members, seen, apex, rings[0][s], role='meridian')
+        for k in range(n_rings - 1):
+            _add_member(members, seen, rings[k][s], rings[k + 1][s], role='meridian')
+
+    for k in range(n_rings):
+        ring = rings[k]
+        n = len(ring)
+        for s in range(n):
+            _add_member(members, seen, ring[s], ring[(s + 1) % n], role='hoop')
+
+    prev_ring = [apex] * n_sectors
+    for k in range(n_rings):
+        ring = rings[k]
+        n = len(ring)
+        for s in range(n_sectors):
+            a = prev_ring[s]
+            b = prev_ring[(s + 1) % n_sectors] if k > 0 else apex
+            c = ring[s]
+            d = ring[(s + 1) % n]
+            if k == 0:
+                # triangular apex panels are already stable; no diagonal
+                # needed (a and b coincide at the apex).
+                continue
+            if s % 2 == 0:
+                _add_member(members, seen, a, d, role='diagonal')
+            else:
+                _add_member(members, seen, b, c, role='diagonal')
+        prev_ring = ring
+
 
 def dome(base_radius, rise, n_rings=4, n_sectors=12):
     """A single-layer ribbed dome on a spherical cap: `n_sectors` meridian
@@ -485,39 +790,7 @@ def dome(base_radius, rise, n_rings=4, n_sectors=12):
             ring.append(bank.add(r_k * math.cos(th), r_k * math.sin(th), z_k))
         rings.append(ring)
 
-    # meridian ribs
-    for s in range(n_sectors):
-        _add_member(members, seen, apex, rings[0][s], role='meridian')
-        for k in range(n_rings - 1):
-            _add_member(members, seen, rings[k][s], rings[k + 1][s], role='meridian')
-
-    # hoop rings
-    for k in range(n_rings):
-        ring = rings[k]
-        n = len(ring)
-        for s in range(n):
-            _add_member(members, seen, ring[s], ring[(s + 1) % n], role='hoop')
-
-    # Schwedler diagonals: one per panel, alternating direction ring to ring
-    # so consecutive rings brace against opposite racking senses.
-    prev_ring = [apex] * n_sectors
-    for k in range(n_rings):
-        ring = rings[k]
-        n = len(ring)
-        for s in range(n_sectors):
-            a = prev_ring[s]
-            b = prev_ring[(s + 1) % n_sectors] if k > 0 else apex
-            c = ring[s]
-            d = ring[(s + 1) % n]
-            if k == 0:
-                # triangular apex panels are already stable; no diagonal
-                # needed (a and b coincide at the apex).
-                continue
-            if s % 2 == 0:
-                _add_member(members, seen, a, d, role='diagonal')
-            else:
-                _add_member(members, seen, b, c, role='diagonal')
-        prev_ring = ring
+    _add_apex_ribbed_shell(members, seen, apex, rings, n_sectors)
 
     support_candidates = list(rings[-1])
 
@@ -555,11 +828,374 @@ def dome(base_radius, rise, n_rings=4, n_sectors=12):
             'load_nodes': load_nodes}
 
 
+def paraboloid_dish(base_radius, rise, n_rings=4, n_sectors=12):
+    """A single-layer ribbed paraboloid dish (a satellite-dish/reflector-
+    antenna shape): the same Schwedler apex+rings+diagonals bracing as
+    dome(), on a PARABOLIC instead of spherical profile -- z = rise *
+    (r / base_radius)**2, apex at the centre (z=0), opening upward to the
+    rim at z=rise.
+
+    base_radius : radius of the dish's rim (m).
+    rise        : height of the rim above the apex (m).
+    n_rings, n_sectors : as in dome().
+
+    Returns the shared {'nodes','members','support_candidates'} dict, with
+    the rim nodes offered as support candidates.
+    """
+    base_radius = float(base_radius); rise = float(rise)
+    n_rings = max(1, int(n_rings)); n_sectors = max(3, int(n_sectors))
+    if base_radius <= 0 or rise <= 0:
+        raise ValueError('base_radius and rise must both be positive')
+
+    bank = _NodeBank()
+    members = []
+    seen = set()
+
+    apex = bank.add(0.0, 0.0, 0.0)
+
+    rings = []
+    for k in range(1, n_rings + 1):
+        r_k = base_radius * k / n_rings
+        z_k = rise * (r_k / base_radius) ** 2
+        ring = []
+        for s in range(n_sectors):
+            th = 2.0 * math.pi * s / n_sectors
+            ring.append(bank.add(r_k * math.cos(th), r_k * math.sin(th), z_k))
+        rings.append(ring)
+
+    _add_apex_ribbed_shell(members, seen, apex, rings, n_sectors)
+    support_candidates = list(rings[-1])
+
+    # Tributary area, lumped the same midpoint-rule way dome() does: half
+    # the meridian SEGMENT LENGTH (the straight-line distance between
+    # consecutive ring nodes -- a parabola has no simple closed-form arc
+    # length the way a circle does, so this is a secant approximation,
+    # good at ordinary mesh densities) times the hoop arc length at each
+    # ring's own radius.
+    seg = [0.0] * (n_rings + 1)   # seg[k]: distance from ring k-1 to ring k
+    prev_r, prev_z = 0.0, 0.0
+    for k in range(1, n_rings + 1):
+        r_k = base_radius * k / n_rings
+        z_k = rise * (r_k / base_radius) ** 2
+        seg[k] = math.hypot(r_k - prev_r, z_k - prev_z)
+        prev_r, prev_z = r_k, z_k
+
+    load_nodes = {}
+    for k in range(1, n_rings + 1):
+        r_k = base_radius * k / n_rings
+        hoop_factor = r_k * (2.0 * math.pi / n_sectors)
+        meridian_in = seg[k] / 2.0
+        meridian_out = seg[k + 1] / 2.0 if k < n_rings else 0.0
+        area = (meridian_in + meridian_out) * hoop_factor
+        for node in rings[k - 1]:
+            load_nodes[node] = area
+    r_half = base_radius / n_rings / 2.0
+    load_nodes[apex] = math.pi * r_half ** 2
+
+    return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
+            'load_nodes': load_nodes}
+
+
+def elliptic_dome(radius_x, radius_y, rise, n_rings=4, n_sectors=12):
+    """A single-layer ribbed cap of a general ELLIPSOID (independent x and
+    y base radii, and an independent rise): the same Schwedler apex+rings+
+    diagonals bracing as dome(), with x = radius_x*sin(u)*cos(th),
+    y = radius_y*sin(u)*sin(th), z = rise*cos(u) for u running 0 (apex) to
+    pi/2 (base ring) -- a sphere is the special case radius_x = radius_y
+    = rise.
+
+    radius_x, radius_y : the base ellipse's two semi-axes (m).
+    rise                : apex height above the base plane (m).
+    n_rings, n_sectors  : as in dome().
+
+    Returns the shared {'nodes','members','support_candidates'} dict, with
+    the base ring nodes offered as support candidates.
+    """
+    radius_x = float(radius_x); radius_y = float(radius_y); rise = float(rise)
+    n_rings = max(1, int(n_rings)); n_sectors = max(3, int(n_sectors))
+    if radius_x <= 0 or radius_y <= 0 or rise <= 0:
+        raise ValueError('radius_x, radius_y and rise must all be positive')
+
+    bank = _NodeBank()
+    members = []
+    seen = set()
+
+    apex = bank.add(0.0, 0.0, rise)
+    apex_pt = (0.0, 0.0, rise)
+
+    rings = []
+    ring_pts = []
+    for k in range(1, n_rings + 1):
+        u = (k / n_rings) * (math.pi / 2.0)
+        rr = math.sin(u)
+        z_k = rise * math.cos(u)
+        ring, pts = [], []
+        for s in range(n_sectors):
+            th = 2.0 * math.pi * s / n_sectors
+            x = radius_x * rr * math.cos(th)
+            y = radius_y * rr * math.sin(th)
+            ring.append(bank.add(x, y, z_k))
+            pts.append((x, y, z_k))
+        rings.append(ring)
+        ring_pts.append(pts)
+
+    _add_apex_ribbed_shell(members, seen, apex, rings, n_sectors)
+    support_candidates = list(rings[-1])
+
+    # Tributary area via straight-line (secant) segment lengths, both
+    # meridian and hoop -- an ellipse has no simple closed-form arc length
+    # either way, so this is the same kind of midpoint-rule approximation
+    # dome()'s own (exact-formula) spherical tributary area generalizes to
+    # when no exact formula exists, converging the same way as n_rings and
+    # n_sectors grow.
+    load_nodes = {}
+    for k in range(1, n_rings + 1):
+        pts = ring_pts[k - 1]
+        n = len(pts)
+        next_pts = ring_pts[k] if k < n_rings else None
+        for s in range(n):
+            hoop = (math.dist(pts[s], pts[(s - 1) % n])
+                   + math.dist(pts[s], pts[(s + 1) % n])) / 2.0
+            merid_in = math.dist(pts[s], apex_pt) if k == 1 else math.dist(pts[s], ring_pts[k - 2][s])
+            merid_out = math.dist(pts[s], next_pts[s]) if next_pts is not None else 0.0
+            load_nodes[rings[k - 1][s]] = hoop * (merid_in + merid_out) / 2.0
+    avg_merid0 = sum(math.dist(apex_pt, p) for p in ring_pts[0]) / len(ring_pts[0])
+    load_nodes[apex] = math.pi * (avg_merid0 / 2.0) ** 2
+
+    return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
+            'load_nodes': load_nodes}
+
+
+def sphere_shell(radius, n_rings=4, n_sectors=12):
+    """A single-layer ribbed FULL sphere: the same Schwedler apex+rings+
+    diagonals bracing as dome(), extended past a single cap all the way to
+    a second (bottom) pole -- `n_rings` hoop rings per hemisphere
+    (including the shared equator ring), meridian ribs pole to pole, and
+    Schwedler diagonals in every ring-to-ring panel. Both polar caps are
+    simple triangular fans, exactly like dome()'s own apex fan -- inherently
+    stable, no diagonal needed.
+
+    radius   : sphere radius (m).
+    n_rings  : hoop rings PER HEMISPHERE, including the shared equator ring
+               (>= 1); the total distinct hoop-ring count is 2*n_rings - 1.
+    n_sectors: number of meridian ribs (>= 3).
+
+    Returns the shared {'nodes','members','support_candidates'} dict, with
+    the EQUATOR ring nodes offered as support candidates -- the natural
+    place to support a free-standing spherical shell.
+    """
+    radius = float(radius)
+    n_rings = max(1, int(n_rings)); n_sectors = max(3, int(n_sectors))
+    if radius <= 0:
+        raise ValueError('radius must be positive')
+
+    bank = _NodeBank()
+    members = []
+    seen = set()
+
+    apex_top = bank.add(0.0, 0.0, radius)
+
+    total_rings = 2 * n_rings - 1
+    rings = []
+    for k in range(1, total_rings + 1):
+        phi = math.pi * k / (2 * n_rings)
+        r_k = radius * math.sin(phi)
+        z_k = radius * math.cos(phi)
+        ring = []
+        for s in range(n_sectors):
+            th = 2.0 * math.pi * s / n_sectors
+            ring.append(bank.add(r_k * math.cos(th), r_k * math.sin(th), z_k))
+        rings.append(ring)
+
+    apex_bottom = bank.add(0.0, 0.0, -radius)
+
+    _add_apex_ribbed_shell(members, seen, apex_top, rings, n_sectors)
+    for s in range(n_sectors):
+        _add_member(members, seen, rings[-1][s], apex_bottom, role='meridian')
+
+    support_candidates = list(rings[n_rings - 1])   # the equator ring
+
+    # Tributary area: the same midpoint-rule spherical-zone lumping dome()
+    # uses. Unlike dome, every numbered ring here has a neighbour on BOTH
+    # sides (another ring, or a pole) -- there is no free/boundary ring --
+    # so every ring gets the FULL phi_step tributary width, with no
+    # dome-style halving anywhere.
+    phi_step = math.pi / (2 * n_rings)
+    load_nodes = {}
+    cap_area = 2.0 * math.pi * radius ** 2 * (1.0 - math.cos(phi_step / 2.0))
+    load_nodes[apex_top] = cap_area
+    load_nodes[apex_bottom] = cap_area
+    for k in range(1, total_rings + 1):
+        phi_k = math.pi * k / (2 * n_rings)
+        meridian_factor = radius * phi_step
+        hoop_factor = radius * math.sin(phi_k) * (2.0 * math.pi / n_sectors)
+        area = meridian_factor * hoop_factor
+        for node in rings[k - 1]:
+            load_nodes[node] = area
+
+    return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
+            'load_nodes': load_nodes}
+
+
 # ═══════════════════════════════════════════════════════════════════════
-#  4 · Add-on features: column (shaft + capital) and reinforcement beam
+#  4 · Circular (radial) flat double-layer grid
+# ═══════════════════════════════════════════════════════════════════════
+
+def circular_flat_grid(outer_radius, depth, n_rings, n_sectors, offset=True):
+    """A round-plan double-layer flat space grid (e.g. a circular stadium/
+    arena roof): a HUB at the centre, `n_rings` concentric hoop rings of
+    `n_sectors` nodes each on the bottom layer, and a matching top layer
+    `depth` above it -- the polar analogue of flat_grid's own rectangular
+    scheme, including its `offset` idea.
+
+    offset=True  : the top layer's rings sit at radii BETWEEN consecutive
+                   bottom rings and rotated by half a sector, so each top
+                   node webs down to the 4 bottom nodes around it (or, for
+                   the innermost top ring, to the hub plus the 2 nearest
+                   ring-1 nodes) -- the polar equivalent of flat_grid's own
+                   "square-on-square offset" pyramidal webs, and for the
+                   same reason: it triangulates automatically with no
+                   extra diagonal member.
+    offset=False : the two layers align (same radius and angle); each
+                   bottom node webs UP to its neighbouring top nodes --
+                   one ring in, one ring out (where they exist, PLUS a
+                   diagonal tie shifted one sector for each), one sector
+                   each way -- never straight up to the point directly
+                   above it, extending the fix flat_grid's own aligned
+                   mode needed for the same reason (a purely vertical web
+                   has no horizontal stiffness and leaves an interior
+                   node's Z free). The diagonal (sector-shifted) radial tie
+                   is NOT optional here the way it would be on a
+                   rectangular grid: a same-sector radial web is purely
+                   radial with zero tangential component, so without it an
+                   entire ring can rotate rigidly relative to its
+                   neighbours with no member changing length -- a genuine
+                   mechanism found by eigenanalysis at ordinary mesh
+                   densities (e.g. 6 rings x 12 sectors), fixed by giving
+                   every radial web a deliberate angular offset too.
+
+    outer_radius : plan radius of the grid (m).
+    depth        : vertical distance between the two layers (m).
+    n_rings      : number of concentric hoop rings (>= 1).
+    n_sectors    : number of radial divisions (>= 3).
+
+    Returns the shared {'nodes','members','support_candidates'} dict;
+    `support_candidates` is the outermost bottom ring. `load_nodes` are
+    exact for offset=True (the annular-sector cells tile the circle's
+    plan area exactly, the same "no curvature error" property flat_grid's
+    own rectangular cells have) and a standard r*dr*dtheta lumped
+    approximation for offset=False.
+    """
+    outer_radius = float(outer_radius); depth = float(depth)
+    n_rings = max(1, int(n_rings)); n_sectors = max(3, int(n_sectors))
+    if outer_radius <= 0:
+        raise ValueError('outer_radius must be positive')
+
+    bank = _NodeBank()
+    members = []
+    seen = set()
+
+    hub = bank.add(0.0, 0.0, 0.0)
+    bottom = {}
+    for k in range(1, n_rings + 1):
+        r = outer_radius * k / n_rings
+        for s in range(n_sectors):
+            th = 2.0 * math.pi * s / n_sectors
+            bottom[(k, s)] = bank.add(r * math.cos(th), r * math.sin(th), 0.0)
+
+    top = {}
+    if offset:
+        for k in range(1, n_rings + 1):
+            r = outer_radius * (k - 0.5) / n_rings
+            for s in range(n_sectors):
+                th = 2.0 * math.pi * (s + 0.5) / n_sectors
+                top[(k, s)] = bank.add(r * math.cos(th), r * math.sin(th), depth)
+    else:
+        for k in range(1, n_rings + 1):
+            r = outer_radius * k / n_rings
+            for s in range(n_sectors):
+                th = 2.0 * math.pi * s / n_sectors
+                top[(k, s)] = bank.add(r * math.cos(th), r * math.sin(th), depth)
+
+    # bottom chords: hub spokes, radial spokes, hoops
+    for s in range(n_sectors):
+        _add_member(members, seen, hub, bottom[(1, s)], role='bottom_chord')
+    for k in range(1, n_rings):
+        for s in range(n_sectors):
+            _add_member(members, seen, bottom[(k, s)], bottom[(k + 1, s)], role='bottom_chord')
+    for k in range(1, n_rings + 1):
+        for s in range(n_sectors):
+            _add_member(members, seen, bottom[(k, s)], bottom[(k, (s + 1) % n_sectors)],
+                       role='bottom_chord')
+
+    # top chords: hoops + radial spokes
+    for k in range(1, n_rings + 1):
+        for s in range(n_sectors):
+            _add_member(members, seen, top[(k, s)], top[(k, (s + 1) % n_sectors)],
+                       role='top_chord')
+    for k in range(1, n_rings):
+        for s in range(n_sectors):
+            _add_member(members, seen, top[(k, s)], top[(k + 1, s)], role='top_chord')
+
+    if offset:
+        for s in range(n_sectors):
+            _add_member(members, seen, top[(1, s)], hub, role='web')
+            _add_member(members, seen, top[(1, s)], bottom[(1, s)], role='web')
+            _add_member(members, seen, top[(1, s)], bottom[(1, (s + 1) % n_sectors)], role='web')
+        for k in range(2, n_rings + 1):
+            for s in range(n_sectors):
+                _add_member(members, seen, top[(k, s)], bottom[(k - 1, s)], role='web')
+                _add_member(members, seen, top[(k, s)], bottom[(k - 1, (s + 1) % n_sectors)],
+                           role='web')
+                _add_member(members, seen, top[(k, s)], bottom[(k, s)], role='web')
+                _add_member(members, seen, top[(k, s)], bottom[(k, (s + 1) % n_sectors)], role='web')
+    else:
+        for s in range(n_sectors):
+            _add_member(members, seen, hub, top[(1, s)], role='web')
+            _add_member(members, seen, hub, top[(1, (s + 1) % n_sectors)], role='web_diag')
+        for k in range(1, n_rings + 1):
+            for s in range(n_sectors):
+                if k > 1:
+                    _add_member(members, seen, bottom[(k, s)], top[(k - 1, s)], role='web')
+                    _add_member(members, seen, bottom[(k, s)], top[(k - 1, (s + 1) % n_sectors)],
+                               role='web_diag')
+                if k < n_rings:
+                    _add_member(members, seen, bottom[(k, s)], top[(k + 1, s)], role='web')
+                    _add_member(members, seen, bottom[(k, s)], top[(k + 1, (s + 1) % n_sectors)],
+                               role='web_diag')
+                _add_member(members, seen, bottom[(k, s)], top[(k, (s - 1) % n_sectors)], role='web')
+                _add_member(members, seen, bottom[(k, s)], top[(k, (s + 1) % n_sectors)], role='web')
+
+    support_candidates = [bottom[(n_rings, s)] for s in range(n_sectors)]
+
+    load_nodes = {}
+    angular_step = 2.0 * math.pi / n_sectors
+    if offset:
+        r_prev = 0.0
+        for k in range(1, n_rings + 1):
+            r_k = outer_radius * k / n_rings
+            area = 0.5 * (r_k ** 2 - r_prev ** 2) * angular_step
+            for s in range(n_sectors):
+                load_nodes[top[(k, s)]] = area
+            r_prev = r_k
+    else:
+        dr = outer_radius / n_rings
+        for k in range(1, n_rings + 1):
+            r_k = outer_radius * k / n_rings
+            fr = dr if 1 < k < n_rings else dr / 2.0
+            area = r_k * fr * angular_step
+            for s in range(n_sectors):
+                load_nodes[top[(k, s)]] = area
+
+    return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
+            'load_nodes': load_nodes}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  5 · Add-on features: column (shaft + capital) and reinforcement beam
 # ═══════════════════════════════════════════════════════════════════════
 #
-# Unlike the three generators above, these two AUGMENT an existing mesh
+# Unlike the generators above, these two AUGMENT an existing mesh
 # (nodes/members already built by flat_grid/barrel_vault/dome) instead of
 # building one from scratch -- they are the "add a feature to what's
 # already there" tools a real space-frame designer reaches for once the
@@ -708,6 +1344,14 @@ def reinforcement_beam(nodes, members, edge_a, edge_b, depth, direction=(0.0, 0.
 
 GENERATORS = {
     'flat_grid': flat_grid,
+    'hypar_shell': hypar_shell,
+    'hip_roof_grid': hip_roof_grid,
+    'circular_flat_grid': circular_flat_grid,
     'barrel_vault': barrel_vault,
+    'parabolic_vault': parabolic_vault,
+    'elliptic_vault': elliptic_vault,
     'dome': dome,
+    'paraboloid_dish': paraboloid_dish,
+    'elliptic_dome': elliptic_dome,
+    'sphere_shell': sphere_shell,
 }

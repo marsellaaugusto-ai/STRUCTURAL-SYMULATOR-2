@@ -268,8 +268,16 @@ def test_dome_rejects_nonpositive_dimensions():
 
 def test_generators_table_names_match_the_functions():
     assert sg.GENERATORS['flat_grid'] is sg.flat_grid
+    assert sg.GENERATORS['hypar_shell'] is sg.hypar_shell
+    assert sg.GENERATORS['hip_roof_grid'] is sg.hip_roof_grid
+    assert sg.GENERATORS['circular_flat_grid'] is sg.circular_flat_grid
     assert sg.GENERATORS['barrel_vault'] is sg.barrel_vault
+    assert sg.GENERATORS['parabolic_vault'] is sg.parabolic_vault
+    assert sg.GENERATORS['elliptic_vault'] is sg.elliptic_vault
     assert sg.GENERATORS['dome'] is sg.dome
+    assert sg.GENERATORS['paraboloid_dish'] is sg.paraboloid_dish
+    assert sg.GENERATORS['elliptic_dome'] is sg.elliptic_dome
+    assert sg.GENERATORS['sphere_shell'] is sg.sphere_shell
 
 
 # ── a generated mesh must actually analyze ──────────────────────────────────
@@ -291,6 +299,29 @@ def test_generators_table_names_match_the_functions():
     ('barrel_vault', dict(span=8.0, rise=2.0, length=6.0, n_arch=6, n_bays=3,
                           double_layer=False)),
     ('dome', dict(base_radius=8.0, rise=2.5, n_rings=3, n_sectors=10)),
+    ('hypar_shell', dict(span_x=9.0, span_y=9.0, depth=1.2, module=3.0, rise=2.0,
+                        offset=True, pattern='square')),
+    ('hypar_shell', dict(span_x=9.0, span_y=9.0, depth=1.2, module=3.0, rise=2.0,
+                        offset=False, pattern='diagonal')),
+    ('hip_roof_grid', dict(span_x=9.0, span_y=9.0, depth=1.2, module=3.0, rise=3.0,
+                          offset=True, pattern='square')),
+    ('hip_roof_grid', dict(span_x=9.0, span_y=9.0, depth=1.2, module=3.0, rise=3.0,
+                          offset=False, pattern='diagonal')),
+    ('circular_flat_grid', dict(outer_radius=10.0, depth=1.5, n_rings=3, n_sectors=10,
+                              offset=True)),
+    ('circular_flat_grid', dict(outer_radius=10.0, depth=1.5, n_rings=6, n_sectors=12,
+                              offset=False)),
+    ('parabolic_vault', dict(span=8.0, rise=2.0, length=6.0, n_arch=6, n_bays=3,
+                            double_layer=True, depth=0.5)),
+    ('parabolic_vault', dict(span=8.0, rise=2.0, length=6.0, n_arch=6, n_bays=3,
+                            double_layer=False)),
+    ('elliptic_vault', dict(span=8.0, rise=3.0, length=6.0, n_arch=6, n_bays=3,
+                           double_layer=True, depth=0.5)),
+    ('elliptic_vault', dict(span=8.0, rise=3.0, length=6.0, n_arch=6, n_bays=3,
+                           double_layer=False)),
+    ('paraboloid_dish', dict(base_radius=8.0, rise=2.5, n_rings=3, n_sectors=10)),
+    ('elliptic_dome', dict(radius_x=8.0, radius_y=5.0, rise=2.5, n_rings=3, n_sectors=10)),
+    ('sphere_shell', dict(radius=5.0, n_rings=3, n_sectors=10)),
 ])
 def test_generated_mesh_solves_under_self_weight_when_fully_pinned(gen, kwargs):
     mesh = sg.GENERATORS[gen](**kwargs)
@@ -599,3 +630,254 @@ def test_reinforced_edge_still_analyzes_under_self_weight(n_stations):
     loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
     res, err = sm.analyze(nodes, members, loads, supports)
     assert err is None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  New grid families: hypar, hip roof, circular flat grid, parabolic/
+#  elliptic vaults, paraboloid dish, elliptic dome, full sphere
+# ═══════════════════════════════════════════════════════════════════════
+
+def _solves(mesh):
+    nodes, members = mesh['nodes'], mesh['members']
+    for m in members:
+        m.setdefault('E', 200e3); m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
+    _res, err = sm.analyze(nodes, members, loads, supports)
+    return err
+
+
+# ── hypar shell ──────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('offset', [True, False])
+@pytest.mark.parametrize('pattern', ['square', 'diagonal'])
+def test_hypar_shell_analyzes_cleanly(offset, pattern):
+    mesh = sg.hypar_shell(12.0, 12.0, 1.5, 3.0, rise=2.5, offset=offset, pattern=pattern)
+    assert _solves(mesh) is None
+
+
+def test_hypar_shell_saddles_opposite_corners_in_opposite_directions():
+    mesh = sg.hypar_shell(12.0, 12.0, 1.5, 3.0, rise=2.5)
+    by_xy = {(round(x, 6), round(y, 6)): z for x, y, z in mesh['nodes']}
+    z00 = by_xy[(0.0, 0.0)]
+    z_far = by_xy[(12.0, 12.0)]
+    z_adj1 = by_xy[(12.0, 0.0)]
+    z_adj2 = by_xy[(0.0, 12.0)]
+    assert z00 == pytest.approx(z_far)          # same-sense corners rise/dip together
+    assert z_adj1 == pytest.approx(z_adj2)
+    assert (z00 > 0) != (z_adj1 > 0)             # opposite-sense corners are opposite
+
+
+def test_hypar_shell_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError):
+        sg.hypar_shell(0.0, 9.0, 1.2, 3.0, rise=1.0)
+
+
+# ── hip roof grid ────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('offset', [True, False])
+@pytest.mark.parametrize('pattern', ['square', 'diagonal'])
+def test_hip_roof_grid_analyzes_cleanly(offset, pattern):
+    mesh = sg.hip_roof_grid(12.0, 12.0, 1.5, 3.0, rise=3.0, offset=offset, pattern=pattern)
+    assert _solves(mesh) is None
+
+
+def test_hip_roof_grid_ridge_is_higher_than_the_eaves():
+    # module divides evenly into both spans so the plan centre (the ridge
+    # apex) lands exactly on a grid node.
+    mesh = sg.hip_roof_grid(12.0, 12.0, 1.5, 3.0, rise=3.0)
+    by_xy = {(round(x, 6), round(y, 6)): z for x, y, z in mesh['nodes']}
+    z_ridge = by_xy[(6.0, 6.0)]
+    z_eave = by_xy[(0.0, 0.0)]
+    assert z_ridge == pytest.approx(3.0)
+    assert z_eave == pytest.approx(0.0)
+
+
+def test_hip_roof_grid_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError):
+        sg.hip_roof_grid(9.0, -1.0, 1.2, 3.0, rise=1.0)
+
+
+# ── circular flat grid ───────────────────────────────────────────────────
+
+@pytest.mark.parametrize('offset', [True, False])
+@pytest.mark.parametrize('n_rings,n_sectors', [(1, 3), (2, 6), (3, 8), (6, 12), (4, 20)])
+def test_circular_flat_grid_analyzes_at_every_size(offset, n_rings, n_sectors):
+    mesh = sg.circular_flat_grid(10.0, 1.5, n_rings, n_sectors, offset=offset)
+    assert _solves(mesh) is None, f'offset={offset} rings={n_rings} sectors={n_sectors}'
+
+
+def test_circular_flat_grid_offset_tributary_areas_sum_to_the_plan_area():
+    mesh = sg.circular_flat_grid(10.0, 1.5, 6, 12, offset=True)
+    total = sum(mesh['load_nodes'].values())
+    assert total == pytest.approx(math.pi * 10.0 ** 2, rel=1e-9)
+
+
+def test_circular_flat_grid_aligned_tributary_areas_converge_to_the_plan_area():
+    prev_err = None
+    for n_rings, n_sectors in ((3, 8), (6, 16), (12, 32)):
+        mesh = sg.circular_flat_grid(10.0, 1.5, n_rings, n_sectors, offset=False)
+        total = sum(mesh['load_nodes'].values())
+        err = abs(total - math.pi * 10.0 ** 2)
+        if prev_err is not None:
+            assert err < prev_err
+        prev_err = err
+
+
+def test_circular_flat_grid_support_candidates_are_the_outer_ring():
+    mesh = sg.circular_flat_grid(10.0, 1.5, 4, 12, offset=True)
+    assert len(mesh['support_candidates']) == 12
+    for i in mesh['support_candidates']:
+        x, y, z = mesh['nodes'][i]
+        assert math.hypot(x, y) == pytest.approx(10.0)
+        assert z == pytest.approx(0.0)
+
+
+def test_circular_flat_grid_rejects_nonpositive_radius():
+    with pytest.raises(ValueError):
+        sg.circular_flat_grid(0.0, 1.5, 4, 12)
+
+
+# ── parabolic and elliptic vaults ────────────────────────────────────────
+
+@pytest.mark.parametrize('n_arch,n_bays', [(2, 2), (3, 3), (6, 2), (10, 5)])
+@pytest.mark.parametrize('double_layer', [True, False])
+def test_parabolic_vault_analyzes_at_every_size(n_arch, n_bays, double_layer):
+    mesh = sg.parabolic_vault(10.0, 2.5, 15.0, n_arch, n_bays, double_layer=double_layer,
+                              depth=0.6)
+    assert _solves(mesh) is None
+
+
+@pytest.mark.parametrize('n_arch,n_bays', [(2, 2), (3, 3), (6, 2), (10, 5)])
+@pytest.mark.parametrize('double_layer', [True, False])
+def test_elliptic_vault_analyzes_at_every_size(n_arch, n_bays, double_layer):
+    mesh = sg.elliptic_vault(10.0, 3.5, 15.0, n_arch, n_bays, double_layer=double_layer,
+                             depth=0.6)
+    assert _solves(mesh) is None
+
+
+def test_parabolic_vault_crown_is_higher_than_the_springing():
+    mesh = sg.parabolic_vault(10.0, 2.5, 15.0, n_arch=8, n_bays=2)
+    ys_zs = {(round(y, 6)): z for _x, y, z in mesh['nodes']}
+    assert ys_zs[0.0] == pytest.approx(2.5)      # crown, t=0 -> y=0
+    assert ys_zs[round(-5.0, 6)] == pytest.approx(0.0)   # springing, t=-1 -> y=-span/2
+
+
+def test_elliptic_vault_matches_a_circle_when_rise_equals_half_span():
+    # rise == span/2 makes the ellipse's two semi-axes equal -- a circle,
+    # exactly the barrel_vault() special case.
+    span, rise = 10.0, 5.0
+    mesh_e = sg.elliptic_vault(span, rise, 6.0, n_arch=8, n_bays=1)
+    mesh_c = sg.barrel_vault(span, rise, 6.0, n_arch=8, n_bays=1, double_layer=False)
+    ys_e = sorted(round(y, 4) for _x, y, _z in mesh_e['nodes'])
+    ys_c = sorted(round(y, 4) for _x, y, _z in mesh_c['nodes'])
+    assert ys_e == pytest.approx(ys_c)
+
+
+def test_parabolic_vault_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError):
+        sg.parabolic_vault(0.0, 2.5, 15.0)
+
+
+def test_elliptic_vault_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError):
+        sg.elliptic_vault(10.0, 0.0, 15.0)
+
+
+# ── paraboloid dish ──────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('n_rings,n_sectors', [(1, 3), (2, 6), (4, 12), (8, 20)])
+def test_paraboloid_dish_analyzes_at_every_size(n_rings, n_sectors):
+    mesh = sg.paraboloid_dish(10.0, 3.0, n_rings=n_rings, n_sectors=n_sectors)
+    assert _solves(mesh) is None
+
+
+def test_paraboloid_dish_apex_is_at_the_bottom_centre():
+    mesh = sg.paraboloid_dish(10.0, 3.0, n_rings=4, n_sectors=12)
+    apex = mesh['nodes'][0]
+    assert apex == pytest.approx((0.0, 0.0, 0.0))
+    rim_z = [z for x, y, z in mesh['nodes'] if math.hypot(x, y) == pytest.approx(10.0, abs=1e-6)]
+    assert rim_z and all(z == pytest.approx(3.0) for z in rim_z)
+
+
+def test_paraboloid_dish_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError):
+        sg.paraboloid_dish(10.0, 0.0)
+
+
+# ── elliptic dome ────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('n_rings,n_sectors', [(1, 3), (2, 6), (4, 12), (8, 20)])
+def test_elliptic_dome_analyzes_at_every_size(n_rings, n_sectors):
+    mesh = sg.elliptic_dome(10.0, 6.0, 2.5, n_rings=n_rings, n_sectors=n_sectors)
+    assert _solves(mesh) is None
+
+
+def test_elliptic_dome_base_ring_matches_the_two_requested_radii():
+    mesh = sg.elliptic_dome(10.0, 6.0, 2.5, n_rings=4, n_sectors=4)
+    base = mesh['support_candidates']
+    xs = sorted(abs(round(mesh['nodes'][i][0], 4)) for i in base)
+    ys = sorted(abs(round(mesh['nodes'][i][1], 4)) for i in base)
+    assert max(xs) == pytest.approx(10.0)
+    assert max(ys) == pytest.approx(6.0)
+    for i in base:
+        assert mesh['nodes'][i][2] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_elliptic_dome_matches_dome_when_radii_and_rise_are_equal():
+    r = 8.0
+    mesh_e = sg.elliptic_dome(r, r, r, n_rings=3, n_sectors=8)
+    # elliptic_dome's own parametrization: apex height = rise = r, base radius = r
+    apex = mesh_e['nodes'][0]
+    assert apex == pytest.approx((0.0, 0.0, r))
+    base_r = [math.hypot(mesh_e['nodes'][i][0], mesh_e['nodes'][i][1])
+             for i in mesh_e['support_candidates']]
+    assert all(v == pytest.approx(r) for v in base_r)
+
+
+def test_elliptic_dome_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError):
+        sg.elliptic_dome(10.0, 6.0, 0.0)
+
+
+# ── full sphere ──────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('n_rings,n_sectors', [(1, 3), (2, 6), (4, 12), (8, 20)])
+def test_sphere_shell_analyzes_at_every_size(n_rings, n_sectors):
+    mesh = sg.sphere_shell(5.0, n_rings=n_rings, n_sectors=n_sectors)
+    assert _solves(mesh) is None
+
+
+def test_sphere_shell_spans_from_the_north_to_the_south_pole():
+    mesh = sg.sphere_shell(5.0, n_rings=4, n_sectors=12)
+    zs = [z for _x, _y, z in mesh['nodes']]
+    assert max(zs) == pytest.approx(5.0)
+    assert min(zs) == pytest.approx(-5.0)
+
+
+def test_sphere_shell_every_node_lies_on_the_sphere():
+    mesh = sg.sphere_shell(5.0, n_rings=4, n_sectors=12)
+    for x, y, z in mesh['nodes']:
+        assert math.sqrt(x * x + y * y + z * z) == pytest.approx(5.0)
+
+
+def test_sphere_shell_support_candidates_are_the_equator():
+    mesh = sg.sphere_shell(5.0, n_rings=4, n_sectors=12)
+    for i in mesh['support_candidates']:
+        assert mesh['nodes'][i][2] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_sphere_shell_tributary_areas_converge_to_the_full_surface_area():
+    prev_err = None
+    for n_rings, n_sectors in ((2, 8), (4, 16), (8, 32)):
+        mesh = sg.sphere_shell(5.0, n_rings=n_rings, n_sectors=n_sectors)
+        total = sum(mesh['load_nodes'].values())
+        err = abs(total - 4.0 * math.pi * 5.0 ** 2)
+        if prev_err is not None:
+            assert err < prev_err
+        prev_err = err
+
+
+def test_sphere_shell_rejects_nonpositive_radius():
+    with pytest.raises(ValueError):
+        sg.sphere_shell(0.0)

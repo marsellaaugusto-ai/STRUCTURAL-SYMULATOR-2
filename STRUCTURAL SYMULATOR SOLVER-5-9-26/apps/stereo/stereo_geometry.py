@@ -388,8 +388,15 @@ def barrel_vault(span, rise, length, n_arch=8, n_bays=8, double_layer=True,
                  double_layer is False.
 
     Returns the shared {'nodes','members','support_candidates'} dict, with
-    every node on the two end arches (the vault's supported edges in the
-    usual arrangement) offered as support candidates.
+    every node on the two SPRINGING LINES (ai=0 and ai=n_arch, running the
+    full length at every bay station) offered as support candidates --
+    the vault's actual base, where each arch rib's own thrust needs to
+    land, the same way a real barrel vault bears continuously along its
+    two long walls rather than only at its two short end faces (which an
+    earlier version of this function used, structurally backwards: it
+    treated the vault like a beam spanning its own length between two end
+    diaphragms instead of an arch spanning its own width down to a
+    continuous base).
     """
     span = float(span); rise = float(rise); length = float(length)
     n_arch = max(2, int(n_arch)); n_bays = max(1, int(n_bays))
@@ -438,6 +445,25 @@ def barrel_vault(span, rise, length, n_arch=8, n_bays=8, double_layer=True,
             if double_layer and depth > 0:
                 _add_member(members, seen, inner[(bi, ai)], inner[(bi, ai + 1)], role='inner_rib')
 
+    # Intra-rib skip-one diagonal (ai to ai+2, same bay): triangulates each
+    # arch rib WITHIN ITS OWN PLANE, independent of any other bay. This is
+    # needed in addition to the inter-bay 'brace'/'edge_brace' bracing
+    # below: those only resist RELATIVE motion between different bays
+    # (bi vs bi+1), so a mode where every bay's rib flexes in-plane by the
+    # SAME amount (uniform along the vault's length -- no relative inter-bay
+    # motion at all) is invisible to them and remained a genuine zero-energy
+    # mechanism even with a fully double-layer or edge-braced vault, found
+    # by eigenanalysis after the support-placement fix above stopped masking
+    # it (see barrel_vault's module-level history/tests for the full
+    # derivation). Chording i to i+2 (on top of the existing i to i+1 rib)
+    # closes overlapping triangles along the whole rib, exactly like
+    # _edge_brace's own two-station skip.
+    for bi in range(n_bays + 1):
+        for ai in range(n_arch - 1):
+            _add_member(members, seen, outer[(bi, ai)], outer[(bi, ai + 2)], role='rib_diag')
+            if double_layer and depth > 0:
+                _add_member(members, seen, inner[(bi, ai)], inner[(bi, ai + 2)], role='rib_diag')
+
     # purlins (longitudinal chords)
     for ai in range(n_arch + 1):
         for bi in range(n_bays):
@@ -463,6 +489,46 @@ def barrel_vault(span, rise, length, n_arch=8, n_bays=8, double_layer=True,
                 _add_member(members, seen, layer[(bi + 1, ai_edge)], layer[(bi, ai_far)],
                            role='edge_brace')
 
+    # Inter-bay X-brace (both diagonals) every bay panel, on the outer layer
+    # always and the inner layer too whenever a double layer exists. A
+    # single diagonal per panel is enough for a FLAT grid cell (flat_grid's
+    # 'square' pattern), but even a FULL X-brace here still left a real
+    # mechanism at every INTERIOR bay's springing line in the single-layer
+    # case -- found by eigenanalysis (zero eigenvalues, and every member's
+    # elongation under the mode was exactly zero, confirming a true
+    # unbraced DOF rather than mere ill-conditioning). The reason is
+    # geometric, not a missing member count: y and z here depend only on
+    # `ai`, so EVERY member that steps by the same delta-ai (an outer_rib,
+    # or a brace which steps delta-ai=1 and delta-bi=1 at once) has the
+    # exact same (y, z) projection regardless of `bi` -- i.e. ribs and
+    # braces at a given station are all parallel when flattened onto the
+    # arc's own cross-sectional plane. A springing node (ai=0 or ai=n_arch)
+    # only ever reaches ONE step in `ai` (there is no ai=-1), so it gets
+    # exactly one independent in-plane direction from its rib/braces --
+    # leaving the direction perpendicular to it (radially in or out of the
+    # shell) completely unresisted, unless the node is itself a support
+    # (true only at the two END bays of the OLD, structurally-backwards
+    # support pattern). _edge_brace below gives that second direction.
+    #
+    # This same 'brace' diagonal turned out to ALSO be needed for the
+    # DOUBLE-layer case on a non-circular (parabolic/elliptic) profile: at
+    # some n_arch/n_bays combinations the double layer's own 'web_diag'/
+    # 'edge_brace' bracing left a genuine longitudinal (x-direction) shear
+    # mechanism between adjacent arc stations -- found the same way, via
+    # eigenanalysis showing an exact zero mode with zero elongation on
+    # every member. 'brace' connects outer-to-outer (or inner-to-inner)
+    # across BOTH a bay step and an arc step at once, so it is never
+    # parallel/degenerate with the purely-longitudinal purlin or the
+    # purely-in-plane rib/rib_diag/web, closing that x-shear mode
+    # regardless of arch profile.
+    for bi in range(n_bays):
+        for ai in range(n_arch):
+            _add_member(members, seen, outer[(bi, ai)], outer[(bi + 1, ai + 1)], role='brace')
+            _add_member(members, seen, outer[(bi + 1, ai)], outer[(bi, ai + 1)], role='brace')
+            if double_layer and depth > 0:
+                _add_member(members, seen, inner[(bi, ai)], inner[(bi + 1, ai + 1)], role='brace')
+                _add_member(members, seen, inner[(bi + 1, ai)], inner[(bi, ai + 1)], role='brace')
+
     if double_layer and depth > 0:
         # radial webs between the two layers, plus a diagonal per panel so
         # the two layers act as a true space truss rather than a set of
@@ -477,41 +543,19 @@ def barrel_vault(span, rise, length, n_arch=8, n_bays=8, double_layer=True,
         _edge_brace(outer)
         _edge_brace(inner)
     else:
-        # Single layer: X-brace (both diagonals) every bay panel. A single
-        # diagonal per panel is enough for a FLAT grid cell (flat_grid's
-        # 'square' pattern), but even a FULL X-brace here still left a
-        # real mechanism at every INTERIOR bay's springing line -- found by
-        # eigenanalysis (zero eigenvalues, and every member's elongation
-        # under the mode was exactly zero, confirming a true unbraced DOF
-        # rather than mere ill-conditioning). The reason is geometric, not
-        # a missing member count: y and z here depend only on `ai`, so
-        # EVERY member that steps by the same delta-ai (an outer_rib, or a
-        # brace which steps delta-ai=1 and delta-bi=1 at once) has the
-        # exact same (y, z) projection regardless of `bi` -- i.e. ribs and
-        # braces at a given station are all parallel when flattened onto
-        # the arc's own cross-sectional plane. A springing node (ai=0 or
-        # ai=n_arch) only ever reaches ONE step in `ai` (there is no
-        # ai=-1), so it gets exactly one independent in-plane direction
-        # from its rib/braces -- leaving the direction perpendicular to it
-        # (radially in or out of the shell) completely unresisted, unless
-        # the node is itself a support (true only at the two END bays).
-        # The fix: give every interior bay's springing node a SECOND,
-        # non-parallel direction by also bracing it two stations in
-        # (skipping ai=1) -- a chord across two unequal arc steps is not
-        # parallel to a chord across one, which is exactly the missing
-        # direction.
-        for bi in range(n_bays):
-            for ai in range(n_arch):
-                _add_member(members, seen, outer[(bi, ai)], outer[(bi + 1, ai + 1)], role='brace')
-                _add_member(members, seen, outer[(bi + 1, ai)], outer[(bi, ai + 1)], role='brace')
         _edge_brace(outer)
 
-    support_candidates = sorted(set(outer[(0, ai)] for ai in range(n_arch + 1))
-                                 | set(outer[(n_bays, ai)] for ai in range(n_arch + 1)))
+    # The vault's BASE: the two springing lines (ai=0, ai=n_arch), running
+    # the full length (every bi) -- where a real barrel vault actually
+    # bears (continuously along its two long walls), not the two short end
+    # faces (bi=0, bi=n_bays), which would treat the vault as a beam
+    # spanning its own length instead of an arch spanning its own width.
+    support_candidates = sorted(set(outer[(bi, 0)] for bi in range(n_bays + 1))
+                                 | set(outer[(bi, n_arch)] for bi in range(n_bays + 1)))
     if double_layer and depth > 0:
         support_candidates = sorted(set(support_candidates)
-                                     | set(inner[(0, ai)] for ai in range(n_arch + 1))
-                                     | set(inner[(n_bays, ai)] for ai in range(n_arch + 1)))
+                                     | set(inner[(bi, 0)] for bi in range(n_bays + 1))
+                                     | set(inner[(bi, n_arch)] for bi in range(n_bays + 1)))
 
     # Tributary area for a roof (area) load, lumped onto the OUTER shell
     # (the one facing outward/upward, whether single- or double-layer).
@@ -573,6 +617,17 @@ def _extruded_arch_grid(arch_point, length, n_arch, n_bays, double_layer, depth)
             if double_layer and depth > 0:
                 _add_member(members, seen, inner[(bi, ai)], inner[(bi, ai + 1)], role='inner_rib')
 
+    # Intra-rib skip-one diagonal -- see barrel_vault()'s own comment on
+    # this same fix for the full derivation (the inter-bay 'brace'/
+    # 'edge_brace' bracing below can't resist a mode where every bay's rib
+    # flexes identically, since that mode has no relative inter-bay motion
+    # for it to detect).
+    for bi in range(n_bays + 1):
+        for ai in range(n_arch - 1):
+            _add_member(members, seen, outer[(bi, ai)], outer[(bi, ai + 2)], role='rib_diag')
+            if double_layer and depth > 0:
+                _add_member(members, seen, inner[(bi, ai)], inner[(bi, ai + 2)], role='rib_diag')
+
     for ai in range(n_arch + 1):
         for bi in range(n_bays):
             _add_member(members, seen, outer[(bi, ai)], outer[(bi + 1, ai)], role='purlin')
@@ -587,6 +642,20 @@ def _extruded_arch_grid(arch_point, length, n_arch, n_bays, double_layer, depth)
                 _add_member(members, seen, layer[(bi + 1, ai_edge)], layer[(bi, ai_far)],
                            role='edge_brace')
 
+    # Inter-bay X-brace, on the outer layer always and the inner layer too
+    # whenever a double layer exists -- see barrel_vault()'s own comment on
+    # this same fix. Needed for single-layer in-plane stability, AND (on a
+    # non-circular profile specifically) to close a longitudinal x-shear
+    # mechanism the double layer's own web_diag/edge_brace can leave open
+    # at some n_arch/n_bays combinations.
+    for bi in range(n_bays):
+        for ai in range(n_arch):
+            _add_member(members, seen, outer[(bi, ai)], outer[(bi + 1, ai + 1)], role='brace')
+            _add_member(members, seen, outer[(bi + 1, ai)], outer[(bi, ai + 1)], role='brace')
+            if double_layer and depth > 0:
+                _add_member(members, seen, inner[(bi, ai)], inner[(bi + 1, ai + 1)], role='brace')
+                _add_member(members, seen, inner[(bi + 1, ai)], inner[(bi, ai + 1)], role='brace')
+
     if double_layer and depth > 0:
         for bi in range(n_bays + 1):
             for ai in range(n_arch + 1):
@@ -598,18 +667,18 @@ def _extruded_arch_grid(arch_point, length, n_arch, n_bays, double_layer, depth)
         _edge_brace(outer)
         _edge_brace(inner)
     else:
-        for bi in range(n_bays):
-            for ai in range(n_arch):
-                _add_member(members, seen, outer[(bi, ai)], outer[(bi + 1, ai + 1)], role='brace')
-                _add_member(members, seen, outer[(bi + 1, ai)], outer[(bi, ai + 1)], role='brace')
         _edge_brace(outer)
 
-    support_candidates = sorted(set(outer[(0, ai)] for ai in range(n_arch + 1))
-                                 | set(outer[(n_bays, ai)] for ai in range(n_arch + 1)))
+    # The vault's BASE: the two springing lines (ai=0, ai=n_arch), running
+    # the full length (every bi) -- see barrel_vault()'s own comment on
+    # this same point (an earlier version of both functions put supports
+    # on the two short end faces instead, structurally backwards).
+    support_candidates = sorted(set(outer[(bi, 0)] for bi in range(n_bays + 1))
+                                 | set(outer[(bi, n_arch)] for bi in range(n_bays + 1)))
     if double_layer and depth > 0:
         support_candidates = sorted(set(support_candidates)
-                                     | set(inner[(0, ai)] for ai in range(n_arch + 1))
-                                     | set(inner[(n_bays, ai)] for ai in range(n_arch + 1)))
+                                     | set(inner[(bi, 0)] for bi in range(n_bays + 1))
+                                     | set(inner[(bi, n_arch)] for bi in range(n_bays + 1)))
 
     return bank, members, outer, inner, support_candidates, bay_dx
 
@@ -644,7 +713,8 @@ def parabolic_vault(span, rise, length, n_arch=8, n_bays=8, double_layer=True, d
     barrel_vault().
 
     Returns the shared {'nodes','members','support_candidates'} dict, with
-    every node on the two end arches offered as support candidates.
+    every node on the two springing lines (the vault's base) offered as
+    support candidates.
     """
     span = float(span); rise = float(rise)
     if span <= 0 or rise <= 0:
@@ -674,7 +744,8 @@ def elliptic_vault(span, rise, length, n_arch=8, n_bays=8, double_layer=True, de
     than jointly fixing a single circle radius.
 
     Returns the shared {'nodes','members','support_candidates'} dict, with
-    every node on the two end arches offered as support candidates.
+    every node on the two springing lines (the vault's base) offered as
+    support candidates.
     """
     span = float(span); rise = float(rise)
     if span <= 0 or rise <= 0:

@@ -192,15 +192,56 @@ def test_barrel_vault_crown_is_higher_in_z_than_its_springing():
         assert crown[1] > z
 
 
-def test_barrel_vault_support_candidates_are_on_the_two_end_arches():
+def test_barrel_vault_support_candidates_are_on_the_two_springing_lines():
+    # The vault's actual base is the two springing lines (running the full
+    # length, at the arch's two spring points) -- not the two end arches,
+    # which would treat the vault like a beam spanning its own length
+    # instead of an arch spanning its own width down to a continuous base.
     mesh = sg.barrel_vault(span=8.0, rise=2.0, length=6.0, n_arch=6, n_bays=3,
                             double_layer=False)
     nodes = mesh['nodes']
-    xs = sorted({round(x, 6) for x, y, z in nodes})
-    x_min, x_max = xs[0], xs[-1]
+    ys = sorted({round(y, 6) for x, y, z in nodes})
+    y_min, y_max = ys[0], ys[-1]
+    xs_seen = set()
     for c in mesh['support_candidates']:
         x, y, z = nodes[c]
-        assert x == pytest.approx(x_min) or x == pytest.approx(x_max)
+        assert y == pytest.approx(y_min) or y == pytest.approx(y_max)
+        xs_seen.add(round(x, 6))
+    # every longitudinal station (bay) contributes support candidates on
+    # both springing lines -- the base runs the vault's full length.
+    all_xs = sorted({round(x, 6) for x, y, z in nodes})
+    assert xs_seen == set(all_xs)
+
+
+@pytest.mark.parametrize('double_layer', [True, False])
+@pytest.mark.parametrize('n_arch', [2, 3, 6, 10])
+@pytest.mark.parametrize('n_bays', [1, 2, 3, 5])
+def test_barrel_vault_rib_is_stable_when_only_the_springing_lines_are_pinned(
+        n_bays, n_arch, double_layer):
+    # Regression test: once support_candidates was corrected to sit on the
+    # two springing lines (this vault's actual base) rather than the two
+    # end arches, a real zero-energy mechanism was exposed at n_arch >= 6 --
+    # every bay's rib flexing in-plane by the SAME amount along the vault's
+    # length, which the existing inter-bay-only bracing ('brace'/
+    # 'edge_brace') cannot see since that mode has no relative inter-bay
+    # motion. The fix is an intra-rib skip-one diagonal (role='rib_diag')
+    # bracing each rib within its own plane, independent of every other bay.
+    mesh = sg.barrel_vault(span=8.0, rise=2.0, length=6.0, n_arch=n_arch,
+                            n_bays=n_bays, double_layer=double_layer, depth=0.5)
+    assert _solves(mesh) is None
+
+
+@pytest.mark.parametrize('family', [sg.parabolic_vault, sg.elliptic_vault])
+@pytest.mark.parametrize('double_layer', [True, False])
+@pytest.mark.parametrize('n_arch', [2, 3, 6, 10])
+@pytest.mark.parametrize('n_bays', [1, 2, 3, 5])
+def test_extruded_arch_rib_is_stable_when_only_the_springing_lines_are_pinned(
+        n_bays, n_arch, double_layer, family):
+    # Same regression as the barrel_vault case above, for the shared
+    # _extruded_arch_grid() engine used by parabolic_vault/elliptic_vault.
+    mesh = family(span=8.0, rise=2.0, length=6.0, n_arch=n_arch, n_bays=n_bays,
+                   double_layer=double_layer, depth=0.5)
+    assert _solves(mesh) is None
 
 
 # ── dome ─────────────────────────────────────────────────────────────────────

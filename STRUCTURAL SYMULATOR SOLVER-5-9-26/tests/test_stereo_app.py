@@ -637,6 +637,111 @@ def test_legend_explains_the_dashed_over_capacity_line(app):
     assert any('over capacity' in t and 'utilisation' in t for t in texts)
 
 
+# ── didactic features: reactions, click-to-inspect, load %, utilization ─────
+
+def test_reaction_arrows_are_drawn_only_when_toggled_and_analyzed(app):
+    app.show_reactions.set(True)
+    app._draw()
+    assert len(app.canvas.find_withtag('reaction')) == 0   # not analyzed yet
+
+    app._analyze()
+    app._draw()
+    assert len(app.canvas.find_withtag('reaction')) > 0
+
+    app.show_reactions.set(False)
+    app._draw()
+    assert len(app.canvas.find_withtag('reaction')) == 0
+
+
+def test_clicking_a_rod_shows_its_force_and_utilization(app):
+    app._analyze()
+    pts = app._screen_positions()
+    m = app.members[0]
+    sx0, sy0 = pts[m['a']]
+    sx1, sy1 = pts[m['b']]
+    mx, my = (sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0
+
+    app._select_node_at(mx, my)
+    assert app.selected_member == 0
+    assert app.selected_nodes == set()
+    text = app.sel_label.cget('text')
+    assert 'Member 0' in text
+    assert 'N =' in text
+    assert 'utilization' in text
+
+
+def test_clicking_a_node_clears_any_selected_member(app):
+    app._analyze()
+    pts = app._screen_positions()
+    m = app.members[0]
+    sx0, sy0 = pts[m['a']]
+    sx1, sy1 = pts[m['b']]
+    app._select_node_at((sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0)
+    assert app.selected_member is not None
+
+    sx, sy = _screen_pos_of(app, 0)
+    app._select_node_at(sx, sy)
+    assert app.selected_member is None
+    assert app.selected_nodes == {0}
+
+
+def test_member_info_before_analysis_says_so(app):
+    app.results = None
+    app.selected_member = 0
+    app.selected_nodes = set()
+    app._sync_selection_fields()
+    assert 'Run' in app.sel_label.cget('text')
+
+
+def test_load_fraction_scales_deformation_and_force_linearly(app):
+    app._analyze()
+    app.show_deformed.set(True)
+    app.deform_scale.set(100)
+
+    app.load_fraction.set(100)
+    _deformed_full, disp_full = app._deformed_nodes_and_disp()
+    app.load_fraction.set(50)
+    _deformed_half, disp_half = app._deformed_nodes_and_disp()
+
+    for d_half, d_full in zip(disp_half, disp_full):
+        assert d_half == pytest.approx(d_full * 0.5, abs=1e-9)
+
+
+def test_load_fraction_zero_shows_no_displacement_and_no_load_arrows(app):
+    app._analyze()
+    app.show_deformed.set(True)
+    app.load_fraction.set(0)
+    _deformed, disp = app._deformed_nodes_and_disp()
+    assert all(d == pytest.approx(0.0) for d in disp)
+
+    app._draw()
+    assert len(app.canvas.find_withtag('load')) == 0
+
+
+def test_utilization_heat_map_colors_members_by_utilization_not_force(app):
+    app.chord_A.set(0.02)
+    app.web_A.set(0.02)
+    app._apply_sections()
+    app._analyze()
+
+    app.colour_by_util.set(True)
+    app.colour_by_force.set(True)   # util must win over force when both are on
+    app._draw()
+    util_colors = {app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')}
+
+    app.colour_by_util.set(False)
+    app._draw()
+    force_colors = {app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')}
+    assert util_colors != force_colors
+
+
+def test_utilization_heat_map_is_a_no_op_before_analysis(app):
+    app.results = None
+    app.member_checks = None
+    app.colour_by_util.set(True)
+    app._draw()   # must not raise
+
+
 # ── member report dialog ─────────────────────────────────────────────────────
 
 def test_member_report_requires_analysis_first(app):

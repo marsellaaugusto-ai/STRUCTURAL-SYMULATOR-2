@@ -66,6 +66,12 @@ DEFORM_GAMMA = 0.6
 DEFORM_MODE_DISPLACEMENT = 'Displacement'
 DEFORM_MODE_FORCE = 'Axial force'
 DEFORM_MODES = (DEFORM_MODE_DISPLACEMENT, DEFORM_MODE_FORCE)
+REACTION_COLOR = '#c2185b'
+UTIL_LOW = '#2e7d32'    # green -- well within capacity
+UTIL_MID = '#f9a825'    # amber -- approaching capacity
+UTIL_HIGH = '#c62828'   # red -- at or over capacity
+MEMBER_SEL_COLOR = '#e0522b'
+MEMBER_SEL_HIT_PX = 8
 
 DOF_LABELS = (('ux', 'Ux'), ('uy', 'Uy'), ('uz', 'Uz'),
               ('rx', 'Rx'), ('ry', 'Ry'), ('rz', 'Rz'))
@@ -103,6 +109,19 @@ QUICK_SUPPORT_FIXED = 'All suggested nodes: fixed'
 QUICK_SUPPORT_CLEAR = 'Clear all supports'
 QUICK_SUPPORT_CHOICES = (QUICK_SUPPORT_CUSTOM, QUICK_SUPPORT_PIN,
                          QUICK_SUPPORT_FIXED, QUICK_SUPPORT_CLEAR)
+
+
+def _point_segment_distance(px, py, ax, ay, bx, by):
+    """Shortest distance from point (px, py) to the line SEGMENT (not
+    infinite line) from (ax, ay) to (bx, by) -- used for click-to-inspect
+    hit-testing against a member's own screen-space line."""
+    dx, dy = bx - ax, by - ay
+    length_sq = dx * dx + dy * dy
+    if length_sq < 1e-9:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length_sq))
+    nx, ny = ax + t * dx, ay + t * dy
+    return math.hypot(px - nx, py - ny)
 
 
 def _lerp_hex(c1, c2, t):
@@ -150,6 +169,21 @@ def deform_color(disp_mm, max_disp_mm):
     return _lerp_hex(DEFORM_LOW, DEFORM_HIGH, frac)
 
 
+def util_color(util):
+    """Green-amber-red heat-map for a member's utilization (demand/
+    capacity ratio): green at 0, amber at 0.5, red at 1.0 and beyond --
+    unlike force_color (which reads sign and relative magnitude within
+    THIS model's own force range), this reads an ABSOLUTE, code-defined
+    threshold that is the same from one model to the next, so "red" always
+    means the same thing: at or over capacity."""
+    util = max(0.0, util)
+    if util <= 0.5:
+        return _lerp_hex(UTIL_LOW, UTIL_MID, util / 0.5)
+    if util <= 1.0:
+        return _lerp_hex(UTIL_MID, UTIL_HIGH, (util - 0.5) / 0.5)
+    return UTIL_HIGH
+
+
 class StereoApp(UnitsMixin):
     STORAGE_UNITS = units.storage_like('stereo storage', stress=units.MPA)
 
@@ -163,6 +197,7 @@ class StereoApp(UnitsMixin):
         self.member_checks = None
         self.err = None
         self.selected_nodes = set()
+        self.selected_member = None
         self._support_candidates = []
         self._load_nodes = {}
         self._load_glyphs = {}
@@ -257,6 +292,9 @@ class StereoApp(UnitsMixin):
         self.colour_by_force = tk.BooleanVar(value=True)
         tk.Checkbutton(g, text='Colour by force', variable=self.colour_by_force, bg=BG,
                        command=self._draw).pack(side='left')
+        self.colour_by_util = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Utilization heat-map', variable=self.colour_by_util, bg=BG,
+                       command=self._draw).pack(side='left', padx=(6, 0))
         self.show_deformed = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Show deformed', variable=self.show_deformed, bg=BG,
                        command=self._draw).pack(side='left', padx=(8, 0))
@@ -295,6 +333,20 @@ class StereoApp(UnitsMixin):
         self.show_loads = tk.BooleanVar(value=True)
         tk.Checkbutton(g, text='Load arrows', variable=self.show_loads, bg=BG,
                        command=self._draw).pack(side='left', padx=(6, 0))
+        self.show_reactions = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Reaction arrows', variable=self.show_reactions, bg=BG,
+                       command=self._draw).pack(side='left', padx=(6, 0))
+
+        self.toolbar_flow.separator()
+        g = self.toolbar_flow.group()
+        tk.Label(g, text='Load %:', bg=BG, font=('Helvetica', 9)).pack(side='left', padx=(0, 2))
+        self.load_fraction = tk.IntVar(value=100)
+        tk.Scale(g, from_=0, to=100, orient='horizontal', variable=self.load_fraction,
+                length=110, showvalue=True, command=lambda _v: self._draw()
+                ).pack(side='left')
+        tk.Label(g, text='(steps through the applied load; the solved '
+                       'model is linear, so this just scales the results)',
+                bg=BG, font=('Helvetica', 7), fg='#888').pack(side='left', padx=(4, 0))
 
         self.toolbar_flow.separator()
         g = self.toolbar_flow.group()
@@ -976,6 +1028,7 @@ class StereoApp(UnitsMixin):
         self.results = None
         self.member_checks = None
         self.selected_nodes = set()
+        self.selected_member = None
         self._reset_view(redraw=False)
         self._refresh_all()
 
@@ -1235,6 +1288,7 @@ class StereoApp(UnitsMixin):
             x1, y1 = self._lasso_cur
             found = set(self._nodes_in_screen_box(x0, y0, x1, y1))
             self.selected_nodes = (self.selected_nodes | found) if additive else found
+            self.selected_member = None
             self._sync_selection_fields()
         else:
             self._select_node_at(event.x, event.y, additive=additive)
@@ -1260,24 +1314,37 @@ class StereoApp(UnitsMixin):
 
     PX_PER_M = 20.0
 
+    def _load_frac(self):
+        """The 'Load %' slider as a 0..1 fraction. The solved model is
+        linear-elastic (small-deflection direct stiffness), so scaling
+        every applied load by this fraction scales every displacement,
+        member force and reaction by the EXACT same fraction (this is
+        superposition, not an approximation) -- letting the whole display
+        step through the load from 0% to 100% by just multiplying the
+        already-solved results, with no need to re-run the solver for
+        every slider tick."""
+        return max(0, min(100, self.load_fraction.get())) / 100.0
+
     def _deformed_nodes_and_disp(self):
         """World-space node positions offset by the solved displacement
-        times the scale slider, and each node's own (unscaled) displacement
-        magnitude in mm -- the same def_scale idiom truss_app.py uses, just
-        applied directly in metres since this view already works in world
-        units rather than pixels. Used only by the deformed-shape overlay:
-        the REST structure (self.nodes) is what everything else -- the
-        main render, click-select, the lasso -- always uses, so "Show
-        deformed" draws an additional green overlay in parallel rather
-        than moving the real structure out from under the mouse."""
-        scale = self.deform_scale.get()
+        times the scale slider AND the load-fraction slider, and each
+        node's own (unscaled by def_scale, but load-fraction-scaled)
+        displacement magnitude in mm -- the same def_scale idiom
+        truss_app.py uses, just applied directly in metres since this view
+        already works in world units rather than pixels. Used only by the
+        deformed-shape overlay: the REST structure (self.nodes) is what
+        everything else -- the main render, click-select, the lasso --
+        always uses, so "Show deformed" draws an additional green overlay
+        in parallel rather than moving the real structure out from under
+        the mouse."""
+        scale = self.deform_scale.get() * self._load_frac()
         deformed, disp_mm = [], []
         for (x, y, z), nr in zip(self.nodes, self.results['node_res']):
             ux, uy, uz = nr['ux'], nr['uy'], nr['uz']
             deformed.append((x + ux / 1000.0 * scale,
                             y + uy / 1000.0 * scale,
                             z + uz / 1000.0 * scale))
-            disp_mm.append(math.sqrt(ux * ux + uy * uy + uz * uz))
+            disp_mm.append(math.sqrt(ux * ux + uy * uy + uz * uz) * self._load_frac())
         return deformed, disp_mm
 
     def _draw(self):
@@ -1309,7 +1376,9 @@ class StereoApp(UnitsMixin):
         if show_def:
             self._draw_deformed_overlay(c, to_screen)
 
-        by_force = self.colour_by_force.get() and self.results is not None
+        frac = self._load_frac()
+        by_util = self.colour_by_util.get() and self.member_checks is not None
+        by_force = self.colour_by_force.get() and self.results is not None and not by_util
         max_abs_N = 0.0
         if by_force:
             max_abs_N = max((abs(mr['N']) for mr in self.results['member_res']), default=0.0)
@@ -1330,22 +1399,38 @@ class StereoApp(UnitsMixin):
                 sx0, sy0 = to_screen(ax, ay)
                 sx1, sy1 = to_screen(bx, by)
                 over = False
+                chk = self.member_checks[i] if self.member_checks and i < len(self.member_checks) \
+                    else None
+                # 'Load %' scales linearly through: N and utilization both
+                # scale exactly with the applied load in a linear-elastic
+                # solve (see _load_frac's own docstring), so stepping the
+                # slider down shows the SAME model at a lighter load,
+                # colours included, not just a smaller deformed shape.
                 if ref_grey is not None:
                     color = ref_grey
+                elif by_util:
+                    util = chk['util'] * frac if chk and chk.get('checked') else 0.0
+                    color = util_color(util)
                 elif by_force:
-                    N = self.results['member_res'][i]['N']
+                    N = self.results['member_res'][i]['N'] * frac
                     color = force_color(N, max_abs_N)
                 else:
                     color = MEMBER_RIGID_COLOR if m.get('conn') == 'rigid' else MEMBER_PIN_COLOR
                 width = 2
-                if self.member_checks and i < len(self.member_checks) and \
-                   self.member_checks[i].get('checked') and self.member_checks[i]['util'] > 1.0:
+                if chk and chk.get('checked') and chk['util'] * frac > 1.0:
                     over = True
                     width = 3
+                if i == self.selected_member:
+                    width = max(width, 4)
                 kw = {'fill': color, 'width': width, 'tags': 'member'}
                 if over:
                     kw['dash'] = (5, 3)
                 c.create_line(sx0, sy0, sx1, sy1, **kw)
+                if i == self.selected_member:
+                    # A halo drawn on top so the selected member reads
+                    # clearly regardless of whatever colour mode is active.
+                    c.create_line(sx0, sy0, sx1, sy1, fill=MEMBER_SEL_COLOR, width=1,
+                                 dash=(2, 2), tags='member')
 
             support_nodes = {s['node'] for s in self.supports
                              if any(sm.support_restraints(s).values())}
@@ -1391,13 +1476,16 @@ class StereoApp(UnitsMixin):
             if self.show_loads.get():
                 self._draw_load_arrows(c, to_screen)
 
+            if self.show_reactions.get() and self.results is not None:
+                self._draw_reaction_arrows(c, to_screen, proj)
+
         if self._lasso_dragging and self._lasso_cur is not None:
             x0, y0 = self._lasso_press
             x1, y1 = self._lasso_cur
             c.create_rectangle(x0, y0, x1, y1, outline='#333333', dash=(5, 3),
                                stipple='gray12', fill='#333333', tags='lasso')
 
-        self._draw_legend(c, by_force, show_def, deformed_only)
+        self._draw_legend(c, by_force, show_def, deformed_only, by_util)
         self._to_screen_cache = to_screen   # for hit-testing on click
 
     def _reference_grey(self):
@@ -1434,6 +1522,7 @@ class StereoApp(UnitsMixin):
         proj_def = [self._project(x, y, z) for x, y, z in deformed]
         max_disp = max(disp_mm, default=0.0)
         by_force_mode = self.deform_color_mode.get() == DEFORM_MODE_FORCE
+        frac = self._load_frac()
         max_abs_N = 0.0
         if by_force_mode:
             max_abs_N = max((abs(mr['N']) for mr in self.results['member_res']), default=0.0)
@@ -1445,7 +1534,7 @@ class StereoApp(UnitsMixin):
             sx0, sy0 = to_screen(ax, ay)
             sx1, sy1 = to_screen(bx, by)
             if by_force_mode:
-                color = force_color(self.results['member_res'][i]['N'], max_abs_N)
+                color = force_color(self.results['member_res'][i]['N'] * frac, max_abs_N)
             else:
                 color = deform_color((disp_mm[a] + disp_mm[b]) / 2.0, max_disp)
             c.create_line(sx0, sy0, sx1, sy1, fill=color, width=2, tags='deform')
@@ -1471,8 +1560,16 @@ class StereoApp(UnitsMixin):
         common.LoadScale exactly the way every other tab draws a load
         glyph, so a model with loads spanning orders of magnitude still
         shows visible contrast at every node instead of one huge arrow and
-        a field of invisible stubs."""
+        a field of invisible stubs. Shrinks with the 'Load %' slider (the
+        arrows show the load actually being analyzed right now, not just
+        the full specified load) while the underlying LoadScale keeps
+        using the FULL-load magnitudes as its reference band, so easing
+        the slider down shrinks the arrows smoothly instead of having them
+        all rescale relative to a shrinking max."""
         if not self._load_glyphs:
+            return
+        frac = self._load_frac()
+        if frac < 1e-9:
             return
         mags = [math.sqrt(fx * fx + fy * fy + fz * fz)
                for fx, fy, fz in self._load_glyphs.values()]
@@ -1492,14 +1589,57 @@ class StereoApp(UnitsMixin):
             d = math.hypot(ddx, ddy)
             if d < 1e-9:
                 continue
-            length = scale(mag)
+            length = scale(mag) * frac
             ddx, ddy = ddx / d * length, ddy / d * length
             # Arrowhead points AT the node (the load acts ON it); the tail
             # trails away in the load's own direction.
             c.create_line(sx0 - ddx, sy0 - ddy, sx0, sy0, fill=LOAD_COLOR, width=1.5,
                          arrow=tk.LAST, arrowshape=(5, 6, 2), tags='load')
 
-    def _draw_legend(self, c, by_force, show_def=False, deformed_only=False):
+    def _draw_reaction_arrows(self, c, to_screen, proj):
+        """Arrows at every support showing its solved reaction force
+        (Fx, Fy, Fz -- moments are not drawn, there is no clean glyph for
+        a 3D couple), sized the same LoadScale way as the applied-load
+        arrows so the two are visually comparable, and drawn in a distinct
+        colour so the two are never confused with each other. The tail
+        sits at the support node and the arrow points AWAY from it, in the
+        reaction's own direction -- the opposite convention from load
+        arrows (which point INTO the node) -- since a reaction is the
+        support pushing back on the structure, not a load acting on it.
+        Scales with the 'Load %' slider exactly like everything else that
+        reads self.results, since a reaction scales linearly with the
+        applied load in a linear-elastic solve."""
+        reactions = self.results.get('reactions', {})
+        if not reactions:
+            return
+        frac = self._load_frac()
+        if frac < 1e-9:
+            return
+        mags = {i: math.sqrt(r.get('Fx', 0.0) ** 2 + r.get('Fy', 0.0) ** 2
+                             + r.get('Fz', 0.0) ** 2) for i, r in reactions.items()}
+        scale = LoadScale.of(mags.values(), 6.0, 24.0)
+        eps = 1e-3
+        for i, mag in mags.items():
+            if mag < 1e-9 or not (0 <= i < len(self.nodes)):
+                continue
+            r = reactions[i]
+            fx, fy, fz = r.get('Fx', 0.0), r.get('Fy', 0.0), r.get('Fz', 0.0)
+            x, y, z = self.nodes[i]
+            ux_, uy_, uz_ = fx / mag, fy / mag, fz / mag
+            px0, py0, _ = self._project(x, y, z)
+            px1, py1, _ = self._project(x + ux_ * eps, y + uy_ * eps, z + uz_ * eps)
+            sx0, sy0 = to_screen(px0, py0)
+            sx1, sy1 = to_screen(px1, py1)
+            ddx, ddy = sx1 - sx0, sy1 - sy0
+            d = math.hypot(ddx, ddy)
+            if d < 1e-9:
+                continue
+            length = scale(mag) * frac
+            ddx, ddy = ddx / d * length, ddy / d * length
+            c.create_line(sx0, sy0, sx0 + ddx, sy0 + ddy, fill=REACTION_COLOR, width=2,
+                         arrow=tk.LAST, arrowshape=(6, 7, 3), tags='reaction')
+
+    def _draw_legend(self, c, by_force, show_def=False, deformed_only=False, by_util=False):
         x0, y0 = 10, 10
         y = y0
 
@@ -1513,7 +1653,11 @@ class StereoApp(UnitsMixin):
             y += 15
 
         if not deformed_only:
-            if by_force:
+            if by_util:
+                row(UTIL_LOW, 'utilization ~0')
+                row(UTIL_MID, 'utilization 0.5')
+                row(UTIL_HIGH, 'utilization >= 1.0 (at/over capacity)')
+            elif by_force:
                 row(TENSION_HIGH, 'tension')
                 row(COMPRESSION_HIGH, 'compression')
                 row(NEAR_ZERO_COLOR, '~0 force')
@@ -1528,6 +1672,8 @@ class StereoApp(UnitsMixin):
             # over capacity and turn dashed, with no visible link back to
             # this line otherwise).
             row('#555555', 'dashed = over capacity (utilisation > 1.0)', dashed=True)
+            if self.show_reactions.get() and self.results is not None:
+                row(REACTION_COLOR, 'reaction (support pushing back)')
 
         if show_def:
             if self.deform_color_mode.get() == DEFORM_MODE_FORCE:
@@ -1542,10 +1688,17 @@ class StereoApp(UnitsMixin):
                              text=f'deformed shape (white→green: 0–{max_disp:.1f} mm)')
                 y += 15
 
+        frac = self._load_frac()
+        if frac < 0.999:
+            c.create_text(x0, y, anchor='w', font=('Helvetica', 8, 'bold'), fill='#a3241a',
+                         text=f'Load: {frac * 100:.0f}% of applied')
+            y += 15
+
         hint_y = y + 6
         c.create_text(x0, hint_y, anchor='nw', font=('Helvetica', 8), fill='#888',
                      text='left-drag: lasso select (+Shift: add)  ·  right-drag: orbit\n'
-                          'wheel: zoom  ·  middle-drag: pan  ·  □ box = support')
+                          'wheel: zoom  ·  middle-drag: pan  ·  □ box = support\n'
+                          'click a rod to inspect its force/utilization')
 
     def _screen_positions(self):
         """Every node's current on-screen (sx, sy) at its REST position, in
@@ -1575,13 +1728,18 @@ class StereoApp(UnitsMixin):
         """Push the current single-node selection (if exactly one node is
         selected) into the typed node fields and the selection/BC panels --
         the same sync a click always did, now shared with the lasso path
-        too so a one-node lasso box behaves identically to a plain click."""
+        too so a one-node lasso box behaves identically to a plain click.
+        Falls through to showing the selected MEMBER's own force/
+        utilization readout when a rod, not a node, was clicked."""
         best = self.selected_node
         if best is None:
-            if len(self.selected_nodes) > 1:
+            if self.selected_member is not None:
+                self._show_member_info(self.selected_member)
+            elif len(self.selected_nodes) > 1:
                 self.sel_label.config(text=f'{len(self.selected_nodes)} nodes selected.')
             else:
-                self.sel_label.config(text='(click, or drag a box, to select node(s))')
+                self.sel_label.config(
+                    text='(click, or drag a box, to select node(s); click a rod to inspect it)')
             return
         self.sup_node_var.set(best)
         self.ld_node_var.set(best)
@@ -1594,6 +1752,35 @@ class StereoApp(UnitsMixin):
             for d, _ in DOF_LABELS:
                 self.dof_vars[d].set(r[d])
 
+    def _show_member_info(self, i):
+        """The click-to-inspect readout for member `i`: its endpoints/
+        role/connectivity always, plus its solved axial force and CIRSOC
+        utilization/governing check once ▶ Analyze has run -- the quick,
+        one-click alternative to opening the full Member Report table for
+        just one rod. Scales N and utilization by the 'Load %' slider like
+        every other results display in this tab."""
+        m = self.members[i]
+        frac = self._load_frac()
+        lines = [f'Member {i}: nodes {m["a"]}–{m["b"]}',
+                f'role={m.get("role", "web")}  conn={m.get("conn", "pin")}']
+        if self.results is not None and i < len(self.results['member_res']):
+            N = self.results['member_res'][i]['N'] * frac
+            sense = 'tension' if N >= 0 else 'compression'
+            lines.append(f'N = {N:+.2f} kN ({sense})')
+            if self.member_checks and i < len(self.member_checks):
+                chk = self.member_checks[i]
+                if chk.get('checked'):
+                    util = chk['util'] * frac
+                    status = 'OVER' if util > 1.0 else 'OK'
+                    lines.append(f'utilization = {util:.2f} ({status})')
+                    if chk.get('governing'):
+                        lines.append(f'governs: {chk["governing"]}')
+                elif chk.get('note'):
+                    lines.append(chk['note'])
+        else:
+            lines.append('Run ▶ Analyze for force/utilization.')
+        self.sel_label.config(text='\n'.join(lines))
+
     def _select_node_at(self, ex, ey, additive=False):
         if not self.nodes:
             return
@@ -1602,18 +1789,45 @@ class StereoApp(UnitsMixin):
             d = math.hypot(sx - ex, sy - ey)
             if d < best_d:
                 best, best_d = i, d
-        if best is None:
+        if best is not None:
+            if additive:
+                self.selected_nodes.symmetric_difference_update({best})
+            else:
+                self.selected_nodes = {best}
+            self.selected_member = None
+            self._sync_selection_fields()
+            self._draw()
+            return
+        # No node close enough -- try the nearest rod instead, so a click
+        # on empty space near a member still does something useful.
+        mi = self._select_member_at(ex, ey)
+        if mi is not None:
+            self.selected_member = mi
             if not additive:
                 self.selected_nodes = set()
-                self._sync_selection_fields()
-                self._draw()
+            self._sync_selection_fields()
+            self._draw()
             return
-        if additive:
-            self.selected_nodes.symmetric_difference_update({best})
-        else:
-            self.selected_nodes = {best}
-        self._sync_selection_fields()
-        self._draw()
+        if not additive:
+            self.selected_nodes = set()
+            self.selected_member = None
+            self._sync_selection_fields()
+            self._draw()
+
+    def _select_member_at(self, ex, ey):
+        """The nearest member to screen point (ex, ey), within
+        MEMBER_SEL_HIT_PX of its own line segment, or None -- shares
+        _screen_positions()'s REST-position frame so a rod click always
+        targets the same geometry a node click would."""
+        pts = self._screen_positions()
+        best, best_d = None, MEMBER_SEL_HIT_PX
+        for i, m in enumerate(self.members):
+            sx0, sy0 = pts[m['a']]
+            sx1, sy1 = pts[m['b']]
+            d = _point_segment_distance(ex, ey, sx0, sy0, sx1, sy1)
+            if d < best_d:
+                best, best_d = i, d
+        return best
 
     # ── refresh / lists / results text ──────────────────────────────────────
     def _refresh_all(self):
@@ -1744,6 +1958,7 @@ class StereoApp(UnitsMixin):
         self.results = None
         self.member_checks = None
         self.selected_nodes = set()
+        self.selected_member = None
         self._refresh_all()
 
     # ── units ────────────────────────────────────────────────────────────────

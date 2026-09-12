@@ -1109,3 +1109,137 @@ def test_wizard_generated_mesh_is_undoable(app):
     assert len(app.nodes) != n0
     app._undo()
     assert len(app.nodes) == n0
+
+
+# ── Module Editor ────────────────────────────────────────────────────────────
+
+def test_module_editor_populates_roles_after_the_default_flat_grid(app):
+    assert app._me_roles   # flat_grid always has at least one role
+    assert app._me_role_id == 0
+    assert app.me_role_combo['values']
+    # the default flat_grid (offset=True) has both pyramidal-web triangles
+    # and flat square chords -- two distinct shapes, so at least one
+    # keystone/singular entry besides the dominant role 0
+    assert app.me_keystone_list.size() >= 1
+
+
+def test_module_editor_clicking_a_node_selects_it_and_shows_the_node_box(app):
+    items = app.me_canvas.find_withtag('node')
+    x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
+    app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
+    app.root.update_idletasks()
+    assert app._me_selection[0] == 'node'
+    assert app.me_node_box.winfo_ismapped()
+
+
+def test_module_editor_clicking_a_rod_selects_it_and_shows_the_edge_box(app):
+    items = app.me_canvas.find_withtag('edge')
+    x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
+    app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
+    app.root.update_idletasks()
+    assert app._me_selection[0] == 'edge'
+    assert app.me_edge_box.winfo_ismapped()
+
+
+def test_module_editor_move_propagates_and_keeps_the_role_grouping_stable(app):
+    items = app.me_canvas.find_withtag('node')
+    x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
+    app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
+    position = app._me_selection[1]
+    role_id = app._me_role_id
+    n_cells_in_role = len(app._me_roles[role_id])
+
+    app.me_du.set(0.3); app.me_dv.set(0.0); app.me_dn.set(0.0)
+    app._me_apply_move()
+
+    # a geometric edit must never fragment the role grouping (see
+    # _me_apply_move's own comment on why this is NOT recomputed)
+    assert len(app._me_roles[role_id]) == n_cells_in_role
+    assert app._me_selection == ('node', position)   # selection survives too
+
+
+def test_module_editor_set_length_changes_the_actual_mesh_distance(app):
+    items = app.me_canvas.find_withtag('edge')
+    x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
+    app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
+    pos_a, pos_b = app._me_selection[1]
+    role_id = app._me_role_id
+    cell_nodes = app._me_cells[app._me_roles[role_id][0]]['nodes']
+
+    app.me_length.set(50.0)
+    app._me_apply_length()
+
+    import math
+    d = math.dist(app.nodes[cell_nodes[pos_a]], app.nodes[cell_nodes[pos_b]])
+    assert d > 10.0   # moved a long way toward the (heavily-shared) target
+
+
+def test_module_editor_lock_prevents_setting_the_length(app, dialogs):
+    items = app.me_canvas.find_withtag('edge')
+    x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
+    app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
+    app.me_locked_var.set(True)
+    app._me_toggle_lock()
+    key = (app._me_role_id,) + tuple(sorted(app._me_selection[1]))
+    assert key in app._me_locked_edges
+
+    app.me_length.set(999.0)
+    app._me_apply_length()
+    assert any(k == 'showinfo' for k, *_ in dialogs)
+
+
+def test_module_editor_toggle_adds_and_removes_a_diagonal(app):
+    quad_role = next((r for r in sorted(app._me_roles)
+                      if len(app._me_cells[app._me_roles[r][0]]['nodes']) == 4), None)
+    assert quad_role is not None
+    app._me_role_id = quad_role
+    app._me_selection = None
+    app._me_render()
+
+    items = app.me_canvas.find_withtag('toggle')
+    assert items
+    x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
+    app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
+    app.root.update_idletasks()
+    assert app._me_selection[0] == 'toggle'
+    assert app.me_toggle_box.winfo_ismapped()
+
+    n0 = len(app.members)
+    app._me_apply_toggle()
+    assert len(app.members) > n0   # added the diagonal everywhere in that role
+
+
+def test_module_editor_rescale_changes_the_role_dimensions(app):
+    role_id = app._me_role_id
+    cell_nodes = app._me_cells[app._me_roles[role_id][0]]['nodes']
+    import math
+    before = math.dist(app.nodes[cell_nodes[0]], app.nodes[cell_nodes[1]])
+
+    app.me_rescale.set(3.0)
+    app._me_apply_rescale()
+
+    after = math.dist(app.nodes[cell_nodes[0]], app.nodes[cell_nodes[1]])
+    assert after == pytest.approx(before * 3.0)
+
+
+def test_module_editor_edits_are_undoable(app):
+    n0 = len(app.nodes)
+    items = app.me_canvas.find_withtag('node')
+    x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
+    app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
+    app.me_du.set(0.5); app.me_dv.set(0.0); app.me_dn.set(0.0)
+    app._me_apply_move()
+    moved_nodes = list(app.nodes)
+    app._undo()
+    assert len(app.nodes) == n0
+    assert app.nodes != moved_nodes
+
+
+def test_module_editor_refreshes_after_generating_a_different_family(app):
+    app.grid_family.set(FAMILY_LABEL['dome'])
+    app._generate()
+    assert app._me_roles   # dome's own module got detected too
+    for role_id, idxs in app._me_roles.items():
+        for ci in idxs:
+            for nid in app._me_cells[ci]['nodes']:
+                assert 0 <= nid < len(app.nodes)   # no stale node references

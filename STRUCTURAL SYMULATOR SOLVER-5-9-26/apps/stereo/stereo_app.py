@@ -44,6 +44,8 @@ from apps.stereo import expr_math as em
 BG = '#f0f0ee'
 CANVAS_BG = '#ffffff'
 PANEL_W = 300
+MODULE_PANEL_W = 300
+MODULE_CANVAS_SIZE = 260
 
 NODE_COLOR = '#1a1a1a'
 NODE_SEL_COLOR = '#e0522b'
@@ -216,6 +218,19 @@ class StereoApp(UnitsMixin):
         self._undo_stack = []
         self._redo_stack = []
 
+        # Module Editor state -- see _build_module_editor_panel. Cells/
+        # roles are recomputed only on a real topology change (a fresh
+        # generate, or one of this editor's own edits), not on every
+        # _refresh_all (find_cells is O(members * degree^2); most
+        # _refresh_all calls -- a colour toggle, a load edit -- touch
+        # neither nodes nor members and would make that work for nothing).
+        self._me_cells = []
+        self._me_roles = {}
+        self._me_role_id = 0
+        self._me_selection = None   # ('node', position) or ('edge', (pos_a, pos_b))
+        self._me_locked_edges = set()   # {(role_id, min(pos_a,pos_b), max(pos_a,pos_b))}
+        self._me_drag = None
+
         self._build_ui()
         self.init_units(repaint=self._on_units_changed)
         self._generate(push_undo=False)
@@ -377,6 +392,16 @@ class StereoApp(UnitsMixin):
         self.panel_outer = ScrollPanel(main, width=PANEL_W, bg=BG, bd=1, relief='solid')
         self.panel_outer.pack(side='left', fill='y', padx=(0, 6))
 
+        # The Module Editor panel is ALSO packed before the expanding
+        # canvas, same reasoning as the left sidebar above (see
+        # ScrollPanel's own docstring): pack(side='right') alone is not
+        # enough -- pack allocates space in PACKING ORDER regardless of
+        # side, so packing it AFTER an expand=True canvas would find
+        # nothing left to claim.
+        self.module_panel_outer = ScrollPanel(main, width=MODULE_PANEL_W, bg=BG, bd=1,
+                                              relief='solid')
+        self.module_panel_outer.pack(side='right', fill='y', padx=(6, 0))
+
         canvas_frame = tk.Frame(main, bg=BG)
         canvas_frame.pack(side='left', fill='both', expand=True)
         self.zc = ZoomCanvas(canvas_frame, bg=CANVAS_BG, bd=1, relief='solid')
@@ -423,6 +448,9 @@ class StereoApp(UnitsMixin):
 
         self._build_panel(self.panel_outer.interior)
         self.panel_outer.fit_to_content()
+
+        self._build_module_editor_panel(self.module_panel_outer.interior)
+        self.module_panel_outer.fit_to_content()
 
         self._on_generator_change()
 
@@ -951,6 +979,496 @@ class StereoApp(UnitsMixin):
         self.selected_nodes = set(apex)
         self.results = None
         self.member_checks = None
+        self._refresh_all()
+
+    # ── Module Editor: cell/role detection display + role-wide edits ────────
+    def _build_module_editor_panel(self, parent):
+        """The right-hand 'Module Editor' panel: shows one representative
+        cell of the grid's own dominant repeating shape (or, via the
+        keystone list below, a one-off shape like a dome's apex fan or a
+        vault's end panel), locally flattened onto that cell's own (u, v)
+        plane -- see stereo_geometry.cell_local_basis -- so it reads the
+        same whether the real grid is flat or wrapped around a dome.
+        Every edit here (drag a node, set/lock a rod's length, toggle a
+        rod on/off, rescale) is applied immediately and PROPAGATED to
+        every other cell sharing that same role -- see
+        stereo_geometry.move_role_node/set_role_member_length/
+        toggle_role_member/rescale_role_cells for exactly what that means
+        for a corner shared between cells, and for a locked rod."""
+        tk.Label(parent, text='Module Editor', bg=BG, font=('Helvetica', 10, 'bold')
+                ).pack(anchor='w', padx=6, pady=(6, 2))
+
+        role_row = tk.Frame(parent, bg=BG)
+        role_row.pack(fill='x', padx=6, pady=2)
+        tk.Label(role_row, text='Editing:', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        self.me_role_var = tk.StringVar(master=parent, value='')
+        self.me_role_combo = ttk.Combobox(role_row, textvariable=self.me_role_var,
+                                          state='readonly', width=22)
+        self.me_role_combo.pack(side='left', padx=(4, 0))
+        self.me_role_combo.bind('<<ComboboxSelected>>', lambda e: self._me_on_role_picked())
+
+        self.me_warning = tk.Label(parent, text='', bg='#fdf0e0', fg='#a3241a',
+                                   font=('Helvetica', 8), wraplength=MODULE_PANEL_W - 20,
+                                   justify='left')
+
+        self.me_canvas = tk.Canvas(parent, width=MODULE_CANVAS_SIZE, height=MODULE_CANVAS_SIZE,
+                                   bg='#ffffff', bd=1, relief='solid')
+        self.me_canvas.pack(padx=6, pady=(4, 2))
+        self.me_canvas.bind('<ButtonPress-1>', self._me_on_press)
+        self.me_canvas.bind('<B1-Motion>', self._me_on_drag)
+        self.me_canvas.bind('<ButtonRelease-1>', self._me_on_release)
+
+        self.me_info = tk.Label(parent, text='(no module to show yet -- generate a grid)',
+                                bg=BG, fg='#666', font=('Helvetica', 8),
+                                wraplength=MODULE_PANEL_W - 20, justify='left')
+        self.me_info.pack(fill='x', padx=6, pady=(0, 4))
+
+        # -- node editing (shown when a node is selected) --
+        self.me_node_box = tk.LabelFrame(parent, text='Selected node', bg=BG,
+                                         font=('Helvetica', 8, 'bold'))
+        tk.Label(self.me_node_box, text='Drag it above, or nudge by (m):', bg=BG,
+                font=('Helvetica', 8), fg='#666').pack(anchor='w', padx=4, pady=(2, 0))
+        self.me_du = tk.DoubleVar(master=parent, value=0.0)
+        self.me_dv = tk.DoubleVar(master=parent, value=0.0)
+        self.me_dn = tk.DoubleVar(master=parent, value=0.0)
+        for label, var in (('du:', self.me_du), ('dv:', self.me_dv), ('dn:', self.me_dn)):
+            row = tk.Frame(self.me_node_box, bg=BG)
+            row.pack(fill='x', padx=4, pady=1)
+            tk.Label(row, text=label, bg=BG, width=4, anchor='w', font=('Helvetica', 8)
+                    ).pack(side='left')
+            tk.Entry(row, textvariable=var, width=8, font=('Helvetica', 8)).pack(side='left')
+        tk.Button(self.me_node_box, text='Move', command=self._me_apply_move
+                 ).pack(padx=4, pady=(2, 4), anchor='w')
+
+        # -- edge editing (shown when a rod is selected) --
+        self.me_edge_box = tk.LabelFrame(parent, text='Selected rod', bg=BG,
+                                         font=('Helvetica', 8, 'bold'))
+        len_row = tk.Frame(self.me_edge_box, bg=BG)
+        len_row.pack(fill='x', padx=4, pady=1)
+        tk.Label(len_row, text='Length (m):', bg=BG, font=('Helvetica', 8)).pack(side='left')
+        self.me_length = tk.DoubleVar(master=parent, value=0.0)
+        tk.Entry(len_row, textvariable=self.me_length, width=8, font=('Helvetica', 8)
+                ).pack(side='left', padx=(4, 0))
+        tk.Button(self.me_edge_box, text='Set length', command=self._me_apply_length
+                 ).pack(padx=4, pady=(2, 2), anchor='w')
+        self.me_locked_var = tk.BooleanVar(master=parent, value=False)
+        tk.Checkbutton(self.me_edge_box, text='Lock this rod\'s length', bg=BG,
+                      variable=self.me_locked_var, font=('Helvetica', 8),
+                      command=self._me_toggle_lock).pack(anchor='w', padx=4, pady=(0, 4))
+
+        # -- toggle-diagonal editing (shown when a potential rod is selected) --
+        self.me_toggle_box = tk.LabelFrame(parent, text='Potential rod', bg=BG,
+                                           font=('Helvetica', 8, 'bold'))
+        tk.Label(self.me_toggle_box, text='This diagonal does not exist yet.', bg=BG,
+                font=('Helvetica', 8), fg='#666').pack(anchor='w', padx=4, pady=(2, 0))
+        tk.Button(self.me_toggle_box, text='Add it (every matching cell)',
+                 command=self._me_apply_toggle).pack(padx=4, pady=(2, 4), anchor='w')
+
+        # -- whole-module rescale --
+        rescale_box = tk.LabelFrame(parent, text='Rescale this module', bg=BG,
+                                    font=('Helvetica', 8, 'bold'))
+        rescale_box.pack(fill='x', padx=6, pady=4)
+        tk.Label(rescale_box, text='Keeps its current shape, just bigger/smaller.', bg=BG,
+                font=('Helvetica', 8), fg='#666', wraplength=MODULE_PANEL_W - 30,
+                justify='left').pack(anchor='w', padx=4, pady=(2, 0))
+        rrow = tk.Frame(rescale_box, bg=BG)
+        rrow.pack(fill='x', padx=4, pady=(2, 4))
+        tk.Label(rrow, text='Factor:', bg=BG, font=('Helvetica', 8)).pack(side='left')
+        self.me_rescale = tk.DoubleVar(master=parent, value=1.0)
+        tk.Entry(rrow, textvariable=self.me_rescale, width=6, font=('Helvetica', 8)
+                ).pack(side='left', padx=(4, 4))
+        tk.Button(rrow, text='Apply', command=self._me_apply_rescale).pack(side='left')
+
+        # -- keystone / singular modules --
+        keystone_box = tk.LabelFrame(parent, text='Keystone / singular modules', bg=BG,
+                                     font=('Helvetica', 9, 'bold'))
+        keystone_box.pack(fill='x', padx=6, pady=(4, 8))
+        tk.Label(keystone_box, text="Shapes that occur only once, or far less often than "
+                               "the grid's main module (an apex fan, an end panel...). "
+                               "Editing one of these can break the topology or coordinate "
+                               "system in ways that don't apply anywhere else.",
+                bg=BG, fg='#666', font=('Helvetica', 8), wraplength=MODULE_PANEL_W - 30,
+                justify='left').pack(anchor='w', padx=4, pady=(2, 2))
+        self.me_keystone_list = tk.Listbox(keystone_box, height=5, font=('Helvetica', 8),
+                                           exportselection=False)
+        self.me_keystone_list.pack(fill='x', padx=4, pady=(0, 4))
+        self.me_keystone_list.bind('<<ListboxSelect>>', lambda e: self._me_on_keystone_picked())
+
+    def _me_maybe_refresh_topology(self):
+        """Recompute cells/roles only when the node/member COUNT has
+        actually changed since the last check -- a cheap fingerprint that
+        catches every real topology change this tab makes (generate,
+        delete, undo/redo, add-on features, this editor's own edits)
+        without re-running find_cells (O(members * degree^2)) on every
+        _refresh_all call, most of which touch neither."""
+        fingerprint = (len(self.nodes), len(self.members))
+        if fingerprint == getattr(self, '_me_fingerprint', None):
+            return
+        self._me_fingerprint = fingerprint
+        self._me_refresh_topology()
+
+    def _me_refresh_topology(self):
+        if not self.nodes:
+            self._me_cells, self._me_roles = [], {}
+            self._me_populate_role_list()
+            self._me_render()
+            return
+        self._me_cells = sg.find_cells(self.nodes, self.members)
+        classified = sg.classify_cell_roles(self.nodes, self._me_cells)
+        self._me_roles = classified['roles']
+        if self._me_role_id not in self._me_roles:
+            self._me_role_id = 0 if self._me_roles else None
+        self._me_selection = None
+        self._me_populate_role_list()
+        self._me_render()
+
+    def _me_role_label(self, role_id):
+        n = len(self._me_roles.get(role_id, ()))
+        shape = 'triangle' if self._me_cells and self._me_roles.get(role_id) and \
+            len(self._me_cells[self._me_roles[role_id][0]]['nodes']) == 3 else 'quad'
+        tag = ' (dominant)' if role_id == 0 else ''
+        return f'Module {role_id} -- {shape}, {n} cell(s){tag}'
+
+    def _me_populate_role_list(self):
+        role_ids = sorted(self._me_roles)
+        labels = [self._me_role_label(r) for r in role_ids]
+        self.me_role_combo['values'] = labels
+        if self._me_role_id is not None and self._me_role_id in role_ids:
+            self.me_role_var.set(self._me_role_label(self._me_role_id))
+        elif labels:
+            self._me_role_id = role_ids[0]
+            self.me_role_var.set(labels[0])
+        else:
+            self.me_role_var.set('')
+
+        self.me_keystone_list.delete(0, tk.END)
+        for r in role_ids:
+            if r == 0:
+                continue
+            self.me_keystone_list.insert(tk.END, self._me_role_label(r))
+
+    def _me_on_role_picked(self):
+        role_ids = sorted(self._me_roles)
+        try:
+            idx = self.me_role_combo['values'].index(self.me_role_var.get())
+            self._me_role_id = role_ids[idx]
+        except (ValueError, IndexError):
+            return
+        self._me_selection = None
+        self._me_render()
+
+    def _me_on_keystone_picked(self):
+        sel = self.me_keystone_list.curselection()
+        if not sel:
+            return
+        role_ids = [r for r in sorted(self._me_roles) if r != 0]
+        role_id = role_ids[sel[0]]
+        self._me_role_id = role_id
+        self.me_role_var.set(self._me_role_label(role_id))
+        self._me_selection = None
+        self._me_render()
+
+    # -- rendering --------------------------------------------------------
+    def _me_current_cell_nodes(self):
+        if self._me_role_id is None or self._me_role_id not in self._me_roles:
+            return None
+        idxs = self._me_roles[self._me_role_id]
+        if not idxs:
+            return None
+        return self._me_cells[idxs[0]]['nodes']
+
+    def _me_to_screen_fn(self, cell_nodes):
+        coords = [sg.cell_local_coords(self.nodes, cell_nodes, k)
+                 for k in range(len(cell_nodes))]
+        us = [p[0] for p in coords] + [0.0]
+        vs = [p[1] for p in coords] + [0.0]
+        umin, umax = min(us), max(us)
+        vmin, vmax = min(vs), max(vs)
+        span = max(umax - umin, vmax - vmin, 1e-6)
+        size = MODULE_CANVAS_SIZE
+        margin = 34
+        scale = (size - 2 * margin) / span
+
+        def to_screen(u, v):
+            return (margin + (u - umin) * scale, size - margin - (v - vmin) * scale)
+        return coords, to_screen, scale
+
+    def _me_render(self):
+        c = self.me_canvas
+        c.delete('all')
+        self.me_warning.pack_forget()
+        self.me_node_box.pack_forget()
+        self.me_edge_box.pack_forget()
+        self.me_toggle_box.pack_forget()
+
+        cell_nodes = self._me_current_cell_nodes()
+        if cell_nodes is None:
+            self.me_info.config(text='(no module to show yet -- generate a grid)')
+            return
+        if self._me_role_id != 0:
+            self.me_warning.config(
+                text='Editing a KEYSTONE/SINGULAR module: this shape does not repeat '
+                    'elsewhere, so an edit here only affects this one spot -- but it can '
+                    'still break the surrounding topology or coordinate system if the '
+                    'result no longer fits where this cell sits in the grid.')
+            self.me_warning.pack(fill='x', padx=6, pady=(0, 4), before=self.me_canvas)
+
+        n = len(cell_nodes)
+        coords, to_screen, scale = self._me_to_screen_fn(cell_nodes)
+        role_edges = {(i, (i + 1) % n) for i in range(n)}
+
+        # potential (missing) diagonals -- quads only, and guaranteed
+        # absent (see find_cells: a quad is never reported if either of
+        # its diagonals already exists)
+        if n == 4:
+            for pos_a, pos_b in ((0, 2), (1, 3)):
+                x0, y0 = to_screen(*coords[pos_a][:2])
+                x1, y1 = to_screen(*coords[pos_b][:2])
+                sel = self._me_selection == ('toggle', (pos_a, pos_b))
+                c.create_line(x0, y0, x1, y1, fill='#bbbbbb', dash=(4, 3),
+                             width=(3 if sel else 1.5),
+                             tags=('toggle', f'toggle{pos_a}_{pos_b}'))
+
+        # existing ring edges
+        for i in range(n):
+            pos_a, pos_b = i, (i + 1) % n
+            x0, y0 = to_screen(*coords[pos_a][:2])
+            x1, y1 = to_screen(*coords[pos_b][:2])
+            locked = (self._me_role_id, min(pos_a, pos_b), max(pos_a, pos_b)) \
+                in self._me_locked_edges
+            sel = self._me_selection == ('edge', (pos_a, pos_b))
+            color = '#a3241a' if locked else ('#1a6bbd' if sel else '#333333')
+            c.create_line(x0, y0, x1, y1, fill=color, width=(4 if sel else 2.5),
+                         tags=('edge', f'edge{pos_a}_{pos_b}'))
+
+        # nodes, coloured by their own n (out-of-plane) coordinate --
+        # amber toward +n, blue toward -n, greyish near the (u, v) plane
+        max_n = max((abs(p[2]) for p in coords), default=0.0) or 1.0
+        for k in range(n):
+            x, y = to_screen(*coords[k][:2])
+            frac = coords[k][2] / max_n
+            if abs(frac) < 0.05:
+                color = '#555555'
+            elif frac > 0:
+                color = _lerp_hex('#cccccc', '#c98a00', min(1.0, frac))
+            else:
+                color = _lerp_hex('#cccccc', '#1a6bbd', min(1.0, -frac))
+            sel = self._me_selection == ('node', k)
+            r = 8 if sel else 6
+            c.create_oval(x - r, y - r, x + r, y + r, fill=color,
+                         outline=('#e0522b' if sel else ''), width=2,
+                         tags=('node', f'node{k}'))
+            c.create_text(x, y - r - 8, text=str(k), font=('Helvetica', 8, 'bold'),
+                         fill='#333333')
+
+        self._me_show_selection_info(cell_nodes, coords)
+
+    def _me_show_selection_info(self, cell_nodes, coords):
+        sel = self._me_selection
+        if sel is None:
+            role_txt = self._me_role_label(self._me_role_id)
+            self.me_info.config(text=f'{role_txt}\nClick a node to move it, a rod to '
+                                     'set/lock its length, or a dashed line to add it.')
+            return
+        kind, payload = sel
+        if kind == 'node':
+            k = payload
+            u, v, n = coords[k]
+            self.me_info.config(text=f'Node {k}: u={u:.3f}  v={v:.3f}  n={n:.3f} (m, '
+                                     "in this cell's own local frame)")
+            self.me_du.set(0.0); self.me_dv.set(0.0); self.me_dn.set(0.0)
+            self.me_node_box.pack(fill='x', padx=6, pady=4, after=self.me_info)
+        elif kind == 'edge':
+            pos_a, pos_b = payload
+            length = math.dist(self.nodes[cell_nodes[pos_a]], self.nodes[cell_nodes[pos_b]])
+            locked = (self._me_role_id, min(pos_a, pos_b), max(pos_a, pos_b)) \
+                in self._me_locked_edges
+            self.me_info.config(text=f'Rod {pos_a}-{pos_b}: {length:.3f} m'
+                                     + (' (LOCKED)' if locked else ''))
+            self.me_length.set(round(length, 6))
+            self.me_locked_var.set(locked)
+            self.me_edge_box.pack(fill='x', padx=6, pady=4, after=self.me_info)
+        elif kind == 'toggle':
+            pos_a, pos_b = payload
+            self.me_info.config(text=f'Potential diagonal {pos_a}-{pos_b} (not present).')
+            self.me_toggle_box.pack(fill='x', padx=6, pady=4, after=self.me_info)
+
+    # -- mouse interaction --------------------------------------------------
+    def _me_hit_test(self, ex, ey):
+        for tag in ('node', 'edge', 'toggle'):
+            items = self.me_canvas.find_withtag(tag)
+            for item in items:
+                x0, y0, x1, y1 = self.me_canvas.bbox(item)
+                pad = 6
+                if x0 - pad <= ex <= x1 + pad and y0 - pad <= ey <= y1 + pad:
+                    tags = self.me_canvas.gettags(item)
+                    spec = next((t for t in tags if t != tag and t != 'current'), None)
+                    if spec is None:
+                        continue
+                    suffix = spec[len(tag):]   # e.g. 'toggle0_2' -> '0_2', 'node3' -> '3'
+                    if tag == 'node':
+                        return ('node', int(suffix))
+                    nums = suffix.split('_')
+                    return (tag, (int(nums[0]), int(nums[1])))
+        return None
+
+    def _me_on_press(self, event):
+        hit = self._me_hit_test(event.x, event.y)
+        cell_nodes = self._me_current_cell_nodes()
+        if hit is None or cell_nodes is None:
+            self._me_selection = None
+            self._me_drag = None
+            self._me_render()
+            return
+        self._me_selection = hit
+        if hit[0] == 'node':
+            _coords, _to_screen, scale = self._me_to_screen_fn(cell_nodes)
+            self._me_drag = {'start': (event.x, event.y), 'scale': scale, 'moved': False}
+        else:
+            self._me_drag = None
+        self._me_render()
+
+    def _me_on_drag(self, event):
+        if self._me_drag is None or self._me_selection is None \
+                or self._me_selection[0] != 'node':
+            return
+        sx, sy = self._me_drag['start']
+        ddx, ddy = event.x - sx, event.y - sy
+        if abs(ddx) > 2 or abs(ddy) > 2:
+            self._me_drag['moved'] = True
+        scale = self._me_drag['scale']
+        # screen y is flipped relative to local v (see _me_to_screen_fn)
+        self.me_du.set(round(ddx / scale, 4))
+        self.me_dv.set(round(-ddy / scale, 4))
+
+    def _me_on_release(self, event):
+        if self._me_drag and self._me_drag.get('moved') and self._me_selection \
+                and self._me_selection[0] == 'node':
+            self._me_apply_move()
+        self._me_drag = None
+
+    # -- edit actions ---------------------------------------------------------
+    def _me_locked_member_idxs(self):
+        """Every CURRENT member index that a lock in self._me_locked_edges
+        (keyed by role/canonical-position, which stays meaningful across
+        edits) resolves to right now, across every cell of every role --
+        a locked rod protects its length under ANY role's edit, not just
+        edits made to its own role."""
+        idxs = []
+        for role_id, pos_a, pos_b in self._me_locked_edges:
+            for ci in self._me_roles.get(role_id, ()):
+                cell_nodes = self._me_cells[ci]['nodes']
+                if pos_a >= len(cell_nodes) or pos_b >= len(cell_nodes):
+                    continue
+                a_id, b_id = cell_nodes[pos_a], cell_nodes[pos_b]
+                for mi, m in enumerate(self.members):
+                    if {m['a'], m['b']} == {a_id, b_id}:
+                        idxs.append(mi)
+                        break
+        return idxs
+
+    def _me_apply_move(self):
+        if self._me_selection is None or self._me_selection[0] != 'node':
+            return
+        position = self._me_selection[1]
+        try:
+            delta = (float(self.me_du.get()), float(self.me_dv.get()), float(self.me_dn.get()))
+        except (tk.TclError, ValueError):
+            return
+        if delta == (0.0, 0.0, 0.0):
+            return
+        self._push_undo('module editor: move node')
+        self.nodes = sg.move_role_node(self.nodes, self.members, self._me_cells,
+                                       self._me_roles, self._me_role_id, position, delta,
+                                       locked_member_idxs=self._me_locked_member_idxs())
+        self.results = None
+        self.member_checks = None
+        # Deliberately NOT _me_refresh_topology() here: a move changes
+        # WHERE nodes sit, never WHICH nodes are members of each other --
+        # self._me_cells (node-id and member-index tuples) is still
+        # exactly as valid as before. Re-running find_cells/
+        # classify_cell_roles after every geometric nudge would instead
+        # re-derive roles from the now slightly-less-congruent shapes a
+        # shared-corner average can produce, fragmenting what was one
+        # role into many tiny ones after a single edit -- a real failure
+        # mode found by actually exercising this on a densely-shared role
+        # (a flat_grid's own pyramidal web) rather than assuming it away.
+        # _refresh_all's own fingerprint-based check (member/node COUNT)
+        # correctly leaves the role grouping alone here too, for the same
+        # reason. _me_render() alone keeps the mini-canvas and the
+        # current SELECTION (still meaningful -- it's the same node) in
+        # sync with the new positions.
+        self._me_render()
+        self._refresh_all()
+
+    def _me_apply_length(self):
+        if self._me_selection is None or self._me_selection[0] != 'edge':
+            return
+        pos_a, pos_b = self._me_selection[1]
+        key = (self._me_role_id, min(pos_a, pos_b), max(pos_a, pos_b))
+        if key in self._me_locked_edges:
+            messagebox.showinfo('Module Editor', 'This rod is locked -- uncheck '
+                                '"Lock this rod\'s length" first.')
+            return
+        try:
+            new_length = float(self.me_length.get())
+        except (tk.TclError, ValueError):
+            return
+        if new_length <= 0:
+            messagebox.showerror('Module Editor', 'Length must be positive.')
+            return
+        self._push_undo('module editor: set rod length')
+        self.nodes = sg.set_role_member_length(self.nodes, self._me_cells, self._me_roles,
+                                               self._me_role_id, pos_a, pos_b, new_length)
+        self.results = None
+        self.member_checks = None
+        # Not _me_refresh_topology() -- see _me_apply_move's own comment;
+        # a length edit is geometric, not topological.
+        self._me_render()
+        self._refresh_all()
+
+    def _me_toggle_lock(self):
+        if self._me_selection is None or self._me_selection[0] != 'edge':
+            self.me_locked_var.set(False)
+            return
+        pos_a, pos_b = self._me_selection[1]
+        key = (self._me_role_id, min(pos_a, pos_b), max(pos_a, pos_b))
+        if self.me_locked_var.get():
+            self._me_locked_edges.add(key)
+        else:
+            self._me_locked_edges.discard(key)
+        self._me_render()
+
+    def _me_apply_toggle(self):
+        if self._me_selection is None or self._me_selection[0] != 'toggle':
+            return
+        pos_a, pos_b = self._me_selection[1]
+        self._push_undo('module editor: toggle rod')
+        self.members = sg.toggle_role_member(self.members, self._me_cells, self._me_roles,
+                                             self._me_role_id, pos_a, pos_b)
+        self._apply_sections(members=self.members, redraw=False)
+        self.results = None
+        self.member_checks = None
+        self._refresh_all()
+
+    def _me_apply_rescale(self):
+        if self._me_role_id is None:
+            return
+        try:
+            factor = float(self.me_rescale.get())
+        except (tk.TclError, ValueError):
+            return
+        if factor <= 0:
+            messagebox.showerror('Module Editor', 'Scale factor must be positive.')
+            return
+        self._push_undo('module editor: rescale')
+        self.nodes = sg.rescale_role_cells(self.nodes, self._me_cells, self._me_roles,
+                                           self._me_role_id, factor)
+        self.results = None
+        self.member_checks = None
+        # Not _me_refresh_topology() -- see _me_apply_move's own comment;
+        # a rescale is geometric, not topological.
+        self._me_render()
         self._refresh_all()
 
     def _build_results_panel(self, parent):
@@ -2197,6 +2715,7 @@ class StereoApp(UnitsMixin):
         self._refresh_load_list()
         self._refresh_results_text()
         self._sync_selection_fields()
+        self._me_maybe_refresh_topology()
         self._draw()
 
     def _combined_loads_by_node(self):

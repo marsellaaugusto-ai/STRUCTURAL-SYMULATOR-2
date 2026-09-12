@@ -19,9 +19,12 @@ import math, os, sys, subprocess
 from common import (
     _ensure_openpyxl,
     PANEL_W, INIT_CW, INIT_CH, INIT_DH,
+    ScrollPanel, WrapBar,
     _beam_gauss_solve, _GAUSS5_NODES, _GAUSS5_WEIGHTS,
-    _nice_ticks, _find_diagram_maxima, make_shape_fn,
+    _nice_ticks, _find_diagram_maxima, make_shape_fn, LoadScale, UnitsMixin,
 )
+
+import units
 
 def _cable_build_cumulative(fn, a, b, tol=1e-7, max_depth=20):
     """Adaptively integrates fn over [a,b] (same Gauss5 + bisection scheme as
@@ -580,6 +583,26 @@ class CableResult:
         At an exact point-load kink there are two different one-sided
         tensions. The tabular nodal value is their average for compatibility;
         diagram_series() never uses this averaged value at a point load.
+
+        The two SUPPORT nodes are computed exactly rather than from their
+        element's chord. `element_tension` divides H by the chord's cos(theta),
+        which is exact for that element but not for the cable AT the support:
+        the end element runs from the support to the first interior node, and
+        its chord is always flatter than the true tangent there. Since the
+        maximum tension is normally at a support, the reported maximum came out
+        LOW -- 0.5% to 1.7% at the default mesh, on the unsafe side, and
+        converging only first-order, so refining the mesh was an expensive way
+        out (2026-09-05 finding C-1). It also disagreed with the tension
+        diagram, which reconstructs its own continuous curve: the app showed
+        25.48 kN here and 25.66 kN in the diagram for its own built-in catenary
+        example.
+
+        The exact value needs no discretisation at all. H is the horizontal
+        component everywhere -- that is what makes a cable a cable -- and the
+        vertical component at a support is exactly that support's reaction, so
+        T = hypot(H, V). Interior nodes keep the averaged element values, whose
+        error is far smaller because the tension varies gently away from the
+        ends.
         """
         T_elem = self.element_tension()
         n = len(T_elem)
@@ -587,6 +610,12 @@ class CableResult:
         T_node[0], T_node[-1] = T_elem[0], T_elem[-1]
         for i in range(1, n):
             T_node[i] = 0.5 * (T_elem[i - 1] + T_elem[i])
+        try:
+            V_left, V_right = self.reactions()
+            T_node[0] = math.hypot(self.H, V_left)
+            T_node[-1] = math.hypot(self.H, V_right)
+        except Exception:
+            pass          # keep the chord estimate if the reactions are unavailable
         return T_node
 
     def force_components(self):
@@ -1034,7 +1063,7 @@ def import_cable_excel(path):
             'point_loads': point_loads, 'distributed_loads': distributed_loads,
             'profile': profile}
 
-class CableApp(tk.Frame):
+class CableApp(UnitsMixin, tk.Frame):
     """
     Cable tab — funicular-curve simulator via CableModel above.
     Units: lengths in m, forces in kN, distributed loads in kN/m, section
@@ -1062,6 +1091,7 @@ class CableApp(tk.Frame):
         self.model = None
         self._probe_point = None
         self._ref_catenary = None   # (xs, ys) of the unloaded (self-weight-only) reference catenary
+        self.init_units(repaint=self._on_units_changed)
         self._build_ui()
         self._update_reference_catenary()
         self._draw_schematic()
@@ -1070,11 +1100,13 @@ class CableApp(tk.Frame):
     def _build_ui(self):
         tb = tk.Frame(self, bg='#ebebea')
         tb.pack(fill='x', padx=6, pady=(6, 0))
-        tk.Label(tb, text='Span L (m):', bg='#ebebea', font=('Helvetica', 11)).pack(side='left', padx=(4, 2))
-        self.span_var = tk.DoubleVar(value=self.span)
+        self.unit_label(tk.Label(tb, bg='#ebebea', font=('Helvetica', 11)),
+                        lambda: f'Span L ({self.u("length")}):').pack(side='left', padx=(4, 2))
+        self.span_var = self.unit_var(tk.DoubleVar(value=self.span), 'length')
         tk.Entry(tb, textvariable=self.span_var, width=6, font=('Helvetica', 11)).pack(side='left')
-        tk.Label(tb, text='Cable length s (m):', bg='#ebebea', font=('Helvetica', 11)).pack(side='left', padx=(8, 2))
-        self.length_var = tk.DoubleVar(value=self.length)
+        self.unit_label(tk.Label(tb, bg='#ebebea', font=('Helvetica', 11)),
+                        lambda: f'Cable length s ({self.u("length")}):').pack(side='left', padx=(8, 2))
+        self.length_var = self.unit_var(tk.DoubleVar(value=self.length), 'length')
         tk.Entry(tb, textvariable=self.length_var, width=6, font=('Helvetica', 11)).pack(side='left')
         tk.Button(tb, text='Set geometry', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica', 11), command=self._set_geometry).pack(side='left', padx=4)
@@ -1100,15 +1132,34 @@ class CableApp(tk.Frame):
         main = tk.Frame(self, bg='#f5f5f3')
         main.pack(fill='both', expand=True, padx=6, pady=6)
 
+        # Right panel FIRST, expanding content SECOND. Tk's pack hands each
+        # slave a parcel in packing order, so the previous order (content
+        # first, expand=True) left the panel whatever the content did not
+        # want -- which at narrow widths was nothing, and the panel was
+        # unmapped entirely with no scrollbar and no error. ScrollPanel also
+        # scrolls horizontally, so a row wider than the panel stays reachable
+        # instead of being clipped mid-widget.
+        self.panel_outer = ScrollPanel(main, width=PANEL_W + 105, bg='#f0f0ee',
+                                        bd=1, relief='solid')
+        self.panel_outer.pack(side='right', fill='y', padx=(6, 0))
+
+        # The schematic pane is fixed-width too, and it is the THIRD thing
+        # competing for the window. Panel + 400 px schematic already exceeds a
+        # 600 px window, which left the expanding middle column -- and the
+        # dozen controls in it -- with zero width and unmapped. `_schem_size`
+        # shrinks it with the window; see _on_root_configure.
         SCHEM_SIZE = 400
+        self._schem_max = SCHEM_SIZE
         schem_outer = tk.Frame(main, bg='#f5f5f3', width=SCHEM_SIZE)
         schem_outer.pack(side='left', fill='y', padx=(0, 8))
         schem_outer.pack_propagate(False)
+        self._schem_outer = schem_outer
         tk.Label(schem_outer, text='Cable schematic', bg='#f5f5f3',
                  font=('Helvetica', 9, 'bold'), fg='#777').pack(anchor='w')
         schem_sq = tk.Frame(schem_outer, bg='#f5f5f3', width=SCHEM_SIZE, height=SCHEM_SIZE)
         schem_sq.pack(pady=(0, 8))
         schem_sq.pack_propagate(False)
+        self._schem_sq = schem_sq
         self.schem = tk.Canvas(schem_sq, bg='white', bd=1, relief='solid', highlightthickness=0)
         self.schem.pack(fill='both', expand=True)
         self.schem.bind('<Configure>', lambda e: self._draw_schematic())
@@ -1122,9 +1173,9 @@ class CableApp(tk.Frame):
 
         probe_row = tk.Frame(schem_outer, bg='#f5f5f3')
         probe_row.pack(fill='x', pady=(2, 2))
-        tk.Label(probe_row, text='s from left support (m):', bg='#f5f5f3',
-                 font=('Helvetica', 9)).pack(side='left')
-        self.probe_s_var = tk.DoubleVar(value=0.0)
+        self.unit_label(tk.Label(probe_row, bg='#f5f5f3', font=('Helvetica', 9)),
+                        lambda: f's from left support ({self.u("length")}):').pack(side='left')
+        self.probe_s_var = self.unit_var(tk.DoubleVar(value=0.0), 'length')
         probe_entry = tk.Entry(probe_row, textvariable=self.probe_s_var, width=7, font=('Helvetica', 9))
         probe_entry.pack(side='left', padx=4)
         probe_entry.bind('<Return>', lambda e: self._update_probe())
@@ -1175,38 +1226,56 @@ class CableApp(tk.Frame):
         self.diag_canvas.pack(fill='both', expand=True)
         self.diag_canvas.bind('<Configure>', lambda e: self._draw_diagram())
 
-        panel_outer = tk.Frame(main, width=PANEL_W + 105, bg='#f0f0ee', bd=1, relief='solid')
-        panel_outer.pack(side='right', fill='y', padx=(6, 0))
-        panel_outer.pack_propagate(False)
-        panel_canvas = tk.Canvas(panel_outer, bg='#f0f0ee', highlightthickness=0, width=PANEL_W + 105)
-        panel_sb = tk.Scrollbar(panel_outer, orient='vertical', command=panel_canvas.yview)
-        panel_canvas.configure(yscrollcommand=panel_sb.set)
-        panel_sb.pack(side='right', fill='y')
-        panel_canvas.pack(side='left', fill='both', expand=True)
-        panel = tk.Frame(panel_canvas, width=PANEL_W + 105, bg='#f0f0ee')
-        panel_canvas.create_window((0, 0), window=panel, anchor='nw', width=PANEL_W + 105)
+        self._build_panel(self.panel_outer.interior)
+        # Adopt whatever width the panel's own content needs, so nothing
+        # starts life behind the horizontal scrollbar.
+        self.panel_outer.fit_to_content()
 
-        def _on_cfg(event):
-            panel_canvas.configure(scrollregion=panel_canvas.bbox('all'))
-        panel.bind('<Configure>', _on_cfg)
+        # The toolbar was one long row of pack(side='left') calls, so its tail
+        # ran off the right edge. WrapBar flows those same widgets across as
+        # many rows as the width needs, without restructuring how they were
+        # built. The same <Configure> drives the panel width, so the two can
+        # never disagree about how wide the window currently is.
+        self.toolbar_wrap = WrapBar(tb)
+        self.toolbar_wrap.start()
+        self.bind('<Configure>', self._on_root_configure, add='+')
+        self.after_idle(lambda: self._on_root_configure(None))
 
-        def _wheel(event):
-            panel_canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
-        panel_canvas.bind('<Enter>', lambda e: panel_canvas.bind_all('<MouseWheel>', _wheel))
-        panel_canvas.bind('<Leave>', lambda e: panel_canvas.unbind_all('<MouseWheel>'))
-
-        self._build_panel(panel)
+    def _on_root_configure(self, _event=None):
+        """Resize the right panel to match the window. Content that no longer
+        fits stays reachable through ScrollPanel's horizontal scrollbar, so
+        this can never hide a control -- unlike the previous fixed-width
+        panel, which was simply dropped."""
+        try:
+            w = self.winfo_width()
+            self.panel_outer.apply_responsive_width(w)
+            # Keep the schematic to at most a third of the window -- a
+            # quarter once the window is genuinely tight -- so the panel, the
+            # schematic and the expanding middle column can all coexist at
+            # 600 px instead of the last one being squeezed out. The middle
+            # column holds the diagram scale rows, and when it runs out of
+            # room those rows wrap until they no longer fit vertically and
+            # start dropping controls, which is the failure being avoided.
+            share = 0.33 if w >= 900 else 0.24
+            size = max(130, min(self._schem_max, int(w * share)))
+            if int(self._schem_outer.cget('width')) != size:
+                self._schem_outer.configure(width=size)
+                self._schem_sq.configure(width=size, height=size)
+        except Exception:
+            pass
 
     def _build_panel(self, panel):
         pad = dict(padx=8, pady=(8, 2))
 
         tk.Label(panel, text='GEOMETRY', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
         geo = tk.Frame(panel, bg='#f0f0ee'); geo.pack(fill='x', padx=8)
-        tk.Label(geo, text='Left support height (m):', bg='#f0f0ee', font=('Helvetica', 9)).grid(row=0, column=0, sticky='w', pady=1)
-        self.yleft_var = tk.DoubleVar(value=self.y_left)
+        self.unit_label(tk.Label(geo, bg='#f0f0ee', font=('Helvetica', 9)),
+                        lambda: f'Left support height ({self.u("length")}):').grid(row=0, column=0, sticky='w', pady=1)
+        self.yleft_var = self.unit_var(tk.DoubleVar(value=self.y_left), 'length')
         tk.Entry(geo, textvariable=self.yleft_var, width=8, font=('Helvetica', 9)).grid(row=0, column=1, pady=1, padx=4)
-        tk.Label(geo, text='Right support height (m):', bg='#f0f0ee', font=('Helvetica', 9)).grid(row=1, column=0, sticky='w', pady=1)
-        self.yright_var = tk.DoubleVar(value=self.y_right)
+        self.unit_label(tk.Label(geo, bg='#f0f0ee', font=('Helvetica', 9)),
+                        lambda: f'Right support height ({self.u("length")}):').grid(row=1, column=0, sticky='w', pady=1)
+        self.yright_var = self.unit_var(tk.DoubleVar(value=self.y_right), 'length')
         tk.Entry(geo, textvariable=self.yright_var, width=8, font=('Helvetica', 9)).grid(row=1, column=1, pady=1, padx=4)
         tk.Label(geo, text='Elements (n):', bg='#f0f0ee', font=('Helvetica', 9)).grid(row=2, column=0, sticky='w', pady=1)
         self.nelem_var = tk.IntVar(value=self.n_elem)
@@ -1214,10 +1283,17 @@ class CableApp(tk.Frame):
         tk.Label(geo, text='(higher n = smoother, slower)', bg='#f0f0ee',
                  font=('Helvetica', 8), fg='#999').grid(row=3, column=0, columnspan=2, sticky='w')
 
-        tk.Label(panel, text='DISTRIBUTED LOADS (kN/m)', bg='#f0f0ee',
-                 font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
-        tk.Label(panel, text='q(x) over a sub-domain [x₁,x₂] (m)', bg='#f0f0ee',
-                 font=('Helvetica', 8), fg='#777').pack(anchor='w', padx=8)
+        self.unit_label(tk.Label(panel, bg='#f0f0ee', font=('Helvetica', 10, 'bold')),
+                        lambda: f'DISTRIBUTED LOADS ({units.STORAGE.label("line_load")})'
+                        ).pack(anchor='w', **pad)
+        # The bounds follow the selector but the EXPRESSION does not: it is a
+        # formula the user wrote, and re-reading `2*x^2` in another convention
+        # would change what it means rather than how it is written. So q(x) is
+        # always in the storage units and the label says so outright.
+        self.unit_label(tk.Label(panel, bg='#f0f0ee', font=('Helvetica', 8), fg='#777'),
+                        lambda: f'q(x) always in {units.STORAGE.label("line_load")} with x in '
+                                f'{units.STORAGE.label("length")}, over [x₁,x₂] '
+                                f'({self.u("length")})').pack(anchor='w', padx=8)
         self.dl_tree = ttk.Treeview(panel, columns=('expr', 'x1', 'x2', 'measure'),
                                     show='headings', height=3)
         for c, w, lbl in [('expr', 90, 'q(x)'), ('x1', 40, 'x₁'), ('x2', 40, 'x₂'), ('measure', 65, 'per')]:
@@ -1228,11 +1304,18 @@ class CableApp(tk.Frame):
         tk.Button(dlf, text='Delete',
                   command=lambda: self._del_row(self.dl_tree, self.distributed_loads)).pack(side='left', padx=2)
 
-        tk.Label(panel, text='POINT LOADS (kN, exact kink)', bg='#f0f0ee',
-                 font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
+        self.unit_label(tk.Label(panel, bg='#f0f0ee', font=('Helvetica', 10, 'bold')),
+                        lambda: f'POINT LOADS ({self.u("force")}, exact kink)'
+                        ).pack(anchor='w', **pad)
         self.pl_tree = ttk.Treeview(panel, columns=('x', 'P'), show='headings', height=3)
         for c, w, lbl in [('x', 60, 'x'), ('P', 60, 'P')]:
             self.pl_tree.heading(c, text=lbl); self.pl_tree.column(c, width=w)
+        # Columns whose heading has to name a unit. Kept as (tree, column,
+        # base text) so one loop repaints them all after a switch.
+        self._unit_headings = [(self.dl_tree, 'x1', 'x₁'), (self.dl_tree, 'x2', 'x₂'),
+                                (self.pl_tree, 'x', 'x'), (self.pl_tree, 'P', 'P')]
+        for tree, col, base in self._unit_headings:
+            tree.heading(col, text=f'{base} ({self._u(col)})')
         self.pl_tree.pack(fill='x', padx=8)
         pf = tk.Frame(panel, bg='#f0f0ee'); pf.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(pf, text='Add', command=self._add_pointload).pack(side='left', padx=2)
@@ -1242,10 +1325,12 @@ class CableApp(tk.Frame):
                  font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
         sec = tk.Frame(panel, bg='#f0f0ee'); sec.pack(fill='x', padx=8)
         self.sec_vars = {}
-        fields = [('A', 'Area A (cm²)'), ('allow_tension', 'Allow. tension σ (kN/cm²)')]
-        for i, (key, label) in enumerate(fields):
-            tk.Label(sec, text=label, bg='#f0f0ee', font=('Helvetica', 9)).grid(row=i, column=0, sticky='w', pady=1)
-            v = tk.DoubleVar(value=self.profile[key])
+        for i, key in enumerate(('A', 'allow_tension')):
+            self.unit_label(
+                tk.Label(sec, bg='#f0f0ee', font=('Helvetica', 9)),
+                (lambda k=key: self._sec_label(k))).grid(row=i, column=0, sticky='w', pady=1)
+            v = self.unit_var(tk.DoubleVar(value=self.profile[key]),
+                              self._SECTION_Q[key])
             self.sec_vars[key] = v
             tk.Entry(sec, textvariable=v, width=8, font=('Helvetica', 9)).grid(row=i, column=1, pady=1, padx=4)
 
@@ -1254,6 +1339,45 @@ class CableApp(tk.Frame):
         self.res_text.pack(fill='both', expand=True, padx=8, pady=(2, 10))
 
     # ── row management ──────────────────────────────────────────────────────
+    # ── units ──────────────────────────────────────────────────────
+    # Which physical quantity each model field is. `expr` and `measure` are
+    # not numbers and pass through untouched.
+    _FIELD_Q = {'x': 'length', 'x1': 'length', 'x2': 'length',
+                'P': 'force', 'expr': None, 'measure': None}
+
+    _SECTION_Q = {'A': 'area', 'allow_tension': 'stress'}
+
+    def _sec_label(self, key):
+        if key == 'A':
+            return f'Area A ({self.u("area")})'
+        return f'Allow. tension σ ({self.u("stress")})'
+
+    # The geometry entry boxes hold DISPLAYED numbers; everything that feeds
+    # the solver reads them through these, so a span typed in feet reaches
+    # CableModel in metres.
+    def _span(self):
+        return self.unit_value(self.span_var, self.span)
+
+    def _slen(self):
+        return self.unit_value(self.length_var, self.length)
+
+    def _yl(self):
+        return self.unit_value(self.yleft_var, self.y_left)
+
+    def _yr(self):
+        return self.unit_value(self.yright_var, self.y_right)
+
+    def _on_units_changed(self):
+        for tree, col, base in getattr(self, '_unit_headings', ()):
+            tree.heading(col, text=f'{base} ({self._u(col)})')
+        self._refresh_tables()
+        if self.result is not None:
+            self._show_results()
+            self._draw_diagram()
+        if getattr(self, 'probe_enabled_var', None) is not None \
+                and self.probe_enabled_var.get():
+            self._update_probe()
+
     def _del_row(self, tree, data_list):
         sel = tree.selection()
         if not sel:
@@ -1263,12 +1387,18 @@ class CableApp(tk.Frame):
         self._refresh_tables()
 
     def _refresh_tables(self):
+        def cell(field, value):
+            v = self._shown(field, value)
+            return f'{v:g}' if isinstance(v, float) else v
+
         self.pl_tree.delete(*self.pl_tree.get_children())
         for r in self.point_loads:
-            self.pl_tree.insert('', 'end', values=(r['x'], r['P']))
+            self.pl_tree.insert('', 'end',
+                                values=(cell('x', r['x']), cell('P', r['P'])))
         self.dl_tree.delete(*self.dl_tree.get_children())
         for r in self.distributed_loads:
-            self.dl_tree.insert('', 'end', values=(r['expr'], r['x1'], r['x2'], r['measure']))
+            self.dl_tree.insert('', 'end', values=(
+                r['expr'], cell('x1', r['x1']), cell('x2', r['x2']), r['measure']))
         self._draw_schematic()
 
     def _ask(self, title, fields):
@@ -1293,11 +1423,12 @@ class CableApp(tk.Frame):
 
     def _add_pointload(self):
         r = self._ask('Add exact point load', [
-            ('x', 'x (m)', self.span_var.get() / 2),
-            ('P', 'P (kN, +down)', 10.0),
+            ('x', f'x ({self.u("length")})', self.span_var.get() / 2),
+            ('P', f'P ({self.u("force")}, +down)', self.show('force', 10.0)),
         ])
         if r:
-            if not (0.0 < r['x'] < self.span_var.get()):
+            r = {k: self._stored(k, v) for k, v in r.items()}
+            if not (0.0 < r['x'] < self._span()):
                 messagebox.showerror('Invalid point load',
                                      'The exact point load must lie strictly between the supports.')
                 return
@@ -1307,18 +1438,20 @@ class CableApp(tk.Frame):
     def _add_distributed_load(self):
         win = tk.Toplevel(self); win.title('Add distributed load'); win.grab_set()
         win.configure(bg='#f0f0ee')
-        tk.Label(win, text='q(x) in kN/m  (vars: x, xc, L, s; xc=x-L/2; ^ or ** = power):', bg='#f0f0ee',
+        tk.Label(win, text=f'q(x) in {units.STORAGE.label("line_load")}  '
+                            f'(vars: x, xc, L, s in {units.STORAGE.label("length")}; '
+                            f'xc=x-L/2; ^ or ** = power):', bg='#f0f0ee',
                  font=('Helvetica', 9)).grid(row=0, column=0, columnspan=2, sticky='w', padx=8, pady=(8, 2))
         expr_var = tk.StringVar(value='1.0')
         tk.Entry(win, textvariable=expr_var, width=28, font=('Helvetica', 9)).grid(
             row=1, column=0, columnspan=2, sticky='we', padx=8, pady=2)
 
-        tk.Label(win, text='x₁ (m):', bg='#f0f0ee', font=('Helvetica', 9)).grid(
+        tk.Label(win, text=f'x₁ ({self.u("length")}):', bg='#f0f0ee', font=('Helvetica', 9)).grid(
             row=2, column=0, sticky='w', padx=8, pady=4)
         x1_var = tk.DoubleVar(value=0.0)
         tk.Entry(win, textvariable=x1_var, width=10).grid(row=2, column=1, padx=8, pady=4)
 
-        tk.Label(win, text='x₂ (m):', bg='#f0f0ee', font=('Helvetica', 9)).grid(
+        tk.Label(win, text=f'x₂ ({self.u("length")}):', bg='#f0f0ee', font=('Helvetica', 9)).grid(
             row=3, column=0, sticky='w', padx=8, pady=4)
         x2_var = tk.DoubleVar(value=self.span_var.get())
         tk.Entry(win, textvariable=x2_var, width=10).grid(row=3, column=1, padx=8, pady=4)
@@ -1339,15 +1472,16 @@ class CableApp(tk.Frame):
         def ok():
             expr = expr_var.get().strip()
             try:
-                ctx = {'L': self.span_var.get(), 's': self.length_var.get()}
-                x1_, x2_ = x1_var.get(), x2_var.get()
+                ctx = {'L': self._span(), 's': self._slen()}
+                x1_ = self.store('length', x1_var.get())
+                x2_ = self.store('length', x2_var.get())
                 x_mid = (min(x1_, x2_) + max(x1_, x2_)) / 2
                 make_shape_fn(expr, ctx)(x_mid)   # validate it compiles & evaluates
             except Exception as e:
                 messagebox.showerror('Invalid expression', str(e)); return
             result['expr'] = expr
-            result['x1'] = x1_var.get()
-            result['x2'] = x2_var.get()
+            result['x1'] = x1_
+            result['x2'] = x2_
             result['measure'] = measure_var.get()
             win.destroy()
 
@@ -1359,16 +1493,16 @@ class CableApp(tk.Frame):
             self._refresh_tables()
 
     def _set_geometry(self):
-        span = self.span_var.get()
-        length = self.length_var.get()
+        span = self._span()
+        length = self._slen()
         if length <= span:
             messagebox.showerror('Invalid geometry',
                                   'Cable length s must exceed the span L (s > L).')
             return
         self.span = span
         self.length = length
-        self.y_left = self.yleft_var.get()
-        self.y_right = self.yright_var.get()
+        self.y_left = self._yl()
+        self.y_right = self._yr()
         # clear any previous analysis -- it belongs to the OLD geometry, and
         # _draw_schematic() prefers self.result when present, so leaving it
         # set here would silently keep showing the stale shape
@@ -1396,11 +1530,11 @@ class CableApp(tk.Frame):
     # ── Excel export / import ────────────────────────────────────────────────
     def _current_state(self):
         return {
-            'span': self.span_var.get(), 'length': self.length_var.get(),
+            'span': self._span(), 'length': self._slen(),
             'n_elem': int(self.nelem_var.get()),
-            'y_left': self.yleft_var.get(), 'y_right': self.yright_var.get(),
+            'y_left': self._yl(), 'y_right': self._yr(),
             'point_loads': self.point_loads, 'distributed_loads': self.distributed_loads,
-            'profile': {k: v.get() for k, v in self.sec_vars.items()},
+            'profile': {k: self.unit_value(v) for k, v in self.sec_vars.items()},
         }
 
     def _export_excel(self):
@@ -1452,25 +1586,34 @@ class CableApp(tk.Frame):
 
         self._clear_all()
         self.span = st['span']; self.length = st['length']
-        self.span_var.set(st['span']); self.length_var.set(st['length'])
+        self.set_unit_value(self.span_var, st['span'])
+        self.set_unit_value(self.length_var, st['length'])
         self.nelem_var.set(st['n_elem'])
-        self.yleft_var.set(st['y_left']); self.yright_var.set(st['y_right'])
+        self.set_unit_value(self.yleft_var, st['y_left'])
+        self.set_unit_value(self.yright_var, st['y_right'])
         self.point_loads = st['point_loads']
         self.distributed_loads = st['distributed_loads']
         for k, v in st['profile'].items():
             if k in self.sec_vars:
-                self.sec_vars[k].set(v)
+                self.set_unit_value(self.sec_vars[k], v)
                 self.profile[k] = v
         self._refresh_tables()
         self._update_reference_catenary()
         self._draw_schematic()
 
     # ── examples ─────────────────────────────────────────────────────────────
+    def _set_geometry_vars(self, span, length, y_left=0.0, y_right=0.0):
+        """Write a geometry given in STORAGE units into the entry boxes,
+        which hold whatever the selected convention writes."""
+        self.set_unit_value(self.span_var, span)
+        self.set_unit_value(self.length_var, length)
+        self.set_unit_value(self.yleft_var, y_left)
+        self.set_unit_value(self.yright_var, y_right)
+
     def _load_example_parabola(self):
         self._clear_all()
         self.span = 20.0; self.length = 22.0
-        self.span_var.set(20.0); self.length_var.set(22.0)
-        self.yleft_var.set(0.0); self.yright_var.set(0.0)
+        self._set_geometry_vars(20.0, 22.0)
         self.distributed_loads.append({'expr': '2.0', 'x1': 0.0, 'x2': 20.0, 'measure': 'horizontal'})
         self._refresh_tables()
         self._update_reference_catenary()
@@ -1478,8 +1621,7 @@ class CableApp(tk.Frame):
     def _load_example_catenary(self):
         self._clear_all()
         self.span = 20.0; self.length = 22.0
-        self.span_var.set(20.0); self.length_var.set(22.0)
-        self.yleft_var.set(0.0); self.yright_var.set(0.0)
+        self._set_geometry_vars(20.0, 22.0)
         self.distributed_loads.append({'expr': '1.5', 'x1': 0.0, 'x2': 20.0, 'measure': 'arc'})
         self._refresh_tables()
         self._update_reference_catenary()
@@ -1487,8 +1629,7 @@ class CableApp(tk.Frame):
     def _load_example_point(self):
         self._clear_all()
         self.span = 20.0; self.length = 24.0
-        self.span_var.set(20.0); self.length_var.set(24.0)
-        self.yleft_var.set(0.0); self.yright_var.set(0.0)
+        self._set_geometry_vars(20.0, 24.0)
         self.point_loads.append({'x': 10.0, 'P': 50.0})
         self._refresh_tables()
         self._update_reference_catenary()
@@ -1496,11 +1637,11 @@ class CableApp(tk.Frame):
     # ── analysis ─────────────────────────────────────────────────────────────
     def _analyze(self):
         try:
-            self.span = self.span_var.get()
-            self.length = self.length_var.get()
+            self.span = self._span()
+            self.length = self._slen()
             self.n_elem = max(6, int(self.nelem_var.get()))
-            self.y_left = self.yleft_var.get()
-            self.y_right = self.yright_var.get()
+            self.y_left = self._yl()
+            self.y_right = self._yr()
 
             if self.length <= self.span:
                 messagebox.showerror('Invalid geometry',
@@ -1527,7 +1668,7 @@ class CableApp(tk.Frame):
                 m.add_point_load(p['x'], p['P'] * 1e3)  # kN -> N; exact nodal force
 
             for k in self.sec_vars:
-                self.profile[k] = self.sec_vars[k].get()
+                self.profile[k] = self.unit_value(self.sec_vars[k])
 
             self.result = m.solve()
             self.model = m
@@ -1559,14 +1700,24 @@ class CableApp(tk.Frame):
         sigma_kncm2 = (Tmax / 1e3) / A_cm2 if A_cm2 else 0.0
         ratio = sigma_kncm2 / allow_t if allow_t else 0.0
 
+        F, LEN, ST = self.u('force'), self.u('length'), self.u('stress')
+
+        def f_(v):      # a force stored in kN, written in the chosen convention
+            return self.show('force', v)
+
+        def l_(v):
+            return self.show('length', v)
+
         lines = ['REACTIONS (vertical, +up)']
-        lines.append(f"  Left  (x=0)        : Ry = {V_left/1e3:+8.2f} kN")
-        lines.append(f"  Right (x={m.span:.2f}) : Ry = {V_right/1e3:+8.2f} kN")
-        lines += ['', f'Horizontal thrust H     = {r.H/1e3:8.2f} kN',
-                  f'Max tension             T = {Tmax/1e3:8.2f} kN',
-                  f'Max sag                   = {sag:8.3f} m  at x = {x_sag:.2f} m', '',
+        lines.append(f"  Left  (x=0)        : Ry = {f_(V_left/1e3):+8.2f} {F}")
+        lines.append(f"  Right (x={l_(m.span):.2f}) : Ry = {f_(V_right/1e3):+8.2f} {F}")
+        lines += ['', f'Horizontal thrust H     = {f_(r.H/1e3):8.2f} {F}',
+                  f'Max tension             T = {f_(Tmax/1e3):8.2f} {F}',
+                  f'Max sag                   = {l_(sag):8.3f} {LEN}  '
+                  f'at x = {l_(x_sag):.2f} {LEN}', '',
                   'STRESS CHECK']
-        lines.append(f'  sigma = T_max/A = {sigma_kncm2:7.3f} kN/cm²   allow = {allow_t:.3f} '
+        lines.append(f'  sigma = T_max/A = {self.show("stress", sigma_kncm2):7.3f} {ST}   '
+                      f'allow = {self.show("stress", allow_t):.3f} '
                       f'({"OK" if ratio <= 1.0 else "FAIL"}, ratio {ratio:.2f})')
         if not r.converged:
             lines += ['', '*** WARNING: solver did not fully converge ***',
@@ -1576,8 +1727,8 @@ class CableApp(tk.Frame):
             lines += ['', 'INVERTED ARCH (compression) — anti-funicular of this cable',
                       '  Mirroring this shape about the chord gives an arch that carries',
                       '  the SAME load in pure compression, with zero bending moment:',
-                      f'    thrust  H = {r.H/1e3:8.2f} kN  (same magnitude, now pushing outward)',
-                      f'    max |N| = {Tmax/1e3:8.2f} kN  (compression, N(x) = T(x) of the cable)']
+                      f'    thrust  H = {f_(r.H/1e3):8.2f} {F}  (same magnitude, now pushing outward)',
+                      f'    max |N| = {f_(Tmax/1e3):8.2f} {F}  (compression, N(x) = T(x) of the cable)']
 
         self.res_text.delete('1.0', 'end')
         self.res_text.insert('1.0', '\n'.join(lines))
@@ -1588,14 +1739,14 @@ class CableApp(tk.Frame):
         c.delete('all')
         w = c.winfo_width() or 400
         h = c.winfo_height() or 400
-        L = max(self.span_var.get() if hasattr(self, 'span_var') else self.span, 1e-6)
+        L = max(self._span() if hasattr(self, 'span_var') else self.span, 1e-6)
 
         if self.result is not None:
             xs_s, ys_s = self.result.x, self.result.y
         else:
             # un-analyzed preview: shallow parabola-ish sag for visual reference
-            yl = self.yleft_var.get() if hasattr(self, 'yleft_var') else self.y_left
-            yr = self.yright_var.get() if hasattr(self, 'yright_var') else self.y_right
+            yl = self._yl() if hasattr(self, 'yleft_var') else self.y_left
+            yr = self._yr() if hasattr(self, 'yright_var') else self.y_right
             s_ = self.length_var.get() if hasattr(self, 'length_var') else self.length
             sag0 = max(math.sqrt(max(3.0 * L * (s_ - L) / 8.0, 0.0)), 0.02 * L) if s_ > L else 0.05 * L
             n_s = 60
@@ -1665,6 +1816,11 @@ class CableApp(tk.Frame):
             c.create_polygon(sx - 10, sy + 18, sx + 10, sy + 18, sx, sy,
                               fill='', outline=self.CSUP, width=2)
 
+        # Point-load arrows are sized RELATIVE to the largest on the cable --
+        # see common.LoadScale. They were a flat 22 px whatever the magnitude,
+        # so a 5 kN load and a 500 kN load drew as the same arrow.
+        p_scale = LoadScale.of((p['P'] for p in self.point_loads), 12.0, 40.0)
+
         for p in self.point_loads:
             xi = p['x']
             yi = None
@@ -1677,11 +1833,16 @@ class CableApp(tk.Frame):
             else:
                 yi = ys_s[min(range(len(xs_s)), key=lambda k: abs(xs_s[k] - xi))]
             sx, sy = X(xi), Y(yi)
-            c.create_line(sx, sy - 22, sx, sy, fill=self.CLOAD, width=2, arrow='last', arrowshape=(8, 10, 3))
-            c.create_text(sx, sy - 30, text=f"P={p['P']:g}", fill=self.CLOAD, font=('Helvetica', 8))
+            ph = p_scale(p['P'])
+            c.create_line(sx, sy - ph, sx, sy, fill=self.CLOAD, width=2,
+                          arrow='last', arrowshape=(8, 10, 3))
+            c.create_text(sx, sy - ph - 8,
+                          text=f"P={self.show('force', p['P']):g}", fill=self.CLOAD,
+                          font=('Helvetica', 8))
 
         c.create_text(X(0), h - 14, text='0', font=('Helvetica', 8), fill='#555')
-        c.create_text(X(L), h - 14, text=f'{L:.1f} m', font=('Helvetica', 8), fill='#555')
+        c.create_text(X(L), h - 14, text=f'{self.show("length", L):.1f} {self.u("length")}',
+                      font=('Helvetica', 8), fill='#555')
 
         legend_y = 14
         if show_ref:
@@ -1766,7 +1927,7 @@ class CableApp(tk.Frame):
             return
         sigma = self.model.sigma
         s_max = sigma[-1]
-        s_target = max(0.0, min(s_max, self.probe_s_var.get()))
+        s_target = max(0.0, min(s_max, self.unit_value(self.probe_s_var)))
         best_i, best_d = 0, None
         for i, sv in enumerate(sigma):
             d = abs(sv - s_target)
@@ -1779,11 +1940,15 @@ class CableApp(tk.Frame):
         R = math.hypot(Fx[best_i], Fy[best_i])
 
         self._probe_point = (x[best_i], y[best_i])
+        L_, F_ = self.u('length'), self.u('force')
+        sh_l = lambda v: self.show('length', v)
+        sh_f = lambda v: self.show('force', v / 1e3)
         self.probe_result_label.config(text=(
-            f"s = {sigma[best_i]:.2f} m  (x={x[best_i]:.2f}, y={y[best_i]:.2f})\n"
-            f"Fx = {Fx[best_i]/1e3:+8.2f} kN\n"
-            f"Fy = {Fy[best_i]/1e3:+8.2f} kN\n"
-            f"T  = {T[best_i]/1e3:8.2f} kN"))
+            f"s = {sh_l(sigma[best_i]):.2f} {L_}  "
+            f"(x={sh_l(x[best_i]):.2f}, y={sh_l(y[best_i]):.2f})\n"
+            f"Fx = {sh_f(Fx[best_i]):+8.2f} {F_}\n"
+            f"Fy = {sh_f(Fy[best_i]):+8.2f} {F_}\n"
+            f"T  = {sh_f(T[best_i]):8.2f} {F_}"))
         self._draw_schematic()
 
     # ── reference (unloaded) catenary ───────────────────────────────────────
@@ -1796,10 +1961,10 @@ class CableApp(tk.Frame):
         value gives the same shape, only H scales), so an arbitrary uniform
         intensity is used purely as a solver input."""
         try:
-            span = self.span_var.get() if hasattr(self, 'span_var') else self.span
-            length = self.length_var.get() if hasattr(self, 'length_var') else self.length
-            yl = self.yleft_var.get() if hasattr(self, 'yleft_var') else self.y_left
-            yr = self.yright_var.get() if hasattr(self, 'yright_var') else self.y_right
+            span = self._span() if hasattr(self, 'span_var') else self.span
+            length = self._slen() if hasattr(self, 'length_var') else self.length
+            yl = self._yl() if hasattr(self, 'yleft_var') else self.y_left
+            yr = self._yr() if hasattr(self, 'yright_var') else self.y_right
             if length <= span:
                 self._ref_catenary = None
                 return
@@ -1857,7 +2022,8 @@ class CableApp(tk.Frame):
             c.create_text(left, top + 8, text=title, anchor='w', font=('Helvetica', 8, 'bold'), fill='#555')
             c.create_line(left, plot_bot, right, plot_bot, fill='#999')
             c.create_line(left, plot_top, left, plot_bot, fill='#999')
-            c.create_text((left + right) / 2, bot - 8, text='x (m)', font=('Helvetica', 8), fill='#555')
+            c.create_text((left + right) / 2, bot - 8, text=f'x ({self.u("length")})',
+                          font=('Helvetica', 8), fill='#555')
             c.create_text(left - 32, (plot_top + plot_bot) / 2, text=y_label, font=('Helvetica', 8),
                           fill='#555', angle=90)
 
@@ -1879,11 +2045,12 @@ class CableApp(tk.Frame):
                                   text=f"x={xv:.2f}", font=('Helvetica', 7), fill=color)
             return X, Yv, plot_top, plot_bot
 
-        draw_band([T], (0, band_h), 'T (kN)', [(xT, T, self.CTENS, 'T')], 'TENSION  T(x)')
+        draw_band([T], (0, band_h), f'T ({self.u("force")})',
+                  [(xT, T, self.CTENS, 'T')], 'TENSION  T(x)')
         Xt, Yt, ptop, pbot = draw_band(
-            [Fx, Fy], (band_h, h), 'F (kN)',
+            [Fx, Fy], (band_h, h), f'F ({self.u("force")})',
             [(xF, Fx, self.CTHH, 'Fx'), (xF, Fy, self.CTHV, 'Fy')],
-            'THRUST  Fx / Fy  (kN, global components)')
+            f'THRUST  Fx / Fy  ({self.u("force")}, global components)')
 
         # ── reaction call-outs, clearly labelled, at both supports ──
         left, right = pad_l, w - pad_r
@@ -1891,8 +2058,12 @@ class CableApp(tk.Frame):
         H_kn = H / 1e3
         y0 = pbot + 2
         c.create_line(left - 14, y0, left + 2, y0, fill='#c0392b', width=2, arrow='first', arrowshape=(7, 9, 3))
-        c.create_text(left + 6, y0, text=f"◄ R_left: H={H_kn:.2f} kN, V={Ry_l:.2f} kN ▲",
+        c.create_text(left + 6, y0,
+                      text=f"◄ R_left: H={self.show('force', H_kn):.2f} {self.u('force')}, "
+                            f"V={self.show('force', Ry_l):.2f} {self.u('force')} ▲",
                       anchor='w', font=('Helvetica', 8, 'bold'), fill='#c0392b')
-        c.create_text(right - 6, y0, text=f"► R_right: H={H_kn:.2f} kN, V={Ry_r:.2f} kN ▲",
+        c.create_text(right - 6, y0,
+                      text=f"► R_right: H={self.show('force', H_kn):.2f} {self.u('force')}, "
+                            f"V={self.show('force', Ry_r):.2f} {self.u('force')} ▲",
                       anchor='e', font=('Helvetica', 8, 'bold'), fill='#c0392b')
         c.create_line(0, band_h, w, band_h, fill='#ccc')  # divider between bands

@@ -35,6 +35,7 @@ import pytest
 
 from apps.cable_web.cable_web_app import CableWebApp, PX_PER_M, LOAD, ANTI
 from common import CT, CL, CZ
+from apps.cable_web.cable_web_math import CableWebResult
 
 
 # --------------------------------------------------------------------------
@@ -1853,3 +1854,322 @@ def test_a_solvable_model_is_never_called_impossible():
                 '%s was wrongly called impossible' % build.__name__)
         finally:
             _teardown(root)
+
+
+# --------------------------------------------------------------------------
+# 11. smooth (closed-form) diagrams
+# --------------------------------------------------------------------------
+#
+# These deliberately need NO solver. A synthetic result whose nodes sit on an
+# EXACT catenary, with the exact tension at each edge midpoint, is a stronger
+# input than a solved one: a solved case carries discretisation error, so
+# agreement to 1e-9 would be impossible and any disagreement ambiguous. Here
+# the input is exact, so the identities must come out exact -- and they run on
+# a machine where SciPy cannot load.
+
+_SM_SPAN, _SM_ARC, _SM_Q = 20.0, 22.0, 10.0
+
+
+def _exact_catenary_result(app, nseg=None):
+    """Give `app` a synthetic result lying on an exact catenary.
+
+    Returns (cid, a, sag, H_exact, T_support_exact).
+    """
+    _reset(app)
+    a_node = app._new_node(*_m(0, 0), support=True)
+    b_node = app._new_node(*_m(_SM_SPAN, 0), support=True)
+    c = app._new_cable(a_node['id'], b_node['id'])
+    c['length_override'] = _SM_ARC
+    c['w'] = _SM_Q
+
+    A = _catenary_a(_SM_SPAN, _SM_ARC)
+    sag = A * (math.cosh(_SM_SPAN / (2.0 * A)) - 1.0)
+
+    def point_at(sv):
+        u = sv - _SM_ARC / 2.0
+        return (_SM_SPAN / 2.0 + A * math.asinh(u / A),
+                -sag + A * (math.sqrt(1.0 + (u / A) ** 2) - 1.0))
+
+    model, seg_owner = app._build_solver_model()
+    meta = app._solver_meta
+    cid = c['id']
+    positions = {nid: point_at(sv) for nid, sv in
+                 zip(meta['cable_solver_nodes'][cid], meta['cable_bp'][cid])}
+    tensions = {}
+    for eid, owner in seg_owner.items():
+        if owner[0] != cid:
+            continue
+        u_mid = 0.5 * (owner[1] + owner[2]) - _SM_ARC / 2.0
+        tensions[eid] = _SM_Q * math.hypot(A, u_mid)
+    app.result = CableWebResult(model, positions, tensions, True, 0.0)
+    app.result_kind = 'analysis'
+    app.results_current = True
+    app._result_serial = 1
+    return (cid, A, sag, _SM_Q * A,
+            _SM_Q * A * math.cosh(_SM_SPAN / (2.0 * A)))
+
+
+def test_smooth_diagram_is_off_by_default():
+    """The stepped band is what the solve literally produced, so it stays the
+    default -- the toggle exists to add a reading, not to replace one."""
+    root, app = _make_app()
+    try:
+        assert app.diagram_smooth.get() is False
+    finally:
+        _teardown(root)
+
+
+def test_smooth_diagram_satisfies_the_statics_exactly():
+    """The identities the closed form rests on, at the shipped mesh.
+
+    Under vertical load H is constant along a cable and V varies linearly with
+    arc length at the rate of the applied load, so on a symmetric span V is
+    zero at the vertex, T there equals H, and V at each anchorage is half the
+    total weight. None of those can be read off a stepped band, which only
+    ever samples edge midpoints.
+    """
+    root, app = _make_app()
+    try:
+        cid, A, sag, H_exact, T_support = _exact_catenary_result(app)
+        seg_owner = app._solver_meta['seg_owner']
+        eids = [eid for eid, o in seg_owner.items() if o[0] == cid]
+        params = app._analytic_group_params(cid, eids, 0.0, _SM_ARC,
+                                            app.result.positions, seg_owner)
+        assert params is not None, 'a uniformly loaded cable was refused'
+        H, v0, q = params
+        val = app._analytic_diagram_value
+
+        assert q == pytest.approx(_SM_Q, abs=1e-12)
+        assert v0 == pytest.approx(-_SM_Q * _SM_ARC / 2.0, abs=1e-9)
+        assert val(4, H, v0, q, _SM_ARC / 2.0) == pytest.approx(0.0, abs=1e-9), \
+            'V is not zero at the vertex'
+        assert val(2, H, v0, q, _SM_ARC / 2.0) == pytest.approx(H, abs=1e-12), \
+            'T at the vertex must equal H'
+        assert val(4, H, v0, q, 0.0) == pytest.approx(_SM_Q * _SM_ARC / 2.0, abs=1e-9), \
+            'V at the anchorage must be half the total weight'
+        assert val(3, H, v0, q, 3.7) == pytest.approx(val(3, H, v0, q, 17.3), abs=1e-12), \
+            'H must be constant along the cable'
+        assert val(2, H, v0, q, 4.1) == pytest.approx(math.hypot(H, v0 + q * 4.1), abs=1e-12)
+    finally:
+        _teardown(root)
+
+
+def test_smooth_diagram_reaches_a_peak_the_steps_cannot():
+    """The reason this matters for sizing a cable. An edge's value is the true
+    value at its MIDPOINT, so the stepped band's highest step is always short
+    of the real peak at the anchorage. Measured on a 20 m / 22 m cable at
+    10 N/m against the closed form q*a*cosh(span/2a): stepped -4.97%, smooth
+    +0.03%.
+    """
+    root, app = _make_app()
+    try:
+        cid, A, sag, H_exact, T_support = _exact_catenary_result(app)
+        seg_owner = app._solver_meta['seg_owner']
+        eids = [eid for eid, o in seg_owner.items() if o[0] == cid]
+        H, v0, q = app._analytic_group_params(cid, eids, 0.0, _SM_ARC,
+                                              app.result.positions, seg_owner)
+
+        stepped_peak = max(app.result.tensions.values())
+        smooth_peak = app._analytic_diagram_value(2, H, v0, q, 0.0)
+        stepped_err = abs(stepped_peak - T_support) / T_support
+        smooth_err = abs(smooth_peak - T_support) / T_support
+
+        assert stepped_err > 0.02, (
+            'the stepped peak is suspiciously good (%.4f vs %.4f); this test '
+            'no longer proves anything' % (stepped_peak, T_support))
+        assert smooth_err < 0.002, (
+            'smooth peak %.4f N is not close to the closed form %.4f N'
+            % (smooth_peak, T_support))
+        assert smooth_err < stepped_err / 10.0
+    finally:
+        _teardown(root)
+
+
+def test_smooth_diagram_curve_matches_its_own_closed_form():
+    """The drawing path, not just the formula: every point _diagram_curve
+    emits must be the closed form evaluated there, and the points must run in
+    order of s."""
+    root, app = _make_app()
+    try:
+        cid, A, sag, H_exact, T_support = _exact_catenary_result(app)
+        seg_owner = app._solver_meta['seg_owner']
+        eids = [eid for eid, o in seg_owner.items() if o[0] == cid]
+        params = app._analytic_group_params(cid, eids, 0.0, _SM_ARC,
+                                            app.result.positions, seg_owner)
+        for idx in (2, 3, 4):
+            curve = app._diagram_curve(cid, idx)
+            assert curve, 'no curve for idx %d' % idx
+            ss = [p[0] for p in curve]
+            assert all(ss[i] <= ss[i + 1] + 1e-12 for i in range(len(ss) - 1)), \
+                'curve %d is not ordered along s' % idx
+            worst = max(abs(v - app._analytic_diagram_value(idx, *params, sv))
+                        for sv, v in curve)
+            assert worst < 1e-9, 'curve %d departs from the closed form by %g' % (idx, worst)
+    finally:
+        _teardown(root)
+
+
+def test_smooth_diagram_falls_back_where_the_load_is_not_uniform():
+    """No closed form, no smooth curve. A variable load has no uniform q, so
+    that stretch keeps its per-edge steps -- the picture must never claim
+    resolution the solve does not have there."""
+    root, app = _make_app()
+    try:
+        cid, A, sag, H_exact, T_support = _exact_catenary_result(app)
+        app.loads.append({'id': 'V1', 'cable': cid, 'type': 'Variable',
+                          's1': 0.0, 's2': _SM_ARC, 'magnitude': 5.0,
+                          'direction': 'Vertical', 'angle_deg': -90.0,
+                          'expression': 's'})
+        seg_owner = app._solver_meta['seg_owner']
+        eids = [eid for eid, o in seg_owner.items() if o[0] == cid]
+        assert app._analytic_group_params(cid, eids, 0.0, _SM_ARC,
+                                          app.result.positions, seg_owner) is None, \
+            'a variable load was accepted by the closed form'
+
+        curve = app._diagram_curve(cid, 2)
+        assert curve, 'the fallback drew nothing at all'
+        # a stepped run repeats each value at both ends of its edge
+        vals = [v for _s, v in curve]
+        assert any(abs(vals[i] - vals[i + 1]) < 1e-12 for i in range(len(vals) - 1)), \
+            'the fallback does not look stepped'
+    finally:
+        _teardown(root)
+
+
+def test_stepped_diagram_data_is_unchanged():
+    """_diagram_series is the measured path and must be exactly what it was."""
+    root, app = _make_app()
+    try:
+        cid, A, sag, H_exact, T_support = _exact_catenary_result(app)
+        series = app._diagram_series(cid)
+        assert series, 'no series'
+        for _s0, _s1, T, H, V in series:
+            assert math.hypot(H, V) == pytest.approx(T, rel=1e-12)
+    finally:
+        _teardown(root)
+
+
+# --------------------------------------------------------------------------
+# 12. the smooth diagram on a REAL solve
+# --------------------------------------------------------------------------
+#
+# Section 11 feeds the diagram code an exact catenary, which pins down the
+# formulae but says nothing about what the app actually shows after a solve.
+# These two run solve_analysis and measure against q*a*cosh(span/2a), the
+# number an engineer would size the cable with.
+
+_SM_REAL_CASES = [
+    # (label, span, arc, q) -- measured stepped error at the shipped mesh
+    ('20 m span, 22 m arc   (stepped -5.3%)', 20.0, 22.0, 10.0),
+    ('20 m span, 26 m arc   (stepped -9.2%)', 20.0, 26.0, 10.0),
+    ('30 m span, 31 m arc   (stepped -2.7%)', 30.0, 31.0, 25.0),
+    ('12 m span, 18 m arc  (stepped -10.6%)', 12.0, 18.0, 4.0),
+]
+
+
+def _solved_cable(app, root, span, arc, q):
+    """Solve one uniformly loaded cable; return (cid, eids, params, result)."""
+    _reset(app)
+    c = _build_cable(app, span, arc, w=q)
+    res = _analyze(app, root)
+    assert res is not None and res.converged, 'the solve did not converge'
+    cid = c['id']
+    seg_owner = app._solver_meta['seg_owner']
+    eids = [eid for eid, o in seg_owner.items() if o[0] == cid]
+    params = app._analytic_group_params(cid, eids, 0.0, arc,
+                                        res.positions, seg_owner)
+    assert params is not None, 'a uniformly loaded cable was refused'
+    return cid, eids, params, res
+
+
+@pytest.mark.parametrize('label,span,arc,q', _SM_REAL_CASES,
+                         ids=[c[0].split('(')[0].strip() for c in _SM_REAL_CASES])
+def test_smooth_peak_beats_the_stepped_peak_on_a_real_solve(label, span, arc, q):
+    """Peak tension is at the anchorage, which is the one place no edge
+    midpoint ever lands, so the stepped band always under-reports it -- and
+    under-reporting is the dangerous direction for sizing. Measured against
+    the closed form, smooth is within a fraction of a percent where stepped is
+    off by 2.7% to 10.6%, and it is low in every case, never high.
+    """
+    pytest.importorskip('scipy.optimize')
+    root, app = _make_app()
+    try:
+        cid, eids, params, res = _solved_cable(app, root, span, arc, q)
+        a = _catenary_a(span, arc)
+        t_exact = q * a * math.cosh(span / (2.0 * a))
+
+        stepped = max(res.tensions[e] for e in eids)
+        smooth = app._analytic_diagram_value(2, *params, 0.0)
+        e_step = abs(stepped - t_exact) / t_exact
+        e_smooth = abs(smooth - t_exact) / t_exact
+
+        assert stepped < t_exact, (
+            'the stepped peak is no longer low; trapezoidal lumping should '
+            'always under-report the anchorage')
+        assert e_smooth < 0.01, (
+            'smooth peak %.4f N is %.3f%% from the closed form %.4f N'
+            % (smooth, 100 * e_smooth, t_exact))
+        assert e_smooth < e_step / 4.0, (
+            'smooth (%.3f%%) is not clearly better than stepped (%.3f%%)'
+            % (100 * e_smooth, 100 * e_step))
+    finally:
+        _teardown(root)
+
+
+def test_smooth_peak_converges_at_second_order_and_stepped_at_first():
+    """The finding that makes this more than a drawing choice.
+
+    The smooth reading is recovered from edge CHORDS, so it carries the mesh's
+    own discretisation error -- which is why it lands near, not on, the closed
+    form. Refining decides where that error lives. Measured on a 30 m / 31 m
+    cable at 25 N/m, error ratios per doubling: smooth 4.01, 4.00, 4.00
+    (second order); stepped 2.20, 2.10, 2.05 (first). Refining the mesh
+    therefore buys four times as much from the smooth reading as from the
+    stepped one.
+
+    Asserted as a RATE, not a value: the value cannot equal the continuum's,
+    and demanding that it should is what made the first version of this test
+    wrong.
+    """
+    pytest.importorskip('scipy.optimize')
+    span, arc, q = 30.0, 31.0, 25.0
+    a = _catenary_a(span, arc)
+    t_exact = q * a * math.cosh(span / (2.0 * a))
+
+    root, app = _make_app()
+    try:
+        smooth_err, stepped_err = [], []
+        for n in (8, 16, 32):
+            _reset(app)
+            app._graded_bp = {}
+            c = _build_cable(app, span, arc, w=q)
+            # Force an exactly uniform mesh of n edges: _solver_breakpoints
+            # hands back a stored graded mesh verbatim when one exists, which
+            # is the only seam here that does not need the solver touched.
+            app._graded_bp[c['id']] = [arc * k / n for k in range(n + 1)]
+            res = _analyze(app, root)
+            assert res is not None and res.converged, 'n=%d did not converge' % n
+            cid = c['id']
+            seg_owner = app._solver_meta['seg_owner']
+            eids = [eid for eid, o in seg_owner.items() if o[0] == cid]
+            assert len(eids) == n, 'the forced mesh did not take (%d edges)' % len(eids)
+            params = app._analytic_group_params(cid, eids, 0.0, arc,
+                                                res.positions, seg_owner)
+            assert params is not None
+            smooth_err.append(abs(app._analytic_diagram_value(2, *params, 0.0)
+                                  - t_exact) / t_exact)
+            stepped_err.append(abs(max(res.tensions[e] for e in eids)
+                                   - t_exact) / t_exact)
+
+        for i in range(len(smooth_err) - 1):
+            r = smooth_err[i] / smooth_err[i + 1]
+            assert 3.4 < r < 4.6, (
+                'smooth is not second order between %d and %d edges (%.2fx)'
+                % (2 ** (i + 3), 2 ** (i + 4), r))
+        for i in range(len(stepped_err) - 1):
+            r = stepped_err[i] / stepped_err[i + 1]
+            assert r < 2.6, (
+                'stepped improved faster than first order (%.2fx); if the '
+                'lumping changed, this comparison needs rewriting' % r)
+    finally:
+        _teardown(root)

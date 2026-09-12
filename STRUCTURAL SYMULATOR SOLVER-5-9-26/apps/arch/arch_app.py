@@ -10,11 +10,16 @@ enforces zero moment there with no extra condensation math needed.
 """
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import tkinter.font as tkfont
+
+import units
 import math, os, sys, subprocess
 
 from common import (
+    UnitsMixin,
     _ensure_openpyxl,
     PANEL_W, INIT_CW, INIT_CH, INIT_DH,
+    ScrollPanel, WrapBar,
     _beam_gauss_solve, _GAUSS5_NODES, _GAUSS5_WEIGHTS,
     _nice_ticks, _find_diagram_maxima, make_shape_fn,
 )
@@ -99,6 +104,13 @@ class ArchModel:
     (concave-up) convention, consistent along the arc.
     """
     def __init__(self, shape_fn, span, n_elem=60):
+        # The App layer clamps this with max(4, ...), so a typed or imported 0
+        # never reaches here -- but driven directly from a test or a script it
+        # used to divide by zero inside nodes() with no explanation
+        # (2026-09-05 finding A-2). Say so instead.
+        if n_elem < 1:
+            raise ValueError(
+                f'An arch needs at least one element; got n_elem = {n_elem}.')
         self.shape_fn = shape_fn
         self.span = span
         self.n_elem = n_elem
@@ -120,7 +132,34 @@ class ArchModel:
         ys = [self.shape_fn(x) for x in xs]
         return xs, ys
 
+    def _validate_loads(self):
+        """Refuse loads that are not on the arch.
+
+        A point load is assembled onto the NEAREST node, which for any x beyond
+        the springings is a support -- so an out-of-span load was accepted, moved
+        onto the support, and carried by nothing. Global equilibrium still
+        closed, so nothing looked wrong (2026-09-05 finding A-6). A distributed
+        load whose domain misses the span entirely simply integrated to zero and
+        vanished (A-7).
+        """
+        tol = 1e-9 * max(1.0, abs(self.span))
+        for p in self.point_loads:
+            x = p['x']
+            if not (-tol <= x <= self.span + tol):
+                raise ValueError(
+                    f"A point load at x = {x:g} m is not on the arch, which "
+                    f"spans 0 to {self.span:g} m. Move it onto the arch, or set "
+                    f"the span first.")
+        for d in self.distributed_loads:
+            lo, hi = sorted((d['x1'], d['x2']))
+            if hi <= -tol or lo >= self.span + tol:
+                raise ValueError(
+                    f"A distributed load covering x = {lo:g} to {hi:g} m lies "
+                    f"entirely off the arch, which spans 0 to {self.span:g} m, "
+                    f"so it would carry nothing.")
+
     def solve(self):
+        self._validate_loads()
         xs, ys = self.nodes()
         n = self.n_elem
         nn = n + 1
@@ -597,7 +636,19 @@ def import_arch_excel(path):
             'point_loads': point_loads, 'distributed_loads': distributed_loads,
             'profile': profile}
 
-class ArchApp(tk.Frame):
+# Shortest usable caption per diagram panel, for when a quarter of the diagram
+# pane is too narrow even for the quantity's name (A-5). The symbol is the one
+# thing that must never be dropped -- without it the panel is unidentifiable.
+def short_caption(kind):
+    F, MOM, ST = (units.label('force'), units.label('moment'),
+                  units.label('stress'))
+    return {'N': f'N ({F})',
+            'thrust': f'Fx / Fy ({F})',
+            'M': f'M ({MOM})',
+            'sigma': f'σ ({ST})'}.get(kind)
+
+
+class ArchApp(UnitsMixin, tk.Frame):
     """
     Arch tab — two-hinged, three-hinged, and fixed-base arches from a smooth
     y=f(x) shape, via the ArchModel direct-stiffness solver above.
@@ -636,6 +687,7 @@ class ArchApp(tk.Frame):
                          'allow_tension': 16.0, 'allow_compression': 16.0}
         self.result = None
         self.model = None
+        self.init_units(repaint=self._on_units_changed)
         self._build_ui()
         self._draw_schematic()
 
@@ -643,11 +695,13 @@ class ArchApp(tk.Frame):
     def _build_ui(self):
         tb = tk.Frame(self, bg='#ebebea')
         tb.pack(fill='x', padx=6, pady=(6, 0))
-        tk.Label(tb, text='Span (m):', bg='#ebebea', font=('Helvetica', 11)).pack(side='left', padx=(4, 2))
-        self.span_var = tk.DoubleVar(value=self.span)
+        self.unit_label(tk.Label(tb, bg='#ebebea', font=('Helvetica', 11)),
+                        lambda: f'Span ({self.u("length")}):').pack(side='left', padx=(4, 2))
+        self.span_var = self.unit_var(tk.DoubleVar(value=self.span), 'length')
         tk.Entry(tb, textvariable=self.span_var, width=6, font=('Helvetica', 11)).pack(side='left')
-        tk.Label(tb, text='Rise (m):', bg='#ebebea', font=('Helvetica', 11)).pack(side='left', padx=(8, 2))
-        self.rise_var = tk.DoubleVar(value=self.rise)
+        self.unit_label(tk.Label(tb, bg='#ebebea', font=('Helvetica', 11)),
+                        lambda: f'Rise ({self.u("length")}):').pack(side='left', padx=(8, 2))
+        self.rise_var = self.unit_var(tk.DoubleVar(value=self.rise), 'length')
         tk.Entry(tb, textvariable=self.rise_var, width=6, font=('Helvetica', 11)).pack(side='left')
         tk.Button(tb, text='Set geometry', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica', 11), command=self._set_geometry).pack(side='left', padx=4)
@@ -673,16 +727,35 @@ class ArchApp(tk.Frame):
         main = tk.Frame(self, bg='#f5f5f3')
         main.pack(fill='both', expand=True, padx=6, pady=6)
 
+        # Right panel FIRST, expanding content SECOND. Tk's pack hands each
+        # slave a parcel in packing order, so the previous order (content
+        # first, expand=True) left the panel whatever the content did not
+        # want -- which at narrow widths was nothing, and the panel was
+        # unmapped entirely with no scrollbar and no error. ScrollPanel also
+        # scrolls horizontally, so a row wider than the panel stays reachable
+        # instead of being clipped mid-widget.
+        self.panel_outer = ScrollPanel(main, width=PANEL_W + 105, bg='#f0f0ee',
+                                        bd=1, relief='solid')
+        self.panel_outer.pack(side='right', fill='y', padx=(6, 0))
+
+        # The schematic pane is fixed-width too, and it is the THIRD thing
+        # competing for the window. Panel + 400 px schematic already exceeds a
+        # 600 px window, which left the expanding middle column -- and the
+        # dozen controls in it -- with zero width and unmapped. `_schem_size`
+        # shrinks it with the window; see _on_root_configure.
         SCHEM_SIZE = 400
+        self._schem_max = SCHEM_SIZE
         schem_outer = tk.Frame(main, bg='#f5f5f3', width=SCHEM_SIZE)
         schem_outer.pack(side='left', fill='y', padx=(0, 8))
         schem_outer.pack_propagate(False)
+        self._schem_outer = schem_outer
 
         tk.Label(schem_outer, text='Arch schematic', bg='#f5f5f3',
                  font=('Helvetica', 9, 'bold'), fg='#777').pack(anchor='w')
         schem_sq = tk.Frame(schem_outer, bg='#f5f5f3', width=SCHEM_SIZE, height=SCHEM_SIZE)
         schem_sq.pack(pady=(0, 8))
         schem_sq.pack_propagate(False)
+        self._schem_sq = schem_sq
         self.schem = tk.Canvas(schem_sq, bg='white', bd=1, relief='solid', highlightthickness=0)
         self.schem.pack(fill='both', expand=True)
         self.schem.bind('<Configure>', lambda e: self._draw_schematic())
@@ -696,9 +769,10 @@ class ArchApp(tk.Frame):
 
         probe_row = tk.Frame(schem_outer, bg='#f5f5f3')
         probe_row.pack(fill='x', pady=(2, 2))
-        tk.Label(probe_row, text='s from support A (m):', bg='#f5f5f3',
-                 font=('Helvetica', 9)).pack(side='left')
-        self.probe_s_var = tk.DoubleVar(value=0.0)
+        self.unit_label(tk.Label(probe_row, bg='#f5f5f3',
+                                 font=('Helvetica', 9)),
+                        lambda: f's from support A ({self.u("length")}):').pack(side='left')
+        self.probe_s_var = self.unit_var(tk.DoubleVar(value=0.0), 'length')
         probe_entry = tk.Entry(probe_row, textvariable=self.probe_s_var, width=7, font=('Helvetica', 9))
         probe_entry.pack(side='left', padx=4)
         probe_entry.bind('<Return>', lambda e: self._update_probe())
@@ -736,9 +810,19 @@ class ArchApp(tk.Frame):
         mid = tk.Frame(main, bg='#f5f5f3')
         mid.pack(side='left', fill='both', expand=True)
 
-        tk.Label(mid, text='Diagrams (2×2): axial N · thrust Fx/Fy · bending M · fibre stress'
-                            ' (run ▶ Analyze; hover over any arch outline for a live readout)',
-                 bg='#f5f5f3', font=('Helvetica', 9, 'bold'), fg='#777').pack(anchor='w')
+        # This header is wider than the column it sits in, and Tk centres an
+        # over-wide label and clips BOTH ends -- it used to read
+        # "): axial N ... hover over any arch outline for", losing its own first
+        # word (2026-09-10 finding A-5). Shortened, and given a wraplength that
+        # tracks the column so it wraps instead of clipping at any width.
+        diag_hint = tk.Label(
+            mid, text='Diagrams (2×2): N · Fx/Fy · M · fibre stress'
+                      ' — run ▶ Analyze, then hover the arch for a live readout',
+            bg='#f5f5f3', font=('Helvetica', 9, 'bold'), fg='#777',
+            justify='left', anchor='w')
+        diag_hint.pack(anchor='w', fill='x')
+        diag_hint.bind('<Configure>',
+                       lambda e, lb=diag_hint: lb.config(wraplength=max(120, e.width - 8)))
 
         scale_bar = tk.Frame(mid, bg='#f5f5f3')
         scale_bar.pack(fill='x', pady=(2, 0))
@@ -790,27 +874,50 @@ class ArchApp(tk.Frame):
         self.diag_canvas.bind('<Motion>', self._on_diagram_motion)
         self.diag_canvas.bind('<Leave>', lambda e: self._hide_tooltip())
 
-        panel_outer = tk.Frame(main, width=PANEL_W + 105, bg='#f0f0ee', bd=1, relief='solid')
-        panel_outer.pack(side='right', fill='y', padx=(6, 0))
-        panel_outer.pack_propagate(False)
-        panel_canvas = tk.Canvas(panel_outer, bg='#f0f0ee', highlightthickness=0, width=PANEL_W + 105)
-        panel_sb = tk.Scrollbar(panel_outer, orient='vertical', command=panel_canvas.yview)
-        panel_canvas.configure(yscrollcommand=panel_sb.set)
-        panel_sb.pack(side='right', fill='y')
-        panel_canvas.pack(side='left', fill='both', expand=True)
-        panel = tk.Frame(panel_canvas, width=PANEL_W + 105, bg='#f0f0ee')
-        panel_canvas.create_window((0, 0), window=panel, anchor='nw', width=PANEL_W + 105)
+        self._build_panel(self.panel_outer.interior)
+        # Adopt whatever width the panel's own content needs, so nothing
+        # starts life behind the horizontal scrollbar.
+        self.panel_outer.fit_to_content()
 
-        def _on_cfg(event):
-            panel_canvas.configure(scrollregion=panel_canvas.bbox('all'))
-        panel.bind('<Configure>', _on_cfg)
+        # The toolbar was one long row of pack(side='left') calls, so its tail
+        # ran off the right edge. WrapBar flows those same widgets across as
+        # many rows as the width needs, without restructuring how they were
+        # built. The same <Configure> drives the panel width, so the two can
+        # never disagree about how wide the window currently is.
+        self.toolbar_wrap = WrapBar(tb)
+        self.toolbar_wrap.start()
+        # The two diagram-scale rows are the same shape as the toolbar -- one
+        # long run of pack(side=left) -- and lost their sliders, the
+        # Horizontal/Vertical/Both radios and the scale lock the same way.
+        self.scale_wrap = WrapBar(scale_bar)
+        self.scale_wrap.start()
+        self.scale_wrap2 = WrapBar(scale_bar2)
+        self.scale_wrap2.start()
+        self.bind('<Configure>', self._on_root_configure, add='+')
+        self.after_idle(lambda: self._on_root_configure(None))
 
-        def _wheel(event):
-            panel_canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
-        panel_canvas.bind('<Enter>', lambda e: panel_canvas.bind_all('<MouseWheel>', _wheel))
-        panel_canvas.bind('<Leave>', lambda e: panel_canvas.unbind_all('<MouseWheel>'))
-
-        self._build_panel(panel)
+    def _on_root_configure(self, _event=None):
+        """Resize the right panel to match the window. Content that no longer
+        fits stays reachable through ScrollPanel's horizontal scrollbar, so
+        this can never hide a control -- unlike the previous fixed-width
+        panel, which was simply dropped."""
+        try:
+            w = self.winfo_width()
+            self.panel_outer.apply_responsive_width(w)
+            # Keep the schematic to at most a third of the window -- a
+            # quarter once the window is genuinely tight -- so the panel, the
+            # schematic and the expanding middle column can all coexist at
+            # 600 px instead of the last one being squeezed out. The middle
+            # column holds the diagram scale rows, and when it runs out of
+            # room those rows wrap until they no longer fit vertically and
+            # start dropping controls, which is the failure being avoided.
+            share = 0.33 if w >= 900 else 0.24
+            size = max(130, min(self._schem_max, int(w * share)))
+            if int(self._schem_outer.cget('width')) != size:
+                self._schem_outer.configure(width=size)
+                self._schem_sq.configure(width=size, height=size)
+        except Exception:
+            pass
 
     def _build_panel(self, panel):
         pad = dict(padx=8, pady=(8, 2))
@@ -847,17 +954,26 @@ class ArchApp(tk.Frame):
 
         tk.Label(panel, text='LOADS (horizontal-projected)', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
         ld = tk.Frame(panel, bg='#f0f0ee'); ld.pack(fill='x', padx=8)
-        tk.Label(ld, text='Weight w (kN/m, +down):', bg='#f0f0ee', font=('Helvetica', 9)).grid(row=0, column=0, sticky='w', pady=1)
-        self.wweight_var = tk.DoubleVar(value=self.w_weight)
+        self.unit_label(tk.Label(ld, bg='#f0f0ee', font=('Helvetica', 9)),
+                        lambda: f'Weight w ({self.u("line_load")}, +down):'
+                        ).grid(row=0, column=0, sticky='w', pady=1)
+        self.wweight_var = self.unit_var(tk.DoubleVar(value=self.w_weight), 'line_load')
         tk.Entry(ld, textvariable=self.wweight_var, width=8, font=('Helvetica', 9)).grid(row=0, column=1, pady=1, padx=4)
-        tk.Label(ld, text='Wind w (kN/m, +x):', bg='#f0f0ee', font=('Helvetica', 9)).grid(row=1, column=0, sticky='w', pady=1)
-        self.wwind_var = tk.DoubleVar(value=self.w_wind)
+        self.unit_label(tk.Label(ld, bg='#f0f0ee', font=('Helvetica', 9)),
+                        lambda: f'Wind w ({self.u("line_load")}, +x):'
+                        ).grid(row=1, column=0, sticky='w', pady=1)
+        self.wwind_var = self.unit_var(tk.DoubleVar(value=self.w_wind), 'line_load')
         tk.Entry(ld, textvariable=self.wwind_var, width=8, font=('Helvetica', 9)).grid(row=1, column=1, pady=1, padx=4)
 
         tk.Label(panel, text='NON-UNIFORM DISTRIBUTED LOADS', bg='#f0f0ee',
                  font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
-        tk.Label(panel, text='q(x) in kN/m, over a sub-domain [x₁,x₂] (m)', bg='#f0f0ee',
-                 font=('Helvetica', 8), fg='#777').pack(anchor='w', padx=8)
+        # The bounds follow the selector, the EXPRESSION does not: q(x) is a
+        # formula the user wrote, and re-reading it in another convention would
+        # change what it means rather than how it is written.
+        self.unit_label(tk.Label(panel, bg='#f0f0ee', font=('Helvetica', 8), fg='#777'),
+                        lambda: f'q(x) always in {units.STORAGE.label("line_load")} with x in '
+                                f'{units.STORAGE.label("length")}, over [x₁,x₂] '
+                                f'({self.u("length")})').pack(anchor='w', padx=8)
         self.dl_tree = ttk.Treeview(panel, columns=('expr', 'x1', 'x2', 'dir'),
                                     show='headings', height=3)
         for c, w, lbl in [('expr', 100, 'q(x)'), ('x1', 45, 'x₁'), ('x2', 45, 'x₂'), ('dir', 55, 'dir')]:
@@ -868,10 +984,18 @@ class ArchApp(tk.Frame):
         tk.Button(dlf, text='Delete',
                   command=lambda: self._del_row(self.dl_tree, self.distributed_loads)).pack(side='left', padx=2)
 
-        tk.Label(panel, text='POINT LOADS (kN)', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
+        self.unit_label(tk.Label(panel, bg='#f0f0ee', font=('Helvetica', 10, 'bold')),
+                        lambda: f'POINT LOADS ({self.u("force")})').pack(anchor='w', **pad)
         self.pl_tree = ttk.Treeview(panel, columns=('x', 'fx', 'fy'), show='headings', height=3)
         for c, w in [('x', 60), ('fx', 60), ('fy', 60)]:
             self.pl_tree.heading(c, text=c); self.pl_tree.column(c, width=w)
+        # Columns whose heading has to name a unit, kept as (tree, column, base
+        # text) so one loop repaints them all after a switch.
+        self._unit_headings = [(self.dl_tree, 'x1', 'x₁'), (self.dl_tree, 'x2', 'x₂'),
+                                (self.pl_tree, 'x', 'x'), (self.pl_tree, 'fx', 'fx'),
+                                (self.pl_tree, 'fy', 'fy')]
+        for tree, col, base in self._unit_headings:
+            tree.heading(col, text=f'{base} ({self._u(col)})')
         self.pl_tree.pack(fill='x', padx=8)
         pf = tk.Frame(panel, bg='#f0f0ee'); pf.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(pf, text='Add', command=self._add_pointload).pack(side='left', padx=2)
@@ -880,13 +1004,13 @@ class ArchApp(tk.Frame):
         tk.Label(panel, text='CROSS-SECTION / MATERIAL', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
         sec = tk.Frame(panel, bg='#f0f0ee'); sec.pack(fill='x', padx=8)
         self.sec_vars = {}
-        fields = [('E', 'E (GPa)'), ('A', 'Area A (cm²)'), ('I', 'I (cm⁴)'),
-                  ('c_top', 'c extrados (cm)'), ('c_bot', 'c intrados (cm)'),
-                  ('allow_tension', 'Allow. tension σ (kN/cm²)'),
-                  ('allow_compression', 'Allow. compression σ (kN/cm²)')]
-        for i, (key, label) in enumerate(fields):
-            tk.Label(sec, text=label, bg='#f0f0ee', font=('Helvetica', 9)).grid(row=i, column=0, sticky='w', pady=1)
-            v = tk.DoubleVar(value=self.profile[key])
+        for i, key in enumerate(('E', 'A', 'I', 'c_top', 'c_bot',
+                                  'allow_tension', 'allow_compression')):
+            self.unit_label(tk.Label(sec, bg='#f0f0ee', font=('Helvetica', 9)),
+                            (lambda k=key: self._sec_label(k))
+                            ).grid(row=i, column=0, sticky='w', pady=1)
+            v = self.unit_var(tk.DoubleVar(value=self.profile[key]),
+                              self._SECTION_Q[key])
             self.sec_vars[key] = v
             tk.Entry(sec, textvariable=v, width=8, font=('Helvetica', 9)).grid(row=i, column=1, pady=1, padx=4)
 
@@ -897,8 +1021,8 @@ class ArchApp(tk.Frame):
     # ── combobox-driven helpers ─────────────────────────────────────────────
     def _apply_shape_preset(self):
         preset = self.shape_var.get()
-        L = self.span_var.get() or self.span
-        rise = self.rise_var.get() or self.rise
+        L = self._span() or self.span
+        rise = self._rise() or self.rise
         if preset == 'Parabolic':
             self.expr_var.set('4*rise*x*(L-x)/L**2')
             self.expr_entry.config(state='disabled')
@@ -929,13 +1053,58 @@ class ArchApp(tk.Frame):
         del data_list[idx]
         self._refresh_tables()
 
+    # ── units ────────────────────────────────────────────────────────────
+    # Which physical quantity each model field is. `expr` and `direction` are
+    # not numbers and pass through untouched.
+    _FIELD_Q = {'x': 'length', 'x1': 'length', 'x2': 'length',
+                'fx': 'force', 'fy': 'force',
+                'expr': None, 'direction': None}
+
+    _SECTION_Q = {'E': 'modulus', 'A': 'area', 'I': 'inertia',
+                  'c_top': 'section_length', 'c_bot': 'section_length',
+                  'allow_tension': 'stress', 'allow_compression': 'stress'}
+
+    _SEC_TEXT = {'E': 'E', 'A': 'Area A', 'I': 'I',
+                 'c_top': 'c extrados', 'c_bot': 'c intrados',
+                 'allow_tension': 'Allow. tension σ',
+                 'allow_compression': 'Allow. compression σ'}
+
+    def _sec_label(self, key):
+        return f'{self._SEC_TEXT[key]} ({self.u(self._SECTION_Q[key])})'
+
+    # The geometry entries hold DISPLAYED numbers; everything feeding the
+    # solver reads them through these, so a span typed in feet arrives in
+    # metres.
+    def _span(self):
+        return self.unit_value(self.span_var, self.span)
+
+    def _rise(self):
+        return self.unit_value(self.rise_var, self.rise)
+
+    def _on_units_changed(self):
+        for tree, col, base in getattr(self, '_unit_headings', ()):
+            tree.heading(col, text=f'{base} ({self._u(col)})')
+        self._refresh_tables()
+        if self.result is not None:
+            self._show_results()
+            self._draw_diagrams()
+        if getattr(self, 'probe_enabled_var', None) is not None \
+                and self.probe_enabled_var.get():
+            self._update_probe()
+
     def _refresh_tables(self):
+        def cell(field, value):
+            v = self._shown(field, value)
+            return f'{v:g}' if isinstance(v, float) else v
+
         self.pl_tree.delete(*self.pl_tree.get_children())
         for r in self.point_loads:
-            self.pl_tree.insert('', 'end', values=(r['x'], r['fx'], r['fy']))
+            self.pl_tree.insert('', 'end', values=(
+                cell('x', r['x']), cell('fx', r['fx']), cell('fy', r['fy'])))
         self.dl_tree.delete(*self.dl_tree.get_children())
         for r in self.distributed_loads:
-            self.dl_tree.insert('', 'end', values=(r['expr'], r['x1'], r['x2'], r['direction']))
+            self.dl_tree.insert('', 'end', values=(
+                r['expr'], cell('x1', r['x1']), cell('x2', r['x2']), r['direction']))
         self._draw_schematic()
 
     def _ask(self, title, fields):
@@ -959,26 +1128,40 @@ class ArchApp(tk.Frame):
         return result if result else None
 
     def _add_pointload(self):
-        r = self._ask('Add point load', [('x', 'x (m)', self.span / 2),
-                                          ('fx', 'Fx (kN, +→)', 0.0),
-                                          ('fy', 'Fy (kN, +down)', 10.0)])
-        if r: self.point_loads.append(r); self._refresh_tables()
+        r = self._ask('Add point load', [
+            ('x', f'x ({self.u("length")})', self.show('length', self.span / 2)),
+            ('fx', f'Fx ({self.u("force")}, +→)', 0.0),
+            ('fy', f'Fy ({self.u("force")}, +down)', self.show('force', 10.0))])
+        if not r:
+            return
+        # An out-of-span load used to be silently relocated onto a springing,
+        # where the arch carries none of it (finding A-6). Say so at entry.
+        if not (0.0 <= r['x'] <= self.span):
+            messagebox.showwarning(
+                'Off the arch',
+                f"x = {r['x']:g} m is not on the arch, which spans 0 to "
+                f"{self.span:g} m.\n\nNothing was added. Move it onto the arch, "
+                f"or set the span first.")
+            return
+        self.point_loads.append(r); self._refresh_tables()
 
     def _add_distributed_load(self):
         win = tk.Toplevel(self); win.title('Add non-uniform distributed load'); win.grab_set()
         win.configure(bg='#f0f0ee')
-        tk.Label(win, text='q(x) in kN/m  (vars: x, L, rise, R, k; ^ or ** = power):', bg='#f0f0ee',
+        tk.Label(win, text=f'q(x) in {units.STORAGE.label("line_load")}  '
+                            f'(vars: x, L, rise, R, k in {units.STORAGE.label("length")}; '
+                            f'^ or ** = power):', bg='#f0f0ee',
                  font=('Helvetica', 9)).grid(row=0, column=0, columnspan=2, sticky='w', padx=8, pady=(8, 2))
         expr_var = tk.StringVar(value='10*sin(pi*x/L)')
         tk.Entry(win, textvariable=expr_var, width=28, font=('Helvetica', 9)).grid(
             row=1, column=0, columnspan=2, sticky='we', padx=8, pady=2)
 
-        tk.Label(win, text='x₁ (m):', bg='#f0f0ee', font=('Helvetica', 9)).grid(
+        tk.Label(win, text=f'x₁ ({self.u("length")}):', bg='#f0f0ee', font=('Helvetica', 9)).grid(
             row=2, column=0, sticky='w', padx=8, pady=4)
         x1_var = tk.DoubleVar(value=0.0)
         tk.Entry(win, textvariable=x1_var, width=10).grid(row=2, column=1, padx=8, pady=4)
 
-        tk.Label(win, text='x₂ (m):', bg='#f0f0ee', font=('Helvetica', 9)).grid(
+        tk.Label(win, text=f'x₂ ({self.u("length")}):', bg='#f0f0ee', font=('Helvetica', 9)).grid(
             row=3, column=0, sticky='w', padx=8, pady=4)
         x2_var = tk.DoubleVar(value=self.span)
         tk.Entry(win, textvariable=x2_var, width=10).grid(row=3, column=1, padx=8, pady=4)
@@ -994,10 +1177,10 @@ class ArchApp(tk.Frame):
         def ok():
             expr = expr_var.get().strip()
             try:
-                ctx = {'L': self.span_var.get(), 'rise': self.rise_var.get(),
-                       'R': (self.span_var.get()**2)/(8*self.rise_var.get()) + self.rise_var.get()/2
-                            if self.rise_var.get() else 1e9,
-                       'k': 3.0/self.span_var.get() if self.span_var.get() else 1.0}
+                L_, rise_ = self._span(), self._rise()
+                ctx = {'L': L_, 'rise': rise_,
+                       'R': (L_**2)/(8*rise_) + rise_/2 if rise_ else 1e9,
+                       'k': 3.0/L_ if L_ else 1.0}
                 x1_, x2_ = x1_var.get(), x2_var.get()
                 x_mid = (min(x1_, x2_) + max(x1_, x2_)) / 2
                 make_shape_fn(expr, ctx)(x_mid)   # validate it compiles & evaluates
@@ -1017,8 +1200,8 @@ class ArchApp(tk.Frame):
             self._refresh_tables()
 
     def _set_geometry(self):
-        self.span = self.span_var.get()
-        self.rise = self.rise_var.get()
+        self.span = self._span()
+        self.rise = self._rise()
         if self.shape_var.get() != 'Custom':
             self._apply_shape_preset()
         self._draw_schematic()
@@ -1040,12 +1223,13 @@ class ArchApp(tk.Frame):
     # ── Excel export / import ────────────────────────────────────────────────
     def _current_state(self):
         return {
-            'span': self.span_var.get(), 'rise': self.rise_var.get(),
+            'span': self._span(), 'rise': self._rise(),
             'n_elem': int(self.nelem_var.get()), 'shape_expr': self.expr_var.get(),
             'arch_type': self.arch_type_var.get(), 'hinge_frac': self.hinge_var.get(),
-            'w_weight': self.wweight_var.get(), 'w_wind': self.wwind_var.get(),
+            'w_weight': self.unit_value(self.wweight_var),
+            'w_wind': self.unit_value(self.wwind_var),
             'point_loads': self.point_loads, 'distributed_loads': self.distributed_loads,
-            'profile': {k: v.get() for k, v in self.sec_vars.items()},
+            'profile': {k: self.unit_value(v) for k, v in self.sec_vars.items()},
         }
 
     def _export_excel(self):
@@ -1097,7 +1281,8 @@ class ArchApp(tk.Frame):
 
         self._clear_all()
         self.span = st['span']; self.rise = st['rise']
-        self.span_var.set(st['span']); self.rise_var.set(st['rise'])
+        self.set_unit_value(self.span_var, st['span'])
+        self.set_unit_value(self.rise_var, st['rise'])
         self.nelem_var.set(st['n_elem'])
         self.shape_var.set('Custom')
         self.expr_entry.config(state='normal')
@@ -1105,13 +1290,13 @@ class ArchApp(tk.Frame):
         self.arch_type_var.set(st['arch_type'])
         self._on_arch_type_change()
         self.hinge_var.set(st['hinge_frac'])
-        self.wweight_var.set(st['w_weight'])
-        self.wwind_var.set(st['w_wind'])
+        self.set_unit_value(self.wweight_var, st['w_weight'])
+        self.set_unit_value(self.wwind_var, st['w_wind'])
         self.point_loads = st['point_loads']
         self.distributed_loads = st['distributed_loads']
         for k, v in st['profile'].items():
             if k in self.sec_vars:
-                self.sec_vars[k].set(v)
+                self.set_unit_value(self.sec_vars[k], v)
                 self.profile[k] = v
         self._refresh_tables()
         self._draw_schematic()
@@ -1120,36 +1305,42 @@ class ArchApp(tk.Frame):
     def _load_example_two_hinged(self):
         self._clear_all()
         self.span = 20.0; self.rise = 5.0
-        self.span_var.set(20.0); self.rise_var.set(5.0)
+        self.set_unit_value(self.span_var, 20.0)
+        self.set_unit_value(self.rise_var, 5.0)
         self.shape_var.set('Parabolic'); self._apply_shape_preset()
         self.arch_type_var.set('Two-hinged'); self._on_arch_type_change()
-        self.wweight_var.set(10.0); self.wwind_var.set(3.0)
+        self.set_unit_value(self.wweight_var, 10.0)
+        self.set_unit_value(self.wwind_var, 3.0)
         self._refresh_tables()
 
     def _load_example_three_hinged(self):
         self._clear_all()
         self.span = 20.0; self.rise = 5.0
-        self.span_var.set(20.0); self.rise_var.set(5.0)
+        self.set_unit_value(self.span_var, 20.0)
+        self.set_unit_value(self.rise_var, 5.0)
         self.shape_var.set('Parabolic'); self._apply_shape_preset()
         self.arch_type_var.set('Three-hinged'); self.hinge_var.set(0.5)
         self._on_arch_type_change()
-        self.wweight_var.set(10.0); self.wwind_var.set(3.0)
+        self.set_unit_value(self.wweight_var, 10.0)
+        self.set_unit_value(self.wwind_var, 3.0)
         self._refresh_tables()
 
     def _load_example_fixed(self):
         self._clear_all()
         self.span = 16.0; self.rise = 3.0
-        self.span_var.set(16.0); self.rise_var.set(3.0)
+        self.set_unit_value(self.span_var, 16.0)
+        self.set_unit_value(self.rise_var, 3.0)
         self.shape_var.set('Circular'); self._apply_shape_preset()
         self.arch_type_var.set('Fixed'); self._on_arch_type_change()
-        self.wweight_var.set(12.0); self.wwind_var.set(4.0)
+        self.set_unit_value(self.wweight_var, 12.0)
+        self.set_unit_value(self.wwind_var, 4.0)
         self._refresh_tables()
 
     # ── analysis ─────────────────────────────────────────────────────────────
     def _analyze(self):
         try:
-            self.span = self.span_var.get()
-            self.rise = self.rise_var.get()
+            self.span = self._span()
+            self.rise = self._rise()
             self.n_elem = max(4, int(self.nelem_var.get()))
             ctx = {'L': self.span, 'rise': self.rise,
                    'R': (self.span**2)/(8*self.rise) + self.rise/2 if self.rise else 1e9,
@@ -1168,15 +1359,15 @@ class ArchApp(tk.Frame):
                 m.support_a = 'fixed'; m.support_b = 'fixed'; m.hinge_x = None
 
             for k in self.sec_vars:
-                self.profile[k] = self.sec_vars[k].get()
+                self.profile[k] = self.unit_value(self.sec_vars[k])
             m.E = self.profile['E'] * 1e9
             m.A = self.profile['A'] * 1e-4
             m.I = self.profile['I'] * 1e-8
             m.c_top = self.profile['c_top'] * 1e-2
             m.c_bot = self.profile['c_bot'] * 1e-2
 
-            self.w_weight = self.wweight_var.get()
-            self.w_wind = self.wwind_var.get()
+            self.w_weight = self.unit_value(self.wweight_var)
+            self.w_wind = self.unit_value(self.wwind_var)
             m.w_weight = self.w_weight * 1e3
             m.w_wind = self.w_wind * 1e3
             m.point_loads = [{'x': p['x'], 'fx': p['fx']*1e3, 'fy': -p['fy']*1e3}
@@ -1227,18 +1418,30 @@ class ArchApp(tk.Frame):
         t_ratio = t_kncm2 / allow_t if allow_t else 0
         c_ratio = abs(c_kncm2) / allow_c if allow_c else 0
 
+        F, MOM, ST, LEN = (self.u('force'), self.u('moment'),
+                            self.u('stress'), self.u('length'))
+
+        def f_(v):
+            return self.show('force', v / 1e3)
+
+        def m_(v):
+            return self.show('moment', v / 1e3)
+
         lines = ['REACTIONS']
-        lines.append(f"  Left  (x=0)       : Rx={Rx0/1e3:+8.2f} kN  Ry={Ry0/1e3:+8.2f} kN"
-                      + (f"  M={M0/1e3:+8.2f} kN·m" if m.support_a == 'fixed' else ''))
-        lines.append(f"  Right (x={m.span:.2f}) : Rx={Rxn/1e3:+8.2f} kN  Ry={Ryn/1e3:+8.2f} kN"
-                      + (f"  M={Mn/1e3:+8.2f} kN·m" if m.support_b == 'fixed' else ''))
-        lines += ['', f'Max axial (tension)     N = {Nmax_t/1e3:8.2f} kN',
-                  f'Max axial (compression) N = {Nmax_c/1e3:8.2f} kN',
-                  f'Max |bending moment|    M = {Mmax/1e3:8.2f} kN·m', '',
+        lines.append(f"  Left  (x=0)       : Rx={f_(Rx0):+8.2f} {F}  Ry={f_(Ry0):+8.2f} {F}"
+                      + (f"  M={m_(M0):+8.2f} {MOM}" if m.support_a == 'fixed' else ''))
+        lines.append(f"  Right (x={self.show('length', m.span):.2f}) : "
+                      f"Rx={f_(Rxn):+8.2f} {F}  Ry={f_(Ryn):+8.2f} {F}"
+                      + (f"  M={m_(Mn):+8.2f} {MOM}" if m.support_b == 'fixed' else ''))
+        lines += ['', f'Max axial (tension)     N = {f_(Nmax_t):8.2f} {F}',
+                  f'Max axial (compression) N = {f_(Nmax_c):8.2f} {F}',
+                  f'Max |bending moment|    M = {m_(Mmax):8.2f} {MOM}', '',
                   'STRESS CHECK (extreme fibres, tension +)']
-        lines.append(f'  Max tension     σ = {t_kncm2:7.3f} kN/cm²   allow = {allow_t:.3f} '
+        lines.append(f'  Max tension     σ = {self.show("stress", t_kncm2):7.3f} {ST}   '
+                      f'allow = {self.show("stress", allow_t):.3f} '
                       f'({"OK" if t_ratio <= 1.0 else "FAIL"}, ratio {t_ratio:.2f})')
-        lines.append(f'  Max compression σ = {c_kncm2:7.3f} kN/cm²   allow = {allow_c:.3f} '
+        lines.append(f'  Max compression σ = {self.show("stress", c_kncm2):7.3f} {ST}   '
+                      f'allow = {self.show("stress", allow_c):.3f} '
                       f'({"OK" if c_ratio <= 1.0 else "FAIL"}, ratio {c_ratio:.2f})')
 
         self.res_text.delete('1.0', 'end')
@@ -1247,7 +1450,7 @@ class ArchApp(tk.Frame):
     # ── drawing ──────────────────────────────────────────────────────────────
     def _current_shape_fn(self):
         try:
-            L = self.span_var.get(); rise = self.rise_var.get()
+            L = self._span(); rise = self._rise()
             ctx = {'L': L, 'rise': rise,
                    'R': (L**2)/(8*rise) + rise/2 if rise else 1e9,
                    'k': 3.0/L if L else 1.0}
@@ -1315,7 +1518,8 @@ class ArchApp(tk.Frame):
             c.create_oval(X(hx)-6, Y(hy)-6, X(hx)+6, Y(hy)+6, fill=self.CHINGE, outline='')
 
         c.create_text(X(0), h-14, text='0', font=('Helvetica', 8), fill='#555')
-        c.create_text(X(L), h-14, text=f'{L:.1f} m', font=('Helvetica', 8), fill='#555')
+        c.create_text(X(L), h-14, text=f'{self.show("length", L):.1f} {self.u("length")}',
+                      font=('Helvetica', 8), fill='#555')
 
         if self.probe_enabled_var.get() and self._probe_point is not None:
             px, py = self._probe_point
@@ -1415,7 +1619,7 @@ class ArchApp(tk.Frame):
             return
         samp = self.result.sample()
         s_max = samp['s'][-1]
-        s_target = max(0.0, min(s_max, self.probe_s_var.get()))
+        s_target = max(0.0, min(s_max, self.unit_value(self.probe_s_var)))
         best_i, best_d = 0, None
         for i, sv in enumerate(samp['s']):
             d = abs(sv - s_target)
@@ -1429,10 +1633,14 @@ class ArchApp(tk.Frame):
         R = math.hypot(Fx, Fy)
 
         self._probe_point = (samp['x'][best_i], samp['y'][best_i])
+        L_, F_ = self.u('length'), self.u('force')
+        sh_l = lambda v: self.show('length', v)
+        sh_f = lambda v: self.show('force', v / 1e3)
         self.probe_result_label.config(text=(
-            f"s = {samp['s'][best_i]:.2f} m  (x={samp['x'][best_i]:.2f}, y={samp['y'][best_i]:.2f})\n"
-            f"Fx = {Fx/1e3:+8.2f} kN\n"
-            f"Fy = {Fy/1e3:+8.2f} kN\n"
+            f"s = {sh_l(samp['s'][best_i]):.2f} {L_}  "
+            f"(x={sh_l(samp['x'][best_i]):.2f}, y={sh_l(samp['y'][best_i]):.2f})\n"
+            f"Fx = {sh_f(Fx):+8.2f} {F_}\n"
+            f"Fy = {sh_f(Fy):+8.2f} {F_}\n"
             f"R  = {R/1e3:8.2f} kN"))
         self._draw_schematic()
 
@@ -1492,20 +1700,23 @@ class ArchApp(tk.Frame):
         Fy = V*tc - N*ts
         R = math.hypot(Fx, Fy)
 
-        lines = [f"s = {samp['s'][best_i]:.2f} m",
-                 f"Fx = {Fx/1e3:+.2f} kN   Fy = {Fy/1e3:+.2f} kN",
-                 f"R  = {R/1e3:.2f} kN"]
+        F_ = self.u('force')
+        sh_f = lambda v: self.show('force', v / 1e3)
+        lines = [f"s = {self.show('length', samp['s'][best_i]):.2f} {self.u('length')}",
+                 f"Fx = {sh_f(Fx):+.2f} {F_}   Fy = {sh_f(Fy):+.2f} {F_}",
+                 f"R  = {sh_f(R):.2f} {F_}"]
         if band['kind'] == 'N':
-            lines.append(f"N = {N/1e3:+.2f} kN")
+            lines.append(f"N = {sh_f(N):+.2f} {F_}")
         elif band['kind'] == 'M':
-            lines.append(f"M = {M/1e3:+.2f} kN·m")
+            lines.append(f"M = {self.show('moment', M/1e3):+.2f} {self.u('moment')}")
         elif band['kind'] == 'sigma':
             A, I = self.model.A, self.model.I
             ct, cb = self.model.c_top, self.model.c_bot
             sig_top = N/A - M*ct/I
             sig_bot = N/A + M*cb/I
-            lines.append(f"σ_top = {sig_top*1e-7:+.3f} kN/cm²")
-            lines.append(f"σ_bot = {sig_bot*1e-7:+.3f} kN/cm²")
+            ST_ = self.u('stress')
+            lines.append(f"σ_top = {self.show('stress', sig_top*1e-7):+.3f} {ST_}")
+            lines.append(f"σ_bot = {self.show('stress', sig_bot*1e-7):+.3f} {ST_}")
         # 'Fx' / 'Fy' bands: already shown in the shared Fx/Fy line above
 
         self._show_tooltip(event.x_root, event.y_root, '\n'.join(lines))
@@ -1537,44 +1748,91 @@ class ArchApp(tk.Frame):
         c.create_line(0, row_h, w, row_h, fill=self.CGRID)
 
         thrust_view = self.thrust_view_var.get()
+        # Plotted values are converted here, at the one place they leave SI,
+        # so the curve, its axis ticks and its "max ±..." readout can never
+        # disagree about which convention they are in.
+        F_, MOM_, ST_ = self.u('force'), self.u('moment'), self.u('stress')
+        f_ = lambda v: self.show('force', v / 1e3)
+        m_ = lambda v: self.show('moment', v / 1e3)
+        st_ = lambda v: self.show('stress', v * 1e-7)
+
         thrust_curves = []
         if thrust_view in ('Horizontal', 'Both'):
-            thrust_curves.append({'vals': [v/1e3 for v in Fx_list], 'color': self.CTHH,
+            thrust_curves.append({'vals': [f_(v) for v in Fx_list], 'color': self.CTHH,
                                    'sign_color': False, 'dash': False, 'label': 'Fx'})
         if thrust_view in ('Vertical', 'Both'):
-            thrust_curves.append({'vals': [v/1e3 for v in Fy_list], 'color': self.CTHV,
+            thrust_curves.append({'vals': [f_(v) for v in Fy_list], 'color': self.CTHV,
                                    'sign_color': False, 'dash': (thrust_view == 'Both'), 'label': 'Fy'})
 
         quads = [
-            ('AXIAL FORCE N  (kN) — red = tension, blue = compression',
-             [{'vals': [v/1e3 for v in samp['N']], 'color': None, 'sign_color': True, 'dash': False}],
+            (f'AXIAL FORCE N  ({F_}) — red = tension, blue = compression',
+             [{'vals': [f_(v) for v in samp['N']], 'color': None, 'sign_color': True, 'dash': False}],
              (0, 0, col_w, row_h), self.n_scale_var.get()/100.0, 'N'),
-            (f'THRUST  Fx / Fy  (kN, global components) — showing: {thrust_view}',
+            (f'THRUST  Fx / Fy  ({F_}, global components) — showing: {thrust_view}',
              thrust_curves, (col_w, 0, w, row_h), self.thrust_scale_var.get()/100.0, 'thrust'),
-            ('BENDING MOMENT M  (kN·m)',
-             [{'vals': [v/1e3 for v in samp['M']], 'color': self.CM_, 'sign_color': False, 'dash': False}],
+            (f'BENDING MOMENT M  ({MOM_})',
+             [{'vals': [m_(v) for v in samp['M']], 'color': self.CM_, 'sign_color': False, 'dash': False}],
              (0, row_h, col_w, h), self.m_scale_var.get()/100.0, 'M'),
-            ('FIBRE STRESS  (kN/cm²) — red = tension, blue = compression, solid = extrados, dashed = intrados',
-             [{'vals': [v*1e-7 for v in sig_top], 'color': None, 'sign_color': True, 'dash': False},
-              {'vals': [v*1e-7 for v in sig_bot], 'color': None, 'sign_color': True, 'dash': True}],
+            (f'FIBRE STRESS  ({ST_}) — red = tension, blue = compression, solid = extrados, dashed = intrados',
+             [{'vals': [st_(v) for v in sig_top], 'color': None, 'sign_color': True, 'dash': False},
+              {'vals': [st_(v) for v in sig_bot], 'color': None, 'sign_color': True, 'dash': True}],
              (col_w, row_h, w, h), self.sigma_scale_var.get()/100.0, 'sigma'),
         ]
+        # Captions are fitted to the panel instead of being drawn at full
+        # length. Each was anchored 'w' at the SAME y as its panel's "max ±..."
+        # readout, with a wrap width spanning the whole panel, so the two ran
+        # straight through each other -- 7 overlapping text items at 1600 px and
+        # 23 at 700 px, with the FIBRE STRESS header an unreadable pile-up
+        # (2026-09-10 finding A-5). Every caption is "NAME (units) — explanation";
+        # the explanation is dropped when there is no room for it, the name
+        # never is, and a strip is reserved on the right so nothing can reach
+        # the max readout. Anchoring 'nw' keeps a wrapped caption growing
+        # downwards rather than up out of the panel.
+        MAX_LABEL_W = 96          # px reserved at the right for "max ±..."
+        cap_font = tkfont.Font(font=('Helvetica', 8, 'bold'))
         for label, curves, box, user_scale, kind in quads:
             left, top, right, bot = box
-            c.create_text(left + 6, top + 10, text=label, anchor='w',
-                          font=('Helvetica', 8, 'bold'), fill='#555', width=right-left-16)
+            avail = (right - left - 16) - MAX_LABEL_W
+            # Longest form that fits, in order: full caption, name only, symbol.
+            # A quarter panel is about 97 px wide at a 1000 px window, so on a
+            # narrow window even the name does not fit and only the symbol does.
+            text = label
+            if cap_font.measure(text) > avail:
+                text = label.split(' — ', 1)[0]
+            if cap_font.measure(text) > avail:
+                text = short_caption(kind) or text
+            cap_end = left + 6 + cap_font.measure(text)
+            c.create_text(left + 6, top + 2, text=text, anchor='nw',
+                          font=('Helvetica', 8, 'bold'), fill='#555',
+                          width=max(40, avail))
             if curves:
-                self._draw_curve_diagram(c, samp, curves, (left, top+16, right, bot), user_scale, kind)
+                self._draw_curve_diagram(c, samp, curves, (left, top+16, right, bot),
+                                          user_scale, kind, cap_end=cap_end)
             if kind == 'thrust':
                 Rx0, Ry0, _ = self.result.reaction(0)
                 Rxn, Ryn, _ = self.result.reaction(self.model.n_elem)
+                # Both reaction readouts used to be drawn on one line, anchored
+                # to opposite edges of a panel narrower than either of them --
+                # they overlapped by 184 px even in a 1500 px window (A-5).
+                # Stack them when they will not fit side by side.
+                l_text = f"◄ R_left: Rx={Rx0/1e3:+.2f} kN, Ry={Ry0/1e3:+.2f} kN ▲"
+                r_text = f"► R_right: Rx={Rxn/1e3:+.2f} kN, Ry={Ryn/1e3:+.2f} kN ▲"
+                rf = tkfont.Font(font=('Helvetica', 8, 'bold'))
+                fits = rf.measure(l_text) + rf.measure(r_text) + 18 <= (right - left)
                 yy = bot - 8
-                c.create_text(left + 6, yy, anchor='w', font=('Helvetica', 8, 'bold'), fill='#c0392b',
-                              text=f"◄ R_left: Rx={Rx0/1e3:+.2f} kN, Ry={Ry0/1e3:+.2f} kN ▲")
-                c.create_text(right - 6, yy, anchor='e', font=('Helvetica', 8, 'bold'), fill='#c0392b',
-                              text=f"► R_right: Rx={Rxn/1e3:+.2f} kN, Ry={Ryn/1e3:+.2f} kN ▲")
+                if fits:
+                    c.create_text(left + 6, yy, anchor='w', font=('Helvetica', 8, 'bold'),
+                                  fill='#c0392b', text=l_text)
+                    c.create_text(right - 6, yy, anchor='e', font=('Helvetica', 8, 'bold'),
+                                  fill='#c0392b', text=r_text)
+                else:
+                    c.create_text(left + 6, yy - 11, anchor='w', font=('Helvetica', 8, 'bold'),
+                                  fill='#c0392b', text=l_text)
+                    c.create_text(left + 6, yy, anchor='w', font=('Helvetica', 8, 'bold'),
+                                  fill='#c0392b', text=r_text)
 
-    def _draw_curve_diagram(self, c, samp, curves, box, user_scale=1.0, kind=None):
+    def _draw_curve_diagram(self, c, samp, curves, box, user_scale=1.0, kind=None,
+                             cap_end=None):
         """Draws the arch centerline plus one or more value-curves offset
         perpendicular to the local tangent at every station — so each curve
         literally follows the arch's own path instead of a flat axis. All
@@ -1665,7 +1923,17 @@ class ArchApp(tk.Frame):
                 mx, my = off_pts[idx]
                 sx, sy = X(mx), Y(my)
                 c.create_oval(sx - 4, sy - 4, sx + 4, sy + 4, fill='#222222', outline='white', width=1)
-                c.create_text(sx, sy - 10, text=f"s={sv:.2f}", font=('Helvetica', 7), fill='#222222')
+                c.create_text(sx, sy - 10, text=f"s={self.show('length', sv):.2f}",
+                              font=('Helvetica', 7), fill='#222222')
 
-        c.create_text(right - 8, top - 6, text=f"max ±{maxabs:.2f}", anchor='e',
-                      font=('Helvetica', 8), fill='#777')
+        # The "max +/-..." readout shares the caption's line. When the panel is
+        # too narrow to hold both, it drops to the panel's bottom-right instead
+        # of being drawn straight through the caption (finding A-5).
+        max_text = f"max ±{maxabs:.2f}"
+        max_w = tkfont.Font(font=('Helvetica', 8)).measure(max_text)
+        if cap_end is not None and (right - 8 - max_w) < cap_end + 6:
+            c.create_text(right - 8, bot - 6, text=max_text, anchor='se',
+                          font=('Helvetica', 8), fill='#777')
+        else:
+            c.create_text(right - 8, top - 6, text=max_text, anchor='e',
+                          font=('Helvetica', 8), fill='#777')

@@ -20,7 +20,6 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from common import ZoomCanvas
-from apps.perforated_beam import perforated_beam_math as pbm
 from apps.perforated_beam import profile_sketcher_math as psm
 
 BG = '#f5f5f3'

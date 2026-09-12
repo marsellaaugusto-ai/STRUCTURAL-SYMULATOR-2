@@ -50,5 +50,17 @@ def main():
     print('PASS: rigid-member load signs and exact V/M maxima are correct.')
 
 
+def test_truss_load_signs():
+    """pytest entry point.
+
+    This file has always defined only `main()`. pytest collects by the `test_`
+    prefix, so it collected NOTHING from here -- the checks below have never
+    run as part of `pytest -q`, and the Truss tab's "one existing test" was in
+    practice zero. Found while acting on DIAGNOSIS_TRUSS_2026-09-05 T-4. The
+    script form still works; this only makes the suite see it.
+    """
+    main()
+
+
 if __name__ == '__main__':
     main()

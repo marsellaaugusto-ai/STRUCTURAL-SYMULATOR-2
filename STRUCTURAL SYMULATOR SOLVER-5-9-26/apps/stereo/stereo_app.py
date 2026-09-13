@@ -56,6 +56,7 @@ MODULE_DIM_COLOR = '#555555'
 NODE_COLOR = '#1a1a1a'
 NODE_SEL_COLOR = '#e0522b'
 SUPPORT_COLOR = '#1a6bbd'
+SUPPORT_DISABLED_COLOR = '#b9bec4'
 MEMBER_PIN_COLOR = '#555555'
 MEMBER_RIGID_COLOR = '#7a3fb8'
 NEAR_ZERO_COLOR = '#9a9a9a'
@@ -307,6 +308,7 @@ class StereoApp(UnitsMixin):
         self._support_candidates = []
         self._load_nodes = {}
         self._load_glyphs = {}
+        self._disabled_supports = set()
 
         self.azimuth = 35.0
         self.elevation = 22.0
@@ -835,6 +837,29 @@ class StereoApp(UnitsMixin):
         self.sup_list = tk.Listbox(adv, height=5, font=('Courier', 8))
         self.sup_list.pack(fill='x', padx=4, pady=(0, 4))
         self.sup_list.bind('<<ListboxSelect>>', self._on_support_list_select)
+
+        sandbox = tk.LabelFrame(box, text='Support sandbox', bg=BG,
+                                font=('Helvetica', 8, 'bold'))
+        sandbox.pack(fill='x', padx=6, pady=(0, 6))
+        self.support_sandbox = tk.BooleanVar(value=False)
+        tk.Checkbutton(sandbox, text='Click a support to disable/enable it (no re-solve '
+                                     'needed to try again)',
+                       variable=self.support_sandbox, bg=BG, font=('Helvetica', 8),
+                       wraplength=PANEL_W - 30, justify='left', command=self._draw
+                      ).pack(anchor='w', padx=4, pady=(4, 0))
+        tk.Label(sandbox, text='Disabled supports are excluded from the next Analyze -- '
+                              'build intuition for redundancy without editing the model.',
+                bg=BG, fg='#666', font=('Helvetica', 8), wraplength=PANEL_W - 30,
+                justify='left').pack(anchor='w', padx=4, pady=(2, 4))
+        tk.Button(sandbox, text='Reset sandbox (re-enable all)',
+                 command=self._reset_support_sandbox).pack(anchor='w', padx=4, pady=(0, 4))
+
+    def _reset_support_sandbox(self):
+        if not self._disabled_supports:
+            return
+        self._disabled_supports = set()
+        self._refresh_indeterminacy_label()
+        self._draw()
 
     # ── Loads ────────────────────────────────────────────────────────────────
     def _build_loads_panel(self, parent):
@@ -1916,24 +1941,44 @@ class StereoApp(UnitsMixin):
                                     font=('Helvetica', 9), relief='flat', bg=BG)
         self.results_text.pack(fill='both', padx=6, pady=6)
 
+    def _active_supports(self):
+        """self.supports with any support the sandbox has disabled left
+        out -- the set _analyze() and the indeterminacy readout both
+        solve/count against, so toggling a support in the sandbox is felt
+        immediately by both without touching the model's own support
+        list. Filters defensively against self.supports's own current
+        node set, so a stale sandbox entry for a node no longer supported
+        (edited elsewhere) is simply harmless rather than needing to be
+        swept every time self.supports changes."""
+        if not self._disabled_supports:
+            return self.supports
+        return [s for s in self.supports if s['node'] not in self._disabled_supports]
+
     def _refresh_indeterminacy_label(self):
         if not self.nodes:
             self.indeterminacy_label.config(text='')
             return
-        restraint_count = sm.total_restrained_dofs(self.nodes, self.supports)
-        dsi = sm.degree_of_indeterminacy(self.nodes, self.members, self.supports)
+        active = self._active_supports()
+        restraint_count = sm.total_restrained_dofs(self.nodes, active)
+        dsi = sm.degree_of_indeterminacy(self.nodes, self.members, active)
+        sandbox_note = ''
+        if self._disabled_supports & {s['node'] for s in self.supports}:
+            n_off = len(self._disabled_supports & {s['node'] for s in self.supports})
+            sandbox_note = f'  [sandbox: {n_off} support(s) disabled]'
         if restraint_count < 6:
             text = (f'UNSTABLE: only {restraint_count}/6 restraint components -- free-floating '
-                    f'mechanism regardless of DSI (add supports)')
+                    f'mechanism regardless of DSI (add supports){sandbox_note}')
             color = '#a3241a'
         elif dsi > 0:
-            text = f'Statically INDETERMINATE, degree {dsi} ({dsi} redundant load path(s))'
+            text = (f'Statically INDETERMINATE, degree {dsi} ({dsi} redundant load '
+                    f'path(s)){sandbox_note}')
             color = '#17458c'
         elif dsi == 0:
-            text = 'Statically DETERMINATE (degree 0)'
+            text = f'Statically DETERMINATE (degree 0){sandbox_note}'
             color = '#2e7d32'
         else:
-            text = f'UNDER-restrained by {-dsi} -- likely a mechanism (check supports/bracing)'
+            text = (f'UNDER-restrained by {-dsi} -- likely a mechanism (check '
+                    f'supports/bracing){sandbox_note}')
             color = '#a3241a'
         self.indeterminacy_label.config(text=text, fg=color)
 
@@ -2023,6 +2068,7 @@ class StereoApp(UnitsMixin):
         self._apply_sections(members=self.members, redraw=False)
         self.supports = [{'node': i, 'type': 'pin'} for i in self._support_candidates]
         self.sup_quick_var.set(QUICK_SUPPORT_PIN)
+        self._disabled_supports = set()
         self.loads = []
         self.results = None
         self.member_checks = None
@@ -2504,7 +2550,7 @@ class StereoApp(UnitsMixin):
     # ── analysis ─────────────────────────────────────────────────────────────
     def _analyze(self):
         loads = self._all_loads()
-        res, err = sm.analyze(self.nodes, self.members, loads, self.supports)
+        res, err = sm.analyze(self.nodes, self.members, loads, self._active_supports())
         self.err = err
         if err:
             self.results = None
@@ -2793,6 +2839,8 @@ class StereoApp(UnitsMixin):
                 r = 5 if sel else 4
                 if sel:
                     color = NODE_SEL_COLOR
+                elif i in self._disabled_supports and i in support_nodes:
+                    color = SUPPORT_DISABLED_COLOR
                 elif by_moment and i in moment_by_node:
                     color = moment_color(moment_by_node.get(i, 0.0), max_abs_moment)
                 elif ref_grey is not None:
@@ -2815,7 +2863,14 @@ class StereoApp(UnitsMixin):
                 # would otherwise override/obscure).
                 if i in support_nodes:
                     h = SUPPORT_BOX_HALF_PX
-                    if by_moment:
+                    disabled = i in self._disabled_supports
+                    if disabled:
+                        # the sandbox toggle wins over every other colour
+                        # mode -- a support you just switched off must
+                        # stay visibly distinct regardless of what else
+                        # the view is colouring by
+                        box_color = SUPPORT_DISABLED_COLOR
+                    elif by_moment:
                         box_color = moment_color(moment_by_node.get(i, 0.0), max_abs_moment)
                         # a white (zero-moment) outline would be invisible
                         # against the canvas's own white background
@@ -2825,8 +2880,9 @@ class StereoApp(UnitsMixin):
                         box_color = ref_grey
                     else:
                         box_color = SUPPORT_COLOR
+                    kw = {'dash': (3, 2)} if disabled else {}
                     c.create_rectangle(sx - h, sy - h, sx + h, sy + h, outline=box_color,
-                                       width=2, tags=('node', f'node{i}'))
+                                       width=2, tags=('node', f'node{i}'), **kw)
 
             if self.show_node_labels.get():
                 labels = []
@@ -3109,6 +3165,9 @@ class StereoApp(UnitsMixin):
                 row(MOMENT_NEG_HIGH, f'node moment ({axis_txt}): negative')
                 row(MOMENT_ZERO_COLOR, f'node moment ({axis_txt}): ~0', outline=MOMENT_NODE_OUTLINE)
                 row(MOMENT_POS_HIGH, f'node moment ({axis_txt}): positive')
+            if self._disabled_supports & {s['node'] for s in self.supports}:
+                row(SUPPORT_DISABLED_COLOR, 'sandbox: support disabled (excluded from Analyze)',
+                   dashed=True)
 
         if show_def:
             if self.deform_color_mode.get() == DEFORM_MODE_FORCE:
@@ -3224,6 +3283,13 @@ class StereoApp(UnitsMixin):
             d = math.hypot(sx - ex, sy - ey)
             if d < best_d:
                 best, best_d = i, d
+        if best is not None and self.support_sandbox.get():
+            support_nodes = {s['node'] for s in self.supports}
+            if best in support_nodes:
+                self._disabled_supports.symmetric_difference_update({best})
+                self._refresh_indeterminacy_label()
+                self._draw()
+                return
         if best is not None:
             if additive:
                 self.selected_nodes.symmetric_difference_update({best})

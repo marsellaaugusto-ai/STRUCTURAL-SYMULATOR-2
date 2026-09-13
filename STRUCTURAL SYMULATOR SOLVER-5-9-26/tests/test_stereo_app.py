@@ -21,7 +21,7 @@ from apps.stereo.stereo_app import (
     QUICK_SUPPORT_PIN, QUICK_SUPPORT_FIXED, QUICK_SUPPORT_CLEAR, QUICK_SUPPORT_CUSTOM,
     moment_color, reaction_moment_signed, MOMENT_ZERO_COLOR, MOMENT_AXES,
     MOMENT_AXIS_RESULTANT, MOMENT_AXIS_MX, MOMENT_AXIS_MY, MOMENT_AXIS_MZ,
-    MODULE_DIM_COLOR,
+    MODULE_DIM_COLOR, SUPPORT_DISABLED_COLOR,
 )
 from apps.stereo import stereo_math as sm
 
@@ -1039,6 +1039,101 @@ def test_indeterminacy_label_is_blank_with_no_mesh_loaded(app):
     app.nodes = []
     app._refresh_all()
     assert app.indeterminacy_label.cget('text') == ''
+
+
+# ── support sandbox ──────────────────────────────────────────────────────────
+
+def test_support_sandbox_is_off_by_default(app):
+    assert app.support_sandbox.get() is False
+    assert app._disabled_supports == set()
+
+
+def test_sandbox_click_on_a_support_disables_it_instead_of_selecting(app):
+    app.support_sandbox.set(True)
+    node = app.supports[0]['node']
+    sx, sy = _screen_pos_of(app, node)
+    app._select_node_at(sx, sy)
+    assert node in app._disabled_supports
+    assert app.selected_nodes == set()   # sandbox click never selects
+
+
+def test_sandbox_click_again_re_enables_the_same_support(app):
+    app.support_sandbox.set(True)
+    node = app.supports[0]['node']
+    sx, sy = _screen_pos_of(app, node)
+    app._select_node_at(sx, sy)
+    assert node in app._disabled_supports
+    app._select_node_at(sx, sy)
+    assert node not in app._disabled_supports
+
+
+def test_sandbox_click_on_a_non_support_node_still_selects_normally(app):
+    app.support_sandbox.set(True)
+    support_nodes = {s['node'] for s in app.supports}
+    non_support = next(i for i in range(len(app.nodes)) if i not in support_nodes)
+    sx, sy = _screen_pos_of(app, non_support)
+    app._select_node_at(sx, sy)
+    assert app.selected_nodes == {non_support}
+    assert app._disabled_supports == set()
+
+
+def test_sandbox_toggle_off_makes_clicks_select_supports_normally_again(app):
+    app.support_sandbox.set(True)
+    node = app.supports[0]['node']
+    sx, sy = _screen_pos_of(app, node)
+    app._select_node_at(sx, sy)
+    assert node in app._disabled_supports
+    app.support_sandbox.set(False)
+    app._select_node_at(sx, sy)
+    assert app.selected_nodes == {node}
+
+
+def test_analyze_excludes_disabled_supports_from_the_solve(app):
+    node = app.supports[0]['node']
+    app._disabled_supports = {node}
+    app._analyze()
+    assert app.err is None
+    assert node not in app.results['reactions']
+
+
+def test_reset_sandbox_button_re_enables_every_disabled_support(app):
+    app._disabled_supports = {s['node'] for s in app.supports[:2]}
+    app._reset_support_sandbox()
+    assert app._disabled_supports == set()
+
+
+def test_active_supports_excludes_only_the_disabled_ones(app):
+    node = app.supports[0]['node']
+    app._disabled_supports = {node}
+    active = app._active_supports()
+    assert node not in {s['node'] for s in active}
+    assert len(active) == len(app.supports) - 1
+
+
+def test_indeterminacy_label_reflects_the_sandbox_state(app):
+    node = app.supports[0]['node']
+    app._refresh_all()
+    text_before = app.indeterminacy_label.cget('text')
+    app._disabled_supports = {node}
+    app._refresh_indeterminacy_label()
+    text_after = app.indeterminacy_label.cget('text')
+    assert text_after != text_before
+    assert 'sandbox: 1 support(s) disabled' in text_after
+
+
+def test_disabled_support_is_drawn_with_the_disabled_colour(app):
+    node = app.supports[0]['node']
+    app._disabled_supports = {node}
+    app._draw()
+    items = app.canvas.find_withtag(f'node{node}')
+    fills = {app.canvas.itemcget(i, 'fill') for i in items if app.canvas.type(i) == 'oval'}
+    assert SUPPORT_DISABLED_COLOR in fills
+
+
+def test_generating_a_new_mesh_resets_the_sandbox(app):
+    app._disabled_supports = {app.supports[0]['node']}
+    app._generate()
+    assert app._disabled_supports == set()
 
 
 # ── analysis error handling ──────────────────────────────────────────────────

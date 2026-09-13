@@ -21,7 +21,8 @@ from apps.stereo.stereo_app import (
     QUICK_SUPPORT_PIN, QUICK_SUPPORT_FIXED, QUICK_SUPPORT_CLEAR, QUICK_SUPPORT_CUSTOM,
     moment_color, reaction_moment_signed, MOMENT_ZERO_COLOR, MOMENT_AXES,
     MOMENT_AXIS_RESULTANT, MOMENT_AXIS_MX, MOMENT_AXIS_MY, MOMENT_AXIS_MZ,
-    MODULE_DIM_COLOR, SUPPORT_DISABLED_COLOR,
+    MODULE_DIM_COLOR, SUPPORT_DISABLED_COLOR, SLENDER_HALO_COLOR, SLENDERNESS_LIMIT,
+    LOAD_PATH_COLOR,
 )
 from apps.stereo import stereo_math as sm
 
@@ -873,6 +874,219 @@ def test_utilization_heat_map_is_a_no_op_before_analysis(app):
     app.member_checks = None
     app.colour_by_util.set(True)
     app._draw()   # must not raise
+
+
+# ── slenderness flag (distinct from the utilization heat-map) ───────────────
+
+def test_flag_slender_is_off_by_default(app):
+    assert app.flag_slender.get() is False
+
+
+def test_flag_slender_draws_a_halo_for_a_genuinely_slender_compression_member(app):
+    # a tiny radius of gyration on an otherwise normal-length member pushes
+    # KL/r (~3m module / a few mm) far past the 200 flag threshold
+    app.chord_r.set(0.3)
+    app.web_r.set(0.3)
+    app._apply_sections()
+    app._analyze()
+    assert any(chk.get('mode') == 'compression' and chk.get('slenderness', 0) > SLENDERNESS_LIMIT
+              for chk in app.member_checks)
+
+    app.flag_slender.set(True)
+    app._draw()
+    halos = [i for i in app.canvas.find_withtag('member')
+            if app.canvas.itemcget(i, 'fill') == SLENDER_HALO_COLOR]
+    assert halos
+
+    app.flag_slender.set(False)
+    app._draw()
+    assert not [i for i in app.canvas.find_withtag('member')
+               if app.canvas.itemcget(i, 'fill') == SLENDER_HALO_COLOR]
+
+
+def test_flag_slender_does_not_flag_stocky_members(app):
+    # the default chord/web radius of gyration keeps KL/r well under 200
+    # for the default flat_grid's own short module length
+    app._analyze()
+    assert not any(chk.get('mode') == 'compression'
+                  and chk.get('slenderness', 0) > SLENDERNESS_LIMIT
+                  for chk in app.member_checks)
+    app.flag_slender.set(True)
+    app._draw()
+    halos = [i for i in app.canvas.find_withtag('member')
+            if app.canvas.itemcget(i, 'fill') == SLENDER_HALO_COLOR]
+    assert not halos
+
+
+def test_flag_slender_is_independent_of_the_load_percent_slider(app):
+    # slenderness (KL/r) is a section/geometry property, not a force one --
+    # unlike the utilization heat-map, it must NOT change with 'Load %'
+    app.chord_r.set(0.3)
+    app.web_r.set(0.3)
+    app._apply_sections()
+    app._analyze()
+    app.flag_slender.set(True)
+
+    app.load_fraction.set(100.0)
+    app._draw()
+    halos_100 = len([i for i in app.canvas.find_withtag('member')
+                    if app.canvas.itemcget(i, 'fill') == SLENDER_HALO_COLOR])
+
+    app.load_fraction.set(10.0)
+    app._draw()
+    halos_10 = len([i for i in app.canvas.find_withtag('member')
+                   if app.canvas.itemcget(i, 'fill') == SLENDER_HALO_COLOR])
+    assert halos_100 == halos_10 > 0
+
+
+def test_flag_slender_legend_row_appears_only_when_active(app):
+    app.chord_r.set(0.3)
+    app.web_r.set(0.3)
+    app._apply_sections()
+    app._analyze()
+
+    app.flag_slender.set(False)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert not any('slender' in t for t in texts)
+
+    app.flag_slender.set(True)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any('slender' in t for t in texts)
+
+
+def test_flag_slender_is_a_no_op_before_analysis(app):
+    app.results = None
+    app.member_checks = None
+    app.flag_slender.set(True)
+    app._draw()   # must not raise
+
+
+# ── load-path pulse animation ────────────────────────────────────────────────
+
+def _load_path_lines(app):
+    return [i for i in app.canvas.find_withtag('member')
+            if app.canvas.itemcget(i, 'fill') == LOAD_PATH_COLOR]
+
+
+def test_load_path_anim_is_off_by_default(app):
+    assert app.load_path_anim.get() is False
+    assert app._load_path_after_id is None
+
+
+def test_load_path_anim_draws_marching_dashes_once_analyzed_and_enabled(app):
+    app._analyze()
+    assert not _load_path_lines(app)   # off -> nothing yet
+
+    app.load_path_anim.set(True)
+    app._draw()
+    assert _load_path_lines(app)
+
+
+def test_load_path_anim_is_a_no_op_before_analysis(app):
+    app.results = None
+    app.load_path_anim.set(True)
+    app._draw()   # must not raise
+    assert not _load_path_lines(app)
+
+
+def test_load_path_anim_tension_and_compression_dashoffsets_diverge(app):
+    # Direction alone distinguishes tension from compression in this
+    # animation (see its design note in stereo_app.py), so once the phase
+    # has advanced past the very first frame the marching dashes must show
+    # more than one distinct dashoffset -- otherwise every member would be
+    # marching the same way regardless of sign, which is exactly the
+    # ambiguity this feature exists to avoid.
+    app._analyze()
+    max_abs_n = max(abs(mr['N']) for mr in app.results['member_res'])
+    ns = [mr['N'] for mr in app.results['member_res']]
+    assert max_abs_n > 1e-9
+    assert any(n > 0 for n in ns) and any(n < 0 for n in ns)
+
+    app.load_path_anim.set(True)
+    app._load_path_phase = 5
+    app._draw()
+    offsets = {app.canvas.itemcget(i, 'dashoffset') for i in _load_path_lines(app)}
+    assert len(offsets) > 1
+
+
+def test_load_path_anim_legend_row_appears_only_when_active(app):
+    app._analyze()
+
+    app.load_path_anim.set(False)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert not any('load path' in t for t in texts)
+
+    app.load_path_anim.set(True)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any('load path' in t for t in texts)
+
+
+def test_load_path_anim_toggle_on_starts_the_timer(app):
+    app._analyze()
+    assert app._load_path_after_id is None
+    app.load_path_anim.set(True)
+    app._on_load_path_anim_toggle()
+    assert app._load_path_after_id is not None
+    app.root.after_cancel(app._load_path_after_id)
+    app._load_path_after_id = None
+
+
+def test_load_path_anim_toggle_off_clears_the_dashes_without_leaving_a_timer(app):
+    app._analyze()
+    app.load_path_anim.set(True)
+    app._on_load_path_anim_toggle()
+    app.root.after_cancel(app._load_path_after_id)
+    app._load_path_after_id = None
+
+    app.load_path_anim.set(False)
+    app._on_load_path_anim_toggle()
+    assert not _load_path_lines(app)
+    assert app._load_path_after_id is None
+
+
+def test_load_path_tick_increments_phase_and_reschedules_while_enabled(app):
+    app._analyze()
+    app.load_path_anim.set(True)
+    phase_before = app._load_path_phase
+    app._load_path_tick()
+    try:
+        assert app._load_path_phase == phase_before + 1
+        assert app._load_path_after_id is not None
+    finally:
+        if app._load_path_after_id is not None:
+            app.root.after_cancel(app._load_path_after_id)
+            app._load_path_after_id = None
+
+
+def test_load_path_tick_self_clears_and_does_not_reschedule_when_disabled(app):
+    app._analyze()
+    app.load_path_anim.set(True)
+    app._load_path_after_id = app.root.after(50000, lambda: None)   # sentinel
+    stale_id = app._load_path_after_id
+
+    app.load_path_anim.set(False)   # disabled between scheduling and firing
+    app._load_path_tick()
+    assert app._load_path_after_id is None
+    app.root.after_cancel(stale_id)
+
+
+def test_start_load_path_animation_does_not_stack_multiple_timers(app):
+    app._analyze()
+    app.load_path_anim.set(True)
+    app._start_load_path_animation()
+    first_id = app._load_path_after_id
+    app._start_load_path_animation()   # calling again must be a no-op
+    assert app._load_path_after_id == first_id
+    app.root.after_cancel(first_id)
+    app._load_path_after_id = None
 
 
 # ── member report dialog ─────────────────────────────────────────────────────

@@ -82,6 +82,11 @@ UTIL_MID = '#f9a825'    # amber -- approaching capacity
 UTIL_HIGH = '#c62828'   # red -- at or over capacity
 MEMBER_SEL_COLOR = '#e0522b'
 MEMBER_SEL_HIT_PX = 8
+SLENDER_HALO_COLOR = '#ffb300'
+SLENDERNESS_LIMIT = 200.0   # AISC/CIRSOC's own recommended (non-mandatory) practical limit
+LOAD_PATH_COLOR = '#00acc1'
+LOAD_PATH_DASH = (6, 6)
+LOAD_PATH_NEAR_ZERO_FRAC = 0.02   # members below this fraction of the largest |N| stay still
 MOMENT_NEG_HIGH = '#c46a12'   # saturated orange -- negative moment
 MOMENT_ZERO_COLOR = '#ffffff'   # white -- zero moment
 MOMENT_POS_HIGH = '#6a2ca0'   # saturated violet -- positive moment
@@ -309,6 +314,8 @@ class StereoApp(UnitsMixin):
         self._load_nodes = {}
         self._load_glyphs = {}
         self._disabled_supports = set()
+        self._load_path_phase = 0
+        self._load_path_after_id = None
 
         self.azimuth = 35.0
         self.elevation = 22.0
@@ -426,6 +433,17 @@ class StereoApp(UnitsMixin):
         self.colour_by_util = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Utilization heat-map', variable=self.colour_by_util, bg=BG,
                        command=self._draw).pack(side='left', padx=(6, 0))
+        self.flag_slender = tk.BooleanVar(value=False)
+        # Short on purpose: the KL/r threshold itself is shown in the legend
+        # once this is on (see _draw_legend), not repeated in the checkbox
+        # text -- a long label here pushed this toolbar group's requested
+        # width right to FlowBar's row-wrap threshold, and re-measuring that
+        # borderline width on every relayout pass (see FlowBar.relayout's own
+        # notes on why it never caches) made the row wrap and un-wrap forever
+        # instead of settling, which looked like the whole app hanging.
+        tk.Checkbutton(g, text='Flag slender compression members',
+                       variable=self.flag_slender, bg=BG,
+                       command=self._draw).pack(side='left', padx=(6, 0))
         self.show_deformed = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Show deformed', variable=self.show_deformed, bg=BG,
                        command=self._draw).pack(side='left', padx=(8, 0))
@@ -478,6 +496,9 @@ class StereoApp(UnitsMixin):
                                        width=15, values=MOMENT_AXES)
         moment_axis_box.pack(side='left', padx=(2, 0))
         moment_axis_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
+        self.load_path_anim = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Animate load path', variable=self.load_path_anim, bg=BG,
+                      command=self._on_load_path_anim_toggle).pack(side='left', padx=(6, 0))
 
         self.toolbar_flow.separator()
         g = self.toolbar_flow.group()
@@ -2561,6 +2582,42 @@ class StereoApp(UnitsMixin):
             self.member_checks = sc.check_all_members(self.nodes, self.members, res['member_res'])
         self._refresh_all()
 
+    # ── load-path pulse animation ─────────────────────────────────────────────
+    LOAD_PATH_TICK_MS = 150
+
+    def _on_load_path_anim_toggle(self):
+        if self.load_path_anim.get():
+            self._start_load_path_animation()
+        else:
+            self._draw()   # one immediate redraw to clear the marching dashes
+
+    def _start_load_path_animation(self):
+        # only one ticking timer at a time -- toggling the checkbox off and
+        # back on quickly must not stack up multiple self-rescheduling loops
+        if self._load_path_after_id is not None:
+            return
+        self._load_path_tick()
+
+    def _load_path_tick(self):
+        self._load_path_after_id = None
+        # the checkbox and the canvas can both go away between one tick
+        # being scheduled and it firing (the tab closed, a new mesh loaded
+        # elsewhere) -- checking both here is what makes this loop
+        # self-terminating instead of a runaway after() chain outliving
+        # the widget it draws on. The try/except is the last line of
+        # defence for the same reason: a fully torn-down Tcl interpreter
+        # can make even .get()/winfo_exists() themselves raise, at which
+        # point there is nothing left to redraw or reschedule onto anyway.
+        try:
+            if not self.load_path_anim.get() or not self.canvas.winfo_exists():
+                return
+            self._load_path_phase += 1
+            self._draw()
+            self._load_path_after_id = self.root.after(self.LOAD_PATH_TICK_MS,
+                                                        self._load_path_tick)
+        except tk.TclError:
+            pass
+
     # ── camera (mouse-only: right-drag orbit, wheel zoom, middle-drag pan) ───
     DRAG_THRESHOLD_PX = 3
     DEG_PER_PX = 0.4
@@ -2737,6 +2794,10 @@ class StereoApp(UnitsMixin):
         max_abs_N = 0.0
         if by_force:
             max_abs_N = max((abs(mr['N']) for mr in self.results['member_res']), default=0.0)
+        load_path_on = self.load_path_anim.get() and self.results is not None
+        max_abs_N_lp = max_abs_N
+        if load_path_on and not by_force:
+            max_abs_N_lp = max((abs(mr['N']) for mr in self.results['member_res']), default=0.0)
 
         if not deformed_only:
             # While comparing against the deformed overlay, the reference
@@ -2777,6 +2838,18 @@ class StereoApp(UnitsMixin):
                     width = 3
                 if i == self.selected_member:
                     width = max(width, 4)
+                # Slenderness is a purely geometric/section property (KL/r),
+                # independent of the applied load -- unlike the utilization
+                # overlay above, it never scales with 'Load %'. Drawn as a
+                # wide dashed halo UNDERNEATH the member's own normal-
+                # coloured line (i.e. BEFORE it, so the halo peeks out from
+                # behind), so it stays visible regardless of which colour
+                # mode -- force, utilization, or plain -- is currently
+                # active, instead of competing with it for the same line.
+                if self.flag_slender.get() and chk and chk.get('mode') == 'compression' \
+                        and chk.get('slenderness', 0.0) > SLENDERNESS_LIMIT:
+                    c.create_line(sx0, sy0, sx1, sy1, fill=SLENDER_HALO_COLOR,
+                                 width=width + 5, dash=(4, 3), tags='member')
                 kw = {'fill': color, 'width': width, 'tags': 'member'}
                 if over:
                     kw['dash'] = (5, 3)
@@ -2786,6 +2859,25 @@ class StereoApp(UnitsMixin):
                     # clearly regardless of whatever colour mode is active.
                     c.create_line(sx0, sy0, sx1, sy1, fill=MEMBER_SEL_COLOR, width=1,
                                  dash=(2, 2), tags='member')
+                # Load-path pulse: a genuinely unambiguous single "load
+                # path" doesn't exist in a statically indeterminate
+                # structure (load splits across every parallel path in
+                # proportion to relative stiffness -- see this feature's
+                # own design notes), so this is deliberately a simpler,
+                # still-informative animation instead: marching dashes on
+                # every member actually carrying force, direction alone
+                # distinguishing tension from compression (the two step
+                # in OPPOSITE directions along the member), not a claim
+                # about which way "the" load flows. Independent of the
+                # member's own colour mode, like the slenderness halo.
+                if load_path_on and max_abs_N_lp > 1e-9:
+                    N = self.results['member_res'][i]['N'] * frac
+                    if abs(N) / max_abs_N_lp > LOAD_PATH_NEAR_ZERO_FRAC:
+                        step = 1 if N >= 0 else -1
+                        cycle = sum(LOAD_PATH_DASH)
+                        offset = (self._load_path_phase * step * 2) % cycle
+                        c.create_line(sx0, sy0, sx1, sy1, fill=LOAD_PATH_COLOR, width=2,
+                                     dash=LOAD_PATH_DASH, dashoffset=offset, tags='member')
 
             support_nodes = {s['node'] for s in self.supports
                              if any(sm.support_restraints(s).values())}
@@ -3158,6 +3250,9 @@ class StereoApp(UnitsMixin):
             # over capacity and turn dashed, with no visible link back to
             # this line otherwise).
             row('#555555', 'dashed = over capacity (utilisation > 1.0)', dashed=True)
+            if self.flag_slender.get() and self.member_checks is not None:
+                row(SLENDER_HALO_COLOR, f'halo = slender compression member '
+                                       f'(KL/r > {SLENDERNESS_LIMIT:.0f})', dashed=True)
             if self.show_reactions.get() and self.results is not None:
                 row(REACTION_COLOR, 'reaction (support pushing back)')
             if self.colour_by_moment.get() and self.results is not None:
@@ -3168,6 +3263,9 @@ class StereoApp(UnitsMixin):
             if self._disabled_supports & {s['node'] for s in self.supports}:
                 row(SUPPORT_DISABLED_COLOR, 'sandbox: support disabled (excluded from Analyze)',
                    dashed=True)
+            if self.load_path_anim.get() and self.results is not None:
+                row(LOAD_PATH_COLOR, 'marching dashes: tension/compression step in '
+                                    'OPPOSITE directions (not "the" load path)', dashed=True)
 
         if show_def:
             if self.deform_color_mode.get() == DEFORM_MODE_FORCE:

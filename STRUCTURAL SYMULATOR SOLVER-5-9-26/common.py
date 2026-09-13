@@ -402,6 +402,9 @@ def draw_moment_arrow(canvas, cx, cy, r, ccw, color, width=2, arrowshape=(8, 10,
                                arrowshape=arrowshape, capstyle='round', joinstyle='round')
 
 
+DECLUTTER_MAX_ITEMS = 80   # see declutter_text's own docstring for why
+
+
 def declutter_text(canvas, item_ids, step=14, max_passes=8, top_margin=2):
     """Nudge overlapping canvas TEXT items apart, upwards, in place.
 
@@ -417,8 +420,20 @@ def declutter_text(canvas, item_ids, step=14, max_passes=8, top_margin=2):
     cannot push a label off the canvas -- on a pane too short to separate them
     the labels stay overlapped, which is visible, rather than disappearing,
     which is not.
+
+    Each pairwise comparison costs a real canvas.bbox() round-trip into the
+    Tk/Tcl bridge, so the all-pairs loop below is fine for the handful of load
+    labels this was designed for but becomes ruinously expensive on a dense
+    mesh's node/member labels -- a 221-node grid is ~24k pairs per pass, times
+    up to max_passes, i.e. hundreds of thousands of round-trips, observed to
+    take minutes under a loaded display server. Past DECLUTTER_MAX_ITEMS this
+    is skipped entirely and the labels are left exactly where they were drawn
+    (the same "stays overlapped rather than disappearing" degrade mode the
+    function already falls back to when it runs out of vertical room).
     """
     ids = [i for i in item_ids if canvas.type(i) == 'text']
+    if len(ids) > DECLUTTER_MAX_ITEMS:
+        return
     for _ in range(max_passes):
         moved = False
         boxes = {}
@@ -778,7 +793,31 @@ class FlowBar:
             self.groups = live
 
             # 1. Lay out each group's own children, wrapping internally only
-            #    if the group alone is wider than the bar.
+            #    if the group alone is wider than the bar. Each group's
+            #    effective width is recorded here in `group_width` rather
+            #    than re-read from winfo_reqwidth() in step 2 below: pack()
+            #    only SCHEDULES Tk's geometry recomputation, it does not run
+            #    it, so querying reqwidth() on a group _wrap_children just
+            #    finished re-packing (destroying its old internal rows and
+            #    creating new ones) can observe a transient ~1px placeholder
+            #    from between the two -- which corrupted step 2's row-wrap
+            #    decision for exactly that group on exactly that pass,
+            #    changing how many rows the bar needs, which resizes the
+            #    canvas below it, which fires ANOTHER <Configure> that
+            #    schedules ANOTHER relayout: observed in practice as the
+            #    bar's width cycling through a fixed set of values forever
+            #    instead of settling. (An earlier fix forced the recompute
+            #    with a mid-relayout bar.update_idletasks() call instead --
+            #    that resolved the oscillation too, but it flushes Tk's
+            #    whole pending-idle queue from inside an already-running
+            #    relayout, which can silently run and discard a second
+            #    relayout call queued by an earlier _schedule() before this
+            #    one's own reentrancy guard was reached, dropping a pass
+            #    that was needed to fully map every control -- reproduced as
+            #    test_truss_layout.py's widest-window case losing 8 controls.
+            #    Recording each group's already-known width sidesteps the
+            #    stale read directly, with no extra Tk event processing.)
+            group_width = {}
             for g in self.groups:
                 for w in list(g.winfo_children()):
                     if getattr(w, '_is_wrap_row', False):
@@ -791,10 +830,11 @@ class FlowBar:
                 req = sum(max(ch.winfo_reqwidth(), 1) + 2 * self.item_pad
                           for ch in children)
                 if req > available:
-                    self._wrap_children(g, available, self.item_pad)
+                    group_width[g] = self._wrap_children(g, available, self.item_pad)
                 else:
                     for child in children:
                         child.pack(side='left', padx=self.item_pad, pady=3)
+                    group_width[g] = req
 
             # 2. Lay the groups out left-to-right, wrapping whole groups onto
             #    new ROWS. One Frame per row, packed top-to-bottom -- NOT
@@ -811,7 +851,7 @@ class FlowBar:
             rows = [[]]
             used = 0
             for g in self.groups:
-                req = max(g.winfo_reqwidth(), 1)
+                req = max(group_width.get(g, 1), 1)
                 if used and used + self.group_gap + req > available:
                     rows.append([])
                     used = 0
@@ -849,14 +889,17 @@ class FlowBar:
             child.pack_forget()
             child.grid_forget()
         rows = [[]]
+        row_widths = [0]
         used = 0
         for child in children:
             req = max(child.winfo_reqwidth(), 1)
             if used and used + pad + req > available:
                 rows.append([])
+                row_widths.append(0)
                 used = 0
             rows[-1].append(child)
             used += req + pad
+            row_widths[-1] = used
         for row_children in rows:
             row_frame = tk.Frame(group, bg=group.cget('bg'))
             row_frame._is_wrap_row = True
@@ -870,6 +913,11 @@ class FlowBar:
             row_frame.lower()
             for child in row_children:
                 child.pack(in_=row_frame, side='left', padx=pad, pady=2)
+        # The group's own effective width, once stacked into these rows, is
+        # its WIDEST row -- returned so relayout() can use this already-known
+        # value instead of re-reading winfo_reqwidth() (see relayout's own
+        # note on why that reread is unsafe immediately after this repack).
+        return max(row_widths)
 
 
 class ScrollPanel(tk.Frame):

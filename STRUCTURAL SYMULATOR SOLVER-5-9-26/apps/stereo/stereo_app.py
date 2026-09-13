@@ -76,12 +76,12 @@ UTIL_MID = '#f9a825'    # amber -- approaching capacity
 UTIL_HIGH = '#c62828'   # red -- at or over capacity
 MEMBER_SEL_COLOR = '#e0522b'
 MEMBER_SEL_HIT_PX = 8
-MOMENT_NEG_LOW = '#fbe3c6'    # pale orange
-MOMENT_NEG_HIGH = '#c46a12'   # saturated orange -- negative resultant moment
-MOMENT_ZERO_COLOR = '#9a9a9a'   # neutral grey, same as NEAR_ZERO_COLOR
-MOMENT_POS_LOW = '#e6dbf2'    # pale violet
-MOMENT_POS_HIGH = '#6a2ca0'   # saturated violet -- positive resultant moment
+MOMENT_NEG_HIGH = '#c46a12'   # saturated orange -- negative moment
+MOMENT_ZERO_COLOR = '#ffffff'   # white -- zero moment
+MOMENT_POS_HIGH = '#6a2ca0'   # saturated violet -- positive moment
 MOMENT_GAMMA = 0.6
+MOMENT_NODE_OUTLINE = '#999999'   # keeps a white (zero-moment) node visible
+                                   # against the canvas's own white background
 
 DOF_LABELS = (('ux', 'Ux'), ('uy', 'Uy'), ('uz', 'Uz'),
               ('rx', 'Rx'), ('ry', 'Ry'), ('rz', 'Rz'))
@@ -234,21 +234,24 @@ def reaction_moment_signed(reaction, axis=MOMENT_AXIS_RESULTANT):
 
 
 def moment_color(m_signed, max_abs_m):
-    """Orange-grey-violet spectrum for a support node's own net reaction
-    moment (see reaction_moment_signed): orange toward negative, a
-    neutral grey at ~0, violet toward positive -- the per-node quantity a
-    RIGID (moment-transferring) connection scheme actually produces at
-    its supports, unlike a pin-jointed truss's, which reacts to force
-    only and would read ~0 here at every support regardless of load."""
+    """Continuous orange-white-violet diverging spectrum for a node's own
+    moment (a support's reaction moment, see reaction_moment_signed, or an
+    ordinary joint's own value, see stereo_math.node_moment_vectors):
+    orange at the most negative moment PRESENT ANYWHERE IN THE GRID, white
+    at exactly zero, violet at the most positive -- so `max_abs_m` (the
+    largest |moment| across every node currently being coloured, supports
+    and interior rigid joints alike) is what scales any one node's colour,
+    making it always relative to the rest of the structure rather than an
+    absolute threshold. This is the per-node quantity a RIGID
+    (moment-transferring) connection scheme actually produces, unlike a
+    pin-jointed truss's, which reacts to force only and would read as
+    white everywhere regardless of load."""
     if max_abs_m < 1e-9:
         return MOMENT_ZERO_COLOR
-    frac = abs(m_signed) / max_abs_m
-    if frac < NEAR_ZERO_FRAC:
-        return MOMENT_ZERO_COLOR
-    frac = min(1.0, frac) ** MOMENT_GAMMA
+    frac = min(1.0, abs(m_signed) / max_abs_m) ** MOMENT_GAMMA
     if m_signed >= 0:
-        return _lerp_hex(MOMENT_POS_LOW, MOMENT_POS_HIGH, frac)
-    return _lerp_hex(MOMENT_NEG_LOW, MOMENT_NEG_HIGH, frac)
+        return _lerp_hex(MOMENT_ZERO_COLOR, MOMENT_POS_HIGH, frac)
+    return _lerp_hex(MOMENT_ZERO_COLOR, MOMENT_NEG_HIGH, frac)
 
 
 class StereoApp(UnitsMixin):
@@ -427,7 +430,7 @@ class StereoApp(UnitsMixin):
         tk.Checkbutton(g, text='Reaction arrows', variable=self.show_reactions, bg=BG,
                        command=self._draw).pack(side='left', padx=(6, 0))
         self.colour_by_moment = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Supports by moment (rigid)', variable=self.colour_by_moment,
+        tk.Checkbutton(g, text='Nodes by moment (rigid)', variable=self.colour_by_moment,
                       bg=BG, command=self._draw).pack(side='left', padx=(6, 0))
         self.moment_axis = tk.StringVar(value=MOMENT_AXIS_RESULTANT)
         moment_axis_box = ttk.Combobox(g, textvariable=self.moment_axis, state='readonly',
@@ -1682,9 +1685,36 @@ class StereoApp(UnitsMixin):
     def _build_results_panel(self, parent):
         box = tk.LabelFrame(parent, text='Results', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='both', padx=6, pady=(4, 8))
+        # A property of the STRUCTURE (geometry/connectivity/supports)
+        # alone, not of any solved load case -- shown even before Analyze
+        # has ever run, and kept live as supports/members change.
+        self.indeterminacy_label = tk.Label(box, text='', bg=BG, font=('Helvetica', 9, 'bold'),
+                                            wraplength=PANEL_W - 20, justify='left')
+        self.indeterminacy_label.pack(fill='x', padx=6, pady=(6, 0), anchor='w')
         self.results_text = tk.Text(box, height=8, width=32, wrap='word',
                                     font=('Helvetica', 9), relief='flat', bg=BG)
         self.results_text.pack(fill='both', padx=6, pady=6)
+
+    def _refresh_indeterminacy_label(self):
+        if not self.nodes:
+            self.indeterminacy_label.config(text='')
+            return
+        restraint_count = sm.total_restrained_dofs(self.nodes, self.supports)
+        dsi = sm.degree_of_indeterminacy(self.nodes, self.members, self.supports)
+        if restraint_count < 6:
+            text = (f'UNSTABLE: only {restraint_count}/6 restraint components -- free-floating '
+                    f'mechanism regardless of DSI (add supports)')
+            color = '#a3241a'
+        elif dsi > 0:
+            text = f'Statically INDETERMINATE, degree {dsi} ({dsi} redundant load path(s))'
+            color = '#17458c'
+        elif dsi == 0:
+            text = 'Statically DETERMINATE (degree 0)'
+            color = '#2e7d32'
+        else:
+            text = f'UNDER-restrained by {-dsi} -- likely a mechanism (check supports/bracing)'
+            color = '#a3241a'
+        self.indeterminacy_label.config(text=text, fg=color)
 
     # ── generator ────────────────────────────────────────────────────────────
     def _on_generator_change(self):
@@ -2492,13 +2522,22 @@ class StereoApp(UnitsMixin):
 
             support_nodes = {s['node'] for s in self.supports
                              if any(sm.support_restraints(s).values())}
-            # Supports-by-moment: a support's reaction Mx/My/Mz only exists
-            # to begin with because SOMETHING in the model transfers moment
-            # into it -- a rigid (moment-transmitting) connection scheme,
-            # or a directly-applied point moment. A purely pin-jointed
-            # model reacts to force alone, so every support reads ~0 here
-            # regardless of load -- an accurate reflection of the physics,
-            # not a sign the feature is broken on that kind of model.
+            # Nodes-by-moment: every rigid (moment-transmitting) joint in
+            # the grid gets its own value, not just supports -- a support's
+            # own reaction Mx/My/Mz (SOMETHING must transfer moment into it:
+            # a rigid connection scheme, or a directly-applied point
+            # moment), and every ordinary interior joint touched by at
+            # least one rigid member gets sm.node_moment_vectors's own
+            # value (the largest-magnitude incident member end, expressed
+            # in the same global axes reactions already use -- see that
+            # function's own docstring for why a plain sum across incident
+            # members would be wrong here). A purely pin-jointed model
+            # reacts to force alone, so every node reads ~0 here regardless
+            # of load -- an accurate reflection of the physics, not a sign
+            # the feature is broken on that kind of model. max_abs_moment
+            # spans the WHOLE grid (supports and interior joints alike) so
+            # the colour of any one node is always relative to every other
+            # node currently in the structure, not to supports alone.
             by_moment = self.colour_by_moment.get() and self.results is not None
             moment_by_node = {}
             max_abs_moment = 0.0
@@ -2510,13 +2549,21 @@ class StereoApp(UnitsMixin):
                         m = reaction_moment_signed(r, moment_axis) * frac
                         moment_by_node[i] = m
                         max_abs_moment = max(max_abs_moment, abs(m))
+                node_vecs = sm.node_moment_vectors(self.nodes, self.members,
+                                                   self.results['member_res'])
+                for i, vec in node_vecs.items():
+                    if i in moment_by_node:
+                        continue   # a support's own reaction already wins
+                    m = reaction_moment_signed(vec, moment_axis) * frac
+                    moment_by_node[i] = m
+                    max_abs_moment = max(max_abs_moment, abs(m))
             for i, (px, py, _) in enumerate(proj):
                 sx, sy = to_screen(px, py)
                 sel = i in self.selected_nodes
                 r = 5 if sel else 4
                 if sel:
                     color = NODE_SEL_COLOR
-                elif by_moment and i in support_nodes:
+                elif by_moment and i in moment_by_node:
                     color = moment_color(moment_by_node.get(i, 0.0), max_abs_moment)
                 elif ref_grey is not None:
                     color = ref_grey
@@ -2524,8 +2571,14 @@ class StereoApp(UnitsMixin):
                     color = SUPPORT_COLOR
                 else:
                     color = NODE_COLOR
-                c.create_oval(sx - r, sy - r, sx + r, sy + r, fill=color, outline='',
-                             tags=('node', f'node{i}'))
+                # A thin grey outline is drawn only in moment mode: the
+                # gradient's own zero-point is white (MOMENT_ZERO_COLOR),
+                # the same colour as the canvas background, so a
+                # near-zero-moment node would otherwise vanish entirely
+                # against it without a border to still mark its position.
+                node_outline = MOMENT_NODE_OUTLINE if (by_moment and i in moment_by_node) else ''
+                c.create_oval(sx - r, sy - r, sx + r, sy + r, fill=color,
+                             outline=node_outline, tags=('node', f'node{i}'))
                 # A small box drawn AROUND a supported node -- the "box
                 # that symbolises the support" asked for, instead of
                 # relying on dot-color alone (which a selection highlight
@@ -2534,6 +2587,10 @@ class StereoApp(UnitsMixin):
                     h = SUPPORT_BOX_HALF_PX
                     if by_moment:
                         box_color = moment_color(moment_by_node.get(i, 0.0), max_abs_moment)
+                        # a white (zero-moment) outline would be invisible
+                        # against the canvas's own white background
+                        if box_color == MOMENT_ZERO_COLOR:
+                            box_color = MOMENT_NODE_OUTLINE
                     elif ref_grey is not None:
                         box_color = ref_grey
                     else:
@@ -2731,8 +2788,13 @@ class StereoApp(UnitsMixin):
         x0, y0 = 10, 10
         y = y0
 
-        def row(color, text, dashed=False):
+        def row(color, text, dashed=False, outline=None):
             nonlocal y
+            if outline:
+                # a border drawn first, wider, so a white/near-white swatch
+                # (e.g. the moment gradient's own zero-point) still shows
+                # up against the canvas's own white background
+                c.create_line(x0, y, x0 + 18, y, fill=outline, width=5)
             kw = {'fill': color, 'width': 3}
             if dashed:
                 kw['dash'] = (5, 3)
@@ -2764,9 +2826,9 @@ class StereoApp(UnitsMixin):
                 row(REACTION_COLOR, 'reaction (support pushing back)')
             if self.colour_by_moment.get() and self.results is not None:
                 axis_txt = self.moment_axis.get()
-                row(MOMENT_NEG_HIGH, f'support moment ({axis_txt}): negative')
-                row(MOMENT_ZERO_COLOR, f'support moment ({axis_txt}): ~0')
-                row(MOMENT_POS_HIGH, f'support moment ({axis_txt}): positive')
+                row(MOMENT_NEG_HIGH, f'node moment ({axis_txt}): negative')
+                row(MOMENT_ZERO_COLOR, f'node moment ({axis_txt}): ~0', outline=MOMENT_NODE_OUTLINE)
+                row(MOMENT_POS_HIGH, f'node moment ({axis_txt}): positive')
 
         if show_def:
             if self.deform_color_mode.get() == DEFORM_MODE_FORCE:
@@ -2970,6 +3032,7 @@ class StereoApp(UnitsMixin):
         self._refresh_support_list()
         self._refresh_load_list()
         self._refresh_results_text()
+        self._refresh_indeterminacy_label()
         self._sync_selection_fields()
         self._me_maybe_refresh_topology()
         self._draw()

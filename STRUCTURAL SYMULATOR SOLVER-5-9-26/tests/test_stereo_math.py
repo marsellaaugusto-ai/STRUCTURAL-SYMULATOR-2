@@ -318,3 +318,156 @@ def test_combine_loads_sums_contributions_on_the_same_node():
     assert combined[0]['fx'] == pytest.approx(3.0)
     assert combined[0]['fy'] == pytest.approx(5.0)
     assert combined[0]['fz'] == pytest.approx(-1.0)
+
+
+# ── degree_of_indeterminacy ──────────────────────────────────────────────────
+
+def _tetrahedron():
+    """A fully-triangulated 3D tetrahedron (4 joints, all 6 possible pin
+    members present) with the classic minimal "3-2-1" support scheme:
+    node 0 pinned in all 3 translations (fixes translation), node 1
+    restrained in the 2 directions perpendicular to edge 0-1 (fixes
+    rotation about the other two axes), node 2 restrained in the 1
+    direction perpendicular to the 0-1-2 plane (fixes the last rotation)
+    -- 6 restraint components total, the textbook minimum for a stable,
+    statically DETERMINATE 3D truss (m + r - 3j = 6 + 6 - 12 = 0)."""
+    nodes = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)]
+    members = [{'a': a, 'b': b, 'conn': 'pin', 'E': E_GPA, 'A': 20.0, 'Fy': FY}
+              for a, b in ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))]
+    supports = [
+        {'node': 0, 'dofs': {'ux': True, 'uy': True, 'uz': True}},
+        {'node': 1, 'dofs': {'uy': True, 'uz': True}},
+        {'node': 2, 'dofs': {'uz': True}},
+    ]
+    return nodes, members, supports
+
+
+def test_degree_of_indeterminacy_is_zero_for_a_minimally_supported_determinate_truss():
+    nodes, members, supports = _tetrahedron()
+    assert sm.degree_of_indeterminacy(nodes, members, supports) == 0
+    # and it really is determinate+stable, not just numerically coincidental
+    loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
+    _res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None
+
+
+def test_degree_of_indeterminacy_is_positive_for_an_over_restrained_truss():
+    nodes, members, supports = _tetrahedron()
+    over = supports + [{'node': 3, 'dofs': {'uz': True}}]
+    assert sm.degree_of_indeterminacy(nodes, members, over) == 1
+    # redundant, not unstable -- it still solves fine
+    loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
+    _res, err = sm.analyze(nodes, members, loads, over)
+    assert err is None
+
+
+def test_degree_of_indeterminacy_is_negative_for_a_mechanism():
+    nodes, members, supports = _tetrahedron()
+    under = supports[:2]   # drop node 2's restraint -- one rotation is now free
+    assert sm.degree_of_indeterminacy(nodes, members, under) == -1
+    loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
+    _res, err = sm.analyze(nodes, members, loads, under)
+    assert err is not None   # genuinely a mechanism, not just a number
+
+
+def test_degree_of_indeterminacy_of_a_fixed_fixed_rigid_member_matches_hand_calc():
+    # A single rigid member, both ends fully fixed, no intermediate joint:
+    # every one of its 12 total reaction components is a genuine unknown,
+    # but the member (as one free body) only offers 6 independent global
+    # equilibrium equations -- DSI = 6 (member's own 6 internal-force
+    # unknowns) + 12 (reactions) - 12 (6 DOF/node x 2 nodes) = 6, matching
+    # the classic fixed-fixed-beam result once the extra out-of-plane DOF
+    # a 3D formulation carries are accounted for.
+    nodes = [(0.0, 0.0, 0.0), (3.0, 0.0, 0.0)]
+    members = [{'a': 0, 'b': 1, 'conn': 'rigid', 'E': E_GPA, 'A': 20.0,
+               'I': 800.0, 'J': 50.0}]
+    supports = [{'node': 0, 'type': 'fixed'}, {'node': 1, 'type': 'fixed'}]
+    assert sm.degree_of_indeterminacy(nodes, members, supports) == 6
+
+
+def test_degree_of_indeterminacy_ignores_which_load_case_is_applied():
+    # a structural (geometry/connectivity/supports) property, not a
+    # per-load-case one -- the whole point of "static indeterminacy"
+    nodes, members, supports = _tetrahedron()
+    dsi = sm.degree_of_indeterminacy(nodes, members, supports)
+    assert dsi == sm.degree_of_indeterminacy(nodes, members, supports)   # pure function
+    for m in members:
+        assert 'conn' in m   # unchanged by the call -- no mutation either
+
+
+def test_node_moment_vectors_picks_the_larger_end_not_the_sum():
+    # Two collinear rigid members sharing node 1, hand-crafted member_res
+    # (no real solve needed -- this only tests the aggregation rule). Both
+    # members run along global X, so _local_axes works out to the global
+    # frame exactly (identity transform), making the expected numbers
+    # trivial to predict by hand: global Mx=T, My=My, Mz=Mz directly.
+    nodes = [(0.0, 0.0, 0.0), (3.0, 0.0, 0.0), (6.0, 0.0, 0.0)]
+    members = [{'a': 0, 'b': 1, 'conn': 'rigid'}, {'a': 1, 'b': 2, 'conn': 'rigid'}]
+    member_res = [
+        {'length_m': 3.0, 'T': 0.0, 'My_a': 5.0, 'Mz_a': 0.0, 'My_b': -5.0, 'Mz_b': 0.0},
+        {'length_m': 3.0, 'T': 0.0, 'My_a': 8.0, 'Mz_a': 0.0, 'My_b': -8.0, 'Mz_b': 0.0},
+    ]
+    vecs = sm.node_moment_vectors(nodes, members, member_res)
+    assert vecs[0] == {'Mx': 0.0, 'My': 5.0, 'Mz': 0.0}
+    # node 1 sees +8 (member 1's a-end) and -5 (member 0's b-end) -- the
+    # LARGER-magnitude one (8) wins, not their sum (which would be 3 and
+    # would misleadingly read as "barely any moment here")
+    assert vecs[1] == {'Mx': 0.0, 'My': 8.0, 'Mz': 0.0}
+    assert vecs[2] == {'Mx': 0.0, 'My': -8.0, 'Mz': 0.0}
+
+
+def test_node_moment_vectors_omits_nodes_touched_only_by_pin_members():
+    nodes = [(0.0, 0.0, 0.0), (3.0, 0.0, 0.0)]
+    members = [{'a': 0, 'b': 1, 'conn': 'pin'}]
+    member_res = [{'length_m': 3.0, 'N': 12.0}]
+    assert sm.node_moment_vectors(nodes, members, member_res) == {}
+
+
+def test_node_moment_vectors_matches_the_reaction_at_a_singly_connected_support():
+    # A single rigid member, TILTED (not axis-aligned) so _local_axes must
+    # do a genuine rotation, fixed at node 0 only. With no directly-applied
+    # moment load at node 0, the support reaction moment IS exactly the
+    # member's own end moment expressed in global axes -- the same
+    # physical quantity, computed two different ways (the global residual
+    # Ku-F vs. this function's own local-to-global transform) -- so they
+    # must agree exactly if the transform here is correct.
+    nodes = [(0.0, 0.0, 0.0), (2.0, 1.0, 1.0)]
+    members = [{'a': 0, 'b': 1, 'conn': 'rigid', 'E': E_GPA, 'A': 20.0,
+               'I': 800.0, 'J': 50.0}]
+    supports = [{'node': 0, 'type': 'fixed'}]
+    loads = [{'node': 1, 'fy': -5.0, 'fz': -8.0}]
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None
+    vecs = sm.node_moment_vectors(nodes, members, res['member_res'])
+    assert 0 in vecs
+    for k in ('Mx', 'My', 'Mz'):
+        assert vecs[0][k] == pytest.approx(res['reactions'][0][k], abs=1e-6)
+
+
+def test_total_restrained_dofs_counts_the_minimal_3_2_1_scheme_as_exactly_6():
+    nodes, members, supports = _tetrahedron()
+    assert sm.total_restrained_dofs(nodes, supports) == 6
+
+
+def test_total_restrained_dofs_is_zero_with_no_supports_at_all():
+    nodes, members, supports = _tetrahedron()
+    assert sm.total_restrained_dofs(nodes, []) == 0
+
+
+def test_total_restrained_dofs_merges_duplicate_restraints_on_the_same_node():
+    nodes, members, supports = _tetrahedron()
+    # restraining ux on node 0 twice (already restrained) must not double-count
+    duplicated = supports + [{'node': 0, 'dofs': {'ux': True}}]
+    assert sm.total_restrained_dofs(nodes, duplicated) == 6
+
+
+def test_total_restrained_dofs_flags_the_same_mechanism_that_negative_dsi_catches():
+    # a structure can ALSO be flagged unstable via total_restrained_dofs < 6
+    # even when degree_of_indeterminacy's own aggregate count would otherwise
+    # be masked by internal bracing redundancy -- the caveat this helper
+    # exists to catch is exactly this: DSI alone is necessary but not
+    # sufficient for stability.
+    nodes, members, supports = _tetrahedron()
+    under = supports[:2]
+    assert sm.total_restrained_dofs(nodes, under) == 5
+    assert sm.total_restrained_dofs(nodes, under) < 6

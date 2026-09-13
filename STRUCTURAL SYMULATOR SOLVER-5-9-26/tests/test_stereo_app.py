@@ -955,6 +955,39 @@ def test_add_reinforcement_beam_multilayer_via_the_ui(app):
     assert app.err is None
 
 
+# ── degree-of-indeterminacy readout ──────────────────────────────────────────
+
+def test_indeterminacy_label_shows_a_value_for_the_default_mesh(app):
+    app._refresh_all()
+    text = app.indeterminacy_label.cget('text')
+    assert text != ''
+    assert ('DETERMINATE' in text or 'INDETERMINATE' in text or 'UNSTABLE' in text)
+
+
+def test_indeterminacy_label_matches_stereo_math_for_the_default_mesh(app):
+    app._refresh_all()
+    dsi = sm.degree_of_indeterminacy(app.nodes, app.members, app.supports)
+    text = app.indeterminacy_label.cget('text')
+    assert str(abs(dsi)) in text
+
+
+def test_indeterminacy_label_flags_rigid_body_motion_when_understrained(app):
+    # zero supports -- a free-floating mechanism no matter how large the
+    # raw DSI number computes (the caveat total_restrained_dofs exists to
+    # catch: DSI alone is necessary but not sufficient for stability)
+    app.supports = []
+    app._refresh_all()
+    text = app.indeterminacy_label.cget('text')
+    assert 'UNSTABLE' in text
+    assert '0/6' in text
+
+
+def test_indeterminacy_label_is_blank_with_no_mesh_loaded(app):
+    app.nodes = []
+    app._refresh_all()
+    assert app.indeterminacy_label.cget('text') == ''
+
+
 # ── analysis error handling ──────────────────────────────────────────────────
 
 def test_analysis_error_is_shown_and_does_not_crash_the_tab(app):
@@ -1464,3 +1497,64 @@ def test_moment_legend_mentions_the_selected_axis(app):
     texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
             if app.canvas.type(i) == 'text']
     assert any('My' in t for t in texts)
+
+
+def test_moment_colouring_also_covers_ordinary_interior_nodes_not_just_supports(app):
+    # the actual bug report this section exists to fix: the gradient was
+    # only ever applied at SUPPORTS, so on a mostly-interior grid it read
+    # as "not visible at all" -- every ordinary rigid joint away from a
+    # support must get its own colour too, from sm.node_moment_vectors.
+    _make_rigid_fixed(app)
+    app.colour_by_moment.set(True)
+    app._draw()
+    support_nodes = {s['node'] for s in app.supports}
+    interior = [i for i in range(len(app.nodes)) if i not in support_nodes]
+    assert interior   # the default flat_grid has plenty of interior nodes
+    colored_non_white = []
+    for i in interior:
+        for item in app.canvas.find_withtag(f'node{i}'):
+            if app.canvas.type(item) == 'oval':
+                fill = app.canvas.itemcget(item, 'fill')
+                if fill != MOMENT_ZERO_COLOR:
+                    colored_non_white.append(fill)
+    assert colored_non_white, 'no interior node got a non-zero moment colour'
+
+
+def test_moment_gradient_is_orange_negative_white_zero_violet_positive(app):
+    assert MOMENT_ZERO_COLOR == '#ffffff'
+    neg = moment_color(-10.0, 10.0)
+    pos = moment_color(10.0, 10.0)
+    # orange end: high red, some green, low blue; violet end: high red and
+    # blue, low green -- distinguishable by their green channel alone
+    def rgb(hexcolor):
+        h = hexcolor.lstrip('#')
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+    r_neg, g_neg, b_neg = rgb(neg)
+    r_pos, g_pos, b_pos = rgb(pos)
+    assert g_neg > g_pos   # orange is greener than violet
+    assert b_pos > b_neg   # violet is bluer than orange
+
+
+def test_moment_colouring_is_relative_to_the_whole_grids_own_moment_range(app):
+    # scaling every load in the model by a large factor changes the
+    # absolute moment values but must NOT change how the colours compare
+    # to each other -- moment_color always normalizes by max_abs_m, i.e.
+    # relative to every other node currently in the grid, per the
+    # feature's own spec.
+    _make_rigid_fixed(app)
+    app.colour_by_moment.set(True)
+    app._draw()
+
+    def node_colors():
+        out = {}
+        for i in range(len(app.nodes)):
+            for item in app.canvas.find_withtag(f'node{i}'):
+                if app.canvas.type(item) == 'oval':
+                    out[i] = app.canvas.itemcget(item, 'fill')
+        return out
+
+    colors_100 = node_colors()
+    app.load_fraction.set(50.0)
+    app._draw()
+    colors_50 = node_colors()
+    assert colors_100 == colors_50

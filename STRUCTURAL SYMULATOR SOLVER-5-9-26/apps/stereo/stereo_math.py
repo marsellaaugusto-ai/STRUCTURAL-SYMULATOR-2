@@ -384,6 +384,141 @@ def analyze(nodes, members, loads, supports):
     return {'node_res': node_res, 'member_res': member_res, 'reactions': reactions}, None
 
 
+def node_moment_vectors(nodes, members, member_res):
+    """The internal moment (Mx, My, Mz, kN*m, in GLOBAL axes) each RIGID
+    member end imposes on the joint it frames into, picking -- per node --
+    the single connected member end with the LARGEST resultant magnitude
+    as that joint's representative value. Returned as {node_idx: {'Mx',
+    'My', 'Mz'}}, one entry per node touched by at least one rigid member
+    (a purely pin-jointed joint carries no moment by definition and is
+    omitted, exactly like a pin-jointed truss's support reads ~0 moment).
+
+    Built with the exact same local-axis transform analyze() itself uses
+    (_local_axes / _rotation_12) so the result is directly comparable,
+    axis-for-axis, to a support's own reaction Mx/My/Mz -- e.g. through
+    stereo_app's reaction_moment_signed, which works unchanged on either
+    dict since both only need Mx/My/Mz keys.
+
+    A plain SUM across every member framing into a joint was deliberately
+    rejected: at an unloaded interior joint, moment CONTINUITY means the
+    incoming member-end moments are equal and opposite by joint
+    equilibrium, so a naive sum would read ~0 there regardless of how much
+    bending the joint is actually carrying -- the opposite of useful for a
+    "how much moment is happening here" visualization. Taking the single
+    largest-magnitude incident end instead avoids that cancellation and
+    reads as "the worst-loaded member framing into this joint", which for
+    the common case of two collinear continuous members is the same
+    (equal-and-opposite) value either end would give.
+
+    member_res is the 'member_res' list an earlier analyze() call already
+    returned -- this function does not re-solve anything, only re-expresses
+    already-solved local end-moments in global axes.
+    """
+    best = {}
+    for m, res in zip(members, member_res):
+        if m.get('conn', 'pin') != 'rigid' or res.get('length_m', 0.0) < 1e-9:
+            continue
+        dx, dy, dz, L = member_vector(nodes, m)
+        local_x, local_y, local_z = _local_axes(dx, dy, dz, L)
+        T = res.get('T', 0.0)
+        ends = ((m['a'], T, res.get('My_a', 0.0), res.get('Mz_a', 0.0)),
+                (m['b'], -T, res.get('My_b', 0.0), res.get('Mz_b', 0.0)))
+        for node, t_end, my, mz in ends:
+            gx = local_x[0] * t_end + local_y[0] * my + local_z[0] * mz
+            gy = local_x[1] * t_end + local_y[1] * my + local_z[1] * mz
+            gz = local_x[2] * t_end + local_y[2] * my + local_z[2] * mz
+            mag = math.sqrt(gx * gx + gy * gy + gz * gz)
+            cur = best.get(node)
+            if cur is None or mag > cur[0]:
+                best[node] = (mag, {'Mx': gx, 'My': gy, 'Mz': gz})
+    return {node: vec for node, (_mag, vec) in best.items()}
+
+
+def degree_of_indeterminacy(nodes, members, supports):
+    """The structure's degree of STATIC INDETERMINACY: how many more
+    independent force/moment unknowns (member internal forces plus
+    support reactions) exist than the equilibrium equations available to
+    solve for them. 0 = statically determinate (exactly enough load
+    paths, textbook "simple" structure); positive = redundant (more load
+    paths than the bare minimum -- the classic meaning of "indeterminate"
+    in the sense every statics course uses); negative = UNDER-restrained
+    -- a genuine mechanism, the same condition `analyze()` would reject
+    with a singular stiffness matrix (or `check_boundary_setup` catches
+    even earlier). This is a property of the STRUCTURE alone (geometry,
+    connectivity, supports) -- deliberately independent of any particular
+    load case, the conventional meaning of the term.
+
+    Generalizes the textbook single-typology formulas -- DSI = m + r - 3j
+    for a pure pin-jointed truss, DSI = 6m + r - 6j for a pure rigid
+    frame (m = members, r = individual restrained DOF components, j =
+    joints) -- to any pin/rigid MIX, using the exact same per-node DOF-
+    counting rule analyze() itself uses (a node needs 6 DOF, not just 3,
+    the moment it touches a RIGID member or has a restrained rotation) so
+    a mixed structure is counted consistently with how it is actually
+    solved:
+
+        DSI = (member unknowns: 1 per pin member, 6 per rigid member)
+            + (total restrained DOF count across every support)
+            - (total ACTIVE DOF count across every node)
+
+    Verified against hand-checkable cases in
+    tests/test_stereo_math.py::test_degree_of_indeterminacy_* -- a fully
+    triangulated 3D tetrahedron (6 pin members, 4 joints) with the
+    minimum 6 restraint components needed for 3D stability comes out
+    to exactly 0; adding one redundant brace makes it +1; a fixed-fixed
+    single rigid member (no intermediate joint) comes out to +6, the
+    same result 2D statics gets for a fixed-fixed beam once the extra
+    out-of-plane DOF a 3D formulation carries are accounted for.
+    """
+    N = len(nodes)
+    restraints = [dict.fromkeys(DOF_NAMES, False) for _ in range(N)]
+    for sp in supports:
+        r = support_restraints(sp)
+        node_r = restraints[sp['node']]
+        for d in DOF_NAMES:
+            node_r[d] = node_r[d] or r[d]
+
+    needs_rot = [False] * N
+    for m in members:
+        if m.get('conn', 'pin') == 'rigid':
+            needs_rot[m['a']] = True
+            needs_rot[m['b']] = True
+    for i in range(N):
+        if any(restraints[i][d] for d in ROT_DOFS):
+            needs_rot[i] = True
+
+    ndof = sum(6 if needs_rot[i] else 3 for i in range(N))
+    restraint_count = sum(1 for i in range(N) for d in DOF_NAMES if restraints[i][d])
+    member_unknowns = sum(6 if m.get('conn', 'pin') == 'rigid' else 1 for m in members)
+    return member_unknowns + restraint_count - ndof
+
+
+def total_restrained_dofs(nodes, supports):
+    """Total count of individual restrained DOF components (ux/uy/uz/rx/ry/rz)
+    across every support, merging duplicate restraints on the same node.
+
+    A 3D rigid body has exactly 6 possible rigid-body motions (3
+    translations + 3 rotations). Suppressing all of them requires AT LEAST
+    6 restrained DOF components in total, correctly placed -- this is a
+    hard lower bound, independent of how many members exist or how they
+    are arranged. Below this count the structure is a free-floating
+    mechanism no matter how large `degree_of_indeterminacy` computes,
+    because that formula only balances unknowns against equations in
+    aggregate and cannot by itself see that missing EXTERNAL restraint
+    can never be compensated for by internal bracing redundancy. Callers
+    should treat `total_restrained_dofs(...) < 6` as an unconditional
+    instability warning, checked separately from the DSI sign/value.
+    """
+    N = len(nodes)
+    restraints = [dict.fromkeys(DOF_NAMES, False) for _ in range(N)]
+    for sp in supports:
+        r = support_restraints(sp)
+        node_r = restraints[sp['node']]
+        for d in DOF_NAMES:
+            node_r[d] = node_r[d] or r[d]
+    return sum(1 for i in range(N) for d in DOF_NAMES if restraints[i][d])
+
+
 def check_boundary_setup(nodes, members, supports):
     """Validate supports BEFORE assembly, so a bad boundary-condition setup
     reads as a clear message instead of a numpy singular-matrix traceback

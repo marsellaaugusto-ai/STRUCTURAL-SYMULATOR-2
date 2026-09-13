@@ -305,6 +305,96 @@ def test_dome_rejects_nonpositive_dimensions():
         sg.dome(base_radius=5.0, rise=0.0)
 
 
+# ── conical roof ─────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('n_rings', [1, 2, 3, 5, 8])
+@pytest.mark.parametrize('n_sectors', [3, 6, 8, 12, 20])
+def test_cone_roof_analyzes_at_every_size(n_rings, n_sectors):
+    mesh = sg.cone_roof(base_radius=10.0, rise=6.0, n_rings=n_rings, n_sectors=n_sectors)
+    nodes, members = mesh['nodes'], mesh['members']
+    for m in members:
+        m.update(E=200.0, A=10.0, Fy=250.0, r_gyr=2.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(nodes, members)
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None, f'n_rings={n_rings} n_sectors={n_sectors}: {err}'
+
+
+def test_cone_roof_produces_a_sane_mesh():
+    mesh = sg.cone_roof(base_radius=10.0, rise=6.0, n_rings=4, n_sectors=12)
+    _assert_mesh_is_sane(mesh)
+
+
+def test_cone_roof_meridians_are_straight_lines_not_curved():
+    # the defining difference from dome()/paraboloid_dish(): every ring
+    # node's height is an exact LINEAR function of its radius, i.e. the
+    # rafter from apex to base is a straight line (a true cone), not a
+    # curve.
+    base_radius, rise = 10.0, 6.0
+    mesh = sg.cone_roof(base_radius=base_radius, rise=rise, n_rings=5, n_sectors=8)
+    for x, y, z in mesh['nodes']:
+        r = math.hypot(x, y)
+        expected_z = rise * (1.0 - r / base_radius)
+        assert z == pytest.approx(expected_z, abs=1e-6)
+
+
+def test_cone_roof_apex_is_above_the_base_ring():
+    mesh = sg.cone_roof(base_radius=8.0, rise=5.0, n_rings=3, n_sectors=10)
+    apex = 0   # cone_roof() always adds the apex first
+    ax, ay, az = mesh['nodes'][apex]
+    assert (ax, ay) == (0.0, 0.0)
+    assert az == pytest.approx(5.0)
+    for c in mesh['support_candidates']:
+        assert mesh['nodes'][c][2] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_cone_roof_base_ring_radius_matches_the_requested_base_radius():
+    mesh = sg.cone_roof(base_radius=7.0, rise=3.0, n_rings=2, n_sectors=10)
+    for c in mesh['support_candidates']:
+        x, y, _z = mesh['nodes'][c]
+        assert math.hypot(x, y) == pytest.approx(7.0, rel=1e-6)
+
+
+def test_cone_roof_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError):
+        sg.cone_roof(base_radius=-1.0, rise=2.0)
+    with pytest.raises(ValueError):
+        sg.cone_roof(base_radius=5.0, rise=0.0)
+
+
+def test_cone_roof_tributary_areas_converge_to_the_lateral_surface_area():
+    # The MERIDIAN direction's secant is exact for a cone (a straight
+    # line, unlike a dome's curved meridian) -- but load_nodes still
+    # treats the apex cap as a flat disk (pi * r_half**2, the same
+    # approximation dome()/paraboloid_dish() use for their own apex), when
+    # a cone's actual tip is a small lateral cap, not a flat circle. That
+    # keeps this a CONVERGENT approximation like the other apex-ribbed
+    # shells, not an exact sum at every mesh density -- confirmed
+    # numerically (n_rings=1 overshoots the true area by ~21%, tightening
+    # to <0.1% by n_rings=16).
+    base_radius, rise = 10.0, 6.0
+    slant = math.hypot(base_radius, rise)
+    exact = math.pi * base_radius * slant
+    errors = []
+    for n_rings in (1, 4, 16):
+        mesh = sg.cone_roof(base_radius=base_radius, rise=rise,
+                            n_rings=n_rings, n_sectors=24)
+        total = sum(mesh['load_nodes'].values())
+        errors.append(abs(total - exact) / exact)
+    assert errors[0] < 0.25
+    assert errors[1] < errors[0]
+    assert errors[2] < errors[1]
+    assert errors[2] < 1e-3
+
+
+def test_cone_roof_tributary_areas_are_all_positive():
+    mesh = sg.cone_roof(base_radius=6.0, rise=4.0, n_rings=3, n_sectors=10)
+    apex = 0
+    assert apex in mesh['load_nodes']
+    for area in mesh['load_nodes'].values():
+        assert area > 0.0
+
+
 # ── the generators dispatch table ───────────────────────────────────────────
 
 def test_generators_table_names_match_the_functions():
@@ -316,6 +406,7 @@ def test_generators_table_names_match_the_functions():
     assert sg.GENERATORS['parabolic_vault'] is sg.parabolic_vault
     assert sg.GENERATORS['elliptic_vault'] is sg.elliptic_vault
     assert sg.GENERATORS['dome'] is sg.dome
+    assert sg.GENERATORS['cone_roof'] is sg.cone_roof
     assert sg.GENERATORS['paraboloid_dish'] is sg.paraboloid_dish
     assert sg.GENERATORS['elliptic_dome'] is sg.elliptic_dome
     assert sg.GENERATORS['sphere_shell'] is sg.sphere_shell
@@ -340,6 +431,7 @@ def test_generators_table_names_match_the_functions():
     ('barrel_vault', dict(span=8.0, rise=2.0, length=6.0, n_arch=6, n_bays=3,
                           double_layer=False)),
     ('dome', dict(base_radius=8.0, rise=2.5, n_rings=3, n_sectors=10)),
+    ('cone_roof', dict(base_radius=8.0, rise=2.5, n_rings=3, n_sectors=10)),
     ('hypar_shell', dict(span_x=9.0, span_y=9.0, depth=1.2, module=3.0, rise=2.0,
                         offset=True, pattern='square')),
     ('hypar_shell', dict(span_x=9.0, span_y=9.0, depth=1.2, module=3.0, rise=2.0,

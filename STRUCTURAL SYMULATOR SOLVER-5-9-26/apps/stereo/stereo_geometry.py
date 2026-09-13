@@ -901,6 +901,78 @@ def dome(base_radius, rise, n_rings=4, n_sectors=12):
             'load_nodes': load_nodes}
 
 
+def cone_roof(base_radius, rise, n_rings=4, n_sectors=12):
+    """A single-layer ribbed CONICAL roof: the same Schwedler apex+rings+
+    diagonals bracing as dome()/paraboloid_dish(), on a straight-line
+    (conical) profile instead of a curved one -- z = rise * (1 - r /
+    base_radius), apex at the centre (z=rise), sloping straight down to
+    the base ring at z=0. Every meridian rib is a literal straight rafter
+    from apex to base, unlike a dome's curved meridian -- the shape a
+    conical tower roof or a silo top actually is.
+
+    base_radius : radius of the base ring (m).
+    rise        : height of the apex above the base ring (m).
+    n_rings, n_sectors : as in dome().
+
+    Returns the shared {'nodes','members','support_candidates'} dict, with
+    the base ring nodes offered as support candidates.
+    """
+    base_radius = float(base_radius); rise = float(rise)
+    n_rings = max(1, int(n_rings)); n_sectors = max(3, int(n_sectors))
+    if base_radius <= 0 or rise <= 0:
+        raise ValueError('base_radius and rise must both be positive')
+
+    bank = _NodeBank()
+    members = []
+    seen = set()
+
+    apex = bank.add(0.0, 0.0, rise)
+
+    rings = []
+    for k in range(1, n_rings + 1):
+        r_k = base_radius * k / n_rings
+        z_k = rise * (1.0 - r_k / base_radius)
+        ring = []
+        for s in range(n_sectors):
+            th = 2.0 * math.pi * s / n_sectors
+            ring.append(bank.add(r_k * math.cos(th), r_k * math.sin(th), z_k))
+        rings.append(ring)
+
+    _add_apex_ribbed_shell(members, seen, apex, rings, n_sectors)
+    support_candidates = list(rings[-1])
+
+    # Tributary area via the same midpoint-rule secant lumping dome() and
+    # paraboloid_dish() use. The MERIDIAN direction has no discretization
+    # error here (a cone's meridian genuinely is the straight line the
+    # secant assumes), but the apex cap is still treated as a flat disk
+    # (pi * r_half**2) rather than the small cone-tip lateral area it
+    # actually is, so the total is still a CONVERGENT approximation, not
+    # an exact sum at every mesh density -- confirmed numerically in
+    # test_cone_roof_tributary_areas_converge_to_the_lateral_surface_area.
+    seg = [0.0] * (n_rings + 1)
+    prev_r, prev_z = 0.0, rise
+    for k in range(1, n_rings + 1):
+        r_k = base_radius * k / n_rings
+        z_k = rise * (1.0 - r_k / base_radius)
+        seg[k] = math.hypot(r_k - prev_r, z_k - prev_z)
+        prev_r, prev_z = r_k, z_k
+
+    load_nodes = {}
+    for k in range(1, n_rings + 1):
+        r_k = base_radius * k / n_rings
+        hoop_factor = r_k * (2.0 * math.pi / n_sectors)
+        meridian_in = seg[k] / 2.0
+        meridian_out = seg[k + 1] / 2.0 if k < n_rings else 0.0
+        area = (meridian_in + meridian_out) * hoop_factor
+        for node in rings[k - 1]:
+            load_nodes[node] = area
+    r_half = base_radius / n_rings / 2.0
+    load_nodes[apex] = math.pi * r_half ** 2
+
+    return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
+            'load_nodes': load_nodes}
+
+
 def paraboloid_dish(base_radius, rise, n_rings=4, n_sectors=12):
     """A single-layer ribbed paraboloid dish (a satellite-dish/reflector-
     antenna shape): the same Schwedler apex+rings+diagonals bracing as
@@ -2309,6 +2381,7 @@ GENERATORS = {
     'parabolic_vault': parabolic_vault,
     'elliptic_vault': elliptic_vault,
     'dome': dome,
+    'cone_roof': cone_roof,
     'paraboloid_dish': paraboloid_dish,
     'elliptic_dome': elliptic_dome,
     'sphere_shell': sphere_shell,

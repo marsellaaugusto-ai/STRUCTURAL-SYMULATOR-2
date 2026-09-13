@@ -11,6 +11,7 @@ zoom/pan, a red(tension)/blue(compression) force gradient, a chord/web
 section split, and an area-load feature -- see stereo_app.py's own
 docstring for the reasoning.
 """
+import math
 import time
 
 import tkinter as tk
@@ -22,7 +23,8 @@ from apps.stereo.stereo_app import (
     moment_color, reaction_moment_signed, MOMENT_ZERO_COLOR, MOMENT_AXES,
     MOMENT_AXIS_RESULTANT, MOMENT_AXIS_MX, MOMENT_AXIS_MY, MOMENT_AXIS_MZ,
     MODULE_DIM_COLOR, SUPPORT_DISABLED_COLOR, SLENDER_HALO_COLOR, SLENDERNESS_LIMIT,
-    LOAD_PATH_COLOR, MOMENT_BACKDROP_COLOR, MOMENT_NODE_RADIUS_PX,
+    LOAD_PATH_COLOR, LOAD_PATH_ANIM_TICKS, LOAD_PATH_NEAR_ZERO_FRAC, NEAR_ZERO_COLOR,
+    MOMENT_BACKDROP_COLOR, MOMENT_NODE_RADIUS_PX,
     TENSION_HIGH, COMPRESSION_HIGH,
 )
 from apps.stereo import stereo_math as sm
@@ -994,24 +996,80 @@ def test_load_path_anim_is_a_no_op_before_analysis(app):
     assert not _load_path_lines(app)
 
 
-def test_load_path_anim_tension_and_compression_dashoffsets_diverge(app):
-    # Direction alone distinguishes tension from compression in this
-    # animation (see its design note in stereo_app.py), so once the phase
-    # has advanced past the very first frame the marching dashes must show
-    # more than one distinct dashoffset -- otherwise every member would be
-    # marching the same way regardless of sign, which is exactly the
-    # ambiguity this feature exists to avoid.
-    app._analyze()
-    max_abs_n = max(abs(mr['N']) for mr in app.results['member_res'])
-    ns = [mr['N'] for mr in app.results['member_res']]
-    assert max_abs_n > 1e-9
-    assert any(n > 0 for n in ns) and any(n < 0 for n in ns)
+def _load_path_arrow_items(app):
+    """The travelling arrowhead glyphs specifically -- excludes each
+    member's own static LOAD_PATH_COLOR guide line, which shares the
+    'member' tag and colour but has no arrowhead."""
+    return [i for i in _load_path_lines(app) if app.canvas.itemcget(i, 'arrow') == 'last']
 
+
+def test_load_path_anim_draws_a_static_guide_line_plus_moving_arrowheads(app):
+    app._analyze()
     app.load_path_anim.set(True)
-    app._load_path_phase = 5
     app._draw()
-    offsets = {app.canvas.itemcget(i, 'dashoffset') for i in _load_path_lines(app)}
-    assert len(offsets) > 1
+    lines = _load_path_lines(app)
+    arrows = _load_path_arrow_items(app)
+    assert lines
+    assert arrows
+    assert len(arrows) < len(lines)   # arrows are a subset -- the rest are guide lines
+
+
+def test_load_path_anim_arrows_actually_move_between_phases(app):
+    # the literal "arrows that move" request this replaced the marching
+    # dashes with: the SAME member's arrow glyphs must occupy different
+    # canvas coordinates at two different points in the animation loop,
+    # not just a shifting dash pattern on an otherwise static line.
+    app._analyze()
+    app.load_path_anim.set(True)
+    app._load_path_phase = 0
+    app._draw()
+    coords_at_0 = sorted(tuple(app.canvas.coords(i)) for i in _load_path_arrow_items(app))
+
+    app._load_path_phase = LOAD_PATH_ANIM_TICKS // 2
+    app._draw()
+    coords_at_half = sorted(tuple(app.canvas.coords(i)) for i in _load_path_arrow_items(app))
+
+    assert coords_at_0 != coords_at_half
+
+
+@pytest.mark.parametrize('t_prog', [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0])
+def test_load_path_arrow_fracs_tension_converges_toward_centre(t_prog):
+    (t1, d1), (t2, d2) = StereoApp._load_path_arrow_fracs(N=5.0, t_prog=t_prog)
+    assert d1 == 1 and d2 == -1
+    # both arrows start (t_prog=0) at their own end and end (t_prog=1) at
+    # the centre -- monotonically closer to 0.5 as t_prog increases
+    assert 0.0 <= t1 <= 0.5 and 0.5 <= t2 <= 1.0
+
+
+@pytest.mark.parametrize('t_prog', [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0])
+def test_load_path_arrow_fracs_compression_diverges_from_centre(t_prog):
+    (t1, d1), (t2, d2) = StereoApp._load_path_arrow_fracs(N=-5.0, t_prog=t_prog)
+    assert d1 == -1 and d2 == 1
+    assert 0.0 <= t1 <= 0.5 and 0.5 <= t2 <= 1.0
+
+
+def test_load_path_arrow_fracs_tension_and_compression_are_complementary():
+    # at t_prog=0 tension arrows start at the two ENDS (distance-from-
+    # centre 0.5) while compression arrows start AT the centre (distance
+    # 0); each closes exactly the gap the other opens as t_prog runs to
+    # 1, so at any given moment the two distances-from-centre sum to the
+    # constant 0.5 -- how far tension has travelled inward is exactly how
+    # far compression still has left to travel outward.
+    for t_prog in (0.0, 0.2, 0.5, 0.8, 1.0):
+        tension = StereoApp._load_path_arrow_fracs(N=1.0, t_prog=t_prog)
+        compression = StereoApp._load_path_arrow_fracs(N=-1.0, t_prog=t_prog)
+        tension_dist = max(abs(t - 0.5) for t, _d in tension)
+        compression_dist = max(abs(t - 0.5) for t, _d in compression)
+        assert tension_dist + compression_dist == pytest.approx(0.5)
+
+
+def test_load_path_arrow_fracs_midpoint_matches_regardless_of_sign():
+    # t_prog=0.5 is the one instant where "inward" and "outward" motion
+    # cross the same halfway point -- both signs must agree there.
+    tension = sorted(t for t, _d in StereoApp._load_path_arrow_fracs(N=1.0, t_prog=0.5))
+    compression = sorted(t for t, _d in StereoApp._load_path_arrow_fracs(N=-1.0, t_prog=0.5))
+    assert tension == pytest.approx([0.25, 0.75])
+    assert compression == pytest.approx([0.25, 0.75])
 
 
 def test_load_path_anim_legend_row_appears_only_when_active(app):
@@ -2272,3 +2330,274 @@ def test_colorbar_is_a_no_op_before_analysis(app):
     app.show_deformed.set(True)
     app._draw()   # must not raise
     assert not _colorbar_rects(app)
+
+
+# ── show-rods / show-nodes visibility toggles ────────────────────────────────
+
+def test_show_members_and_show_nodes_default_to_true(app):
+    assert app.show_members.get() is True
+    assert app.show_nodes.get() is True
+
+
+def test_hiding_rods_leaves_only_nodes(app):
+    app._draw()
+    assert app.canvas.find_withtag('member')
+    assert app.canvas.find_withtag('node')
+
+    app.show_members.set(False)
+    app._draw()
+    assert not app.canvas.find_withtag('member')
+    assert app.canvas.find_withtag('node')
+
+
+def test_hiding_nodes_leaves_only_rods(app):
+    app.show_nodes.set(False)
+    app._draw()
+    assert app.canvas.find_withtag('member')
+    assert not app.canvas.find_withtag('node')
+
+
+def test_hiding_both_rods_and_nodes_is_a_no_op_not_a_crash(app):
+    app.show_members.set(False)
+    app.show_nodes.set(False)
+    app._draw()   # must not raise
+    assert not app.canvas.find_withtag('member')
+    assert not app.canvas.find_withtag('node')
+
+
+def test_hidden_rods_do_not_break_the_load_path_animation_overlay(app):
+    # the marching-dash overlay lives in the SAME loop as the rod's own
+    # line -- iterating an empty `order` must skip it cleanly, not raise
+    app._analyze()
+    app.load_path_anim.set(True)
+    app.show_members.set(False)
+    app._draw()   # must not raise
+    assert not app.canvas.find_withtag('member')
+
+
+# ── "Add rod" tool: click two nodes to connect them ──────────────────────────
+
+def _unconnected_pair(app):
+    """Two node indices in the default mesh with no member between them
+    yet -- so a test adding a rod between them is exercising a genuinely
+    NEW connection, not silently hitting the duplicate-rod no-op."""
+    connected = {frozenset((m['a'], m['b'])) for m in app.members}
+    n = len(app.nodes)
+    for a in range(n):
+        for b in range(a + 1, n):
+            if frozenset((a, b)) not in connected:
+                return a, b
+    raise AssertionError('every pair of nodes is already connected')
+
+
+def test_add_rod_mode_is_off_by_default(app):
+    assert app.add_rod_mode.get() is False
+    assert app._add_rod_first is None
+
+
+def test_two_clicks_in_add_rod_mode_creates_a_new_member(app):
+    a, b = _unconnected_pair(app)
+    n_before = len(app.members)
+    app.add_rod_mode.set(True)
+
+    sx, sy = _screen_pos_of(app, a)
+    app._on_canvas_release(FakeEvent(sx, sy, state=0))
+    assert app._add_rod_first == a
+
+    sx, sy = _screen_pos_of(app, b)
+    app._on_canvas_release(FakeEvent(sx, sy, state=0))
+    assert app._add_rod_first is None
+    assert len(app.members) == n_before + 1
+    new = app.members[-1]
+    assert {new['a'], new['b']} == {a, b}
+    assert new['conn'] == app.sec_conn.get()
+
+
+def test_add_rod_between_already_connected_nodes_is_a_no_op(app):
+    m0 = app.members[0]
+    a, b = m0['a'], m0['b']
+    n_before = len(app.members)
+    app.add_rod_mode.set(True)
+
+    sx, sy = _screen_pos_of(app, a)
+    app._on_canvas_release(FakeEvent(sx, sy, state=0))
+    sx, sy = _screen_pos_of(app, b)
+    app._on_canvas_release(FakeEvent(sx, sy, state=0))
+
+    assert len(app.members) == n_before   # already connected -- no duplicate
+
+
+def test_clicking_the_same_node_twice_cancels_the_pending_pick(app):
+    a, _b = _unconnected_pair(app)
+    app.add_rod_mode.set(True)
+    sx, sy = _screen_pos_of(app, a)
+    app._on_canvas_release(FakeEvent(sx, sy, state=0))
+    assert app._add_rod_first == a
+    app._on_canvas_release(FakeEvent(sx, sy, state=0))
+    assert app._add_rod_first is None
+
+
+def test_turning_add_rod_mode_off_clears_a_pending_pick(app):
+    a, _b = _unconnected_pair(app)
+    app.add_rod_mode.set(True)
+    sx, sy = _screen_pos_of(app, a)
+    app._on_canvas_release(FakeEvent(sx, sy, state=0))
+    assert app._add_rod_first is not None
+
+    app.add_rod_mode.set(False)
+    app._on_add_rod_mode_toggle()
+    assert app._add_rod_first is None
+
+
+def test_new_rod_invalidates_stale_results(app):
+    a, b = _unconnected_pair(app)
+    app._analyze()
+    assert app.results is not None
+    app._add_rod_between(a, b)
+    assert app.results is None
+    assert app.member_checks is None
+
+
+def test_add_rod_pending_ring_is_drawn_while_waiting_on_the_second_click(app):
+    a, _b = _unconnected_pair(app)
+    app.add_rod_mode.set(True)
+    sx, sy = _screen_pos_of(app, a)
+    app._on_canvas_release(FakeEvent(sx, sy, state=0))
+    assert app.canvas.find_withtag('add_rod_pending')
+
+    app.add_rod_mode.set(False)
+    app._on_add_rod_mode_toggle()
+    assert not app.canvas.find_withtag('add_rod_pending')
+
+
+# ── shaded faces (flat colour per panel) ─────────────────────────────────────
+
+def test_shaded_faces_off_by_default(app):
+    assert app.shaded_faces.get() is False
+
+
+def test_shaded_faces_draws_filled_polygons_for_force_mode(app):
+    app._analyze()
+    app.shaded_faces.set(True)
+    app._draw()
+    faces = app.canvas.find_withtag('shaded_face')
+    assert faces
+    for f in faces:
+        assert app.canvas.type(f) == 'polygon'
+
+
+def test_shaded_faces_draws_for_utilization_mode_too(app):
+    app._analyze()
+    app.colour_by_force.set(False)
+    app.colour_by_util.set(True)
+    app.shaded_faces.set(True)
+    app._draw()
+    assert app.canvas.find_withtag('shaded_face')
+
+
+def test_shaded_faces_are_drawn_behind_the_wireframe(app):
+    app._analyze()
+    app.shaded_faces.set(True)
+    app._draw()
+    order = app.canvas.find_withtag('all')
+    face_idx = min(order.index(i) for i in app.canvas.find_withtag('shaded_face'))
+    member_idx = min(order.index(i) for i in app.canvas.find_withtag('member'))
+    assert face_idx < member_idx   # faces sit lower in the stack -> drawn first
+
+
+def test_shaded_faces_is_a_no_op_before_analysis(app):
+    app.results = None
+    app.member_checks = None
+    app.shaded_faces.set(True)
+    app._draw()   # must not raise
+    assert not app.canvas.find_withtag('shaded_face')
+
+
+def test_shaded_faces_legend_caption_appears_only_when_active(app):
+    app._analyze()
+    app.shaded_faces.set(False)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert not any('Shaded faces' in t for t in texts)
+
+    app.shaded_faces.set(True)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any('Shaded faces' in t for t in texts)
+
+
+def test_shaded_cells_cache_is_reused_then_invalidated_on_mesh_change(app):
+    first = app._get_shaded_cells()
+    second = app._get_shaded_cells()
+    assert first is second   # same object -- not recomputed on the second call
+
+    app._apply_sections()   # goes through _refresh_all, which invalidates it
+    assert app._shaded_cells is None
+    third = app._get_shaded_cells()
+    assert third is not first
+    assert third == first   # same mesh -- recomputed to an equal, not stale, result
+
+
+# ── "hide ~0-force rods" toggle ───────────────────────────────────────────────
+
+def test_hide_zero_force_is_off_by_default(app):
+    assert app.hide_zero_force.get() is False
+
+
+def test_hide_zero_force_removes_only_the_near_zero_members(app):
+    app._analyze()
+    app._draw()
+    n_before = len(app.canvas.find_withtag('member'))
+
+    max_abs_n = max(abs(mr['N']) for mr in app.results['member_res'])
+    n_zero = sum(1 for mr in app.results['member_res']
+                if abs(mr['N']) / max_abs_n < LOAD_PATH_NEAR_ZERO_FRAC)
+    assert n_zero > 0   # otherwise this test can't tell the toggle apart from a no-op
+
+    app.hide_zero_force.set(True)
+    app._draw()
+    n_after = len(app.canvas.find_withtag('member'))
+    assert n_after < n_before
+
+
+def test_hide_zero_force_is_consistent_with_the_near_zero_colour(app):
+    # a member this toggle hides must be exactly one force_color would
+    # have painted NEAR_ZERO_COLOR -- the two must never disagree about
+    # what "~0" means.
+    app._analyze()
+    app.colour_by_force.set(True)
+    max_abs_n = max(abs(mr['N']) for mr in app.results['member_res'])
+
+    app.hide_zero_force.set(False)
+    app._draw()
+    fills_before = [app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')]
+    assert NEAR_ZERO_COLOR in fills_before
+
+    app.hide_zero_force.set(True)
+    app._draw()
+    fills_after = {app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')}
+    assert NEAR_ZERO_COLOR not in fills_after
+
+
+def test_hide_zero_force_is_a_no_op_before_analysis(app):
+    app.results = None
+    app.hide_zero_force.set(True)
+    app._draw()   # must not raise
+    assert app.canvas.find_withtag('member')   # the plain pin/rigid wireframe still shows
+
+
+def test_hide_zero_force_legend_caption_appears_only_when_active(app):
+    app._analyze()
+    app.hide_zero_force.set(False)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert not any('hidden entirely' in t for t in texts)
+
+    app.hide_zero_force.set(True)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any('hidden entirely' in t for t in texts)

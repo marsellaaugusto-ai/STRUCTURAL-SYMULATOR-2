@@ -20,10 +20,10 @@ def _solves(mesh):
     return err
 
 
-def test_examples_table_has_eight_distinct_entries():
-    assert len(sx.EXAMPLES) == 8
+def test_examples_table_has_nine_distinct_entries():
+    assert len(sx.EXAMPLES) == 9
     labels = [label for label, _builder in sx.EXAMPLES]
-    assert len(set(labels)) == 8
+    assert len(set(labels)) == 9
 
 
 @pytest.mark.parametrize('label,builder', sx.EXAMPLES)
@@ -155,3 +155,11 @@ def test_dome_example_apex_is_the_highest_point():
     apex = max(range(len(nodes)), key=lambda i: nodes[i][2])
     assert abs(nodes[apex][0]) < 1e-6 and abs(nodes[apex][1]) < 1e-6   # apex sits on the axis
     assert apex not in mesh['support_candidates']   # the base ring, not the apex, is supported
+
+
+def test_cone_roof_example_apex_is_the_highest_point():
+    mesh = sx.cone_roof_example()
+    nodes = mesh['nodes']
+    apex = max(range(len(nodes)), key=lambda i: nodes[i][2])
+    assert abs(nodes[apex][0]) < 1e-6 and abs(nodes[apex][1]) < 1e-6
+    assert apex not in mesh['support_candidates']

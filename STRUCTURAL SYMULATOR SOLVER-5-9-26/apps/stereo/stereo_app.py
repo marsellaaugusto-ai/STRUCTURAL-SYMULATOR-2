@@ -55,6 +55,8 @@ MODULE_DIM_COLOR = '#555555'
 
 NODE_COLOR = '#1a1a1a'
 NODE_SEL_COLOR = '#e0522b'
+ADD_ROD_PENDING_COLOR = '#e67e22'   # ring around the first-picked node in
+                                     # 'Add rod' mode, waiting on the second
 SUPPORT_COLOR = '#1a6bbd'
 SUPPORT_DISABLED_COLOR = '#b9bec4'
 MEMBER_PIN_COLOR = '#555555'
@@ -85,8 +87,9 @@ MEMBER_SEL_HIT_PX = 8
 SLENDER_HALO_COLOR = '#ffb300'
 SLENDERNESS_LIMIT = 200.0   # AISC/CIRSOC's own recommended (non-mandatory) practical limit
 LOAD_PATH_COLOR = '#00acc1'
-LOAD_PATH_DASH = (6, 6)
 LOAD_PATH_NEAR_ZERO_FRAC = 0.02   # members below this fraction of the largest |N| stay still
+LOAD_PATH_ARROW_HALF_PX = 7   # half-length of each travelling arrowhead glyph
+LOAD_PATH_ANIM_TICKS = 24     # ticks per full loop (24 * LOAD_PATH_TICK_MS = 3.6s)
 MOMENT_NEG_HIGH = '#c46a12'   # saturated orange -- negative moment
 MOMENT_ZERO_COLOR = '#ffffff'   # white -- zero moment
 MOMENT_POS_HIGH = '#6a2ca0'   # saturated violet -- positive moment
@@ -118,6 +121,7 @@ GRID_FAMILIES = (('flat_grid', 'Flat double-layer grid'),
                  ('parabolic_vault', 'Parabolic vault'),
                  ('elliptic_vault', 'Elliptic vault'),
                  ('dome', 'Dome (Schwedler ribs)'),
+                 ('cone_roof', 'Conical roof (straight rafters)'),
                  ('paraboloid_dish', 'Paraboloid dish (antenna)'),
                  ('elliptic_dome', 'Elliptic dome'),
                  ('sphere_shell', 'Full sphere'))
@@ -324,6 +328,8 @@ class StereoApp(UnitsMixin):
         self._disabled_supports = set()
         self._load_path_phase = 0
         self._load_path_after_id = None
+        self._add_rod_first = None   # first-picked node while 'Add rod' mode is on
+        self._shaded_cells = None    # lazy cache, see _get_shaded_cells
 
         self.azimuth = 35.0
         self.elevation = 22.0
@@ -441,6 +447,9 @@ class StereoApp(UnitsMixin):
         self.colour_by_util = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Utilization heat-map', variable=self.colour_by_util, bg=BG,
                        command=self._draw).pack(side='left', padx=(6, 0))
+        self.shaded_faces = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Shaded faces', variable=self.shaded_faces, bg=BG,
+                       command=self._draw).pack(side='left', padx=(6, 0))
         self.flag_slender = tk.BooleanVar(value=False)
         # Short on purpose: the KL/r threshold itself is shown in the legend
         # once this is on (see _draw_legend), not repeated in the checkbox
@@ -484,6 +493,15 @@ class StereoApp(UnitsMixin):
         self.show_axes = tk.BooleanVar(value=True)
         tk.Checkbutton(g, text='XYZ axes + ground (z=0)', variable=self.show_axes, bg=BG,
                        command=self._draw).pack(side='left')
+        self.show_members = tk.BooleanVar(value=True)
+        tk.Checkbutton(g, text='Show rods', variable=self.show_members, bg=BG,
+                       command=self._draw).pack(side='left', padx=(6, 0))
+        self.show_nodes = tk.BooleanVar(value=True)
+        tk.Checkbutton(g, text='Show nodes', variable=self.show_nodes, bg=BG,
+                       command=self._draw).pack(side='left', padx=(6, 0))
+        self.hide_zero_force = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Hide ~0-force rods', variable=self.hide_zero_force, bg=BG,
+                       command=self._draw).pack(side='left', padx=(6, 0))
         self.show_node_labels = tk.BooleanVar(value=True)
         tk.Checkbutton(g, text='Node #', variable=self.show_node_labels, bg=BG,
                        command=self._draw).pack(side='left', padx=(6, 0))
@@ -523,6 +541,12 @@ class StereoApp(UnitsMixin):
         g = self.toolbar_flow.group()
         tk.Button(g, text='Undo', command=self._undo).pack(side='left', padx=1)
         tk.Button(g, text='Redo', command=self._redo).pack(side='left', padx=1)
+
+        self.toolbar_flow.separator()
+        g = self.toolbar_flow.group()
+        self.add_rod_mode = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Add rod (click 2 nodes)', variable=self.add_rod_mode,
+                       bg=BG, command=self._on_add_rod_mode_toggle).pack(side='left')
 
         self.toolbar_flow.separator()
         g = self.toolbar_flow.group()
@@ -733,6 +757,16 @@ class StereoApp(UnitsMixin):
         self._labeled_entry(self.frame_dome, 'Rings:', self.dm_n_rings)
         self._labeled_entry(self.frame_dome, 'Sectors:', self.dm_n_sectors)
 
+        self.cr_radius = tk.DoubleVar(value=8.0)
+        self.cr_rise = tk.DoubleVar(value=5.0)
+        self.cr_n_rings = tk.IntVar(value=4)
+        self.cr_n_sectors = tk.IntVar(value=12)
+        self.frame_cone_roof = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_cone_roof, 'Base radius (m):', self.cr_radius)
+        self._labeled_entry(self.frame_cone_roof, 'Rise (m):', self.cr_rise)
+        self._labeled_entry(self.frame_cone_roof, 'Rings:', self.cr_n_rings)
+        self._labeled_entry(self.frame_cone_roof, 'Sectors:', self.cr_n_sectors)
+
         self.pv_span = tk.DoubleVar(value=10.0)
         self.pv_rise = tk.DoubleVar(value=2.5)
         self.pv_length = tk.DoubleVar(value=15.0)
@@ -805,6 +839,7 @@ class StereoApp(UnitsMixin):
                               'parabolic_vault': self.frame_parabolic_vault,
                               'elliptic_vault': self.frame_elliptic_vault,
                               'dome': self.frame_dome,
+                              'cone_roof': self.frame_cone_roof,
                               'paraboloid_dish': self.frame_paraboloid_dish,
                               'elliptic_dome': self.frame_elliptic_dome,
                               'sphere_shell': self.frame_sphere_shell}
@@ -2064,6 +2099,9 @@ class StereoApp(UnitsMixin):
             elif key == 'dome':
                 mesh = sg.dome(self.dm_radius.get(), self.dm_rise.get(),
                                int(self.dm_n_rings.get()), int(self.dm_n_sectors.get()))
+            elif key == 'cone_roof':
+                mesh = sg.cone_roof(self.cr_radius.get(), self.cr_rise.get(),
+                                    int(self.cr_n_rings.get()), int(self.cr_n_sectors.get()))
             elif key == 'paraboloid_dish':
                 mesh = sg.paraboloid_dish(self.pd_radius.get(), self.pd_rise.get(),
                                           int(self.pd_n_rings.get()),
@@ -2626,6 +2664,25 @@ class StereoApp(UnitsMixin):
         except tk.TclError:
             pass
 
+    @staticmethod
+    def _load_path_arrow_fracs(N, t_prog):
+        """The two travelling arrowheads' positions for one member in the
+        load-path animation, as (fraction along a->b in 0..1, direction
+        +1/-1 along that same axis) pairs -- a pure function of the
+        member's own signed force and how far through the loop the
+        animation currently is, with no drawing or canvas access, so the
+        tension-converges/compression-diverges behaviour is directly
+        testable without reproducing screen geometry.
+
+        N >= 0 (tension): both arrows travel INWARD from their own end
+        toward the centre (t=0.5) -- the member pulling its two endpoints
+        together. N < 0 (compression): both travel OUTWARD from the
+        centre toward their own end -- the member pushing them apart.
+        """
+        if N >= 0:
+            return ((t_prog * 0.5, 1), (1.0 - t_prog * 0.5, -1))
+        return ((0.5 - t_prog * 0.5, -1), (0.5 + t_prog * 0.5, 1))
+
     # ── camera (mouse-only: right-drag orbit, wheel zoom, middle-drag pan) ───
     DRAG_THRESHOLD_PX = 3
     DEG_PER_PX = 0.4
@@ -2703,6 +2760,17 @@ class StereoApp(UnitsMixin):
     def _on_canvas_release(self, event):
         self.canvas.focus_set()   # so a following Delete/Backspace reaches us
         additive = bool(event.state & 0x0001)   # Shift held: add to selection
+        if self.add_rod_mode.get():
+            # A plain click-to-pick tool, deliberately bypassing the lasso/
+            # select machinery below entirely (including the support-
+            # sandbox click-to-disable behaviour) so the two clicks that
+            # place a rod can never be misread as a box-select or a
+            # sandbox toggle while this mode is on.
+            self._handle_add_rod_click(event.x, event.y)
+            self._lasso_press = None
+            self._lasso_dragging = False
+            self._lasso_cur = None
+            return
         if self._lasso_dragging and self._lasso_cur is not None:
             x0, y0 = self._lasso_press
             x1, y1 = self._lasso_cur
@@ -2810,8 +2878,9 @@ class StereoApp(UnitsMixin):
         if by_force:
             max_abs_N = max((abs(mr['N']) for mr in self.results['member_res']), default=0.0)
         load_path_on = self.load_path_anim.get() and self.results is not None
+        hide_zero_force = self.hide_zero_force.get() and self.results is not None
         max_abs_N_lp = max_abs_N
-        if load_path_on and not by_force:
+        if (load_path_on or hide_zero_force) and not by_force:
             max_abs_N_lp = max((abs(mr['N']) for mr in self.results['member_res']), default=0.0)
 
         if not deformed_only:
@@ -2821,9 +2890,25 @@ class StereoApp(UnitsMixin):
             # backdrop instead of competing with the overlay for attention.
             ref_grey = self._reference_grey() if show_def else None
 
+            # An empty `order` when rods are hidden -- rather than wrapping
+            # this whole loop in an `if` -- keeps every per-member branch
+            # below (halos, load-path dashes, over-capacity dashing) as a
+            # single indentation level, unchanged whether rods show or not.
             order = sorted(range(len(self.members)), key=lambda i: -(
-                proj[self.members[i]['a']][2] + proj[self.members[i]['b']][2]))
+                proj[self.members[i]['a']][2] + proj[self.members[i]['b']][2])) \
+                if self.show_members.get() else []
             for i in order:
+                if hide_zero_force and max_abs_N_lp > 1e-9:
+                    # Same near-zero threshold force_color already uses to
+                    # flag a member NEAR_ZERO_COLOR -- this hides exactly
+                    # the members that colouring already calls "~0", so the
+                    # two stay consistent: a member never reads as "~0" in
+                    # one and "clearly carrying load" in the other. Skipped
+                    # entirely (no line, no halo) rather than dimmed, since
+                    # the point is decluttering the path, not softening it.
+                    N_hide = self.results['member_res'][i]['N'] * frac
+                    if abs(N_hide) / max_abs_N_lp < LOAD_PATH_NEAR_ZERO_FRAC:
+                        continue
                 m = self.members[i]
                 ax, ay, _ = proj[m['a']]
                 bx, by, _ = proj[m['b']]
@@ -2887,21 +2972,37 @@ class StereoApp(UnitsMixin):
                 # path" doesn't exist in a statically indeterminate
                 # structure (load splits across every parallel path in
                 # proportion to relative stiffness -- see this feature's
-                # own design notes), so this is deliberately a simpler,
-                # still-informative animation instead: marching dashes on
-                # every member actually carrying force, direction alone
-                # distinguishing tension from compression (the two step
-                # in OPPOSITE directions along the member), not a claim
-                # about which way "the" load flows. Independent of the
-                # member's own colour mode, like the slenderness halo.
+                # own design notes), so this deliberately does not claim
+                # to show which way "the" load flows. What it DOES show:
+                # every member actually carrying force gets a thin static
+                # guide line (so a still screenshot still answers "which
+                # members"), plus two small arrowheads animated along it
+                # in a continuous loop -- pointing INWARD from both ends
+                # toward the centre for a member in TENSION (pulling its
+                # own two endpoints together) and OUTWARD from the centre
+                # toward both ends for COMPRESSION (pushing them apart).
+                # Direction of travel encodes tension vs compression only,
+                # same as the marching dashes this replaces -- clearer to
+                # read as actual motion than a shifting dash pattern was.
+                # Independent of the member's own colour mode, like the
+                # slenderness halo.
                 if load_path_on and max_abs_N_lp > 1e-9:
                     N = self.results['member_res'][i]['N'] * frac
                     if abs(N) / max_abs_N_lp > LOAD_PATH_NEAR_ZERO_FRAC:
-                        step = 1 if N >= 0 else -1
-                        cycle = sum(LOAD_PATH_DASH)
-                        offset = (self._load_path_phase * step * 2) % cycle
-                        c.create_line(sx0, sy0, sx1, sy1, fill=LOAD_PATH_COLOR, width=2,
-                                     dash=LOAD_PATH_DASH, dashoffset=offset, tags='member')
+                        c.create_line(sx0, sy0, sx1, sy1, fill=LOAD_PATH_COLOR, width=1,
+                                     tags='member')
+                        mlen = math.hypot(sx1 - sx0, sy1 - sy0)
+                        half = min(LOAD_PATH_ARROW_HALF_PX, mlen / 2.0 - 1.0)
+                        if mlen > 1e-6 and half > 1.0:
+                            ux, uy = (sx1 - sx0) / mlen, (sy1 - sy0) / mlen
+                            t_prog = (self._load_path_phase % LOAD_PATH_ANIM_TICKS) \
+                                / LOAD_PATH_ANIM_TICKS
+                            for t, d in self._load_path_arrow_fracs(N, t_prog):
+                                px, py = sx0 + t * (sx1 - sx0), sy0 + t * (sy1 - sy0)
+                                c.create_line(px - d * ux * half, py - d * uy * half,
+                                             px + d * ux * half, py + d * uy * half,
+                                             fill=LOAD_PATH_COLOR, width=2, arrow='last',
+                                             arrowshape=(6, 7, 3), tags='member')
 
             support_nodes = {s['node'] for s in self.supports
                              if any(sm.support_restraints(s).values())}
@@ -2947,7 +3048,10 @@ class StereoApp(UnitsMixin):
                     m = reaction_moment_signed(vec, moment_axis, node_xy, centroid_xy) * frac
                     moment_by_node[i] = m
                     max_abs_moment = max(max_abs_moment, abs(m))
-            for i, (px, py, _) in enumerate(proj):
+            # Same empty-iterable trick as `order` above for show_members --
+            # keeps every per-node branch (selection, support box, moment
+            # colouring) at its existing indentation regardless of the toggle.
+            for i, (px, py, _) in (enumerate(proj) if self.show_nodes.get() else []):
                 sx, sy = to_screen(px, py)
                 sel = i in self.selected_nodes
                 if by_moment and i in moment_by_node:
@@ -3001,6 +3105,21 @@ class StereoApp(UnitsMixin):
                     c.create_rectangle(sx - h, sy - h, sx + h, sy + h, outline=box_color,
                                        width=2, tags=('node', f'node{i}'), **kw)
 
+            if self.add_rod_mode.get() and self._add_rod_first is not None \
+                    and self._add_rod_first < len(proj):
+                # The first-picked node's own pending state, waiting on a
+                # second click -- drawn every frame regardless of
+                # show_nodes so it never silently vanishes mid-pick.
+                px, py, _ = proj[self._add_rod_first]
+                sx, sy = to_screen(px, py)
+                r = MOMENT_NODE_RADIUS_PX + 3
+                c.create_oval(sx - r, sy - r, sx + r, sy + r, outline=ADD_ROD_PENDING_COLOR,
+                             width=2, dash=(3, 2), tags='add_rod_pending')
+
+            if self.shaded_faces.get():
+                self._draw_shaded_faces(c, proj, to_screen, frac, by_util, by_force,
+                                        max_abs_N, by_moment, moment_by_node, max_abs_moment)
+
             if self.show_node_labels.get():
                 labels = []
                 for i, (px, py, _) in enumerate(proj):
@@ -3039,6 +3158,75 @@ class StereoApp(UnitsMixin):
         self._draw_legend(c, by_force, show_def, deformed_only, by_util,
                           max_abs_N=max_abs_N, max_abs_moment=max_abs_moment)
         self._to_screen_cache = to_screen   # for hit-testing on click
+
+    def _get_shaded_cells(self):
+        """The mesh's minimal 3-/4-node closed cells (stereo_geometry's own
+        find_cells -- the same routine the Module Editor uses to find its
+        own faces), cached until the next _refresh_all invalidates it.
+        find_cells is O(members x degree^2); with the 'Shaded faces' mode
+        off (its only caller) this is never computed at all, and with it
+        on the cost is paid once per mesh EDIT, not once per _draw() --
+        _draw() itself runs on every mouse-move while orbiting/panning."""
+        if self._shaded_cells is None:
+            self._shaded_cells = sg.find_cells(self.nodes, self.members)
+        return self._shaded_cells
+
+    def _draw_shaded_faces(self, c, proj, to_screen, frac, by_util, by_force, max_abs_N,
+                           by_moment, moment_by_node, max_abs_moment):
+        """Fill every mesh cell (stereo_geometry.find_cells's 3-/4-node
+        panels) with a flat colour, so the structure reads as one
+        continuous shaded sheet instead of a set of individually-coloured
+        lines -- closer to how an FEA contour plot presents a shell.
+
+        This is a rendering approximation, not a new analysis: the
+        underlying model is still a pin-jointed space TRUSS (discrete
+        axial members, one force each), which has no continuum stress
+        field to interpolate in the first place. Each cell is filled with
+        ONE flat colour, averaged from the same per-member/per-node values
+        and the SAME colour functions (force_color/util_color/
+        moment_color) the wireframe itself uses -- a coarse, "low-poly"
+        mosaic, not a smooth per-pixel gradient (Tk canvas polygons only
+        support one flat fill colour each; a true smooth interpolation
+        would need per-pixel rendering this canvas API cannot do).
+
+        Criterion picked by the same precedence the members already use --
+        utilization, then force, then (independently, since it is a NODE
+        quantity) moment -- so at most one fill layer is ever drawn; two
+        overlapping semi-transparent-looking fills from two criteria at
+        once would be harder to read, not more integral. Drawn last and
+        then sent behind every other item on the canvas (tag_lower), so
+        the wireframe/nodes/labels drawn earlier keep the structure's own
+        rod definition legible on top of the shaded sheet.
+        """
+        cells = self._get_shaded_cells()
+        if not cells:
+            return
+        member_res = self.results['member_res'] if self.results else None
+        for cell in cells:
+            if by_util and self.member_checks is not None:
+                utils = [self.member_checks[mi]['util'] * frac
+                        for mi in cell['members']
+                        if mi < len(self.member_checks) and self.member_checks[mi].get('checked')]
+                if not utils:
+                    continue
+                color = util_color(sum(utils) / len(utils))
+            elif by_force and member_res is not None:
+                forces = [member_res[mi]['N'] * frac for mi in cell['members']]
+                color = force_color(sum(forces) / len(forces), max_abs_N)
+            elif by_moment and moment_by_node:
+                vals = [moment_by_node[n] for n in cell['nodes'] if n in moment_by_node]
+                if not vals:
+                    continue
+                color = moment_color(sum(vals) / len(vals), max_abs_moment)
+            else:
+                continue
+            pts = []
+            for n in cell['nodes']:
+                px, py, _ = proj[n]
+                sx, sy = to_screen(px, py)
+                pts.extend((sx, sy))
+            c.create_polygon(*pts, fill=color, outline='', tags='shaded_face')
+        c.tag_lower('shaded_face')
 
     def _reference_grey(self):
         """The reference (rest) structure's adjustable grey shade, used
@@ -3319,6 +3507,10 @@ class StereoApp(UnitsMixin):
             # over capacity and turn dashed, with no visible link back to
             # this line otherwise).
             row('#555555', 'dashed = over capacity (utilisation > 1.0)', dashed=True)
+            if self.hide_zero_force.get() and self.results is not None:
+                caption('Rods reading ~0 force are hidden entirely (not just dimmed)')
+            if self.shaded_faces.get() and self.results is not None:
+                caption('Shaded faces: flat colour/panel (approx., not a shell FEA)')
             if self.flag_slender.get() and self.member_checks is not None:
                 row(SLENDER_HALO_COLOR, f'halo = slender compression member '
                                        f'(KL/r > {SLENDERNESS_LIMIT:.0f})', dashed=True)
@@ -3335,8 +3527,8 @@ class StereoApp(UnitsMixin):
                 row(SUPPORT_DISABLED_COLOR, 'sandbox: support disabled (excluded from Analyze)',
                    dashed=True)
             if self.load_path_anim.get() and self.results is not None:
-                row(LOAD_PATH_COLOR, 'marching dashes: tension/compression step in '
-                                    'OPPOSITE directions (not "the" load path)', dashed=True)
+                row(LOAD_PATH_COLOR, 'moving arrows: inward = tension, outward = '
+                                    'compression (not "the" load path)')
 
         if show_def:
             if self.deform_color_mode.get() == DEFORM_MODE_FORCE:
@@ -3348,6 +3540,14 @@ class StereoApp(UnitsMixin):
                 caption('Deformed shape, displacement (mm):')
                 colorbar(lambda d: deform_color(d, max_disp), 0.0, max_disp,
                         [(0.0, '0'), (max_disp, f'{max_disp:.1f}')])
+
+        if self.add_rod_mode.get():
+            msg = ('Add rod: click a SECOND node to connect (dashed ring = pending)'
+                  if self._add_rod_first is not None else
+                  'Add rod: click a node to start a new rod')
+            c.create_text(x0, y, anchor='w', font=('Helvetica', 8, 'bold'), fill='#a35a12',
+                         text=msg)
+            y += 15
 
         frac = self._load_frac()
         if frac < 0.999:
@@ -3441,6 +3641,66 @@ class StereoApp(UnitsMixin):
         else:
             lines.append('Run ▶ Analyze for force/utilization.')
         self.sel_label.config(text='\n'.join(lines))
+
+    def _on_add_rod_mode_toggle(self):
+        # Any pending first-picked node from a previous session with the
+        # mode on must not survive turning it off and back on -- otherwise
+        # a click made minutes later, with no visible highlight left over
+        # to explain why, could silently complete a rod the user never
+        # intended.
+        self._add_rod_first = None
+        self._draw()
+
+    def _handle_add_rod_click(self, ex, ey):
+        """One click while 'Add rod' mode is on. The FIRST click within
+        hit range of a node picks it (held in self._add_rod_first and
+        drawn with an ADD_ROD_PENDING_COLOR ring so the pending state is
+        never invisible); the SECOND click on a DIFFERENT node completes
+        the rod and resets, ready for the next pair. Clicking the SAME
+        node again, or empty space with nothing in range, cancels the
+        pending pick instead of leaving it stuck until some later
+        unrelated click accidentally completes it."""
+        best, best_d = None, 12.0
+        for i, (sx, sy) in enumerate(self._screen_positions()):
+            d = math.hypot(sx - ex, sy - ey)
+            if d < best_d:
+                best, best_d = i, d
+        if best is None or best == self._add_rod_first:
+            self._add_rod_first = None
+            self._draw()
+            return
+        if self._add_rod_first is None:
+            self._add_rod_first = best
+            self._draw()
+            return
+        a, b = self._add_rod_first, best
+        self._add_rod_first = None
+        self._add_rod_between(a, b)
+
+    def _add_rod_between(self, a, b):
+        """Add a new pin-connected member directly between two EXISTING
+        nodes -- for exploring "what if I brace this" without regenerating
+        the whole mesh. Silently a no-op if the two nodes are already
+        connected (adding a parallel duplicate rod would just double-count
+        that path's stiffness, not brace anything new). Takes the WEB
+        section's current E/A/etc, and a role ('user_rod') that is not in
+        CHORD_ROLES, so a later Apply Sections call classifies it exactly
+        the way _apply_sections already treats any non-chord role -- it
+        solves immediately, not only after a manual re-apply."""
+        if a == b:
+            return
+        if any((m['a'] == a and m['b'] == b) or (m['a'] == b and m['b'] == a)
+               for m in self.members):
+            return
+        self._push_undo('add rod')
+        web = dict(E=self.web_E.get(), A=self.web_A.get(), I=self.web_I.get(),
+                  J=self.web_J.get(), Fy=self.web_Fy.get(), Fu=self.web_Fu.get(),
+                  K=self.web_K.get(), r_gyr=self.web_r.get())
+        self.members.append({'a': a, 'b': b, 'conn': self.sec_conn.get(),
+                            'role': 'user_rod', **web})
+        self.results = None
+        self.member_checks = None
+        self._refresh_all()
 
     def _select_node_at(self, ex, ey, additive=False):
         if not self.nodes:
@@ -3542,6 +3802,11 @@ class StereoApp(UnitsMixin):
     # ── refresh / lists / results text ──────────────────────────────────────
     def _refresh_all(self):
         self._load_glyphs = self._combined_loads_by_node()
+        self._shaded_cells = None   # invalidate; recomputed lazily on next
+                                     # draw that actually needs it (see
+                                     # _get_shaded_cells) -- find_cells is
+                                     # O(members x degree^2) and this runs
+                                     # after every mesh edit, not every frame
         self._refresh_support_list()
         self._refresh_load_list()
         self._refresh_results_text()

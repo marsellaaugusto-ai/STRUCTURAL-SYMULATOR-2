@@ -217,6 +217,15 @@ def dome_example():
     return mesh
 
 
+def cone_roof_example():
+    """A conical roof (stereo_geometry.cone_roof directly) -- the same
+    Schwedler apex/rings/diagonals bracing as the dome above, but on a
+    straight-line (conical) profile instead of a curved one, pinned along
+    its base ring."""
+    mesh = sg.cone_roof(base_radius=7.0, rise=5.0, n_rings=4, n_sectors=14)
+    return mesh
+
+
 EXAMPLES = (
     ('Planar grid + columns (1-tier) + beam', planar_grid_with_columns_1),
     ('Planar grid + columns (2-tier) + multilayer beam', planar_grid_with_columns_2),
@@ -226,4 +235,5 @@ EXAMPLES = (
     ('Two-surface truss: concentric domes (polar, diagonal)', two_surface_truss_2),
     ('Barrel vault (circular arch), pinned at both springing lines', barrel_vault_example),
     ('Schwedler dome, pinned at the base ring', dome_example),
+    ('Conical roof, pinned at the base ring', cone_roof_example),
 )

@@ -2745,6 +2745,86 @@ def test_voronoi_cache_survives_an_orbit_but_not_a_domain_change(app):
     assert app._voronoi_cache is not cached
 
 
+def test_typing_in_the_band_field_does_not_break_the_canvas(app):
+    # Regression: the radius is a typed Entry bound to a DoubleVar, and a
+    # redraw runs on far more than the Return key (orbit, any toggle, the
+    # load slider). Reading it mid-edit raised TclError and broke the draw.
+    app._analyze()
+    app.faces_mode.set(FILL_VORONOI)
+    app._on_faces_mode_change()
+    app.voronoi_domain.set(sv3.DOMAIN_BAND)
+    app.voronoi_band.set(1.0)
+    app._draw()
+
+    for typed in ('', 'abc', '-', '0.'):
+        app.voronoi_band._tk.globalsetvar(app.voronoi_band._name, typed)
+        app._draw()          # must not raise
+    app.voronoi_band.set(1.0)
+
+
+def test_a_negative_band_radius_is_refused_not_sampled(app):
+    # Regression: the sampling step is derived FROM r, so a negative radius
+    # drove it to its floor and asked for millions of samples per rod --
+    # which took the whole process out with an OOM kill.
+    nodes = [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0)]
+    members = [{'a': 0, 'b': 1}]
+    assert not sv3.within_band([(1.0, 0.0, 0.0)], nodes, members, -3.0).any()
+    assert not sv3.within_band([(1.0, 0.0, 0.0)], nodes, members, 0.0).any()
+
+
+def test_the_band_field_keeps_the_last_good_radius(app):
+    app._analyze()
+    app.faces_mode.set(FILL_VORONOI)
+    app._on_faces_mode_change()
+    app.voronoi_band.set(2.5)
+    app._draw()
+    app.voronoi_band._tk.globalsetvar(app.voronoi_band._name, 'nonsense')
+    assert app._voronoi_band_value() == pytest.approx(2.5)
+    app.voronoi_band.set(1.0)
+
+
+def test_the_empty_note_names_the_real_reason(app):
+    # Regression: every empty result blamed model size, which sent you off
+    # tuning a limit that was not the problem. Each cause must name itself.
+    app._analyze()
+    many = [(0.0, 0.0, 0.0)] * (sv3.CELLS_SITE_LIMIT + 1)
+
+    app.voronoi_view.set(sv3.VIEW_CELLS)
+    assert str(sv3.CELLS_SITE_LIMIT) in app._voronoi_empty_reason(many)
+
+    app.voronoi_view.set(sv3.VIEW_SKIN)
+    assert 'Cells' not in app._voronoi_empty_reason(many)
+
+    app.voronoi_domain.set(sv3.DOMAIN_BAND)
+    assert 'radius' in app._voronoi_empty_reason([(0.0, 0.0, 0.0)])
+    app.voronoi_domain.set(sv3.DOMAIN_HULL)
+
+    flat = app.nodes
+    try:                                   # a mesh with no volume at all
+        app.nodes = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+        assert 'flat' in app._voronoi_empty_reason([(0.0, 0.0, 0.0)])
+    finally:
+        app.nodes = flat
+
+
+def test_the_note_does_not_outlive_its_cause(app):
+    app.grid_family.set(FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(14); app.fg_ny.set(14)
+    app._generate(); app._analyze()
+    app.faces_mode.set(FILL_VORONOI)
+    app._on_faces_mode_change()
+
+    app.voronoi_view.set(sv3.VIEW_CELLS)
+    app._draw()
+    assert app._voronoi_note, 'an over-limit Cells view explained nothing'
+    assert str(sv3.CELLS_SITE_LIMIT) in app._voronoi_note
+
+    app.voronoi_view.set(sv3.VIEW_SKIN)
+    app._draw()
+    assert app._voronoi_note == '', 'the note survived a switch to a view that works'
+
+
 def test_voronoi_is_a_no_op_before_analysis(app):
     app.results = None
     app.faces_mode.set(FILL_VORONOI)

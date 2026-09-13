@@ -168,7 +168,8 @@ class StereoModelMixin:
         # The Voronoi band's radius is a length in MODEL units, so a default
         # carried over from a 9 m grid would be meaningless on a 40 m bridge.
         # Re-derived from the new mesh's own rod spacing instead.
-        self.voronoi_band.set(sv3.default_band_radius(self.nodes, self.members))
+        self._voronoi_band_last = sv3.default_band_radius(self.nodes, self.members)
+        self.voronoi_band.set(self._voronoi_band_last)
         self._apply_sections(members=self.members, redraw=False)
         self.supports = [{'node': i, 'type': 'pin'} for i in self._support_candidates]
         self.sup_quick_var.set(QUICK_SUPPORT_PIN)

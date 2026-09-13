@@ -161,7 +161,11 @@ def within_band(P, nodes, members, r):
     distance_to_members above stays exact for anything that needs it.
     """
     P = np.asarray(P, dtype=float)
-    if not members or len(P) == 0 or not r:
+    # A non-positive radius is not a band at all. Rejected here rather than
+    # clamped, because the sampling step is derived FROM r: a negative radius
+    # once drove the step to its 1e-6 floor, which asked for a few million
+    # samples per rod and took the process out with it.
+    if not members or len(P) == 0 or not r or r <= 0:
         return np.zeros(len(P), dtype=bool)
     pts = np.asarray(nodes, dtype=float)
     step = max(r / 6.0, 1e-6)

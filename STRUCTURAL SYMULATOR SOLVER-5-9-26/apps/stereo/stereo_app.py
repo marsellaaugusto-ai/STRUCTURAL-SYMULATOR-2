@@ -121,6 +121,7 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         # on (geometry, domain, view, slice) and reused while orbiting.
         self._voronoi_cache = None
         self._voronoi_note = ''
+        self._voronoi_band_last = 1.0   # last band radius that was a real length
 
         self.azimuth = 35.0
         self.elevation = 22.0

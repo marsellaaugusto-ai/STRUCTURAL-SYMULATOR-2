@@ -679,15 +679,14 @@ class StereoRenderMixin:
         polygon cannot blend across itself -- so the smooth gradient remains
         the way to read a continuous field along the rods.
         """
+        self._voronoi_note = ''
         spec = self._voronoi_site_values(frac, by_util, by_force, max_abs_N,
                                         by_moment, moment_by_node, max_abs_moment)
         if spec is None:
             return
         sites, colours = spec
         patches = self._voronoi_patches(sites)
-        self._voronoi_note = '' if patches else (
-            f'model too large for the Cells view ({len(sites)} sites) — '
-            f'use Skin or Section')
+        self._voronoi_note = '' if patches else self._voronoi_empty_reason(sites)
         if not patches:
             return
 
@@ -745,6 +744,39 @@ class StereoRenderMixin:
             return list(self.nodes), [deform_color(d, top) for d in disp_mm]
         return None
 
+    def _voronoi_band_value(self):
+        """The band radius, read defensively.
+
+        It is bound to a typed Entry, so between two keystrokes its contents
+        can be empty, half a number, or 'abc' -- and a DoubleVar raises on
+        every one of those. A redraw runs on far more than the Return key
+        (orbit, a toggle, the load slider), so an unguarded read turned an
+        ordinary edit into a broken canvas. The last value that WAS a
+        positive length is kept and used until the field makes sense again.
+        """
+        try:
+            r = float(self.voronoi_band.get())
+        except (tk.TclError, ValueError):
+            return self._voronoi_band_last
+        if r > 0:
+            self._voronoi_band_last = r
+        return self._voronoi_band_last
+
+    def _voronoi_empty_reason(self, sites):
+        """Why the tessellation came back empty -- the legend says this, so
+        it has to name the actual cause rather than guess at the commonest
+        one. Blaming model size for a degenerate hull sends you off tuning a
+        setting that was never the problem."""
+        if self.voronoi_view.get() == sv3.VIEW_CELLS and len(sites) > sv3.CELLS_SITE_LIMIT:
+            return (f'{len(sites)} cells is past the interactive limit '
+                    f'({sv3.CELLS_SITE_LIMIT}) — use Skin or Section')
+        if sv3.hull_of(self.nodes) is None:
+            return 'the model is flat or too small to enclose a volume'
+        if self.voronoi_domain.get() == sv3.DOMAIN_BAND:
+            return (f'nothing lies within r={self._voronoi_band_value():g} m of a rod '
+                    f'— try a larger radius')
+        return 'nothing to tessellate here'
+
     def _voronoi_patches(self, sites):
         """The tessellation's patches, rebuilt only when something it
         actually depends on has changed.
@@ -755,14 +787,14 @@ class StereoRenderMixin:
         """
         key = (len(self.nodes), len(self.members), len(sites),
                self.voronoi_view.get(), self.voronoi_domain.get(),
-               round(float(self.voronoi_band.get()), 4),
+               round(self._voronoi_band_value(), 4),
                self.voronoi_axis.get(), round(float(self.voronoi_slice.get()), 4))
         if self._voronoi_cache is not None and self._voronoi_cache[0] == key:
             return self._voronoi_cache[1]
         patches = sv3.build(
             self.nodes, self.members, sites,
             self.voronoi_view.get(), self.voronoi_domain.get(),
-            band_r=float(self.voronoi_band.get()),
+            band_r=self._voronoi_band_value(),
             section_axis='XYZ'.index(self.voronoi_axis.get()),
             section_position=float(self.voronoi_slice.get()) / 100.0)
         self._voronoi_cache = (key, patches)
@@ -1085,7 +1117,7 @@ class StereoRenderMixin:
                     and not self.colour_by_util.get())
                 caption(f'3D Voronoi · {self.voronoi_view.get()} of the '
                        f'{self.voronoi_domain.get().lower()}'
-                       + (f" (r={float(self.voronoi_band.get()):g} m)"
+                       + (f" (r={self._voronoi_band_value():g} m)"
                           if self.voronoi_domain.get() == sv3.DOMAIN_BAND else '')
                        + f", sites = {'nodes' if nodal else 'rod midpoints'}")
             if self.flag_slender.get() and self.member_checks is not None:

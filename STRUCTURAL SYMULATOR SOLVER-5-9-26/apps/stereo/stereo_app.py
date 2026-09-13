@@ -1091,6 +1091,30 @@ class StereoApp(UnitsMixin):
                                    font=('Helvetica', 8), wraplength=MODULE_PANEL_W - 20,
                                    justify='left')
 
+        # A separate, ABOVE (not overlaid on) the flattened editing view
+        # below it: a true 3D rendering of the same cell -- its actual
+        # geometry, topology (exactly which corners are connected) and
+        # proportions, using the model's own real (x, y, z) coordinates
+        # rather than the flattened view's own local (u, v) plane. Mouse-
+        # interactive (left-drag orbits, wheel zooms, middle-drag pans via
+        # ZoomCanvas) so a complex module can be inspected from any angle,
+        # not just one fixed view -- separate camera state from the main
+        # canvas's own (self.azimuth/self.elevation) so orbiting one never
+        # moves the other.
+        tk.Label(parent, text='3D module (drag to orbit, wheel to zoom):', bg=BG,
+                fg='#666', font=('Helvetica', 8)).pack(anchor='w', padx=6, pady=(2, 0))
+        self.me3d_azimuth = 35.0
+        self.me3d_elevation = 22.0
+        self._me3d_orbit_start = None
+        self.me3d_zc = ZoomCanvas(parent, width=MODULE_CANVAS_SIZE, height=MODULE_CANVAS_SIZE,
+                                  bg='#ffffff', bd=1, relief='solid')
+        self.me3d_zc.pack(padx=6, pady=(2, 4))
+        self.me3d_zc._on_zoom_changed = self._me_render_3d
+        self.me3d_canvas = self.me3d_zc.canvas
+        self.me3d_canvas.bind('<ButtonPress-1>', self._me3d_orbit_press)
+        self.me3d_canvas.bind('<B1-Motion>', self._me3d_orbit_motion)
+        self.me3d_canvas.bind('<ButtonRelease-1>', self._me3d_orbit_release)
+
         self.me_canvas = tk.Canvas(parent, width=MODULE_CANVAS_SIZE, height=MODULE_CANVAS_SIZE,
                                    bg='#ffffff', bd=1, relief='solid')
         self.me_canvas.pack(padx=6, pady=(4, 2))
@@ -1291,7 +1315,7 @@ class StereoApp(UnitsMixin):
                     'elsewhere, so an edit here only affects this one spot -- but it can '
                     'still break the surrounding topology or coordinate system if the '
                     'result no longer fits where this cell sits in the grid.')
-            self.me_warning.pack(fill='x', padx=6, pady=(0, 4), before=self.me_canvas)
+            self.me_warning.pack(fill='x', padx=6, pady=(0, 4), before=self.me3d_zc)
 
         n = len(cell_nodes)
         coords, to_screen, scale = self._me_to_screen_fn(cell_nodes)
@@ -1341,24 +1365,39 @@ class StereoApp(UnitsMixin):
             c.create_text(x, y - r - 8, text=str(k), font=('Helvetica', 8, 'bold'),
                          fill='#333333')
 
-        self._me_draw_axonometric_inset(cell_nodes)
+        self._me_render_3d()
         self._me_show_selection_info(cell_nodes, coords)
 
-    # -- axonometric 3D inset -----------------------------------------------
-    ME_AXO_SIZE = 96
-    ME_AXO_MARGIN = 6
-    ME_AXO_AZIMUTH = 35.0
-    ME_AXO_ELEVATION = 22.0
+    # -- 3D module view: a separate, orbit-able panel ABOVE the flattened
+    # (u, v) editing canvas, not overlaid on it -----------------------------
+    ME3D_DEG_PER_PX = 0.4
+    ME3D_DRAG_THRESHOLD_PX = 3
 
-    def _me_axonometric_project(self, x, y, z):
+    def _me3d_orbit_press(self, event):
+        self._me3d_orbit_start = (event.x, event.y, self.me3d_azimuth, self.me3d_elevation)
+
+    def _me3d_orbit_motion(self, event):
+        if self._me3d_orbit_start is None:
+            return
+        x0, y0, az0, el0 = self._me3d_orbit_start
+        dx, dy = event.x - x0, event.y - y0
+        if abs(dx) < self.ME3D_DRAG_THRESHOLD_PX and abs(dy) < self.ME3D_DRAG_THRESHOLD_PX:
+            return
+        self.me3d_azimuth = (az0 + dx * self.ME3D_DEG_PER_PX) % 360.0
+        self.me3d_elevation = max(-89.0, min(89.0, el0 - dy * self.ME3D_DEG_PER_PX))
+        self._me_render_3d()
+
+    def _me3d_orbit_release(self, event):
+        self._me3d_orbit_start = None
+
+    def _me3d_project(self, x, y, z):
         """The exact same rotate-then-orthographic-project maths as the
-        main 3D view's own _project (see its docstring), but at FIXED
-        angles -- this app's own default main-view angles, for a familiar
-        look -- rather than self.azimuth/self.elevation, so the inset
-        does not spin as you orbit the main canvas for an unrelated
-        reason while editing a module."""
-        az = math.radians(self.ME_AXO_AZIMUTH)
-        el = math.radians(self.ME_AXO_ELEVATION)
+        main 3D view's own _project (see its docstring), using this
+        panel's OWN camera state (self.me3d_azimuth/elevation) -- entirely
+        separate from the main canvas's own (self.azimuth/elevation) so
+        orbiting one view never moves the other."""
+        az = math.radians(self.me3d_azimuth)
+        el = math.radians(self.me3d_elevation)
         xr = x * math.cos(az) - y * math.sin(az)
         yr = x * math.sin(az) + y * math.cos(az)
         zr = z
@@ -1366,63 +1405,71 @@ class StereoApp(UnitsMixin):
         depth = yr * math.sin(el) + zr * math.cos(el)
         return xr, -depth, y2
 
-    def _me_draw_axonometric_inset(self, cell_nodes):
-        """A small, fixed-angle axonometric (isometric-style, no
-        perspective distortion) 3D rendering of the SAME cell, drawn as
-        an inset panel over the corner of the flattened (u, v) polygon
-        view above -- the flattened view is what you actually edit
-        against (its own plane is exactly the cell's own local u/v
-        directions, which is what makes dragging within it meaningful),
-        but it necessarily discards the cell's true 3D shape outside
-        that plane; this inset restores that at a glance, using each
-        node's REAL world (x, y, z) position (re-centred on the cell's
-        own centroid so it always sits nicely inside the inset
-        regardless of where the module actually sits in the model)."""
-        c = self.me_canvas
+    def _me_render_3d(self):
+        """A true 3D rendering of the CURRENT cell -- its actual geometry
+        (real edge lengths/angles, from the model's own coordinates, not
+        the flattened view's local u/v plane), topology (exactly the ring
+        edges plus any diagonal that currently exists -- nothing assumed
+        or simplified) and proportions (fit to the panel preserving
+        aspect ratio, never stretched). Nodes use each node's REAL world
+        (x, y, z) position, re-centred on the cell's own centroid so it
+        always sits nicely in view regardless of where the module
+        actually sits in the model, then this panel's own orbit camera
+        (see _me3d_project) and ZoomCanvas's own pan/zoom."""
+        c = self.me3d_canvas
+        c.delete('all')
+        cell_nodes = self._me_current_cell_nodes()
+        if cell_nodes is None:
+            return
         n = len(cell_nodes)
         pts = [self.nodes[nid] for nid in cell_nodes]
         cx = sum(p[0] for p in pts) / n
         cy = sum(p[1] for p in pts) / n
         cz = sum(p[2] for p in pts) / n
-        proj = [self._me_axonometric_project(p[0] - cx, p[1] - cy, p[2] - cz) for p in pts]
+        proj = [self._me3d_project(p[0] - cx, p[1] - cy, p[2] - cz) for p in pts]
         xs = [p[0] for p in proj]
         ys = [p[1] for p in proj]
         span = max(max(xs) - min(xs), max(ys) - min(ys), 1e-6)
 
-        size = self.ME_AXO_SIZE
-        m = self.ME_AXO_MARGIN
-        x0 = MODULE_CANVAS_SIZE - size - m
-        y0 = m
-        inner_pad = 14
-        scale = (size - 2 * inner_pad) / span
-        cx0 = x0 + size / 2.0
-        cy0 = y0 + size / 2.0
+        size = MODULE_CANVAS_SIZE
+        inner_pad = 24
+        fit_scale = (size - 2 * inner_pad) / span
 
-        def to_inset(px, py):
-            return (cx0 + px * scale, cy0 - py * scale)
+        def to_screen(px, py):
+            wx = px * fit_scale
+            wy = -py * fit_scale
+            return self.me3d_zc.w2s(wx, wy)
 
-        c.create_rectangle(x0, y0, x0 + size, y0 + size, fill='#fbfbf8',
-                           outline='#999999', width=1, tags='axo')
-        c.create_text(x0 + 4, y0 + 4, text='3D', anchor='nw',
-                     font=('Helvetica', 7, 'italic'), fill='#888888', tags='axo')
+        cx0, cy0 = self.me3d_zc.w2s(0.0, 0.0)
+        # re-centre the ZoomCanvas's own pan so (0, 0) (the cell's own
+        # centroid) sits in the middle of the panel rather than its
+        # top-left corner, the same correction the main canvas's own
+        # _reset_view applies for the same reason.
+        if not getattr(self, '_me3d_centered', False):
+            self.me3d_zc.pan_x += (size / 2.0 - cx0) / self.me3d_zc.zoom
+            self.me3d_zc.pan_y += (size / 2.0 - cy0) / self.me3d_zc.zoom
+            self._me3d_centered = True
 
         for i in range(n):
-            ax, ay = to_inset(proj[i][0], proj[i][1])
-            bx, by = to_inset(proj[(i + 1) % n][0], proj[(i + 1) % n][1])
-            c.create_line(ax, ay, bx, by, fill='#333333', width=1.5, tags='axo')
-        # the cell's actual diagonal(s), if a quad has one toggled on --
-        # drawn distinctly (thin, grey) from the ring edges above
+            ax, ay = to_screen(*proj[i][:2])
+            bx, by = to_screen(*proj[(i + 1) % n][:2])
+            c.create_line(ax, ay, bx, by, fill='#333333', width=2)
+        # any diagonal a quad currently has, drawn distinctly (thinner,
+        # grey) from the ring edges -- exactly what find_cells' own
+        # "never report a quad with an existing diagonal" rule guarantees
+        # is the ONLY extra connectivity a cell can have beyond its ring
         if n == 4:
             for pos_a, pos_b in ((0, 2), (1, 3)):
                 a_id, b_id = cell_nodes[pos_a], cell_nodes[pos_b]
                 if any({m2['a'], m2['b']} == {a_id, b_id} for m2 in self.members):
-                    ax, ay = to_inset(*proj[pos_a][:2])
-                    bx, by = to_inset(*proj[pos_b][:2])
-                    c.create_line(ax, ay, bx, by, fill='#888888', width=1, tags='axo')
+                    ax, ay = to_screen(*proj[pos_a][:2])
+                    bx, by = to_screen(*proj[pos_b][:2])
+                    c.create_line(ax, ay, bx, by, fill='#888888', width=1.5, dash=(3, 2))
         for i in range(n):
-            px, py = to_inset(proj[i][0], proj[i][1])
-            c.create_oval(px - 3, py - 3, px + 3, py + 3, fill='#333333',
-                         outline='', tags='axo')
+            px, py = to_screen(*proj[i][:2])
+            c.create_oval(px - 5, py - 5, px + 5, py + 5, fill='#333333', outline='')
+            c.create_text(px, py - 12, text=str(i), font=('Helvetica', 8, 'bold'),
+                         fill='#333333')
 
     def _me_show_selection_info(self, cell_nodes, coords):
         sel = self._me_selection

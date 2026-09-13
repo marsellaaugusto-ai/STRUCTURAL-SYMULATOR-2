@@ -1125,29 +1125,30 @@ def test_module_editor_populates_roles_after_the_default_flat_grid(app):
     assert app.me_keystone_list.size() >= 1
 
 
-def test_module_editor_draws_an_axonometric_inset(app):
-    axo_items = app.me_canvas.find_withtag('axo')
-    assert axo_items
-    kinds = {app.me_canvas.type(i) for i in axo_items}
-    assert 'rectangle' in kinds   # the inset's own background panel
-    assert 'line' in kinds        # the cell's ring edges, in 3D
-    assert 'oval' in kinds        # the cell's nodes, in 3D
-    # every inset line/oval is a distinct set of screen coordinates from
-    # the flattened (u, v) view -- i.e. actually a second, separate
-    # rendering, not just re-tagging the same items
+def test_module_editor_3d_panel_is_separate_and_above_the_flattened_view(app):
+    # a distinct widget, not an overlay drawn onto me_canvas
+    assert app.me3d_canvas is not app.me_canvas
+    assert app.me3d_zc.winfo_y() < app.me_canvas.winfo_y()
+    items = app.me3d_canvas.find_all()
+    assert items
+    kinds = {app.me3d_canvas.type(i) for i in items}
+    assert 'line' in kinds
+    assert 'oval' in kinds
+    # its geometry is independent of the flattened view's own screen
+    # coordinates -- a genuinely separate rendering, not shared items
     flat_edge = app.me_canvas.coords(app.me_canvas.find_withtag('edge')[0])
-    axo_lines = [app.me_canvas.coords(i) for i in axo_items if app.me_canvas.type(i) == 'line']
-    assert flat_edge not in axo_lines
+    threed_lines = [app.me3d_canvas.coords(i) for i in items if app.me3d_canvas.type(i) == 'line']
+    assert flat_edge not in threed_lines
 
 
-def test_axonometric_inset_matches_the_cells_own_triangle_or_quad_count(app):
+def test_module_editor_3d_panel_matches_the_cells_own_triangle_or_quad_count(app):
     cell_nodes = app._me_current_cell_nodes()
     n = len(cell_nodes)
-    axo_lines = [i for i in app.me_canvas.find_withtag('axo') if app.me_canvas.type(i) == 'line']
-    assert len(axo_lines) == n   # one ring edge per side, no diagonal present initially
+    lines = [i for i in app.me3d_canvas.find_all() if app.me3d_canvas.type(i) == 'line']
+    assert len(lines) == n   # one ring edge per side, no diagonal present initially
 
 
-def test_axonometric_inset_shows_an_existing_diagonal_as_an_extra_line():
+def test_module_editor_3d_panel_shows_an_existing_diagonal_as_an_extra_line():
     from apps.stereo.stereo_app import StereoApp
     # build a fresh app so this test doesn't depend on the shared fixture's
     # default role happening to be a quad
@@ -1165,27 +1166,58 @@ def test_axonometric_inset_shows_an_existing_diagonal_as_an_extra_line():
         app._me_role_id = quad_role
         app._me_selection = None
         app._me_render()
-        before = len([i for i in app.me_canvas.find_withtag('axo')
-                     if app.me_canvas.type(i) == 'line'])
+        before = len([i for i in app.me3d_canvas.find_all() if app.me3d_canvas.type(i) == 'line'])
 
         cell_nodes = app._me_current_cell_nodes()
         a_id, b_id = cell_nodes[0], cell_nodes[2]
         app.members.append({'a': a_id, 'b': b_id, 'conn': 'pin', 'role': 'test_diag',
                             'E': 200e3, 'A': 20.0})
         app._me_render()
-        after = len([i for i in app.me_canvas.find_withtag('axo')
-                    if app.me_canvas.type(i) == 'line'])
+        after = len([i for i in app.me3d_canvas.find_all() if app.me3d_canvas.type(i) == 'line'])
         assert after == before + 1
     finally:
         tab.destroy()
         root.destroy()
 
 
-def test_axonometric_inset_still_renders_for_a_curved_family(app):
+def test_module_editor_3d_panel_still_renders_for_a_curved_family(app):
     app.grid_family.set(FAMILY_LABEL['dome'])
     app._generate()
-    axo_items = app.me_canvas.find_withtag('axo')
-    assert axo_items
+    assert app.me3d_canvas.find_all()
+
+
+def test_module_editor_3d_panel_orbits_independently_of_the_main_canvas(app):
+    az0, el0 = app.me3d_azimuth, app.me3d_elevation
+    main_az0, main_el0 = app.azimuth, app.elevation
+    app._me3d_orbit_press(FakeEvent(50, 50))
+    app._me3d_orbit_motion(FakeEvent(90, 80))
+    app._me3d_orbit_release(FakeEvent(90, 80))
+    assert (app.me3d_azimuth, app.me3d_elevation) != (az0, el0)
+    assert (app.azimuth, app.elevation) == (main_az0, main_el0)   # main view untouched
+
+
+def test_module_editor_3d_panel_zooms_via_the_mouse_wheel(app):
+    zoom0 = app.me3d_zc.zoom
+
+    class FakeWheelEvent:
+        num = 0
+        def __init__(self, x, y, delta):
+            self.x, self.y, self.delta = x, y, delta
+            self.widget = app.me3d_canvas
+    app.me3d_zc._on_wheel(FakeWheelEvent(size := 260 // 2, size, 120))
+    assert app.me3d_zc.zoom != zoom0
+
+
+def test_module_editor_3d_panel_switches_with_the_selected_role(app):
+    role_ids = sorted(app._me_roles)
+    quad_role = next((r for r in role_ids
+                      if len(app._me_cells[app._me_roles[r][0]]['nodes']) == 4), None)
+    assert quad_role is not None
+    app._me_role_id = quad_role
+    app._me_selection = None
+    app._me_render()
+    lines = [i for i in app.me3d_canvas.find_all() if app.me3d_canvas.type(i) == 'line']
+    assert len(lines) == 4
 
 
 def test_module_editor_clicking_a_node_selects_it_and_shows_the_node_box(app):

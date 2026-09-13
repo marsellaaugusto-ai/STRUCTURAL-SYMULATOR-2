@@ -63,6 +63,56 @@ def test_planar_example_2_uses_a_two_tier_capital():
     assert 'capital_ring' in roles   # only added for tiers=2
 
 
+def test_planar_example_1_is_supported_only_by_its_four_columns():
+    # the actual bug report this fixes: an earlier version ALSO pinned the
+    # base grid's own perimeter, so the columns carried almost none of the
+    # roof's own weight -- a poor demonstration of the column feature.
+    mesh = sx.planar_grid_with_columns_1()
+    assert len(mesh['support_candidates']) == 4
+    roles = {mesh['members'][i].get('role') for i in range(len(mesh['members']))}
+    # every support candidate must actually be a column base, i.e. touched
+    # by a 'column_shaft' member
+    shaft_nodes = {m['a'] for m in mesh['members'] if m.get('role') == 'column_shaft'} | \
+                  {m['b'] for m in mesh['members'] if m.get('role') == 'column_shaft'}
+    assert set(mesh['support_candidates']) <= shaft_nodes
+
+
+def test_planar_example_2_is_supported_by_its_column_plus_only_the_four_corners():
+    # a single column cannot stabilize a pin-jointed roof alone (see the
+    # example's own docstring) -- it needs a LITTLE extra restraint, but
+    # not the base grid's full perimeter, which would swamp the column's
+    # own share of the load the same way example 1's bug did.
+    mesh = sx.planar_grid_with_columns_2()
+    nodes = mesh['nodes']
+    assert len(mesh['support_candidates']) == 5
+    shaft_nodes = {m['a'] for m in mesh['members'] if m.get('role') == 'column_shaft'} | \
+                  {m['b'] for m in mesh['members'] if m.get('role') == 'column_shaft'}
+    column_supports = [i for i in mesh['support_candidates'] if i in shaft_nodes]
+    assert len(column_supports) == 1
+    corner_supports = [i for i in mesh['support_candidates'] if i not in shaft_nodes]
+    assert len(corner_supports) == 4
+    xs = [nodes[i][0] for i in corner_supports]
+    ys = [nodes[i][1] for i in corner_supports]
+    assert len(set(xs)) == 2 and len(set(ys)) == 2   # the four extreme corners
+
+
+def test_planar_example_2_column_carries_most_of_the_load():
+    mesh = sx.planar_grid_with_columns_2()
+    nodes, members = mesh['nodes'], mesh['members']
+    for m in members:
+        m.setdefault('E', 200e3); m.setdefault('A', 20.0)
+    shaft_nodes = {m['a'] for m in members if m.get('role') == 'column_shaft'} | \
+                  {m['b'] for m in members if m.get('role') == 'column_shaft'}
+    column_base = [i for i in mesh['support_candidates'] if i in shaft_nodes][0]
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None
+    col_fz = -res['reactions'][column_base]['Fz']
+    total_fz = sum(-r['Fz'] for r in res['reactions'].values())
+    assert col_fz / total_fz > 0.5   # the column, not the corners, dominates
+
+
 def test_single_surface_examples_are_double_layer():
     for builder in (sx.single_surface_truss_1, sx.single_surface_truss_2):
         mesh = builder()

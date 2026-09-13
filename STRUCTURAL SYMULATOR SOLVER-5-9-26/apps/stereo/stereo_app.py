@@ -116,6 +116,7 @@ PATTERN_LABEL = {key: label for key, label in GRID_PATTERNS}
 GRID_FAMILIES = (('flat_grid', 'Flat double-layer grid'),
                  ('hypar_shell', 'Hyperbolic paraboloid (hypar) shell'),
                  ('hip_roof_grid', 'Hip (pyramidal) roof grid'),
+                 ('groin_vault', 'Groin (cross) vault'),
                  ('circular_flat_grid', 'Circular flat grid'),
                  ('barrel_vault', 'Barrel vault (circular arch)'),
                  ('parabolic_vault', 'Parabolic vault'),
@@ -124,7 +125,8 @@ GRID_FAMILIES = (('flat_grid', 'Flat double-layer grid'),
                  ('cone_roof', 'Conical roof (straight rafters)'),
                  ('paraboloid_dish', 'Paraboloid dish (antenna)'),
                  ('elliptic_dome', 'Elliptic dome'),
-                 ('sphere_shell', 'Full sphere'))
+                 ('sphere_shell', 'Full sphere'),
+                 ('truss_bridge', 'Truss bridge (Warren/Pratt-style)'))
 FAMILY_KEY = {label: key for key, label in GRID_FAMILIES}
 FAMILY_LABEL = {key: label for key, label in GRID_FAMILIES}
 
@@ -835,6 +837,21 @@ class StereoApp(UnitsMixin):
                        bg=BG, font=('Helvetica', 8)).pack(anchor='w', padx=6, pady=(2, 4))
         self._pattern_row(self.frame_hip_roof_grid, self.hr_pattern)
 
+        self.gv_n = tk.IntVar(value=10)
+        self.gv_module = tk.DoubleVar(value=1.2)
+        self.gv_depth = tk.DoubleVar(value=0.5)
+        self.gv_rise = tk.DoubleVar(value=3.0)
+        self.gv_offset = tk.BooleanVar(value=True)
+        self.gv_pattern = tk.StringVar(value=PATTERN_LABEL['square'])
+        self.frame_groin_vault = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_groin_vault, 'Modules per side (n):', self.gv_n)
+        self._labeled_entry(self.frame_groin_vault, 'Module size (m):', self.gv_module)
+        self._labeled_entry(self.frame_groin_vault, 'Depth (m):', self.gv_depth)
+        self._labeled_entry(self.frame_groin_vault, 'Crown rise (m):', self.gv_rise)
+        tk.Checkbutton(self.frame_groin_vault, text='Offset top layer', variable=self.gv_offset,
+                       bg=BG, font=('Helvetica', 8)).pack(anchor='w', padx=6, pady=(2, 4))
+        self._pattern_row(self.frame_groin_vault, self.gv_pattern)
+
         self.cg_radius = tk.DoubleVar(value=10.0)
         self.cg_depth = tk.DoubleVar(value=1.5)
         self.cg_n_rings = tk.IntVar(value=4)
@@ -933,9 +950,20 @@ class StereoApp(UnitsMixin):
         self._labeled_entry(self.frame_sphere_shell, 'Rings per hemisphere:', self.sp_n_rings)
         self._labeled_entry(self.frame_sphere_shell, 'Sectors:', self.sp_n_sectors)
 
+        self.tb_span = tk.DoubleVar(value=40.0)
+        self.tb_depth = tk.DoubleVar(value=5.0)
+        self.tb_width = tk.DoubleVar(value=8.0)
+        self.tb_n_panels = tk.IntVar(value=8)
+        self.frame_truss_bridge = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_truss_bridge, 'Span (m):', self.tb_span)
+        self._labeled_entry(self.frame_truss_bridge, 'Truss depth (m):', self.tb_depth)
+        self._labeled_entry(self.frame_truss_bridge, 'Deck width (m):', self.tb_width)
+        self._labeled_entry(self.frame_truss_bridge, 'Panels:', self.tb_n_panels)
+
         self._param_frames = {'flat_grid': self.frame_flat_grid,
                               'hypar_shell': self.frame_hypar_shell,
                               'hip_roof_grid': self.frame_hip_roof_grid,
+                              'groin_vault': self.frame_groin_vault,
                               'circular_flat_grid': self.frame_circular_flat_grid,
                               'barrel_vault': self.frame_barrel_vault,
                               'parabolic_vault': self.frame_parabolic_vault,
@@ -944,7 +972,8 @@ class StereoApp(UnitsMixin):
                               'cone_roof': self.frame_cone_roof,
                               'paraboloid_dish': self.frame_paraboloid_dish,
                               'elliptic_dome': self.frame_elliptic_dome,
-                              'sphere_shell': self.frame_sphere_shell}
+                              'sphere_shell': self.frame_sphere_shell,
+                              'truss_bridge': self.frame_truss_bridge}
 
     def _pattern_row(self, parent, var):
         row = tk.Frame(parent, bg=BG)
@@ -2178,6 +2207,12 @@ class StereoApp(UnitsMixin):
                 mesh = sg.hip_roof_grid(nx * module, ny * module, self.hr_depth.get(), module,
                                         rise=self.hr_rise.get(), offset=self.hr_offset.get(),
                                         pattern=pattern)
+            elif key == 'groin_vault':
+                module = self.gv_module.get()
+                span = int(self.gv_n.get()) * module
+                pattern = PATTERN_KEY[self.gv_pattern.get()]
+                mesh = sg.groin_vault(span, self.gv_rise.get(), module, self.gv_depth.get(),
+                                      offset=self.gv_offset.get(), pattern=pattern)
             elif key == 'circular_flat_grid':
                 mesh = sg.circular_flat_grid(self.cg_radius.get(), self.cg_depth.get(),
                                              int(self.cg_n_rings.get()),
@@ -2212,6 +2247,9 @@ class StereoApp(UnitsMixin):
                 mesh = sg.elliptic_dome(self.ed_radius_x.get(), self.ed_radius_y.get(),
                                         self.ed_rise.get(), int(self.ed_n_rings.get()),
                                         int(self.ed_n_sectors.get()))
+            elif key == 'truss_bridge':
+                mesh = sg.truss_bridge(self.tb_span.get(), self.tb_depth.get(),
+                                       self.tb_width.get(), int(self.tb_n_panels.get()))
             else:
                 mesh = sg.sphere_shell(self.sp_radius.get(), int(self.sp_n_rings.get()),
                                        int(self.sp_n_sectors.get()))

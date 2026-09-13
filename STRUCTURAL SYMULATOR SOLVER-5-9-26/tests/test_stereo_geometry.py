@@ -395,6 +395,71 @@ def test_cone_roof_tributary_areas_are_all_positive():
         assert area > 0.0
 
 
+# ── truss bridge ─────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('n_panels', [2, 3, 5, 6, 8, 10])
+def test_truss_bridge_analyzes_at_every_panel_count(n_panels):
+    # span/depth/width deliberately NOT round multiples of each other,
+    # to steer well clear of the documented critical-geometry coincidence
+    # (span=40, depth=5, width=6, n_panels=4) -- see truss_bridge's own
+    # docstring.
+    mesh = sg.truss_bridge(span=41.3, depth=5.2, width=8.1, n_panels=n_panels)
+    assert _solves(mesh) is None
+
+
+def test_truss_bridge_produces_a_sane_mesh():
+    mesh = sg.truss_bridge(span=40.0, depth=5.0, width=8.0, n_panels=8)
+    _assert_mesh_is_sane(mesh)
+
+
+def test_truss_bridge_top_chord_is_exactly_depth_above_bottom_chord():
+    mesh = sg.truss_bridge(span=40.0, depth=5.0, width=8.0, n_panels=8)
+    nodes = mesh['nodes']
+    by_xy = {}
+    for x, y, z in nodes:
+        by_xy.setdefault((round(x, 6), round(y, 6)), []).append(z)
+    for (_x, _y), zs in by_xy.items():
+        assert sorted(zs) == pytest.approx([0.0, 5.0])
+
+
+def test_truss_bridge_deck_width_matches_the_transverse_spacing():
+    mesh = sg.truss_bridge(span=40.0, depth=5.0, width=8.0, n_panels=8)
+    ys = sorted({round(y, 6) for _x, y, _z in mesh['nodes']})
+    assert ys == [0.0, 8.0]
+
+
+def test_truss_bridge_support_candidates_are_the_four_bottom_corners():
+    mesh = sg.truss_bridge(span=40.0, depth=5.0, width=8.0, n_panels=8)
+    nodes = mesh['nodes']
+    assert len(mesh['support_candidates']) == 4
+    corners = {(round(nodes[i][0], 6), round(nodes[i][1], 6), round(nodes[i][2], 6))
+              for i in mesh['support_candidates']}
+    assert corners == {(0.0, 0.0, 0.0), (0.0, 8.0, 0.0), (40.0, 0.0, 0.0), (40.0, 8.0, 0.0)}
+
+
+def test_truss_bridge_tributary_areas_sum_to_the_deck_plan_area():
+    span, width = 40.0, 8.0
+    mesh = sg.truss_bridge(span=span, depth=5.0, width=width, n_panels=8)
+    total = sum(mesh['load_nodes'].values())
+    assert total == pytest.approx(span * width)
+
+
+def test_truss_bridge_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError):
+        sg.truss_bridge(span=-1.0, depth=5.0, width=8.0)
+    with pytest.raises(ValueError):
+        sg.truss_bridge(span=40.0, depth=0.0, width=8.0)
+    with pytest.raises(ValueError):
+        sg.truss_bridge(span=40.0, depth=5.0, width=0.0)
+
+
+def test_truss_bridge_diagonals_alternate_direction_panel_to_panel():
+    mesh = sg.truss_bridge(span=40.0, depth=5.0, width=8.0, n_panels=4)
+    diag_members = [m for m in mesh['members'] if m.get('role') == 'diagonal']
+    # 2 sides * n_panels diagonals
+    assert len(diag_members) == 2 * 4
+
+
 # ── the generators dispatch table ───────────────────────────────────────────
 
 def test_generators_table_names_match_the_functions():
@@ -410,6 +475,8 @@ def test_generators_table_names_match_the_functions():
     assert sg.GENERATORS['paraboloid_dish'] is sg.paraboloid_dish
     assert sg.GENERATORS['elliptic_dome'] is sg.elliptic_dome
     assert sg.GENERATORS['sphere_shell'] is sg.sphere_shell
+    assert sg.GENERATORS['groin_vault'] is sg.groin_vault
+    assert sg.GENERATORS['truss_bridge'] is sg.truss_bridge
 
 
 # ── a generated mesh must actually analyze ──────────────────────────────────
@@ -455,6 +522,15 @@ def test_generators_table_names_match_the_functions():
     ('paraboloid_dish', dict(base_radius=8.0, rise=2.5, n_rings=3, n_sectors=10)),
     ('elliptic_dome', dict(radius_x=8.0, radius_y=5.0, rise=2.5, n_rings=3, n_sectors=10)),
     ('sphere_shell', dict(radius=5.0, n_rings=3, n_sectors=10)),
+    ('groin_vault', dict(span=9.0, rise=2.5, module=3.0, depth=1.2, offset=True,
+                        pattern='square')),
+    ('groin_vault', dict(span=9.0, rise=2.5, module=3.0, depth=1.2, offset=False,
+                        pattern='diagonal')),
+    # span=41.3/depth=5.2/width=8.1 are deliberately non-round: the exact
+    # combination span=40, depth=5, width=6, n_panels=4 is a genuine
+    # coincidental critical-geometry mechanism (see truss_bridge's docstring),
+    # so the test avoids that exact point rather than proving nothing.
+    ('truss_bridge', dict(span=41.3, depth=5.2, width=8.1, n_panels=6)),
 ])
 def test_generated_mesh_solves_under_self_weight_when_fully_pinned(gen, kwargs):
     mesh = sg.GENERATORS[gen](**kwargs)
@@ -829,6 +905,68 @@ def test_hip_roof_grid_ridge_is_higher_than_the_eaves():
 def test_hip_roof_grid_rejects_nonpositive_dimensions():
     with pytest.raises(ValueError):
         sg.hip_roof_grid(9.0, -1.0, 1.2, 3.0, rise=1.0)
+
+
+# ── groin (cross) vault ──────────────────────────────────────────────────
+
+@pytest.mark.parametrize('offset', [True, False])
+@pytest.mark.parametrize('pattern', ['square', 'diagonal'])
+def test_groin_vault_analyzes_cleanly(offset, pattern):
+    mesh = sg.groin_vault(12.0, 3.0, 3.0, 0.5, offset=offset, pattern=pattern)
+    assert _solves(mesh) is None
+
+
+def test_groin_vault_produces_a_sane_mesh():
+    mesh = sg.groin_vault(12.0, 3.0, 2.0, 0.5)
+    _assert_mesh_is_sane(mesh)
+
+
+def test_groin_vault_crown_is_full_rise_and_edges_are_at_ground():
+    # module divides evenly into span so the centre lands on a node
+    mesh = sg.groin_vault(12.0, 3.0, 3.0, 0.5)
+    by_xy = {(round(x, 6), round(y, 6)): z for x, y, z in mesh['nodes']}
+    assert by_xy[(6.0, 6.0)] == pytest.approx(3.0)   # crown
+    assert by_xy[(0.0, 0.0)] == pytest.approx(0.0)    # corner
+    assert by_xy[(0.0, 6.0)] == pytest.approx(0.0)    # mid-edge
+    assert by_xy[(6.0, 0.0)] == pytest.approx(0.0)    # mid-edge
+
+
+def test_groin_vault_diagonal_groin_line_reaches_full_rise_gradually():
+    # along y=x (one of the two diagonals), both barrel profiles are
+    # equal by construction, so the height there is the profile's own
+    # smooth curve, not a flat plateau or a sharp jump.
+    mesh = sg.groin_vault(12.0, 3.0, 1.0, 0.5)
+    by_xy = {(round(x, 6), round(y, 6)): z for x, y, z in mesh['nodes']}
+    # only the first half of the diagonal (corner to centre) is checked --
+    # the full corner-to-corner diagonal rises to the crown then falls again,
+    # so it is the half-diagonal that must be monotonically rising.
+    diag_heights = [by_xy[(float(k), float(k))] for k in range(0, 7)
+                   if (float(k), float(k)) in by_xy]
+    assert len(diag_heights) > 5
+    assert diag_heights == sorted(diag_heights)   # monotonically rising to the centre...
+    assert diag_heights[-1] == pytest.approx(3.0)
+
+
+def test_groin_vault_support_candidates_are_the_full_base_perimeter():
+    # unlike barrel_vault's two springing lines only, a groin vault bears
+    # on all four walls -- the same full perimeter flat_grid's own
+    # bottom layer already offers.
+    mesh = sg.groin_vault(12.0, 3.0, 3.0, 0.5)
+    nodes = mesh['nodes']
+    xs = sorted({round(nodes[i][0], 6) for i in mesh['support_candidates']})
+    ys = sorted({round(nodes[i][1], 6) for i in mesh['support_candidates']})
+    assert xs[0] == 0.0 and xs[-1] == 12.0
+    assert ys[0] == 0.0 and ys[-1] == 12.0
+    for i in mesh['support_candidates']:
+        x, y, z = nodes[i]
+        assert x in (0.0, 12.0) or y in (0.0, 12.0)
+
+
+def test_groin_vault_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError):
+        sg.groin_vault(-1.0, 3.0, 3.0, 0.5)
+    with pytest.raises(ValueError):
+        sg.groin_vault(12.0, 0.0, 3.0, 0.5)
 
 
 # ── circular flat grid ───────────────────────────────────────────────────

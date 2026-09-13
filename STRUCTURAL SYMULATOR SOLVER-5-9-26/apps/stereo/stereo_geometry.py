@@ -367,6 +367,49 @@ def hip_roof_grid(span_x, span_y, depth, module, rise, offset=True, pattern='squ
                      height_fn=height_fn)
 
 
+def groin_vault(span, rise, module, depth, offset=True, pattern='square'):
+    """A groin (cross) vault: two equal-span barrel vaults crossing at
+    right angles over a SQUARE plan, built as flat_grid with a height_fn
+    that is the pointwise MINIMUM of the two independent barrel
+    profiles -- the standard way to define a groin vault's own ceiling
+    surface. Each profile is an elliptical rise*sqrt(1-t^2) curve (t the
+    -1..1 position across that axis, echoing barrel_vault()'s own
+    circular arc without needing its R/half_angle machinery, since here
+    only the height field, not a true circular arc length, is wanted).
+
+    The min() gives z=0 along all four plan edges (one of the two
+    profiles is always 0 there), the full `rise` at the centre (where
+    both profiles equal `rise`), and -- everywhere the two profiles are
+    equal, i.e. along the plan's own two diagonals -- the visible
+    crossing "groin" ridges a real groin vault is named for.
+
+    span   : the SQUARE plan's side length (m), shared by both crossing
+             barrel profiles.
+    rise   : height of the crown above the base plane (m).
+    module, depth, offset, pattern : exactly as in flat_grid, on this
+             same square plan.
+
+    Returns the shared {'nodes','members','support_candidates'} dict,
+    with the FULL base perimeter offered as support candidates -- a
+    groin vault bears on all four walls, unlike a plain barrel vault's
+    two long springing lines only.
+    """
+    span = float(span); rise = float(rise)
+    if span <= 0 or rise <= 0:
+        raise ValueError('span and rise must both be positive')
+    half = span / 2.0
+
+    def profile(u):
+        t = max(-1.0, min(1.0, (u - half) / half))
+        return rise * math.sqrt(max(0.0, 1.0 - t * t))
+
+    def height_fn(x, y):
+        return min(profile(x), profile(y))
+
+    return flat_grid(span, span, depth, module, offset=offset, pattern=pattern,
+                     height_fn=height_fn)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  2 · Extruded-arch vaults (single or double layer): circular
 #      (barrel_vault), parabolic, and elliptic profiles
@@ -1331,6 +1374,125 @@ def circular_flat_grid(outer_radius, depth, n_rings, n_sectors, offset=True):
             area = r_k * fr * angular_step
             for s in range(n_sectors):
                 load_nodes[top[(k, s)]] = area
+
+    return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
+            'load_nodes': load_nodes}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  4 · Truss bridge: two parallel planar Warren/Pratt-style trusses,
+#      deck cross-beams, and lateral bracing
+# ═══════════════════════════════════════════════════════════════════════
+
+def truss_bridge(span, depth, width, n_panels=8):
+    """A through-truss bridge: two parallel vertical PLANAR trusses (one
+    along each edge of the deck), tied together by cross-beams at every
+    panel point and full X lateral bracing at both the top and bottom
+    chord levels. The lateral bracing is not optional decoration: each
+    planar truss on its own is only stable WITHIN its own vertical
+    plane, so without it the two planes together would be free to rack
+    sideways -- a genuine 3D mechanism -- with nothing to resist
+    transverse shear.
+
+    Each planar truss is a classic zigzag (Warren/Pratt-style) truss: a
+    vertical post at every panel point, one chord along the top and one
+    along the bottom, and a single diagonal per panel that alternates
+    direction panel to panel. On its own (as a 2D truss with one pin and
+    one roller support) this is exactly statically determinate --
+    m + r = 2j for any n_panels -- the standard bridge-truss topology,
+    not an arbitrary triangulation.
+
+    span     : total length along the direction of travel (m).
+    depth    : vertical height between the top and bottom chords (m).
+    width    : transverse distance between the two truss planes, i.e.
+               the deck width (m).
+    n_panels : number of panels along the span (>= 2 -- a single panel
+               has no adjacent diagonal to alternate against).
+
+    Returns the shared {'nodes','members','support_candidates'} dict,
+    with the four BOTTOM corner nodes (both ends, both truss planes --
+    a bridge's actual bearing points) offered as support candidates.
+
+    Like any pin-jointed truss, a small set of EXACT dimension
+    combinations can coincidentally put the geometry into a critical
+    (instantaneously mechanistic) form -- a real, if narrow, structural
+    phenomenon, not a defect in this topology: e.g. span=40, depth=5,
+    width=6, n_panels=4 solves as a genuine mechanism, while width=5.9
+    or 6.1 at the same other values does not. Analyze reports this the
+    normal way (a singular stiffness matrix), the same as it would for a
+    hand-built model that happened onto the same critical proportions;
+    changing any one dimension slightly is enough to leave it.
+    """
+    span = float(span); depth = float(depth); width = float(width)
+    n_panels = max(2, int(n_panels))
+    if span <= 0 or depth <= 0 or width <= 0:
+        raise ValueError('span, depth and width must all be positive')
+
+    panel = span / n_panels
+    bank = _NodeBank()
+    members = []
+    seen = set()
+
+    bottom = {}   # (i, side) -> node id; side 0 is y=0, side 1 is y=width
+    top = {}
+    for i in range(n_panels + 1):
+        x = i * panel
+        for side, y in ((0, 0.0), (1, width)):
+            bottom[(i, side)] = bank.add(x, y, 0.0)
+            top[(i, side)] = bank.add(x, y, depth)
+
+    for side in (0, 1):
+        for i in range(n_panels):
+            _add_member(members, seen, bottom[(i, side)], bottom[(i + 1, side)],
+                        role='bottom_chord')
+            _add_member(members, seen, top[(i, side)], top[(i + 1, side)],
+                        role='top_chord')
+        for i in range(n_panels + 1):
+            _add_member(members, seen, bottom[(i, side)], top[(i, side)], role='vertical')
+        for i in range(n_panels):
+            if i % 2 == 0:
+                _add_member(members, seen, bottom[(i, side)], top[(i + 1, side)],
+                            role='diagonal')
+            else:
+                _add_member(members, seen, top[(i, side)], bottom[(i + 1, side)],
+                            role='diagonal')
+
+    # Cross-beams at every panel point, BOTH chord levels: the bottom
+    # ones are where the roadway actually spans between the two edge
+    # trusses; the top ones exist purely for stability -- without a
+    # direct top(i,0)-top(i,1) member at each i, the top level's own
+    # lateral X-braces (below) connect consecutive panel points only,
+    # which makes each panel's own 4 top-level joints a plain 4-bar
+    # loop (chord, brace, chord, brace, with no diagonal of ITS OWN) --
+    # a textbook mechanism, not a rigid quadrilateral, and exactly what
+    # produced a singular stiffness matrix before this member existed.
+    for i in range(n_panels + 1):
+        _add_member(members, seen, bottom[(i, 0)], bottom[(i, 1)], role='cross_beam')
+        _add_member(members, seen, top[(i, 0)], top[(i, 1)], role='cross_beam')
+
+    # Lateral X-bracing at both chord levels -- see this function's own
+    # docstring for why it is required, not optional, for out-of-plane
+    # (transverse) stability of the two truss planes together.
+    for i in range(n_panels):
+        _add_member(members, seen, bottom[(i, 0)], bottom[(i + 1, 1)], role='lateral_brace')
+        _add_member(members, seen, bottom[(i, 1)], bottom[(i + 1, 0)], role='lateral_brace')
+        _add_member(members, seen, top[(i, 0)], top[(i + 1, 1)], role='lateral_brace')
+        _add_member(members, seen, top[(i, 1)], top[(i + 1, 0)], role='lateral_brace')
+
+    support_candidates = [bottom[(0, 0)], bottom[(0, 1)],
+                          bottom[(n_panels, 0)], bottom[(n_panels, 1)]]
+
+    # Tributary area for a roadway (area) load, lumped onto the deck's
+    # own bottom-chord panel points -- plan projection (width * panel
+    # length per interior point, halved at the two ends), exact for a
+    # flat deck, split evenly between the two edge trusses' own panel
+    # points the way a real deck's own weight splits across both girders.
+    load_nodes = {}
+    for i in range(n_panels + 1):
+        f_long = panel if 0 < i < n_panels else panel / 2.0
+        area = f_long * width
+        load_nodes[bottom[(i, 0)]] = area / 2.0
+        load_nodes[bottom[(i, 1)]] = area / 2.0
 
     return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
             'load_nodes': load_nodes}
@@ -2376,6 +2538,7 @@ GENERATORS = {
     'flat_grid': flat_grid,
     'hypar_shell': hypar_shell,
     'hip_roof_grid': hip_roof_grid,
+    'groin_vault': groin_vault,
     'circular_flat_grid': circular_flat_grid,
     'barrel_vault': barrel_vault,
     'parabolic_vault': parabolic_vault,
@@ -2385,6 +2548,7 @@ GENERATORS = {
     'paraboloid_dish': paraboloid_dish,
     'elliptic_dome': elliptic_dome,
     'sphere_shell': sphere_shell,
+    'truss_bridge': truss_bridge,
     'custom_surface_grid': custom_surface_grid,
     'custom_surface_between': custom_surface_between,
 }

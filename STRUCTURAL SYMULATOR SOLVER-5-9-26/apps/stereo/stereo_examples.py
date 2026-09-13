@@ -226,6 +226,26 @@ def cone_roof_example():
     return mesh
 
 
+def groin_vault_example():
+    """A groin (cross) vault (stereo_geometry.groin_vault directly) --
+    two crossing barrel-vault profiles meeting at diagonal groin ridges,
+    pinned along the full base perimeter (all four walls bear, unlike a
+    plain barrel vault's two springing lines)."""
+    mesh = sg.groin_vault(span=12.0, rise=3.0, module=1.5, depth=0.6,
+                          offset=True, pattern='square')
+    return mesh
+
+
+def truss_bridge_example():
+    """A Warren/Pratt-style truss bridge (stereo_geometry.truss_bridge
+    directly), pinned at its four bottom-corner bearings -- span, depth
+    and width deliberately non-round to steer clear of the exact
+    span=40/depth=5/width=6/n_panels=4 coincidental critical-geometry
+    mechanism documented in that function's own docstring."""
+    mesh = sg.truss_bridge(span=42.0, depth=5.5, width=8.0, n_panels=7)
+    return mesh
+
+
 EXAMPLES = (
     ('Planar grid + columns (1-tier) + beam', planar_grid_with_columns_1),
     ('Planar grid + columns (2-tier) + multilayer beam', planar_grid_with_columns_2),
@@ -236,4 +256,6 @@ EXAMPLES = (
     ('Barrel vault (circular arch), pinned at both springing lines', barrel_vault_example),
     ('Schwedler dome, pinned at the base ring', dome_example),
     ('Conical roof, pinned at the base ring', cone_roof_example),
+    ('Groin (cross) vault, pinned at the full base perimeter', groin_vault_example),
+    ('Truss bridge (Warren/Pratt-style), pinned at the four bearings', truss_bridge_example),
 )

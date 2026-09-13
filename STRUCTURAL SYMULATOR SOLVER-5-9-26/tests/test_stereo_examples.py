@@ -20,10 +20,10 @@ def _solves(mesh):
     return err
 
 
-def test_examples_table_has_nine_distinct_entries():
-    assert len(sx.EXAMPLES) == 9
+def test_examples_table_has_eleven_distinct_entries():
+    assert len(sx.EXAMPLES) == 11
     labels = [label for label, _builder in sx.EXAMPLES]
-    assert len(set(labels)) == 9
+    assert len(set(labels)) == 11
 
 
 @pytest.mark.parametrize('label,builder', sx.EXAMPLES)
@@ -163,3 +163,45 @@ def test_cone_roof_example_apex_is_the_highest_point():
     apex = max(range(len(nodes)), key=lambda i: nodes[i][2])
     assert abs(nodes[apex][0]) < 1e-6 and abs(nodes[apex][1]) < 1e-6
     assert apex not in mesh['support_candidates']
+
+
+def test_groin_vault_example_is_supported_on_the_full_perimeter():
+    # unlike the barrel vault's two springing lines, a groin vault bears on
+    # all four walls -- support_candidates should trace the whole base edge.
+    mesh = sx.groin_vault_example()
+    nodes = mesh['nodes']
+    xs = [nodes[i][0] for i in mesh['support_candidates']]
+    ys = [nodes[i][1] for i in mesh['support_candidates']]
+    assert min(xs) == pytest.approx(0.0) and max(xs) == pytest.approx(12.0)
+    assert min(ys) == pytest.approx(0.0) and max(ys) == pytest.approx(12.0)
+    for i in mesh['support_candidates']:
+        assert nodes[i][2] == pytest.approx(0.0)   # every support sits at ground level
+
+
+def test_groin_vault_example_crown_reaches_full_rise():
+    # flat_grid's bottom chord layer sits exactly on the height field with
+    # no extra offset, so the bottom-layer node at the plan centre (6, 6)
+    # -- a bottom-layer grid line for module=1.5 on a 12m span -- reaches
+    # the profile's own full rise. (The offset top layer sits `depth`
+    # higher still but is shifted half a module off-centre, so checking
+    # the global max would conflate the two layers' heights.)
+    mesh = sx.groin_vault_example()
+    by_xy = {(round(x, 6), round(y, 6)): z for x, y, z in mesh['nodes']}
+    assert by_xy[(6.0, 6.0)] == pytest.approx(3.0)
+
+
+def test_truss_bridge_example_supported_at_the_four_bottom_corners():
+    mesh = sx.truss_bridge_example()
+    nodes = mesh['nodes']
+    assert len(mesh['support_candidates']) == 4
+    for i in mesh['support_candidates']:
+        assert nodes[i][2] == pytest.approx(0.0)   # bottom chord, not the top
+    xs = {round(nodes[i][0], 6) for i in mesh['support_candidates']}
+    ys = {round(nodes[i][1], 6) for i in mesh['support_candidates']}
+    assert len(xs) == 2 and len(ys) == 2   # the four extreme corners
+
+
+def test_truss_bridge_example_deck_spans_the_full_width():
+    mesh = sx.truss_bridge_example()
+    ys = [y for _x, y, _z in mesh['nodes']]
+    assert max(ys) - min(ys) == pytest.approx(8.0)

@@ -51,10 +51,7 @@ MODULE_RING_COLOR = '#333333'
 MODULE_APEX_EDGE_COLOR = '#c0392b'
 MODULE_APEX_NODE_COLOR = '#c0392b'
 MODULE_FACE_FILL = '#cfe0fb'
-MODULE_STUB_COLOR = '#9aa5b1'
-MODULE_STUB_FRAC = 0.5   # how far a context stub is drawn toward its real far node
-MODULE_NEIGHBOR_EDGE_COLOR = '#d9887c'
-MODULE_NEIGHBOR_NODE_COLOR = '#d9887c'
+MODULE_DIM_COLOR = '#555555'
 
 NODE_COLOR = '#1a1a1a'
 NODE_SEL_COLOR = '#e0522b'
@@ -1326,6 +1323,27 @@ class StereoApp(UnitsMixin):
             return None
         return self._me_cells[idxs[0]]['nodes']
 
+    def _me3d_cell_nodes(self):
+        """The 3D panel always prefers the canonical QUAD ring (the plain
+        top-chord square, whose own apex reconstructs the full inverted-
+        pyramid module -- see _me_ring_context) even when a TRIANGULAR
+        face role is what's currently selected for the flat 2D editor --
+        so orbiting the 3D view always shows the same complete module
+        regardless of which of its 4 triangular faces happens to be
+        selected there. Falls back to the current selection's own ring
+        when no such quad exists anywhere sharing an edge with it (e.g. a
+        single-layer triangulated dome, which has no pyramid structure to
+        reconstruct)."""
+        cell_nodes = self._me_current_cell_nodes()
+        if cell_nodes is None or len(cell_nodes) != 3:
+            return cell_nodes
+        current = set(cell_nodes)
+        for cell in self._me_cells:
+            nodes = cell['nodes']
+            if len(nodes) == 4 and len(current & set(nodes)) >= 2:
+                return nodes
+        return cell_nodes
+
     def _me_to_screen_fn(self, cell_nodes):
         coords = [sg.cell_local_coords(self.nodes, cell_nodes, k)
                  for k in range(len(cell_nodes))]
@@ -1451,38 +1469,20 @@ class StereoApp(UnitsMixin):
         return xr, -depth, y2
 
     def _me_ring_context(self, cell_nodes):
-        """Beyond the cell's own ring, every OTHER node in the model that
-        connects to it, split into three kinds:
-
-        'apex'      : {node_id: [ring node ids]} for a node connected to
-                      EVERY one of the ring's own nodes -- for the classic
-                      offset square-pyramid module (a top chord square
-                      ring, 4 diagonals converging to ONE bottom apex),
-                      this is exactly that apex, reconstructed from
-                      whichever ring the caller happens to have selected
-                      (the quad face itself, or any one of its 4
-                      triangular side faces) -- rendered as part of the
-                      module's own SOLID (shaded triangular faces to the
-                      ring, not just thin lines).
-        'neighbors' : {node_id: [ring node ids]} for a node connected to
-                      TWO OR MORE but not ALL of the ring's own nodes --
-                      typically a NEIGHBOURING module's own apex, which
-                      happens to also touch one shared top-chord edge of
-                      this ring. Drawn as plain (unshaded) edges to
-                      whichever ring nodes it touches, so it reads as
-                      real context without being mistaken for this
-                      module's own apex.
-        'stubs'     : [(ring_node_id, external_node_id), ...] for a node
-                      connected to exactly ONE ring node -- a
-                      continuation of the grid beyond this module (the
-                      next top-chord bar), drawn as a short partial piece
-                      for context, not the full member.
+        """{node_id: [ring node ids]} for every OTHER node in the model
+        connected to EVERY one of the ring's own nodes. For the classic
+        offset square-pyramid module (a top chord square ring, 4
+        diagonals converging to ONE bottom apex), this is exactly that
+        apex -- reconstructed from whichever ring the caller happens to
+        have (normally always the quad face itself, since _me3d_cell_nodes
+        prefers it over any one of the pyramid's 4 triangular side faces)
+        -- rendered as part of the module's own SOLID (shaded triangular
+        faces to the ring, not just thin lines).
 
         Purely topological (this model's own member connectivity), so it
         degrades gracefully for a family with no pyramid structure at all
         (e.g. a single-layer triangulated dome): nothing qualifies as an
-        apex there beyond whatever coplanar neighbours the mesh actually
-        has.
+        apex there.
         """
         ring = set(cell_nodes)
         n = len(cell_nodes)
@@ -1493,35 +1493,63 @@ class StereoApp(UnitsMixin):
                 touching.setdefault(b, set()).add(a)
             elif b in ring and a not in ring:
                 touching.setdefault(a, set()).add(b)
-        apex = {ext: sorted(ids) for ext, ids in touching.items() if len(ids) == n}
-        neighbors = {ext: sorted(ids) for ext, ids in touching.items() if 2 <= len(ids) < n}
-        stubs = [(next(iter(ids)), ext) for ext, ids in touching.items() if len(ids) == 1]
-        return apex, neighbors, stubs
+        return {ext: sorted(ids) for ext, ids in touching.items() if len(ids) == n}
+
+    def _me_draw_dimension(self, c, s0, s1, text, away_from, offset_px=15):
+        """One CAD-style dimension: short dashed extension lines from each
+        endpoint out past it, a double-headed arrow between them at that
+        offset, and the length text centred on it -- the same convention
+        the course's own guide sheet uses for its 2.50m/1.77m callouts.
+        `away_from` is the screen point the dimension is pushed away from
+        (typically the module's own on-screen centroid), so it always
+        reads outside the solid rather than overlapping it."""
+        dx, dy = s1[0] - s0[0], s1[1] - s0[1]
+        length = math.hypot(dx, dy)
+        if length < 1e-6:
+            return
+        mx, my = (s0[0] + s1[0]) / 2.0, (s0[1] + s1[1]) / 2.0
+        ox, oy = mx - away_from[0], my - away_from[1]
+        onorm = math.hypot(ox, oy)
+        if onorm < 1e-6:
+            ox, oy = -dy / length, dx / length
+        else:
+            ox, oy = ox / onorm, oy / onorm
+        ext_len = offset_px + 6
+        for (sx, sy) in (s0, s1):
+            c.create_line(sx, sy, sx + ox * ext_len, sy + oy * ext_len,
+                         fill=MODULE_DIM_COLOR, width=1, dash=(2, 2))
+        d0 = (s0[0] + ox * offset_px, s0[1] + oy * offset_px)
+        d1 = (s1[0] + ox * offset_px, s1[1] + oy * offset_px)
+        c.create_line(d0[0], d0[1], d1[0], d1[1], fill=MODULE_DIM_COLOR, width=1,
+                     arrow=tk.BOTH, arrowshape=(6, 7, 3))
+        tx, ty = (d0[0] + d1[0]) / 2.0 + ox * 11, (d0[1] + d1[1]) / 2.0 + oy * 11
+        c.create_text(tx, ty, text=text, fill=MODULE_DIM_COLOR, font=('Helvetica', 8))
 
     def _me_render_3d(self):
-        """A true 3D rendering of the CURRENT module -- not just its own
-        flat ring (a triangle or quad silhouette), but the actual
-        repeating POLYHEDRON it belongs to: the ring's own edges, PLUS
-        the node(s) it connects to elsewhere in the model that give it
-        real depth (see _me_ring_context), rendered as a shaded solid
-        with the same real-world geometry (actual edge lengths/angles,
-        never a simplified or assumed shape) and proportions (fit to the
-        panel preserving aspect ratio) the flat rendering always used.
-        Also draws short partial-length CONTEXT STUBS toward whatever
-        else continues beyond the module (the next top-chord bar, a
-        neighbouring module's own apex) -- enough to show how this piece
-        connects onward without drawing full extra geometry. Nodes use
-        each node's REAL world (x, y, z) position, re-centred on the
-        module's own centroid (ring + any promoted apex) so it always
-        sits nicely in view, then this panel's own orbit camera (see
+        """A true 3D rendering of the CURRENT module as the actual
+        repeating POLYHEDRON it belongs to -- not just its own flat ring
+        (a triangle or quad silhouette), but the ring's own edges plus
+        the ONE node elsewhere in the model connected to every one of
+        them (see _me_ring_context), which for the classic offset
+        square-pyramid module is exactly its bottom apex -- rendered as a
+        shaded solid with the same real-world geometry (actual edge
+        lengths/angles, never a simplified or assumed shape) the flat
+        rendering always used. Dimensioned like the course's own
+        reference drawings: dashed CAD-style callouts for two top-chord
+        edge lengths, one diagonal's length, the module's own height, and
+        the angle between two adjacent diagonals at the apex -- all
+        computed from the model's actual coordinates, never hard-coded.
+        Nodes use each node's REAL world (x, y, z) position, re-centred
+        on the module's own centroid (ring + apex) so it always sits
+        nicely in view, then this panel's own orbit camera (see
         _me3d_project) and ZoomCanvas's own pan/zoom."""
         c = self.me3d_canvas
         c.delete('all')
-        cell_nodes = self._me_current_cell_nodes()
+        cell_nodes = self._me3d_cell_nodes()
         if cell_nodes is None:
             return
         n = len(cell_nodes)
-        apex, neighbors, stubs = self._me_ring_context(cell_nodes)
+        apex = self._me_ring_context(cell_nodes)
 
         centroid_pts = [self.nodes[nid] for nid in cell_nodes] + \
             [self.nodes[e] for e in apex]
@@ -1536,33 +1564,14 @@ class StereoApp(UnitsMixin):
 
         ring_proj = [proj_of(nid) for nid in cell_nodes]
         apex_proj = {e: proj_of(e) for e in apex}
-        neighbor_proj = {e: proj_of(e) for e in neighbors}
 
-        # a stub is drawn only PART of the way to its real far node, so it
-        # reads as "a piece of the next rod", not a full extra member
-        stub_proj = {}
-        for ring_id, ext_id in stubs:
-            rp, ep = self.nodes[ring_id], self.nodes[ext_id]
-            far = tuple(rp[k] + (ep[k] - rp[k]) * MODULE_STUB_FRAC for k in range(3))
-            stub_proj[(ring_id, ext_id)] = self._me3d_project(far[0] - cx, far[1] - cy,
-                                                              far[2] - cz)
-
-        # an edge directly between two apex/neighbour nodes (e.g. the far
-        # square edge of a pyramid reconstructed from just one triangular
-        # face) completes the ring visually regardless of which single
-        # face was originally selected
-        solid_set = set(apex) | set(neighbors)
-        extra_ring_edges = [(m2['a'], m2['b']) for m2 in self.members
-                           if m2['a'] in solid_set and m2['b'] in solid_set]
-
-        all_proj = ring_proj + list(apex_proj.values()) + list(neighbor_proj.values()) \
-            + list(stub_proj.values())
+        all_proj = ring_proj + list(apex_proj.values())
         xs = [p[0] for p in all_proj]
         ys = [p[1] for p in all_proj]
         span = max(max(xs) - min(xs), max(ys) - min(ys), 1e-6)
 
         size = MODULE_CANVAS_SIZE
-        inner_pad = 24
+        inner_pad = 82   # extra room for the dimension callouts around the solid
         fit_scale = (size - 2 * inner_pad) / span
 
         def to_screen(px, py):
@@ -1580,7 +1589,9 @@ class StereoApp(UnitsMixin):
             self.me3d_zc.pan_y += (size / 2.0 - cy0) / self.me3d_zc.zoom
             self._me3d_centered = True
 
-        pos_of = {nid: i for i, nid in enumerate(cell_nodes)}
+        ring_scr = [to_screen(*p[:2]) for p in ring_proj]
+        apex_scr = {e: to_screen(*p[:2]) for e, p in apex_proj.items()}
+        centroid_scr = (sum(p[0] for p in ring_scr) / n, sum(p[1] for p in ring_scr) / n)
 
         # -- solid faces first, underneath everything else -- one shaded
         # triangle per (ring edge, apex) pair, so a quad ring reconstructs
@@ -1588,33 +1599,18 @@ class StereoApp(UnitsMixin):
         # the pyramid, so it gets shaded directly rather than needing an
         # apex of its own (its 3rd node already IS the apex in that case).
         if n == 3:
-            a_scr = to_screen(*ring_proj[0][:2])
-            b_scr = to_screen(*ring_proj[1][:2])
-            e_scr = to_screen(*ring_proj[2][:2])
-            c.create_polygon(a_scr[0], a_scr[1], b_scr[0], b_scr[1], e_scr[0], e_scr[1],
-                            fill=MODULE_FACE_FILL, outline='')
+            c.create_polygon(ring_scr[0][0], ring_scr[0][1], ring_scr[1][0], ring_scr[1][1],
+                            ring_scr[2][0], ring_scr[2][1], fill=MODULE_FACE_FILL, outline='')
         for e in apex:   # connects to EVERY ring node, by construction
             for i in range(n):
-                a_scr = to_screen(*ring_proj[i][:2])
-                b_scr = to_screen(*ring_proj[(i + 1) % n][:2])
-                e_scr = to_screen(*apex_proj[e][:2])
+                a_scr, b_scr, e_scr = ring_scr[i], ring_scr[(i + 1) % n], apex_scr[e]
                 c.create_polygon(a_scr[0], a_scr[1], b_scr[0], b_scr[1], e_scr[0], e_scr[1],
                                 fill=MODULE_FACE_FILL, outline='')
 
         # -- ring edges --
         for i in range(n):
-            ax, ay = to_screen(*ring_proj[i][:2])
-            bx, by = to_screen(*ring_proj[(i + 1) % n][:2])
-            c.create_line(ax, ay, bx, by, fill=MODULE_RING_COLOR, width=2.5)
-
-        # -- the far ring edge(s), completed via a direct member between
-        # two apex/neighbour nodes (e.g. the square's far edge, seen from
-        # just one of its triangular faces) --
-        for a_id, b_id in extra_ring_edges:
-            a_proj = apex_proj.get(a_id, neighbor_proj.get(a_id))
-            b_proj = apex_proj.get(b_id, neighbor_proj.get(b_id))
-            ax, ay = to_screen(*a_proj[:2])
-            bx, by = to_screen(*b_proj[:2])
+            ax, ay = ring_scr[i]
+            bx, by = ring_scr[(i + 1) % n]
             c.create_line(ax, ay, bx, by, fill=MODULE_RING_COLOR, width=2.5)
 
         # any diagonal a quad currently has, drawn distinctly (thinner,
@@ -1625,50 +1621,79 @@ class StereoApp(UnitsMixin):
             for pos_a, pos_b in ((0, 2), (1, 3)):
                 a_id, b_id = cell_nodes[pos_a], cell_nodes[pos_b]
                 if any({m2['a'], m2['b']} == {a_id, b_id} for m2 in self.members):
-                    ax, ay = to_screen(*ring_proj[pos_a][:2])
-                    bx, by = to_screen(*ring_proj[pos_b][:2])
+                    ax, ay = ring_scr[pos_a]
+                    bx, by = ring_scr[pos_b]
                     c.create_line(ax, ay, bx, by, fill='#888888', width=1.5, dash=(3, 2))
 
-        # -- apex node(s): solid diagonal edges + a prominent marker --
+        # -- apex node: solid diagonal edges + a prominent marker --
         for e, ring_ids in apex.items():
-            ex, ey = to_screen(*apex_proj[e][:2])
-            for r in ring_ids:
-                pos = pos_of.get(r)
-                if pos is not None:
-                    rx, ry = to_screen(*ring_proj[pos][:2])
-                    c.create_line(rx, ry, ex, ey, fill=MODULE_APEX_EDGE_COLOR, width=2.2)
+            ex, ey = apex_scr[e]
+            for i in range(n):
+                rx, ry = ring_scr[i]
+                c.create_line(rx, ry, ex, ey, fill=MODULE_APEX_EDGE_COLOR, width=2.2)
             c.create_oval(ex - 5, ey - 5, ex + 5, ey + 5, fill=MODULE_APEX_NODE_COLOR,
                          outline='')
 
-        # -- neighbouring modules' own apex/nodes: plain (unshaded) edges
-        # to whichever ring nodes they touch, so they read as real
-        # context without being mistaken for THIS module's own apex --
-        for e, ring_ids in neighbors.items():
-            ex, ey = to_screen(*neighbor_proj[e][:2])
-            for r in ring_ids:
-                pos = pos_of.get(r)
-                if pos is not None:
-                    rx, ry = to_screen(*ring_proj[pos][:2])
-                    c.create_line(rx, ry, ex, ey, fill=MODULE_NEIGHBOR_EDGE_COLOR, width=1.4)
-            c.create_oval(ex - 3.5, ey - 3.5, ex + 3.5, ey + 3.5,
-                         fill=MODULE_NEIGHBOR_NODE_COLOR, outline='')
-
-        # -- context stubs: short partial pieces of whatever continues
-        # beyond this module (the next top-chord bar) -- enough to show
-        # connectivity without full extra geometry --
-        for (ring_id, ext_id), sp in stub_proj.items():
-            pos = pos_of[ring_id]
-            rx, ry = to_screen(*ring_proj[pos][:2])
-            sx, sy = to_screen(*sp[:2])
-            c.create_line(rx, ry, sx, sy, fill=MODULE_STUB_COLOR, width=1.3)
-            c.create_oval(sx - 3, sy - 3, sx + 3, sy + 3, fill=MODULE_STUB_COLOR, outline='')
-
-        # -- ring nodes + numbers, drawn last so they stay on top --
+        # -- ring nodes + numbers, drawn before dimensions so the dashed
+        # extension lines and arrows read clearly on top --
         for i in range(n):
-            px, py = to_screen(*ring_proj[i][:2])
+            px, py = ring_scr[i]
             c.create_oval(px - 5, py - 5, px + 5, py + 5, fill=MODULE_RING_COLOR, outline='')
             c.create_text(px, py - 12, text=str(i), font=('Helvetica', 8, 'bold'),
                          fill=MODULE_RING_COLOR)
+
+        # -- dimensions: real edge lengths/angle, computed from the
+        # model's own coordinates -- two adjacent top-chord edges (enough
+        # to show the module is regular or not, without labelling every
+        # redundant edge), one diagonal, the module's own height, and the
+        # angle between two adjacent diagonals at the apex --
+        for i in (0, 1) if n >= 2 else ():
+            j = (i + 1) % n
+            real_len = math.dist(self.nodes[cell_nodes[i]], self.nodes[cell_nodes[j]])
+            self._me_draw_dimension(c, ring_scr[i], ring_scr[j], f'{real_len:.2f}m',
+                                    centroid_scr)
+        for e, ring_ids in apex.items():
+            r0 = ring_ids[0]
+            pos0 = cell_nodes.index(r0)
+            real_len = math.dist(self.nodes[r0], self.nodes[e])
+            self._me_draw_dimension(c, ring_scr[pos0], apex_scr[e], f'{real_len:.2f}m',
+                                    centroid_scr)
+
+            centroid_world = tuple(sum(self.nodes[nid][k] for nid in cell_nodes) / n
+                                   for k in range(3))
+            height = math.dist(centroid_world, self.nodes[e])
+            # a plain vertical callout pinned to the LEFT of the whole
+            # drawing (like the course's own "1.77m" side dimension),
+            # rather than offset from the centroid-apex line itself --
+            # that line runs right past the diagonals in screen space at
+            # most orbit angles and the label would collide with theirs
+            apex_x, apex_y = apex_scr[e]
+            ring_top_y = min(p[1] for p in ring_scr)
+            ring_top_x = next(p[0] for p in ring_scr if p[1] == ring_top_y)
+            side_x = min(min(p[0] for p in ring_scr), apex_x) - 30
+            c.create_line(ring_top_x, ring_top_y, side_x, ring_top_y,
+                         fill=MODULE_DIM_COLOR, width=1, dash=(2, 2))
+            c.create_line(apex_x, apex_y, side_x, apex_y,
+                         fill=MODULE_DIM_COLOR, width=1, dash=(2, 2))
+            c.create_line(side_x, ring_top_y, side_x, apex_y, fill=MODULE_DIM_COLOR,
+                         width=1, arrow=tk.BOTH, arrowshape=(6, 7, 3))
+            c.create_text(side_x - 6, (ring_top_y + apex_y) / 2.0, text=f'H={height:.2f}m',
+                         fill=MODULE_DIM_COLOR, font=('Helvetica', 8), anchor='e')
+
+            if n >= 2:
+                r1 = ring_ids[1 % len(ring_ids)] if len(ring_ids) > 1 else ring_ids[0]
+                if r1 != r0:
+                    v0 = tuple(self.nodes[r0][k] - self.nodes[e][k] for k in range(3))
+                    v1 = tuple(self.nodes[r1][k] - self.nodes[e][k] for k in range(3))
+                    dot = sum(v0[k] * v1[k] for k in range(3))
+                    n0 = math.sqrt(sum(v0[k] ** 2 for k in range(3)))
+                    n1 = math.sqrt(sum(v1[k] ** 2 for k in range(3)))
+                    if n0 > 1e-9 and n1 > 1e-9:
+                        cos_ang = max(-1.0, min(1.0, dot / (n0 * n1)))
+                        ang_deg = math.degrees(math.acos(cos_ang))
+                        ax_, ay_ = apex_scr[e]
+                        c.create_text(ax_, ay_ + 16, text=f'∠ {ang_deg:.1f}°',
+                                     fill=MODULE_DIM_COLOR, font=('Helvetica', 8))
 
     def _me_show_selection_info(self, cell_nodes, coords):
         sel = self._me_selection

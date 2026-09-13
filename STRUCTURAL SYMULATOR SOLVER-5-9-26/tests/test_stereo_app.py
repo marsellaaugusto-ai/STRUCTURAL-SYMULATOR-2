@@ -21,7 +21,7 @@ from apps.stereo.stereo_app import (
     QUICK_SUPPORT_PIN, QUICK_SUPPORT_FIXED, QUICK_SUPPORT_CLEAR, QUICK_SUPPORT_CUSTOM,
     moment_color, reaction_moment_signed, MOMENT_ZERO_COLOR, MOMENT_AXES,
     MOMENT_AXIS_RESULTANT, MOMENT_AXIS_MX, MOMENT_AXIS_MY, MOMENT_AXIS_MZ,
-    MODULE_STUB_COLOR,
+    MODULE_DIM_COLOR,
 )
 from apps.stereo import stereo_math as sm
 
@@ -1227,25 +1227,35 @@ def test_module_editor_3d_panel_is_separate_and_above_the_flattened_view(app):
     assert flat_edge not in threed_lines
 
 
-def _me3d_expected_line_count(app, cell_nodes):
-    """Ring edges + apex diagonals + neighbour diagonals + any far-edge
-    reconstructed between two apex/neighbour nodes + context stubs -- see
+def _me3d_structural_lines(app):
+    """Every 'line' item in the 3D panel EXCEPT dimension-callout lines
+    (extension lines + arrows, drawn in their own MODULE_DIM_COLOR) --
+    i.e. just the ring edges, any existing quad diagonal, and apex
+    diagonals."""
+    return [i for i in app.me3d_canvas.find_all() if app.me3d_canvas.type(i) == 'line'
+           and app.me3d_canvas.itemcget(i, 'fill') != MODULE_DIM_COLOR]
+
+
+def _me3d_expected_structural_line_count(app, cell_nodes):
+    """Ring edges + apex diagonals + any existing quad diagonal -- see
     _me_ring_context and _me_render_3d's own docstrings for what each of
     these is."""
     n = len(cell_nodes)
-    apex, neighbors, stubs = app._me_ring_context(cell_nodes)
-    solid_set = set(apex) | set(neighbors)
-    extra_ring_edges = [(m['a'], m['b']) for m in app.members
-                        if m['a'] in solid_set and m['b'] in solid_set]
+    apex = app._me_ring_context(cell_nodes)
     apex_edges = sum(len(ids) for ids in apex.values())
-    neighbor_edges = sum(len(ids) for ids in neighbors.values())
-    return n + apex_edges + neighbor_edges + len(extra_ring_edges) + len(stubs)
+    diagonal = 0
+    if n == 4:
+        for pos_a, pos_b in ((0, 2), (1, 3)):
+            a_id, b_id = cell_nodes[pos_a], cell_nodes[pos_b]
+            if any({m['a'], m['b']} == {a_id, b_id} for m in app.members):
+                diagonal += 1
+    return n + apex_edges + diagonal
 
 
-def test_module_editor_3d_panel_matches_the_cells_own_ring_plus_context(app):
-    cell_nodes = app._me_current_cell_nodes()
-    lines = [i for i in app.me3d_canvas.find_all() if app.me3d_canvas.type(i) == 'line']
-    assert len(lines) == _me3d_expected_line_count(app, cell_nodes)
+def test_module_editor_3d_panel_matches_the_cells_own_ring_plus_apex(app):
+    cell_nodes = app._me3d_cell_nodes()
+    lines = _me3d_structural_lines(app)
+    assert len(lines) == _me3d_expected_structural_line_count(app, cell_nodes)
 
 
 def test_module_editor_3d_panel_shows_an_existing_diagonal_as_an_extra_line():
@@ -1266,14 +1276,14 @@ def test_module_editor_3d_panel_shows_an_existing_diagonal_as_an_extra_line():
         app._me_role_id = quad_role
         app._me_selection = None
         app._me_render()
-        before = len([i for i in app.me3d_canvas.find_all() if app.me3d_canvas.type(i) == 'line'])
+        before = len(_me3d_structural_lines(app))
 
         cell_nodes = app._me_current_cell_nodes()
         a_id, b_id = cell_nodes[0], cell_nodes[2]
         app.members.append({'a': a_id, 'b': b_id, 'conn': 'pin', 'role': 'test_diag',
                             'E': 200e3, 'A': 20.0})
         app._me_render()
-        after = len([i for i in app.me3d_canvas.find_all() if app.me3d_canvas.type(i) == 'line'])
+        after = len(_me3d_structural_lines(app))
         assert after == before + 1
     finally:
         tab.destroy()
@@ -1316,9 +1326,9 @@ def test_module_editor_3d_panel_switches_with_the_selected_role(app):
     app._me_role_id = quad_role
     app._me_selection = None
     app._me_render()
-    cell_nodes = app._me_current_cell_nodes()
-    lines = [i for i in app.me3d_canvas.find_all() if app.me3d_canvas.type(i) == 'line']
-    assert len(lines) == _me3d_expected_line_count(app, cell_nodes)
+    cell_nodes = app._me3d_cell_nodes()
+    lines = _me3d_structural_lines(app)
+    assert len(lines) == _me3d_expected_structural_line_count(app, cell_nodes)
 
 
 # ── module display: the module as a solid polyhedron, not a flat polygon ────
@@ -1335,8 +1345,8 @@ def test_default_flat_grid_quad_module_reconstructs_its_own_pyramid_apex(app):
     app._me_role_id = quad_role
     app._me_selection = None
     app._me_render()
-    cell_nodes = app._me_current_cell_nodes()
-    apex, _neighbors, _stubs = app._me_ring_context(cell_nodes)
+    cell_nodes = app._me3d_cell_nodes()
+    apex = app._me_ring_context(cell_nodes)
     assert apex, 'no node connects to all 4 corners of the quad -- apex not found'
 
 
@@ -1351,10 +1361,11 @@ def test_module_3d_panel_draws_shaded_faces_for_a_module_with_a_real_apex(app):
     assert len(polygons) == 4   # one shaded triangular face per side of the pyramid
 
 
-def test_module_3d_panel_quad_and_its_own_triangle_face_agree_on_the_same_apex(app):
+def test_module_3d_panel_always_shows_the_full_pyramid_even_from_a_triangle_role(app):
     # picking the quad (top square) role or any ONE of its 4 triangular
-    # side-face roles must reconstruct the exact same apex node -- they
-    # are two different views of the SAME physical module
+    # side-face roles must resolve to the SAME canonical quad+apex module
+    # -- _me3d_cell_nodes always prefers the quad, so the 3D view never
+    # shows just one bare triangular face
     role_ids = sorted(app._me_roles)
     quad_role = next((r for r in role_ids
                       if len(app._me_cells[app._me_roles[r][0]]['nodes']) == 4), None)
@@ -1363,29 +1374,41 @@ def test_module_3d_panel_quad_and_its_own_triangle_face_agree_on_the_same_apex(a
     assert quad_role is not None and tri_role is not None
 
     app._me_role_id = quad_role
-    quad_nodes = app._me_current_cell_nodes()
-    quad_apex, _neighbors, _stubs = app._me_ring_context(quad_nodes)
+    quad_3d_nodes = app._me3d_cell_nodes()
+    assert len(quad_3d_nodes) == 4
+    quad_apex = app._me_ring_context(quad_3d_nodes)
     assert quad_apex
 
     app._me_role_id = tri_role
-    tri_nodes = app._me_current_cell_nodes()
-    tri_apex, tri_neighbors, _stubs = app._me_ring_context(tri_nodes)
-    # the triangle's own 3rd node IS the apex if it's already in the ring,
-    # otherwise it must show up as an apex/neighbour node of the
-    # triangle's own face
-    apex_from_tri = set(tri_nodes) | set(tri_apex) | set(tri_neighbors)
-    assert set(quad_apex) & apex_from_tri
+    tri_3d_nodes = app._me3d_cell_nodes()
+    assert len(tri_3d_nodes) == 4   # snapped to the canonical quad, not the bare triangle
+    tri_apex = app._me_ring_context(tri_3d_nodes)
+    assert set(quad_apex) == set(tri_apex)
 
 
-def test_module_3d_panel_draws_context_stubs_shorter_than_the_real_member(app):
-    cell_nodes = app._me_current_cell_nodes()
-    _apex, _neighbors, stubs = app._me_ring_context(cell_nodes)
-    assert stubs, 'the default flat_grid module should have at least one stub neighbour'
+def test_module_3d_panel_draws_dimension_callouts_with_the_real_edge_length(app):
+    import math
+    cell_nodes = app._me3d_cell_nodes()
     app._me_render()
-    stub_dots = [i for i in app.me3d_canvas.find_all()
-                if app.me3d_canvas.type(i) == 'oval'
-                and app.me3d_canvas.itemcget(i, 'fill') == MODULE_STUB_COLOR]
-    assert len(stub_dots) == len(stubs)
+    dim_lines = [i for i in app.me3d_canvas.find_all() if app.me3d_canvas.type(i) == 'line'
+                and app.me3d_canvas.itemcget(i, 'fill') == MODULE_DIM_COLOR]
+    assert dim_lines
+    dim_texts = [app.me3d_canvas.itemcget(i, 'text') for i in app.me3d_canvas.find_all()
+                if app.me3d_canvas.type(i) == 'text'
+                and app.me3d_canvas.itemcget(i, 'fill') == MODULE_DIM_COLOR]
+    real_len = math.dist(app.nodes[cell_nodes[0]], app.nodes[cell_nodes[1]])
+    assert any(f'{real_len:.2f}m' in t for t in dim_texts)
+
+
+def test_module_3d_panel_shows_height_and_angle_when_an_apex_exists(app):
+    cell_nodes = app._me3d_cell_nodes()
+    apex = app._me_ring_context(cell_nodes)
+    assert apex, 'the default flat_grid module should have a real apex'
+    app._me_render()
+    dim_texts = [app.me3d_canvas.itemcget(i, 'text') for i in app.me3d_canvas.find_all()
+                if app.me3d_canvas.type(i) == 'text']
+    assert any(t.startswith('H=') for t in dim_texts)
+    assert any(t.startswith('∠') for t in dim_texts)
 
 
 def test_module_editor_clicking_a_node_selects_it_and_shows_the_node_box(app):

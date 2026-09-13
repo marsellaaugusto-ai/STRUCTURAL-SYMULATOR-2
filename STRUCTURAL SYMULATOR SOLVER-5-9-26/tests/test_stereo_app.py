@@ -23,6 +23,7 @@ from apps.stereo.stereo_app import (
     MOMENT_AXIS_RESULTANT, MOMENT_AXIS_MX, MOMENT_AXIS_MY, MOMENT_AXIS_MZ,
     MODULE_DIM_COLOR, SUPPORT_DISABLED_COLOR, SLENDER_HALO_COLOR, SLENDERNESS_LIMIT,
     LOAD_PATH_COLOR, MOMENT_BACKDROP_COLOR, MOMENT_NODE_RADIUS_PX,
+    TENSION_HIGH, COMPRESSION_HIGH,
 )
 from apps.stereo import stereo_math as sm
 
@@ -2168,3 +2169,106 @@ def test_moment_mode_backdrop_is_a_no_op_before_analysis(app):
     app._draw()   # must not raise
     fills = {app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')}
     assert MOMENT_BACKDROP_COLOR not in fills
+
+
+# ── shared numeric colorbar for the four colour spectra ─────────────────────
+
+def _colorbar_rects(app):
+    """Canvas rectangle items belonging to a colorbar -- excludes the
+    support-box rectangles (tagged 'node') and the lasso rectangle (tagged
+    'lasso'), neither of which is part of any colorbar."""
+    return [i for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'rectangle'
+            and not ({'node', 'lasso'} & set(app.canvas.gettags(i)))]
+
+
+def test_force_colorbar_is_a_continuous_gradient_not_flat_swatches(app):
+    app._analyze()
+    app.colour_by_force.set(True)
+    app._draw()
+    fills = [app.canvas.itemcget(i, 'fill') for i in _colorbar_rects(app)]
+    # a real gradient shows many distinct colours across its segments, not
+    # just the handful a flat swatch-per-category legend used to show
+    assert len(set(fills)) > 10
+
+
+def test_force_colorbar_ends_match_the_actual_tension_compression_extremes(app):
+    app._analyze()
+    app.colour_by_force.set(True)
+    app._draw()
+    # the border rectangle (outline='#888', no fill) is drawn last -- the
+    # coloured segments themselves are outline=''
+    fills = [app.canvas.itemcget(i, 'fill') for i in _colorbar_rects(app)
+            if app.canvas.itemcget(i, 'outline') == '']
+    assert fills[0] == COMPRESSION_HIGH
+    assert fills[-1] == TENSION_HIGH
+
+
+def test_force_colorbar_tick_labels_show_the_actual_max_force(app):
+    app._analyze()
+    app.colour_by_force.set(True)
+    app._draw()
+    max_abs_n = max(abs(mr['N']) for mr in app.results['member_res'])
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any(f'{max_abs_n:.0f}' in t for t in texts)
+
+
+def test_utilization_colorbar_is_a_continuous_gradient(app):
+    app._analyze()
+    app.colour_by_util.set(True)
+    app._draw()
+    fills = [app.canvas.itemcget(i, 'fill') for i in _colorbar_rects(app)]
+    assert len(set(fills)) > 10
+
+
+def test_moment_colorbar_is_a_continuous_gradient(app):
+    _make_rigid_fixed(app)
+    app.colour_by_force.set(False)   # isolate the moment bar from the force one
+    app.colour_by_moment.set(True)
+    app._draw()
+    fills = [app.canvas.itemcget(i, 'fill') for i in _colorbar_rects(app)]
+    assert len(set(fills)) > 10
+
+
+def test_moment_colorbar_is_a_no_op_when_every_moment_is_zero(app):
+    # a pin-jointed model's max_abs_moment is 0.0 -- the colorbar's domain
+    # collapses to a single point, which must not raise a ZeroDivisionError
+    app._analyze()
+    app.colour_by_moment.set(True)
+    app._draw()   # must not raise
+
+
+def test_deformed_colorbar_is_a_continuous_gradient(app):
+    app._analyze()
+    app.colour_by_force.set(False)
+    app.show_deformed.set(True)
+    app._draw()
+    fills = [app.canvas.itemcget(i, 'fill') for i in _colorbar_rects(app)]
+    assert len(set(fills)) > 5
+
+
+def test_colorbar_captions_describe_each_spectrum(app):
+    app._analyze()
+    app.colour_by_force.set(True)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any('Axial force' in t for t in texts)
+
+    app.colour_by_force.set(False)
+    app.colour_by_util.set(True)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any('Utilization' in t for t in texts)
+
+
+def test_colorbar_is_a_no_op_before_analysis(app):
+    app.results = None
+    app.colour_by_force.set(True)
+    app.colour_by_util.set(True)
+    app.colour_by_moment.set(True)
+    app.show_deformed.set(True)
+    app._draw()   # must not raise
+    assert not _colorbar_rects(app)

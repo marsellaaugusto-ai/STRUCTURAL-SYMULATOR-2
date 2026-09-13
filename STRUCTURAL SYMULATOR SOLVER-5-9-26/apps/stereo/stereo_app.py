@@ -2801,6 +2801,12 @@ class StereoApp(UnitsMixin):
         by_force = self.colour_by_force.get() and self.results is not None and not by_util
         by_moment = self.colour_by_moment.get() and self.results is not None
         max_abs_N = 0.0
+        max_abs_moment = 0.0   # stays 0.0 unless by_moment computes it below;
+                                # declared here (not inside the deformed_only-
+                                # guarded block that actually fills it in) so
+                                # it is always defined by the time it reaches
+                                # _draw_legend's colorbar, even when
+                                # deformed_only skips that block entirely
         if by_force:
             max_abs_N = max((abs(mr['N']) for mr in self.results['member_res']), default=0.0)
         load_path_on = self.load_path_anim.get() and self.results is not None
@@ -2916,7 +2922,6 @@ class StereoApp(UnitsMixin):
             # the colour of any one node is always relative to every other
             # node currently in the structure, not to supports alone.
             moment_by_node = {}
-            max_abs_moment = 0.0
             if by_moment:
                 moment_axis = self.moment_axis.get()
                 # The structure's own planar centroid -- see
@@ -3031,7 +3036,8 @@ class StereoApp(UnitsMixin):
             c.create_rectangle(x0, y0, x1, y1, outline='#333333', dash=(5, 3),
                                stipple='gray12', fill='#333333', tags='lasso')
 
-        self._draw_legend(c, by_force, show_def, deformed_only, by_util)
+        self._draw_legend(c, by_force, show_def, deformed_only, by_util,
+                          max_abs_N=max_abs_N, max_abs_moment=max_abs_moment)
         self._to_screen_cache = to_screen   # for hit-testing on click
 
     def _reference_grey(self):
@@ -3232,9 +3238,11 @@ class StereoApp(UnitsMixin):
             c.create_text(s1[0], s1[1], text=label, fill=color,
                          font=('Helvetica', 9, 'bold'), tags='axes')
 
-    def _draw_legend(self, c, by_force, show_def=False, deformed_only=False, by_util=False):
+    def _draw_legend(self, c, by_force, show_def=False, deformed_only=False, by_util=False,
+                     max_abs_N=0.0, max_abs_moment=0.0):
         x0, y0 = 10, 10
         y = y0
+        BAR_W, BAR_H = 130, 10
 
         def row(color, text, dashed=False, outline=None):
             nonlocal y
@@ -3250,15 +3258,56 @@ class StereoApp(UnitsMixin):
             c.create_text(x0 + 24, y, text=text, anchor='w', font=('Helvetica', 8), fill='#444')
             y += 15
 
+        def caption(text):
+            nonlocal y
+            c.create_text(x0, y, text=text, anchor='w', font=('Helvetica', 8, 'bold'), fill='#333')
+            y += 13
+
+        def colorbar(color_fn, lo, hi, ticks, n_segs=44):
+            # A CONTINUOUS gradient strip standing in for what used to be 2-3
+            # flat, hand-picked swatches (e.g. "tension" / "compression" /
+            # "~0"): those never showed WHERE a given colour sat on the
+            # actual numeric range, or that the mapping is a smooth gradient
+            # rather than three discrete buckets. Segments call the SAME
+            # colour function the model itself is drawn with (force_color /
+            # util_color / moment_color / deform_color), each with the real
+            # domain value that segment represents, so this can never drift
+            # out of sync with what the drawing shows the way a separately
+            # hand-picked set of swatch colours could. `ticks` are (value,
+            # label) pairs placed at their proportional position along the
+            # bar rather than assumed to sit at the two ends, since e.g.
+            # utilization's "0.5" tick is not the domain's midpoint.
+            nonlocal y
+            span = (hi - lo) or 1.0
+            for i in range(n_segs):
+                # Colour sampled at i/(n_segs-1) -- NOT the segment's own
+                # t0/t1 span -- so the first and last segments land exactly
+                # on color_fn(lo) and color_fn(hi) rather than one step
+                # short of hi (a real, if minor, mismatch against the
+                # actual member/node colouring at the model's true extreme).
+                frac_sample = i / (n_segs - 1) if n_segs > 1 else 0.0
+                color = color_fn(lo + frac_sample * span)
+                sx0 = x0 + (i / n_segs) * BAR_W
+                sx1 = x0 + ((i + 1) / n_segs) * BAR_W + 1   # +1: no seam between segments
+                c.create_rectangle(sx0, y, sx1, y + BAR_H, fill=color, outline='')
+            c.create_rectangle(x0, y, x0 + BAR_W, y + BAR_H, outline='#888')
+            ty = y + BAR_H + 9
+            for value, label in ticks:
+                frac_pos = (value - lo) / span
+                tx = x0 + frac_pos * BAR_W
+                anchor = 'w' if frac_pos <= 0.02 else ('e' if frac_pos >= 0.98 else 'center')
+                c.create_text(tx, ty, text=label, anchor=anchor, font=('Helvetica', 8), fill='#444')
+            y = ty + 12
+
         if not deformed_only:
             if by_util:
-                row(UTIL_LOW, 'utilization ~0')
-                row(UTIL_MID, 'utilization 0.5')
-                row(UTIL_HIGH, 'utilization >= 1.0 (at/over capacity)')
+                caption('Utilization (demand ÷ capacity):')
+                colorbar(util_color, 0.0, 1.2, [(0.0, '0'), (0.5, '0.5'), (1.0, '≥1.0 (over)')])
             elif by_force:
-                row(TENSION_HIGH, 'tension')
-                row(COMPRESSION_HIGH, 'compression')
-                row(NEAR_ZERO_COLOR, '~0 force')
+                caption('Axial force, kN (+ tension / − compression):')
+                colorbar(lambda N: force_color(N, max_abs_N), -max_abs_N, max_abs_N,
+                        [(-max_abs_N, f'−{max_abs_N:.0f}'), (0.0, '0'),
+                         (max_abs_N, f'+{max_abs_N:.0f}')])
             else:
                 row(MEMBER_PIN_COLOR, 'pin connection')
                 row(MEMBER_RIGID_COLOR, 'rigid connection')
@@ -3277,9 +3326,10 @@ class StereoApp(UnitsMixin):
                 row(REACTION_COLOR, 'reaction (support pushing back)')
             if self.colour_by_moment.get() and self.results is not None:
                 axis_txt = self.moment_axis.get()
-                row(MOMENT_NEG_HIGH, f'node moment ({axis_txt}): negative')
-                row(MOMENT_ZERO_COLOR, f'node moment ({axis_txt}): ~0', outline=MOMENT_NODE_OUTLINE)
-                row(MOMENT_POS_HIGH, f'node moment ({axis_txt}): positive')
+                caption(f'Node moment, kN·m ({axis_txt}):')
+                colorbar(lambda m: moment_color(m, max_abs_moment), -max_abs_moment, max_abs_moment,
+                        [(-max_abs_moment, f'−{max_abs_moment:.1f}'), (0.0, '0'),
+                         (max_abs_moment, f'+{max_abs_moment:.1f}')])
                 row(MOMENT_BACKDROP_COLOR, 'members faded to backdrop (node colour is the content)')
             if self._disabled_supports & {s['node'] for s in self.supports}:
                 row(SUPPORT_DISABLED_COLOR, 'sandbox: support disabled (excluded from Analyze)',
@@ -3295,11 +3345,9 @@ class StereoApp(UnitsMixin):
             else:
                 _deformed, disp_mm = self._deformed_nodes_and_disp()
                 max_disp = max(disp_mm, default=0.0)
-                c.create_line(x0, y, x0 + 18, y, fill=DEFORM_LOW, width=3)
-                c.create_line(x0 + 18, y, x0 + 36, y, fill=DEFORM_HIGH, width=3)
-                c.create_text(x0 + 42, y, anchor='w', font=('Helvetica', 8), fill='#444',
-                             text=f'deformed shape (white→green: 0–{max_disp:.1f} mm)')
-                y += 15
+                caption('Deformed shape, displacement (mm):')
+                colorbar(lambda d: deform_color(d, max_disp), 0.0, max_disp,
+                        [(0.0, '0'), (max_disp, f'{max_disp:.1f}')])
 
         frac = self._load_frac()
         if frac < 0.999:

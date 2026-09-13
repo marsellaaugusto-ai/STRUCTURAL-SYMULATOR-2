@@ -24,6 +24,7 @@ from apps.stereo.stereo_app import (
     MOMENT_AXIS_RESULTANT, MOMENT_AXIS_MX, MOMENT_AXIS_MY, MOMENT_AXIS_MZ,
     MODULE_DIM_COLOR, SUPPORT_DISABLED_COLOR, SLENDER_HALO_COLOR, SLENDERNESS_LIMIT,
     LOAD_PATH_COLOR, LOAD_PATH_ANIM_TICKS, LOAD_PATH_NEAR_ZERO_FRAC, NEAR_ZERO_COLOR,
+    NEAR_ZERO_FRAC, STRESS_WIDTH_MIN, STRESS_WIDTH_MAX,
     MOMENT_BACKDROP_COLOR, MOMENT_NODE_RADIUS_PX,
     TENSION_HIGH, COMPRESSION_HIGH,
     _clip_polygon_to_bbox, _voronoi_cells_2d,
@@ -694,7 +695,7 @@ def test_legend_explains_the_dashed_over_capacity_line(app):
     app._draw()
     texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
             if app.canvas.type(i) == 'text']
-    assert any('over capacity' in t and 'utilisation' in t for t in texts)
+    assert any('over capacity' in t and 'utilization' in t for t in texts)
 
 
 # ── didactic features: reactions, click-to-inspect, load %, utilization ─────
@@ -2554,7 +2555,7 @@ def test_hide_zero_force_removes_only_the_near_zero_members(app):
 
     max_abs_n = max(abs(mr['N']) for mr in app.results['member_res'])
     n_zero = sum(1 for mr in app.results['member_res']
-                if abs(mr['N']) / max_abs_n < LOAD_PATH_NEAR_ZERO_FRAC)
+                if abs(mr['N']) / max_abs_n < NEAR_ZERO_FRAC)
     assert n_zero > 0   # otherwise this test can't tell the toggle apart from a no-op
 
     app.hide_zero_force.set(True)
@@ -2582,6 +2583,30 @@ def test_hide_zero_force_is_consistent_with_the_near_zero_colour(app):
     assert NEAR_ZERO_COLOR not in fills_after
 
 
+def test_hide_zero_force_matches_the_colour_on_a_model_that_can_tell_them_apart(app):
+    # Regression: the hide test used LOAD_PATH_NEAR_ZERO_FRAC (0.02) while
+    # force_color paints "~0" grey below NEAR_ZERO_FRAC (0.03), so members
+    # in between were painted "~0" and yet kept on screen. The default flat
+    # grid happens to have nothing in that band, which is why the sibling
+    # test above could not catch it -- the hip roof grid has dozens, so the
+    # two thresholds disagreeing is immediately visible here.
+    app.grid_family.set(FAMILY_LABEL['hip_roof_grid'])
+    app._on_generator_change()
+    app._generate()
+    app._analyze()
+    app.colour_by_force.set(True)
+
+    max_abs_n = max(abs(mr['N']) for mr in app.results['member_res'])
+    in_band = sum(1 for mr in app.results['member_res']
+                 if LOAD_PATH_NEAR_ZERO_FRAC <= abs(mr['N']) / max_abs_n < NEAR_ZERO_FRAC)
+    assert in_band > 0, 'this model no longer exercises the gap between the two thresholds'
+
+    app.hide_zero_force.set(True)
+    app._draw()
+    fills = {app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')}
+    assert NEAR_ZERO_COLOR not in fills
+
+
 def test_hide_zero_force_is_a_no_op_before_analysis(app):
     app.results = None
     app.hide_zero_force.set(True)
@@ -2602,6 +2627,119 @@ def test_hide_zero_force_legend_caption_appears_only_when_active(app):
     texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
             if app.canvas.type(i) == 'text']
     assert any('hidden entirely' in t for t in texts)
+
+
+# ── thickness by stress ──────────────────────────────────────────────────────
+
+def _member_widths(app):
+    return [float(app.canvas.itemcget(i, 'width'))
+            for i in app.canvas.find_withtag('member')]
+
+
+def test_thickness_by_stress_is_off_by_default(app):
+    assert app.thickness_by_stress.get() is False
+
+
+def test_thickness_by_stress_varies_the_width_between_the_documented_bounds(app):
+    app._analyze()
+    app._draw()
+    assert set(_member_widths(app)) == {2.0}   # one flat width until it is on
+
+    app.thickness_by_stress.set(True)
+    app._draw()
+    widths = _member_widths(app)
+    assert len(set(widths)) > 1, 'every rod came out the same width'
+    assert min(widths) >= STRESS_WIDTH_MIN
+    assert max(widths) <= STRESS_WIDTH_MAX
+
+
+def test_thickness_by_stress_caps_the_widest_rod(app):
+    # the cap is the point of the feature: one very hot member must not be
+    # allowed to grow without limit and swallow its neighbours.
+    app._analyze()
+    # make one member's stress enormous by shrinking its section
+    app.members[0]['A'] = 1e-6
+    app._analyze()
+    app.thickness_by_stress.set(True)
+    app._draw()
+    assert max(_member_widths(app)) == pytest.approx(STRESS_WIDTH_MAX)
+
+
+def test_thickness_by_stress_scales_with_stress_not_with_force():
+    # the semantic heart of the feature: two rods carrying the SAME axial
+    # force are not working equally hard if their sections differ, and it
+    # is the stress -- not the kN -- that decides the width.
+    members = [{'a': 0, 'b': 1, 'A': 10.0}, {'a': 1, 'b': 2, 'A': 20.0}]
+    member_res = [{'N': 100.0}, {'N': 100.0}]
+    widths = StereoApp._stress_widths(members, member_res)
+    assert widths[0] == pytest.approx(STRESS_WIDTH_MAX)   # twice the stress
+    assert widths[1] < widths[0]
+    # half the stress => half way up the min..max span
+    half = STRESS_WIDTH_MIN + 0.5 * (STRESS_WIDTH_MAX - STRESS_WIDTH_MIN)
+    assert widths[1] == pytest.approx(half)
+
+
+def test_stress_widths_handles_a_member_with_no_usable_section():
+    # a rod with no area must still be drawn (at the minimum), not skipped
+    # and not a ZeroDivisionError.
+    members = [{'a': 0, 'b': 1, 'A': 10.0}, {'a': 1, 'b': 2, 'A': 0.0},
+               {'a': 2, 'b': 3}]
+    member_res = [{'N': 100.0}, {'N': 50.0}, {'N': 50.0}]
+    widths = StereoApp._stress_widths(members, member_res)
+    assert len(widths) == 3
+    assert widths[1] == pytest.approx(STRESS_WIDTH_MIN)
+    assert widths[2] == pytest.approx(STRESS_WIDTH_MIN)
+
+
+def test_stress_widths_returns_none_when_there_is_nothing_to_scale_against():
+    assert StereoApp._stress_widths([], []) is None
+    assert StereoApp._stress_widths([{'a': 0, 'b': 1, 'A': 10.0}], [{'N': 0.0}]) is None
+
+
+def test_thickness_by_stress_does_not_move_with_the_load_slider(app):
+    # a relative measure: a linear solve scales every member's stress by
+    # the same factor, so the ratios -- and the widths -- must not change.
+    app._analyze()
+    app.thickness_by_stress.set(True)
+    app._draw()
+    at_full = sorted(_member_widths(app))
+
+    app.load_fraction.set(20)
+    app._draw()
+    assert sorted(_member_widths(app)) == at_full
+
+
+def test_thickness_by_stress_is_a_no_op_before_analysis(app):
+    app.results = None
+    app.thickness_by_stress.set(True)
+    app._draw()   # must not raise
+    assert set(_member_widths(app)) == {2.0}
+
+
+def test_thickness_by_stress_never_thins_the_selected_member(app):
+    # width cues stack rather than overwrite: a lightly stressed rod that
+    # is also selected keeps the selection's own wider line.
+    app._analyze()
+    app.thickness_by_stress.set(True)
+    widths = StereoApp._stress_widths(app.members, app.results['member_res'])
+    thinnest = min(range(len(widths)), key=lambda i: widths[i])
+    app.selected_member = thinnest
+    app._draw()
+    assert max(_member_widths(app)) >= 4
+
+
+def test_thickness_by_stress_legend_caption_appears_only_when_active(app):
+    app._analyze()
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert not any('thickness' in t.lower() for t in texts)
+
+    app.thickness_by_stress.set(True)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any('thickness' in t.lower() and 'stress' in t.lower() for t in texts)
 
 
 # ── Voronoi tessellation geometry (pure functions, no widget needed) ────────

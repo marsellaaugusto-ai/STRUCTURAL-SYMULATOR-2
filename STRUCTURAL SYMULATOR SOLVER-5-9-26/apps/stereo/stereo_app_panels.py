@@ -67,6 +67,12 @@ class StereoPanelsMixin:
         self.colour_by_util = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Utilization heat-map', variable=self.colour_by_util, bg=BG,
                        command=self._draw).pack(side='left', padx=(6, 0))
+        self.thickness_by_stress = tk.BooleanVar(value=False)
+        # Sits with the colour modes because it answers the same question
+        # ("how hard is this rod working?") through a second, independent
+        # channel -- width instead of hue -- so the two can be read at once.
+        tk.Checkbutton(g, text='Thickness by stress', variable=self.thickness_by_stress,
+                       bg=BG, command=self._draw).pack(side='left', padx=(6, 0))
         self.shaded_faces = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Shaded faces', variable=self.shaded_faces, bg=BG,
                        command=self._draw).pack(side='left', padx=(6, 0))
@@ -741,6 +747,7 @@ class StereoPanelsMixin:
         self._labeled_entry(beam, 'Layers (tiers):', self.beam_tiers)
         tk.Button(beam, text='Add reinforcement beam over selected rows',
                  command=self._add_reinforcement_beam).pack(padx=4, pady=(2, 4), anchor='w')
+
     def _build_results_panel(self, parent):
         box = tk.LabelFrame(parent, text='Results', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='both', padx=6, pady=(4, 8))

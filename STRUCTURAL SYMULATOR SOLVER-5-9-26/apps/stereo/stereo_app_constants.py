@@ -55,6 +55,14 @@ MEMBER_SEL_COLOR = '#e0522b'
 MEMBER_SEL_HIT_PX = 8
 SLENDER_HALO_COLOR = '#ffb300'
 SLENDERNESS_LIMIT = 200.0   # AISC/CIRSOC's own recommended (non-mandatory) practical limit
+
+# "Thickness by stress": a member's drawn line width scales with its axial
+# STRESS |N|/A relative to the most-stressed member in the model. The cap is
+# the whole point of the pair -- an uncapped scale makes one hot member
+# swallow its neighbours on a dense mesh, so the ratio only ever moves the
+# width between these two values, however extreme the stress ratio gets.
+STRESS_WIDTH_MIN = 1.0   # px, the least-stressed member (and any at ~0)
+STRESS_WIDTH_MAX = 7.0   # px, the hard cap at the highest stress in the model
 LOAD_PATH_COLOR = '#00acc1'
 LOAD_PATH_NEAR_ZERO_FRAC = 0.02   # members below this fraction of the largest |N| stay still
 LOAD_PATH_ARROW_HALF_PX = 7   # half-length of each travelling arrowhead glyph

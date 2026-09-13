@@ -188,6 +188,7 @@ class StereoModelMixin:
             messagebox.showerror('Load Example', str(exc))
             return
         self._load_mesh(mesh, push_undo=True, undo_label=f'load example: {label}')
+
     def _apply_sections(self, members=None, redraw=True):
         members = self.members if members is None else members
         if redraw:

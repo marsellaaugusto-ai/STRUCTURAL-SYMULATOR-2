@@ -175,6 +175,7 @@ class StereoViewMixin:
                             z + uz / 1000.0 * scale))
             disp_mm.append(math.sqrt(ux * ux + uy * uy + uz * uz) * self._load_frac())
         return deformed, disp_mm
+
     def _screen_positions(self):
         """Every node's current on-screen (sx, sy) at its REST position, in
         the exact same projection+centering _draw() uses -- shared by

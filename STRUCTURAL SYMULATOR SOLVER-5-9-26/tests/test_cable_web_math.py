@@ -408,35 +408,6 @@ def test_sparse_jacobian_path_matches_dense_on_a_large_chain():
           f'(dof={dof}, residual={result.residual:.2e}, min_y={min(ys):.3f})')
 
 
-if __name__ == '__main__':
-    tests = [
-        test_reduction_matches_single_cable,
-        test_two_edge_junction_hand_check,
-        test_three_edge_junction_self_stress,
-        test_force_density_linear_sanity,
-        test_global_equilibrium_small_net,
-        test_lateral_load_at_node,
-        test_picture_like_web_regression,
-        test_sparse_jacobian_path_matches_dense_on_a_large_chain,
-    ]
-    failures = 0
-    for t in tests:
-        try:
-            t()
-        except AssertionError as ex:
-            failures += 1
-            print(f'{t.__name__}: FAIL -- {ex}')
-        except Exception as ex:
-            failures += 1
-            print(f'{t.__name__}: ERROR -- {type(ex).__name__}: {ex}')
-    print()
-    if failures:
-        print(f'{failures} test(s) FAILED')
-        sys.exit(1)
-    else:
-        print('All tests passed.')
-
-
 def test_picture_like_web_regression():
     """Regression case for the Cable Web geometry reported on 2026-08-18.
 
@@ -511,3 +482,32 @@ def test_picture_like_web_regression():
     assert result.residual < 1e-8
     assert all(T is None or T >= -1e-7 for T in result.tensions.values())
     print(f'test_picture_like_web_regression: PASS (residual={result.residual:.2e})')
+
+
+if __name__ == '__main__':
+    tests = [
+        test_reduction_matches_single_cable,
+        test_two_edge_junction_hand_check,
+        test_three_edge_junction_self_stress,
+        test_force_density_linear_sanity,
+        test_global_equilibrium_small_net,
+        test_lateral_load_at_node,
+        test_picture_like_web_regression,
+        test_sparse_jacobian_path_matches_dense_on_a_large_chain,
+    ]
+    failures = 0
+    for t in tests:
+        try:
+            t()
+        except AssertionError as ex:
+            failures += 1
+            print(f'{t.__name__}: FAIL -- {ex}')
+        except Exception as ex:
+            failures += 1
+            print(f'{t.__name__}: ERROR -- {type(ex).__name__}: {ex}')
+    print()
+    if failures:
+        print(f'{failures} test(s) FAILED')
+        sys.exit(1)
+    else:
+        print('All tests passed.')

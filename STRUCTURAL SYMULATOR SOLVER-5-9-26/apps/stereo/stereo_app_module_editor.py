@@ -308,7 +308,6 @@ class StereoModuleEditorMixin:
 
         n = len(cell_nodes)
         coords, to_screen, scale = self._me_to_screen_fn(cell_nodes)
-        role_edges = {(i, (i + 1) % n) for i in range(n)}
 
         # potential (missing) diagonals -- quads only, and guaranteed
         # absent (see find_cells: a quad is never reported if either of

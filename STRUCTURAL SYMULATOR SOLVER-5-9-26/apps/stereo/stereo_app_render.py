@@ -32,10 +32,10 @@ from apps.stereo.stereo_app_constants import (
     NODE_COLOR, NODE_SEL_COLOR, ADD_ROD_PENDING_COLOR,
     SUPPORT_COLOR, SUPPORT_DISABLED_COLOR, SUPPORT_BOX_HALF_PX,
     MEMBER_PIN_COLOR, MEMBER_RIGID_COLOR, MEMBER_SEL_COLOR,
-    TENSION_HIGH, COMPRESSION_HIGH, LOAD_COLOR, REACTION_COLOR,
+    TENSION_HIGH, COMPRESSION_HIGH, LOAD_COLOR, REACTION_COLOR, NEAR_ZERO_FRAC,
     DEFORM_MODE_FORCE, SLENDER_HALO_COLOR, SLENDERNESS_LIMIT,
     LOAD_PATH_COLOR, LOAD_PATH_NEAR_ZERO_FRAC, LOAD_PATH_ARROW_HALF_PX,
-    LOAD_PATH_ANIM_TICKS,
+    LOAD_PATH_ANIM_TICKS, STRESS_WIDTH_MIN, STRESS_WIDTH_MAX,
     MOMENT_ZERO_COLOR, MOMENT_NODE_OUTLINE, MOMENT_BACKDROP_COLOR,
     MOMENT_NODE_RADIUS_PX,
 )
@@ -98,6 +98,46 @@ class StereoRenderMixin:
         if N >= 0:
             return ((t_prog * 0.5, 1), (1.0 - t_prog * 0.5, -1))
         return ((0.5 - t_prog * 0.5, -1), (0.5 + t_prog * 0.5, 1))
+
+    @staticmethod
+    def _stress_widths(members, member_res):
+        """One drawn line width per member, scaled by how hard that member
+        is working compared with every other member in the model.
+
+        The quantity is axial STRESS, |N|/A -- not axial force. Two rods
+        carrying the same kN are not working equally hard if one of them
+        has twice the section, and it is the stress that decides whether
+        the material is close to yielding, so a thick line here means
+        "this rod's material is highly stressed" rather than merely "a big
+        number of kN passes through it". That also makes this genuinely
+        different information from the force colouring, which maps N.
+
+        Widths are LINEAR in the stress ratio: perceived line weight
+        tracks pixel width closely enough that the gamma compression the
+        colour ramps need would only misstate the ratio here. The scale
+        runs from STRESS_WIDTH_MIN at zero stress to STRESS_WIDTH_MAX at
+        the model's own maximum, and cannot exceed that cap -- see the
+        constants' own note on why an uncapped width is unreadable.
+
+        A member with no usable section (A missing or <= 0) contributes no
+        stress and is drawn at the minimum width rather than skipped, so
+        the picture never silently loses a rod. Returns None when there is
+        nothing to scale against (no results, or every member unstressed),
+        which is the caller's signal to use its own default width.
+        """
+        if not member_res:
+            return None
+        stresses = []
+        for i, m in enumerate(members):
+            area = m.get('A') or 0.0
+            N = member_res[i]['N'] if i < len(member_res) else 0.0
+            stresses.append(abs(N) / area if area > 0 else 0.0)
+        peak = max(stresses, default=0.0)
+        if peak <= 0.0:
+            return None
+        span = STRESS_WIDTH_MAX - STRESS_WIDTH_MIN
+        return [STRESS_WIDTH_MIN + span * min(1.0, s / peak) for s in stresses]
+
     def _draw(self):
         c = self.canvas
         c.delete('all')
@@ -146,6 +186,16 @@ class StereoRenderMixin:
         if (load_path_on or hide_zero_force) and not by_force:
             max_abs_N_lp = max((abs(mr['N']) for mr in self.results['member_res']), default=0.0)
 
+        # Thickness by stress is a RELATIVE measure (each member against the
+        # most-stressed one), so unlike the force/utilization colours it is
+        # deliberately not scaled by 'Load %': a linear solve scales every
+        # member's stress by the same factor, leaving the ratios -- and so
+        # the drawn widths -- identical at every setting of the slider.
+        stress_widths = None
+        if self.thickness_by_stress.get() and self.results is not None:
+            stress_widths = self._stress_widths(self.members,
+                                                self.results['member_res'])
+
         if not deformed_only:
             # While comparing against the deformed overlay, the reference
             # structure fades to a single adjustable grey (rather than its
@@ -162,15 +212,24 @@ class StereoRenderMixin:
                 if self.show_members.get() else []
             for i in order:
                 if hide_zero_force and max_abs_N_lp > 1e-9:
-                    # Same near-zero threshold force_color already uses to
-                    # flag a member NEAR_ZERO_COLOR -- this hides exactly
-                    # the members that colouring already calls "~0", so the
-                    # two stay consistent: a member never reads as "~0" in
-                    # one and "clearly carrying load" in the other. Skipped
-                    # entirely (no line, no halo) rather than dimmed, since
-                    # the point is decluttering the path, not softening it.
+                    # NEAR_ZERO_FRAC -- force_color's OWN threshold for
+                    # painting a member NEAR_ZERO_COLOR -- so this hides
+                    # exactly the members the colouring already calls "~0"
+                    # and a member can never read as "~0" in one and
+                    # "clearly carrying load" in the other. Deliberately NOT
+                    # LOAD_PATH_NEAR_ZERO_FRAC: that is the (slightly
+                    # tighter) cutoff for which members the load-path
+                    # animation leaves still, a separate question from which
+                    # ones are worth drawing at all. Using it here left a
+                    # band of members painted the "~0" grey that the toggle
+                    # nonetheless kept on screen.
+                    #
+                    # Both sides of the ratio scale with 'Load %' exactly as
+                    # the colouring does (N by frac, the max held at its
+                    # full-load value), so hidden == grey at every setting
+                    # of the slider, not just at 100%.
                     N_hide = self.results['member_res'][i]['N'] * frac
-                    if abs(N_hide) / max_abs_N_lp < LOAD_PATH_NEAR_ZERO_FRAC:
+                    if abs(N_hide) / max_abs_N_lp < NEAR_ZERO_FRAC:
                         continue
                 m = self.members[i]
                 ax, ay, _ = proj[m['a']]
@@ -205,9 +264,15 @@ class StereoRenderMixin:
                 else:
                     color = MEMBER_RIGID_COLOR if m.get('conn') == 'rigid' else MEMBER_PIN_COLOR
                 width = 2
+                if stress_widths is not None:
+                    width = stress_widths[i]
+                # Both of these RAISE the width rather than setting it, so a
+                # heavily stressed member never gets thinner for also being
+                # over capacity or selected -- the two cues stack instead of
+                # overwriting each other.
                 if chk and chk.get('checked') and chk['util'] * frac > 1.0:
                     over = True
-                    width = 3
+                    width = max(width, 3)
                 if i == self.selected_member:
                     width = max(width, 4)
                 # Slenderness is a purely geometric/section property (KL/r),
@@ -831,9 +896,12 @@ class StereoRenderMixin:
             # edges of a grid concentrates force until many members go
             # over capacity and turn dashed, with no visible link back to
             # this line otherwise).
-            row('#555555', 'dashed = over capacity (utilisation > 1.0)', dashed=True)
+            row('#555555', 'dashed = over capacity (utilization > 1.0)', dashed=True)
             if self.hide_zero_force.get() and self.results is not None:
                 caption('Rods reading ~0 force are hidden entirely (not just dimmed)')
+            if self.thickness_by_stress.get() and self.results is not None:
+                caption(f'Rod thickness = axial stress |N|/A vs the model\'s own '
+                       f'max (capped at {STRESS_WIDTH_MAX:.0f}px)')
             if self.shaded_faces.get() and self.results is not None:
                 caption('Shaded faces: flat colour/panel (approx., not a shell FEA)')
             if self.voronoi_faces.get() and self.results is not None:

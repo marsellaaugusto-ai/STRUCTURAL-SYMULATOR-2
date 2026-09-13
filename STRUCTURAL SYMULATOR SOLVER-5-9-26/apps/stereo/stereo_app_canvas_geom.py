@@ -29,6 +29,7 @@ def _clip_polygon_to_bbox(poly, xmin, ymin, xmax, ymax):
     """Sutherland-Hodgman clip of a convex polygon (list of (x, y) points)
     against an axis-aligned rectangle -- every Voronoi cell is convex, so
     this is exact (no need for a general, non-convex clipper)."""
+
     def clip_edge(points, inside, intersect):
         if not points:
             return []

@@ -18,6 +18,7 @@ from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_checks as sc
 from apps.stereo import expr_math as em
+from apps.stereo import stereo_voronoi3d as sv3
 from apps.stereo.stereo_app_constants import (
     DOF_LABELS, FAMILY_KEY, PATTERN_KEY, CHORD_ROLES,
     QUICK_SUPPORT_CUSTOM, QUICK_SUPPORT_PIN, QUICK_SUPPORT_FIXED,
@@ -164,6 +165,10 @@ class StereoModelMixin:
         self.members = mesh['members']
         self._support_candidates = mesh['support_candidates']
         self._load_nodes = mesh.get('load_nodes', {})
+        # The Voronoi band's radius is a length in MODEL units, so a default
+        # carried over from a 9 m grid would be meaningless on a 40 m bridge.
+        # Re-derived from the new mesh's own rod spacing instead.
+        self.voronoi_band.set(sv3.default_band_radius(self.nodes, self.members))
         self._apply_sections(members=self.members, redraw=False)
         self.supports = [{'node': i, 'type': 'pin'} for i in self._support_candidates]
         self.sup_quick_var.set(QUICK_SUPPORT_PIN)

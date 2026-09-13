@@ -70,6 +70,22 @@ STRESS_WIDTH_MAX = 7.0   # px, the hard cap at the highest stress in the model
 # direct multiplier on canvas items, so a dense model uses a coarser run --
 # on a 3000-rod grid each rod is only a few pixels long on screen and the
 # extra steps buy nothing visible.
+# The toolbar's two radio groups. Both exist because the underlying choice
+# really is one-of-N: only one quantity can colour the model at a time, and
+# only one fill can sit behind it. They were checkboxes once, with the
+# exclusivity enforced silently in the renderer (utilization beat force beat
+# moment) and nothing on screen admitting it.
+COLOUR_NONE = 'None'
+COLOUR_FORCE = 'Axial force'
+COLOUR_UTIL = 'Utilization'
+COLOUR_MOMENT = 'Node moment'
+COLOUR_MODES = (COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT)
+
+FILL_NONE = 'None'
+FILL_SHADED = 'Shaded cells'
+FILL_VORONOI = 'Voronoi'
+FILL_MODES = (FILL_NONE, FILL_SHADED, FILL_VORONOI)
+
 GRADIENT_SEGMENTS = 8
 GRADIENT_SEGMENTS_DENSE = 4
 GRADIENT_DENSE_MEMBERS = 900

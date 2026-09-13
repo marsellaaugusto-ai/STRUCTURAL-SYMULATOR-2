@@ -25,12 +25,15 @@ from apps.stereo.stereo_app import (
     MODULE_DIM_COLOR, SUPPORT_DISABLED_COLOR, SLENDER_HALO_COLOR, SLENDERNESS_LIMIT,
     LOAD_PATH_COLOR, LOAD_PATH_ANIM_TICKS, LOAD_PATH_NEAR_ZERO_FRAC, NEAR_ZERO_COLOR,
     NEAR_ZERO_FRAC, STRESS_WIDTH_MIN, STRESS_WIDTH_MAX,
+    COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT,
+    FILL_NONE, FILL_SHADED, FILL_VORONOI,
     GRADIENT_SEGMENTS, GRADIENT_SEGMENTS_DENSE, GRADIENT_DENSE_MEMBERS,
     MOMENT_BACKDROP_COLOR, MOMENT_NODE_RADIUS_PX,
     TENSION_HIGH, COMPRESSION_HIGH,
     _clip_polygon_to_bbox, _voronoi_cells_2d,
 )
 from apps.stereo import stereo_math as sm
+from apps.stereo import stereo_voronoi3d as sv3
 
 
 @pytest.fixture(autouse=True)
@@ -2630,6 +2633,126 @@ def test_hide_zero_force_legend_caption_appears_only_when_active(app):
     assert any('hidden entirely' in t for t in texts)
 
 
+# ── toolbar: the two radio groups ────────────────────────────────────────────
+
+def test_colour_radio_sets_exactly_one_colour_flag(app):
+    # the exclusivity used to live in the renderer as a silent precedence
+    # rule (utilization beat force beat moment); now one radio owns it.
+    for mode, expect in ((COLOUR_FORCE, (True, False, False)),
+                         (COLOUR_UTIL, (False, True, False)),
+                         (COLOUR_MOMENT, (False, False, True)),
+                         (COLOUR_NONE, (False, False, False))):
+        app.colour_mode.set(mode)
+        app._on_colour_mode_change()
+        got = (app.colour_by_force.get(), app.colour_by_util.get(),
+               app.colour_by_moment.get())
+        assert got == expect, f'{mode} -> {got}'
+
+
+def test_fill_radio_sets_exactly_one_fill_flag(app):
+    for mode, expect in ((FILL_NONE, (False, False)),
+                         (FILL_SHADED, (True, False)),
+                         (FILL_VORONOI, (False, True))):
+        app.faces_mode.set(mode)
+        app._on_faces_mode_change()
+        got = (app.shaded_faces.get(), app.voronoi_faces.get())
+        assert got == expect, f'{mode} -> {got}'
+
+
+def test_every_toolbar_choice_redraws(app):
+    app._analyze()
+    app.colour_mode.set(COLOUR_UTIL)
+    app._on_colour_mode_change()
+    assert app.canvas.find_all()          # a redraw happened, nothing raised
+
+
+# ── 3D Voronoi in the UI ─────────────────────────────────────────────────────
+
+def test_voronoi_defaults_to_skin_of_the_hull(app):
+    assert app.voronoi_view.get() == sv3.VIEW_SKIN
+    assert app.voronoi_domain.get() == sv3.DOMAIN_HULL
+
+
+def test_band_radius_is_re_derived_for_each_new_mesh(app):
+    app.grid_family.set(FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_module.set(3.0)
+    app._generate()
+    small = app.voronoi_band.get()
+    app.fg_module.set(9.0)                 # a much coarser grid
+    app._generate()
+    assert app.voronoi_band.get() > small
+
+
+@pytest.mark.parametrize('view', sv3.VIEWS)
+@pytest.mark.parametrize('domain', sv3.DOMAINS)
+def test_every_voronoi_view_and_domain_draws(app, view, domain):
+    app._analyze()
+    app.faces_mode.set(FILL_VORONOI)
+    app._on_faces_mode_change()
+    app.voronoi_view.set(view)
+    app.voronoi_domain.set(domain)
+    app._draw()
+    assert app.canvas.find_withtag('voronoi_face'), f'{view}/{domain} drew nothing'
+
+
+def test_voronoi_works_for_every_colour_system(app):
+    app.sec_conn.set('rigid')
+    app._apply_sections()
+    for s in app.supports:
+        s['type'] = 'fixed'
+    app._analyze()
+    app.faces_mode.set(FILL_VORONOI)
+    app._on_faces_mode_change()
+    for mode in (COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT):
+        app.colour_mode.set(mode)
+        app._on_colour_mode_change()
+        assert app.canvas.find_withtag('voronoi_face'), f'no cells for {mode}'
+    # and for deformation, whose spectrum lives on the deformed overlay
+    app.colour_mode.set(COLOUR_NONE)
+    app._on_colour_mode_change()
+    app.show_deformed.set(True)
+    app._draw()
+    assert app.canvas.find_withtag('voronoi_face'), 'no cells for displacement'
+
+
+def test_voronoi_sites_are_nodes_for_moment_and_midpoints_for_force(app):
+    app._analyze()
+    app.faces_mode.set(FILL_VORONOI)
+    app._on_faces_mode_change()
+    app.colour_mode.set(COLOUR_FORCE)
+    app._on_colour_mode_change()
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any('rod midpoints' in t for t in texts)
+
+
+def test_voronoi_cache_survives_an_orbit_but_not_a_domain_change(app):
+    app._analyze()
+    app.faces_mode.set(FILL_VORONOI)
+    app._on_faces_mode_change()
+    app._draw()
+    cached = app._voronoi_cache
+    assert cached is not None
+
+    app.azimuth += 25.0                     # orbiting must NOT rebuild it
+    app._draw()
+    assert app._voronoi_cache is cached
+
+    app.voronoi_domain.set(sv3.DOMAIN_BAND)  # a domain change must
+    app._draw()
+    assert app._voronoi_cache is not cached
+
+
+def test_voronoi_is_a_no_op_before_analysis(app):
+    app.results = None
+    app.faces_mode.set(FILL_VORONOI)
+    app._on_faces_mode_change()
+    app._draw()                              # must not raise
+    assert not app.canvas.find_withtag('voronoi_face')
+
+
 # ── smooth rod gradient ──────────────────────────────────────────────────────
 
 def _member_fills(app, tag='member'):
@@ -3009,10 +3132,10 @@ def test_voronoi_faces_legend_caption_appears_only_when_active(app):
     app._draw()
     texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
             if app.canvas.type(i) == 'text']
-    assert not any('Voronoi cells' in t for t in texts)
+    assert not any('3D Voronoi' in t for t in texts)
 
     app.voronoi_faces.set(True)
     app._draw()
     texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
             if app.canvas.type(i) == 'text']
-    assert any('Voronoi cells' in t for t in texts)
+    assert any('3D Voronoi' in t for t in texts)

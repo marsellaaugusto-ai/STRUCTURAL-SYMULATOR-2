@@ -116,6 +116,11 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         self._load_path_after_id = None
         self._add_rod_first = None   # first-picked node while 'Add rod' mode is on
         self._shaded_cells = None    # lazy cache, see _get_shaded_cells
+        # The 3D Voronoi tessellation is expensive to build and independent
+        # of the camera, so it is cached against everything it really depends
+        # on (geometry, domain, view, slice) and reused while orbiting.
+        self._voronoi_cache = None
+        self._voronoi_note = ''
 
         self.azimuth = 35.0
         self.elevation = 22.0

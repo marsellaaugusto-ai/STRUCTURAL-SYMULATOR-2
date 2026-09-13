@@ -27,7 +27,7 @@ from apps.stereo.stereo_app_colors import (
     force_color, deform_color, util_color, moment_color,
     reaction_moment_signed,
 )
-from apps.stereo.stereo_app_canvas_geom import _voronoi_cells_2d
+from apps.stereo import stereo_voronoi3d as sv3
 from apps.stereo.stereo_app_constants import (
     NODE_COLOR, NODE_SEL_COLOR, ADD_ROD_PENDING_COLOR,
     SUPPORT_COLOR, SUPPORT_DISABLED_COLOR, SUPPORT_BOX_HALF_PX,
@@ -663,61 +663,110 @@ class StereoRenderMixin:
 
     def _draw_voronoi_faces(self, c, proj, to_screen, frac, by_util, by_force, max_abs_N,
                             by_moment, moment_by_node, max_abs_moment):
-        """An alternative to _draw_shaded_faces that needs no mesh-topology
-        cells at all: a 2D Voronoi tessellation of whichever points the
-        active colour mode is actually about, each cell filled with that
-        point's own colour. Since it works from bare proximity rather
-        than find_cells's panels, it still produces a continuous-looking
-        shaded sheet on a mesh with no clean quad/triangle faces to find
-        (a sparse dome, a one-off rod added by hand, ...) -- the same
-        "read it as one sheet" goal as the shaded-faces mode, by a
-        different, cell-free means.
+        """A true 3D Voronoi tessellation of the model, drawn behind it.
 
-        Moment mode's sites are the NODES themselves -- moment is a
-        nodal quantity, so this is the natural choice. Force/utilization
-        mode's sites are each member's own MIDPOINT: a member has no
-        single point that is uniquely "where its value lives", so this
-        is a reasonable but genuinely debatable stand-in, flagged as such
-        in the legend caption this mode adds rather than presented as
-        the one correct answer.
+        The tessellation lives in MODEL space, not on the screen: the cells
+        are attached to the structure and hold still while the camera moves,
+        and they are confined to the volume the structure actually occupies
+        (see stereo_voronoi3d for the domain and view choices, both of which
+        are the user's to make). All four spectra can drive it -- force,
+        utilization, node moment and deformation.
 
-        Same precedence as _draw_shaded_faces (utilization, then force,
-        then moment -- at most one fill layer at a time), same flat-
-        colour-per-cell caveat (Tk canvas polygons cannot blend a smooth
-        gradient across a cell), and drawn then tag_lower'd behind
-        everything else the same way.
+        Needs no mesh topology at all, which is what it offers over
+        _draw_shaded_faces: bare proximity still produces a continuous sheet
+        on a mesh with no clean quad/triangle faces to find (a sparse dome, a
+        rod added by hand). Cells carry one flat colour each -- a Tk canvas
+        polygon cannot blend across itself -- so the smooth gradient remains
+        the way to read a continuous field along the rods.
         """
-        points, colors = [], []
-        if by_util and self.member_checks is not None:
-            for i, m in enumerate(self.members):
-                if i >= len(self.member_checks) or not self.member_checks[i].get('checked'):
-                    continue
-                ax, ay, _ = proj[m['a']]
-                bx, byy, _ = proj[m['b']]
-                sx0, sy0 = to_screen(ax, ay)
-                sx1, sy1 = to_screen(bx, byy)
-                points.append(((sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0))
-                colors.append(util_color(self.member_checks[i]['util'] * frac))
-        elif by_force and self.results is not None:
-            for i, m in enumerate(self.members):
-                ax, ay, _ = proj[m['a']]
-                bx, byy, _ = proj[m['b']]
-                sx0, sy0 = to_screen(ax, ay)
-                sx1, sy1 = to_screen(bx, byy)
-                points.append(((sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0))
-                N = self.results['member_res'][i]['N'] * frac
-                colors.append(force_color(N, max_abs_N))
-        elif by_moment and moment_by_node:
-            for n, m_val in moment_by_node.items():
-                px, py, _ = proj[n]
-                points.append(to_screen(px, py))
-                colors.append(moment_color(m_val, max_abs_moment))
-        else:
+        spec = self._voronoi_site_values(frac, by_util, by_force, max_abs_N,
+                                        by_moment, moment_by_node, max_abs_moment)
+        if spec is None:
+            return
+        sites, colours = spec
+        patches = self._voronoi_patches(sites)
+        self._voronoi_note = '' if patches else (
+            f'model too large for the Cells view ({len(sites)} sites) — '
+            f'use Skin or Section')
+        if not patches:
             return
 
-        for idx, poly in _voronoi_cells_2d(points):
-            c.create_polygon(*poly, fill=colors[idx], outline='', tags='voronoi_face')
+        # Painter's algorithm: the tessellation is solid geometry, so a patch
+        # behind another has to be drawn first. Depth comes from the same
+        # projection the wireframe uses, so the two always agree about what
+        # is in front.
+        drawn = []
+        for poly, owner in patches:
+            pts, depth = [], 0.0
+            for x, y, z in poly:
+                px, py, d = self._project(x, y, z)
+                sx, sy = to_screen(px, py)
+                pts += [sx, sy]
+                depth += d
+            drawn.append((depth / max(1, len(poly)), pts, owner))
+        drawn.sort(key=lambda t: -t[0])
+
+        stipple = 'gray50' if self.voronoi_view.get() == sv3.VIEW_CELLS else ''
+        for _depth, pts, owner in drawn:
+            c.create_polygon(*pts, fill=colours[owner], outline='',
+                             stipple=stipple, tags='voronoi_face')
         c.tag_lower('voronoi_face')
+
+    def _voronoi_site_values(self, frac, by_util, by_force, max_abs_N,
+                             by_moment, moment_by_node, max_abs_moment):
+        """(sites, colour-per-site) for whichever spectrum is active.
+
+        Moment and deformation are NODAL quantities, so their sites are the
+        nodes themselves. Force and utilization belong to a rod, which has no
+        single point where its value uniquely lives, so the rod's midpoint
+        stands in -- a reasonable choice but a genuinely debatable one, which
+        is why the legend says which it used rather than leaving it implied.
+        """
+        if by_util and self.member_checks is not None:
+            sites = sv3.member_midpoints(self.nodes, self.members)
+            cols = [util_color((self.member_checks[i]['util'] * frac)
+                               if i < len(self.member_checks)
+                               and self.member_checks[i].get('checked') else 0.0)
+                    for i in range(len(self.members))]
+            return sites, cols
+        if by_force and self.results is not None:
+            sites = sv3.member_midpoints(self.nodes, self.members)
+            cols = [force_color(mr['N'] * frac, max_abs_N)
+                    for mr in self.results['member_res']]
+            return sites, cols
+        if by_moment and moment_by_node:
+            sites = [self.nodes[i] for i in range(len(self.nodes))]
+            cols = [moment_color(moment_by_node.get(i, 0.0), max_abs_moment)
+                    for i in range(len(self.nodes))]
+            return sites, cols
+        if self.show_deformed.get() and self.results is not None:
+            _deformed, disp_mm = self._deformed_nodes_and_disp()
+            top = max(disp_mm, default=0.0)
+            return list(self.nodes), [deform_color(d, top) for d in disp_mm]
+        return None
+
+    def _voronoi_patches(self, sites):
+        """The tessellation's patches, rebuilt only when something it
+        actually depends on has changed.
+
+        Being in model space, the tessellation does NOT depend on the camera
+        -- which is the whole point of moving it off the screen -- so orbiting
+        reuses this cache and only re-projects.
+        """
+        key = (len(self.nodes), len(self.members), len(sites),
+               self.voronoi_view.get(), self.voronoi_domain.get(),
+               round(float(self.voronoi_band.get()), 4),
+               self.voronoi_axis.get(), round(float(self.voronoi_slice.get()), 4))
+        if self._voronoi_cache is not None and self._voronoi_cache[0] == key:
+            return self._voronoi_cache[1]
+        patches = sv3.build(
+            self.nodes, self.members, sites,
+            self.voronoi_view.get(), self.voronoi_domain.get(),
+            band_r=float(self.voronoi_band.get()),
+            section_axis='XYZ'.index(self.voronoi_axis.get()),
+            section_position=float(self.voronoi_slice.get()) / 100.0)
+        self._voronoi_cache = (key, patches)
+        return patches
 
     def _reference_grey(self):
         """The reference (rest) structure's adjustable grey shade, used
@@ -1028,8 +1077,17 @@ class StereoRenderMixin:
                        f'max (capped at {STRESS_WIDTH_MAX:.0f}px)')
             if self.shaded_faces.get() and self.results is not None:
                 caption('Shaded faces: flat colour/panel (approx., not a shell FEA)')
+            if self.voronoi_faces.get() and self.results is not None and self._voronoi_note:
+                caption(f'Voronoi: {self._voronoi_note}')
             if self.voronoi_faces.get() and self.results is not None:
-                caption('Voronoi cells: by node (moment) or rod midpoint (force/util.)')
+                nodal = self.colour_by_moment.get() or (
+                    self.show_deformed.get() and not self.colour_by_force.get()
+                    and not self.colour_by_util.get())
+                caption(f'3D Voronoi · {self.voronoi_view.get()} of the '
+                       f'{self.voronoi_domain.get().lower()}'
+                       + (f" (r={float(self.voronoi_band.get()):g} m)"
+                          if self.voronoi_domain.get() == sv3.DOMAIN_BAND else '')
+                       + f", sites = {'nodes' if nodal else 'rod midpoints'}")
             if self.flag_slender.get() and self.member_checks is not None:
                 row(SLENDER_HALO_COLOR, f'halo = slender compression member '
                                        f'(KL/r > {SLENDERNESS_LIMIT:.0f})', dashed=True)

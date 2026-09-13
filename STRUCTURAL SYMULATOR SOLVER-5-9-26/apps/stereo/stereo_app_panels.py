@@ -17,25 +17,68 @@ from common import ZoomCanvas, FlowBar, ScrollPanel
 
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_examples as sx
+from apps.stereo import stereo_voronoi3d as sv3
 from apps.stereo.stereo_app_constants import (
     BG, CANVAS_BG, PANEL_W, MODULE_PANEL_W,
     DOF_LABELS, PRESET_NAMES, GRID_PATTERNS, PATTERN_LABEL, GRID_FAMILIES,
     QUICK_SUPPORT_PIN, QUICK_SUPPORT_CHOICES,
     DEFORM_MODES, DEFORM_MODE_DISPLACEMENT,
     MOMENT_AXES, MOMENT_AXIS_RESULTANT,
+    COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT, COLOUR_MODES,
+    FILL_NONE, FILL_SHADED, FILL_VORONOI, FILL_MODES,
 )
 
 
-class StereoPanelsMixin:
+class _ToolbarModes:
+    """Translates the toolbar's two radio groups into the boolean flags the
+    renderer reads.
+
+    The radios are what a person sees and the booleans are what the drawing
+    code asks, and keeping both means the exclusivity is enforced in ONE
+    obvious place -- setting a radio clears the others by construction --
+    instead of being re-derived as a precedence rule at every draw.
+    """
+
+    def _on_colour_mode_change(self):
+        mode = self.colour_mode.get()
+        self.colour_by_force.set(mode == COLOUR_FORCE)
+        self.colour_by_util.set(mode == COLOUR_UTIL)
+        self.colour_by_moment.set(mode == COLOUR_MOMENT)
+        self._draw()
+
+    def _on_faces_mode_change(self):
+        mode = self.faces_mode.get()
+        self.shaded_faces.set(mode == FILL_SHADED)
+        self.voronoi_faces.set(mode == FILL_VORONOI)
+        self._draw()
+
+
+class StereoPanelsMixin(_ToolbarModes):
     """Builds the toolbar, the 3D canvas and every sidebar panel."""
+
+    def _tb_group(self, caption):
+        """One captioned toolbar group.
+
+        Every group says what it is FOR, because a row of bare checkboxes
+        cannot: the caption is what tells you that 'Skin' belongs to the
+        Voronoi fill and not to the rods, or that 'Only' means only the
+        deformed shape. Two widget types, used consistently, carry the rest
+        of the meaning -- a RADIO where exactly one choice applies, a
+        CHECKBOX where something is independently on or off.
+        """
+        g = self.toolbar_flow.group()
+        tk.Label(g, text=caption, bg=BG, font=('Helvetica', 7, 'bold'),
+                 fg='#7a869a').pack(side='left', padx=(4, 5))
+        return g
 
     def _build_ui(self):
         tb = tk.Frame(self.root, bg=BG)
         tb.pack(side='top', fill='x')
         self.toolbar_flow = FlowBar(tb)
 
-        g = self.toolbar_flow.group()
-        tk.Label(g, text='Grid family:', bg=BG).pack(side='left', padx=(4, 2))
+        # ── 1 · BUILD ────────────────────────────────────────────────────────
+        g = self._tb_group('BUILD')
+        tk.Label(g, text='Grid family:', bg=BG).pack(side='left', padx=(0, 2))
         fam_box = ttk.Combobox(g, textvariable=self.grid_family, state='readonly', width=34,
                                values=[label for _key, label in GRID_FAMILIES])
         fam_box.pack(side='left')
@@ -52,38 +95,55 @@ class StereoPanelsMixin:
                                       command=lambda b=builder, lbl=label: self._load_example(b, lbl))
         examples_btn['menu'] = examples_menu
         examples_btn.pack(side='left', padx=(2, 4))
+        tk.Button(g, text='Undo', command=self._undo).pack(side='left', padx=(6, 1))
+        tk.Button(g, text='Redo', command=self._redo).pack(side='left', padx=1)
+        self.add_rod_mode = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Add rod (click 2 nodes)', variable=self.add_rod_mode,
+                       bg=BG, command=self._on_add_rod_mode_toggle).pack(side='left', padx=(6, 0))
 
+        # ── 2 · SOLVE ────────────────────────────────────────────────────────
         self.toolbar_flow.separator()
-        g = self.toolbar_flow.group()
+        g = self._tb_group('SOLVE')
         tk.Button(g, text='▶ Analyze', font=('Helvetica', 9, 'bold'), bg='#dff0d8',
                   command=self._analyze).pack(side='left', padx=2)
-        tk.Button(g, text='Reset view', command=self._reset_view).pack(side='left', padx=2)
+        tk.Label(g, text='Load %:', bg=BG, font=('Helvetica', 9)).pack(side='left', padx=(8, 2))
+        self.load_fraction = tk.IntVar(value=100)
+        tk.Scale(g, from_=0, to=100, orient='horizontal', variable=self.load_fraction,
+                length=100, showvalue=True, command=lambda _v: self._draw()
+                ).pack(side='left')
 
+        # ── 3 · COLOUR BY ────────────────────────────────────────────────────
+        # One quantity at a time, so this is a radio. It replaces three
+        # independent checkboxes whose mutual exclusivity was real but
+        # invisible -- utilization silently won over force, which won over
+        # moment, and nothing on screen said so.
         self.toolbar_flow.separator()
-        g = self.toolbar_flow.group()
+        g = self._tb_group('COLOUR BY')
         self.colour_by_force = tk.BooleanVar(value=True)
-        tk.Checkbutton(g, text='Colour by force', variable=self.colour_by_force, bg=BG,
-                       command=self._draw).pack(side='left')
         self.colour_by_util = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Utilization heat-map', variable=self.colour_by_util, bg=BG,
-                       command=self._draw).pack(side='left', padx=(6, 0))
+        self.colour_by_moment = tk.BooleanVar(value=False)
+        self.colour_mode = tk.StringVar(value=COLOUR_FORCE)
+        for label in COLOUR_MODES:
+            tk.Radiobutton(g, text=label, value=label, variable=self.colour_mode,
+                           bg=BG, command=self._on_colour_mode_change
+                           ).pack(side='left', padx=(0, 4))
+        self.moment_axis = tk.StringVar(value=MOMENT_AXIS_RESULTANT)
+        moment_axis_box = ttk.Combobox(g, textvariable=self.moment_axis, state='readonly',
+                                       width=15, values=MOMENT_AXES)
+        moment_axis_box.pack(side='left', padx=(2, 0))
+        moment_axis_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
+
+        # ── 4 · DRAW RODS AS ─────────────────────────────────────────────────
+        self.toolbar_flow.separator()
+        g = self._tb_group('DRAW RODS AS')
         self.smooth_gradient = tk.BooleanVar(value=False)
-        # Applies to whichever colour spectrum is active -- force,
-        # utilization, node moment or deformation -- rather than being a
-        # mode of its own, so it composes with the rest of this row.
         tk.Checkbutton(g, text='Smooth gradient', variable=self.smooth_gradient,
-                       bg=BG, command=self._draw).pack(side='left', padx=(6, 0))
+                       bg=BG, command=self._draw).pack(side='left')
         self.thickness_by_stress = tk.BooleanVar(value=False)
-        # Sits with the colour modes because it answers the same question
-        # ("how hard is this rod working?") through a second, independent
-        # channel -- width instead of hue -- so the two can be read at once.
-        tk.Checkbutton(g, text='Thickness by stress', variable=self.thickness_by_stress,
+        tk.Checkbutton(g, text='Thickness = stress', variable=self.thickness_by_stress,
                        bg=BG, command=self._draw).pack(side='left', padx=(6, 0))
-        self.shaded_faces = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Shaded faces', variable=self.shaded_faces, bg=BG,
-                       command=self._draw).pack(side='left', padx=(6, 0))
-        self.voronoi_faces = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Voronoi tessellation', variable=self.voronoi_faces, bg=BG,
+        self.hide_zero_force = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Hide ~0-force rods', variable=self.hide_zero_force, bg=BG,
                        command=self._draw).pack(side='left', padx=(6, 0))
         self.flag_slender = tk.BooleanVar(value=False)
         # Short on purpose: the KL/r threshold itself is shown in the legend
@@ -96,98 +156,130 @@ class StereoPanelsMixin:
         tk.Checkbutton(g, text='Flag slender compression members',
                        variable=self.flag_slender, bg=BG,
                        command=self._draw).pack(side='left', padx=(6, 0))
-        self.show_deformed = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Show deformed', variable=self.show_deformed, bg=BG,
-                       command=self._draw).pack(side='left', padx=(8, 0))
-        self.deform_scale = tk.IntVar(value=50)
-        tk.Scale(g, from_=1, to=500, orient='horizontal', variable=self.deform_scale,
-                length=90, showvalue=True, command=lambda _v: self._draw()
-                ).pack(side='left')
-        self.deformed_only = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Deformed only', variable=self.deformed_only, bg=BG,
-                       command=self._draw).pack(side='left', padx=(8, 0))
 
+        # ── 5 · FILL ─────────────────────────────────────────────────────────
+        # One fill at a time, so again a radio. Whichever is chosen takes its
+        # colours from the COLOUR BY group above -- the fill decides the
+        # SHAPE being coloured, never the quantity.
         self.toolbar_flow.separator()
-        g = self.toolbar_flow.group()
-        tk.Label(g, text='Deformed colour:', bg=BG, font=('Helvetica', 9)
-                ).pack(side='left', padx=(0, 2))
-        self.deform_color_mode = tk.StringVar(value=DEFORM_MODE_DISPLACEMENT)
-        deform_mode_box = ttk.Combobox(g, textvariable=self.deform_color_mode, state='readonly',
-                                       width=16, values=DEFORM_MODES)
-        deform_mode_box.pack(side='left')
-        deform_mode_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
-        tk.Label(g, text='Reference shade:', bg=BG, font=('Helvetica', 9)
-                ).pack(side='left', padx=(8, 2))
-        self.reference_shade = tk.IntVar(value=78)
-        tk.Scale(g, from_=0, to=100, orient='horizontal', variable=self.reference_shade,
+        g = self._tb_group('FILL')
+        self.shaded_faces = tk.BooleanVar(value=False)
+        self.voronoi_faces = tk.BooleanVar(value=False)
+        self.faces_mode = tk.StringVar(value=FILL_NONE)
+        for label in FILL_MODES:
+            tk.Radiobutton(g, text=label, value=label, variable=self.faces_mode,
+                           bg=BG, command=self._on_faces_mode_change
+                           ).pack(side='left', padx=(0, 4))
+
+        # ── 6 · VORONOI ──────────────────────────────────────────────────────
+        # Its own group because these only mean anything once FILL is set to
+        # Voronoi: the domain is which volume the cells may occupy, the view
+        # is how that solid is put on a flat screen.
+        self.toolbar_flow.separator()
+        g = self._tb_group('VORONOI')
+        tk.Label(g, text='domain', bg=BG, font=('Helvetica', 8), fg='#556')\
+            .pack(side='left', padx=(0, 2))
+        self.voronoi_domain = tk.StringVar(value=sv3.DOMAIN_HULL)
+        for label in sv3.DOMAINS:
+            tk.Radiobutton(g, text=label, value=label, variable=self.voronoi_domain,
+                           bg=BG, command=self._draw).pack(side='left', padx=(0, 3))
+        tk.Label(g, text='r(m)', bg=BG, font=('Helvetica', 8), fg='#556')\
+            .pack(side='left', padx=(2, 1))
+        self.voronoi_band = tk.DoubleVar(value=1.0)
+        band_entry = tk.Entry(g, textvariable=self.voronoi_band, width=5)
+        band_entry.pack(side='left')
+        band_entry.bind('<Return>', lambda e: self._draw())
+        band_entry.bind('<FocusOut>', lambda e: self._draw())
+
+        tk.Label(g, text='view', bg=BG, font=('Helvetica', 8), fg='#556')\
+            .pack(side='left', padx=(8, 2))
+        self.voronoi_view = tk.StringVar(value=sv3.VIEW_SKIN)
+        for label in sv3.VIEWS:
+            tk.Radiobutton(g, text=label, value=label, variable=self.voronoi_view,
+                           bg=BG, command=self._draw).pack(side='left', padx=(0, 3))
+        tk.Label(g, text='slice', bg=BG, font=('Helvetica', 8), fg='#556')\
+            .pack(side='left', padx=(8, 2))
+        self.voronoi_axis = tk.StringVar(value='Z')
+        axis_box = ttk.Combobox(g, textvariable=self.voronoi_axis, state='readonly',
+                                width=2, values=('X', 'Y', 'Z'))
+        axis_box.pack(side='left')
+        axis_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
+        self.voronoi_slice = tk.IntVar(value=50)
+        tk.Scale(g, from_=0, to=100, orient='horizontal', variable=self.voronoi_slice,
                 length=80, showvalue=False, command=lambda _v: self._draw()
                 ).pack(side='left')
 
+        # ── 7 · DEFORMED SHAPE ───────────────────────────────────────────────
+        # Kept apart from COLOUR BY on purpose: this colours a DIFFERENT
+        # object -- the displaced copy drawn over the structure -- so it
+        # carries its own quantity choice rather than competing for the one
+        # above.
         self.toolbar_flow.separator()
-        g = self.toolbar_flow.group()
-        self.show_axes = tk.BooleanVar(value=True)
-        tk.Checkbutton(g, text='XYZ axes + ground (z=0)', variable=self.show_axes, bg=BG,
+        g = self._tb_group('DEFORMED SHAPE')
+        self.show_deformed = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Show', variable=self.show_deformed, bg=BG,
                        command=self._draw).pack(side='left')
+        tk.Label(g, text='×', bg=BG, font=('Helvetica', 9)).pack(side='left', padx=(4, 0))
+        self.deform_scale = tk.IntVar(value=50)
+        tk.Scale(g, from_=1, to=500, orient='horizontal', variable=self.deform_scale,
+                length=80, showvalue=True, command=lambda _v: self._draw()
+                ).pack(side='left')
+        self.deformed_only = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Only', variable=self.deformed_only, bg=BG,
+                       command=self._draw).pack(side='left', padx=(4, 0))
+        tk.Label(g, text='colour', bg=BG, font=('Helvetica', 8), fg='#556'
+                ).pack(side='left', padx=(6, 2))
+        self.deform_color_mode = tk.StringVar(value=DEFORM_MODE_DISPLACEMENT)
+        deform_mode_box = ttk.Combobox(g, textvariable=self.deform_color_mode, state='readonly',
+                                       width=14, values=DEFORM_MODES)
+        deform_mode_box.pack(side='left')
+        deform_mode_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
+        tk.Label(g, text='ref. shade', bg=BG, font=('Helvetica', 8), fg='#556'
+                ).pack(side='left', padx=(6, 2))
+        self.reference_shade = tk.IntVar(value=78)
+        tk.Scale(g, from_=0, to=100, orient='horizontal', variable=self.reference_shade,
+                length=70, showvalue=False, command=lambda _v: self._draw()
+                ).pack(side='left')
+
+        # ── 8 · SHOW ─────────────────────────────────────────────────────────
+        # Independent annotations drawn over whatever the groups above
+        # produced -- every one of these is on or off by itself, which is why
+        # they are all checkboxes and all live together.
+        self.toolbar_flow.separator()
+        g = self._tb_group('SHOW')
         self.show_members = tk.BooleanVar(value=True)
-        tk.Checkbutton(g, text='Show rods', variable=self.show_members, bg=BG,
-                       command=self._draw).pack(side='left', padx=(6, 0))
+        tk.Checkbutton(g, text='Rods', variable=self.show_members, bg=BG,
+                       command=self._draw).pack(side='left')
         self.show_nodes = tk.BooleanVar(value=True)
-        tk.Checkbutton(g, text='Show nodes', variable=self.show_nodes, bg=BG,
-                       command=self._draw).pack(side='left', padx=(6, 0))
-        self.hide_zero_force = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Hide ~0-force rods', variable=self.hide_zero_force, bg=BG,
-                       command=self._draw).pack(side='left', padx=(6, 0))
+        tk.Checkbutton(g, text='Nodes', variable=self.show_nodes, bg=BG,
+                       command=self._draw).pack(side='left', padx=(4, 0))
         self.show_node_labels = tk.BooleanVar(value=True)
         tk.Checkbutton(g, text='Node #', variable=self.show_node_labels, bg=BG,
-                       command=self._draw).pack(side='left', padx=(6, 0))
+                       command=self._draw).pack(side='left', padx=(4, 0))
         self.show_member_labels = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Member #', variable=self.show_member_labels, bg=BG,
-                       command=self._draw).pack(side='left', padx=(6, 0))
+        tk.Checkbutton(g, text='Rod #', variable=self.show_member_labels, bg=BG,
+                       command=self._draw).pack(side='left', padx=(4, 0))
         self.show_loads = tk.BooleanVar(value=True)
-        tk.Checkbutton(g, text='Load arrows', variable=self.show_loads, bg=BG,
-                       command=self._draw).pack(side='left', padx=(6, 0))
+        tk.Checkbutton(g, text='Loads', variable=self.show_loads, bg=BG,
+                       command=self._draw).pack(side='left', padx=(4, 0))
         self.show_reactions = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Reaction arrows', variable=self.show_reactions, bg=BG,
-                       command=self._draw).pack(side='left', padx=(6, 0))
-        self.colour_by_moment = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Nodes by moment (rigid)', variable=self.colour_by_moment,
-                      bg=BG, command=self._draw).pack(side='left', padx=(6, 0))
-        self.moment_axis = tk.StringVar(value=MOMENT_AXIS_RESULTANT)
-        moment_axis_box = ttk.Combobox(g, textvariable=self.moment_axis, state='readonly',
-                                       width=15, values=MOMENT_AXES)
-        moment_axis_box.pack(side='left', padx=(2, 0))
-        moment_axis_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
+        tk.Checkbutton(g, text='Reactions', variable=self.show_reactions, bg=BG,
+                       command=self._draw).pack(side='left', padx=(4, 0))
+        self.show_axes = tk.BooleanVar(value=True)
+        tk.Checkbutton(g, text='Axes + ground', variable=self.show_axes, bg=BG,
+                       command=self._draw).pack(side='left', padx=(4, 0))
         self.load_path_anim = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Animate load path', variable=self.load_path_anim, bg=BG,
-                      command=self._on_load_path_anim_toggle).pack(side='left', padx=(6, 0))
+        tk.Checkbutton(g, text='Load-path arrows', variable=self.load_path_anim, bg=BG,
+                      command=self._on_load_path_anim_toggle).pack(side='left', padx=(4, 0))
 
+        # ── 9 · OUTPUT ───────────────────────────────────────────────────────
         self.toolbar_flow.separator()
-        g = self.toolbar_flow.group()
-        tk.Label(g, text='Load %:', bg=BG, font=('Helvetica', 9)).pack(side='left', padx=(0, 2))
-        self.load_fraction = tk.IntVar(value=100)
-        tk.Scale(g, from_=0, to=100, orient='horizontal', variable=self.load_fraction,
-                length=110, showvalue=True, command=lambda _v: self._draw()
-                ).pack(side='left')
-        tk.Label(g, text='(steps through the applied load; the solved '
-                       'model is linear, so this just scales the results)',
-                bg=BG, font=('Helvetica', 7), fg='#888').pack(side='left', padx=(4, 0))
-
-        self.toolbar_flow.separator()
-        g = self.toolbar_flow.group()
-        tk.Button(g, text='Undo', command=self._undo).pack(side='left', padx=1)
-        tk.Button(g, text='Redo', command=self._redo).pack(side='left', padx=1)
-
-        self.toolbar_flow.separator()
-        g = self.toolbar_flow.group()
-        self.add_rod_mode = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Add rod (click 2 nodes)', variable=self.add_rod_mode,
-                       bg=BG, command=self._on_add_rod_mode_toggle).pack(side='left')
-
-        self.toolbar_flow.separator()
-        g = self.toolbar_flow.group()
+        g = self._tb_group('OUTPUT')
+        tk.Button(g, text='Reset view', command=self._reset_view).pack(side='left', padx=2)
+        tk.Button(g, text='Member Report', command=self._show_member_report
+                 ).pack(side='left', padx=2)
         tk.Button(g, text='Export Excel…', command=self._export_excel).pack(side='left', padx=2)
         tk.Button(g, text='Import Excel…', command=self._import_excel).pack(side='left', padx=2)
-        tk.Button(g, text='Member Report', command=self._show_member_report).pack(side='left', padx=2)
 
         self.toolbar_flow.start()
 

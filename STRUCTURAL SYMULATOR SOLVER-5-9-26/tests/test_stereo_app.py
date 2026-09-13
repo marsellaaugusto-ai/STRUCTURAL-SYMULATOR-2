@@ -22,7 +22,7 @@ from apps.stereo.stereo_app import (
     moment_color, reaction_moment_signed, MOMENT_ZERO_COLOR, MOMENT_AXES,
     MOMENT_AXIS_RESULTANT, MOMENT_AXIS_MX, MOMENT_AXIS_MY, MOMENT_AXIS_MZ,
     MODULE_DIM_COLOR, SUPPORT_DISABLED_COLOR, SLENDER_HALO_COLOR, SLENDERNESS_LIMIT,
-    LOAD_PATH_COLOR,
+    LOAD_PATH_COLOR, MOMENT_BACKDROP_COLOR, MOMENT_NODE_RADIUS_PX,
 )
 from apps.stereo import stereo_math as sm
 
@@ -2094,3 +2094,77 @@ def test_moment_colouring_gives_the_four_symmetric_corners_the_same_colour(app):
     fills = {fill_of(i) for i in corners}
     assert len(fills) == 1
     assert None not in fills and MOMENT_ZERO_COLOR not in fills
+
+
+# ── moment-view readability: member backdrop + larger node dots ─────────────
+
+def test_moment_mode_fades_members_to_a_flat_backdrop(app):
+    # 'Colour by force' defaults to True, so this also proves the backdrop
+    # wins over it -- the moment view's actual content is the node colours,
+    # not a competing force gradient on the members underneath them.
+    assert app.colour_by_force.get() is True
+    app._analyze()
+    app.colour_by_moment.set(True)
+    app._draw()
+    fills = {app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')}
+    assert fills == {MOMENT_BACKDROP_COLOR}
+
+
+def test_moment_mode_backdrop_wins_over_utilization_heat_map_too(app):
+    app._analyze()
+    app.colour_by_util.set(True)
+    app.colour_by_moment.set(True)
+    app._draw()
+    fills = {app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')}
+    assert fills == {MOMENT_BACKDROP_COLOR}
+
+
+def test_moment_mode_off_leaves_member_force_colouring_alone(app):
+    app._analyze()
+    app.colour_by_moment.set(False)
+    app._draw()
+    fills = {app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')}
+    assert MOMENT_BACKDROP_COLOR not in fills
+
+
+def test_moment_mode_enlarges_the_dot_for_a_moment_coloured_node(app):
+    _make_rigid_fixed(app)
+    app.colour_by_moment.set(True)
+    app._draw()
+    support_node = app.supports[0]['node']
+
+    def radius_of(node_idx):
+        for item in app.canvas.find_withtag(f'node{node_idx}'):
+            if app.canvas.type(item) == 'oval':
+                x0, y0, x1, y1 = app.canvas.coords(item)
+                return round((x1 - x0) / 2.0)
+        return None
+
+    assert radius_of(support_node) == MOMENT_NODE_RADIUS_PX
+
+    app.colour_by_moment.set(False)
+    app._draw()
+    assert radius_of(support_node) != MOMENT_NODE_RADIUS_PX
+
+
+def test_moment_mode_legend_mentions_the_backdrop(app):
+    app._analyze()
+    app.colour_by_moment.set(False)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert not any('backdrop' in t for t in texts)
+
+    app.colour_by_moment.set(True)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any('backdrop' in t for t in texts)
+
+
+def test_moment_mode_backdrop_is_a_no_op_before_analysis(app):
+    app.results = None
+    app.colour_by_moment.set(True)
+    app._draw()   # must not raise
+    fills = {app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag('member')}
+    assert MOMENT_BACKDROP_COLOR not in fills

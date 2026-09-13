@@ -93,6 +93,14 @@ MOMENT_POS_HIGH = '#6a2ca0'   # saturated violet -- positive moment
 MOMENT_GAMMA = 0.6
 MOMENT_NODE_OUTLINE = '#999999'   # keeps a white (zero-moment) node visible
                                    # against the canvas's own white background
+MOMENT_BACKDROP_COLOR = '#dcdcdc'   # pale grey the members fade to in moment
+                                     # mode, so the node colours -- the actual
+                                     # content of that view -- aren't lost
+                                     # among dark rod lines converging at a
+                                     # busy joint
+MOMENT_NODE_RADIUS_PX = 6   # bigger than the normal 4px dot for the same
+                            # reason -- a small dot is the first thing a
+                            # cluster of member lines swallows
 
 DOF_LABELS = (('ux', 'Ux'), ('uy', 'Uy'), ('uz', 'Uz'),
               ('rx', 'Rx'), ('ry', 'Ry'), ('rz', 'Rz'))
@@ -2791,6 +2799,7 @@ class StereoApp(UnitsMixin):
         frac = self._load_frac()
         by_util = self.colour_by_util.get() and self.member_checks is not None
         by_force = self.colour_by_force.get() and self.results is not None and not by_util
+        by_moment = self.colour_by_moment.get() and self.results is not None
         max_abs_N = 0.0
         if by_force:
             max_abs_N = max((abs(mr['N']) for mr in self.results['member_res']), default=0.0)
@@ -2824,6 +2833,15 @@ class StereoApp(UnitsMixin):
                 # colours included, not just a smaller deformed shape.
                 if ref_grey is not None:
                     color = ref_grey
+                elif by_moment:
+                    # The moment view's actual content is the NODE colours
+                    # below, not the members -- left at their usual dark
+                    # rigid/pin (or force/utilization) colouring, a busy
+                    # joint's converging rod lines visually swallow the
+                    # small moment-coloured dot sitting on top of them. Fade
+                    # to a flat pale backdrop instead, the same idea as
+                    # ref_grey above for the deformed overlay.
+                    color = MOMENT_BACKDROP_COLOR
                 elif by_util:
                     util = chk['util'] * frac if chk and chk.get('checked') else 0.0
                     color = util_color(util)
@@ -2897,7 +2915,6 @@ class StereoApp(UnitsMixin):
             # spans the WHOLE grid (supports and interior joints alike) so
             # the colour of any one node is always relative to every other
             # node currently in the structure, not to supports alone.
-            by_moment = self.colour_by_moment.get() and self.results is not None
             moment_by_node = {}
             max_abs_moment = 0.0
             if by_moment:
@@ -2928,7 +2945,10 @@ class StereoApp(UnitsMixin):
             for i, (px, py, _) in enumerate(proj):
                 sx, sy = to_screen(px, py)
                 sel = i in self.selected_nodes
-                r = 5 if sel else 4
+                if by_moment and i in moment_by_node:
+                    r = MOMENT_NODE_RADIUS_PX + 1 if sel else MOMENT_NODE_RADIUS_PX
+                else:
+                    r = 5 if sel else 4
                 if sel:
                     color = NODE_SEL_COLOR
                 elif i in self._disabled_supports and i in support_nodes:
@@ -3260,6 +3280,7 @@ class StereoApp(UnitsMixin):
                 row(MOMENT_NEG_HIGH, f'node moment ({axis_txt}): negative')
                 row(MOMENT_ZERO_COLOR, f'node moment ({axis_txt}): ~0', outline=MOMENT_NODE_OUTLINE)
                 row(MOMENT_POS_HIGH, f'node moment ({axis_txt}): positive')
+                row(MOMENT_BACKDROP_COLOR, 'members faded to backdrop (node colour is the content)')
             if self._disabled_supports & {s['node'] for s in self.supports}:
                 row(SUPPORT_DISABLED_COLOR, 'sandbox: support disabled (excluded from Analyze)',
                    dashed=True)

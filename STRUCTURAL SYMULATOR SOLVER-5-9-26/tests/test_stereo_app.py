@@ -26,6 +26,7 @@ from apps.stereo.stereo_app import (
     LOAD_PATH_COLOR, LOAD_PATH_ANIM_TICKS, LOAD_PATH_NEAR_ZERO_FRAC, NEAR_ZERO_COLOR,
     MOMENT_BACKDROP_COLOR, MOMENT_NODE_RADIUS_PX,
     TENSION_HIGH, COMPRESSION_HIGH,
+    _clip_polygon_to_bbox, _voronoi_cells_2d,
 )
 from apps.stereo import stereo_math as sm
 
@@ -2601,3 +2602,124 @@ def test_hide_zero_force_legend_caption_appears_only_when_active(app):
     texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
             if app.canvas.type(i) == 'text']
     assert any('hidden entirely' in t for t in texts)
+
+
+# ── Voronoi tessellation geometry (pure functions, no widget needed) ────────
+
+def test_clip_polygon_to_bbox_keeps_a_polygon_fully_inside():
+    square = [(1, 1), (9, 1), (9, 9), (1, 9)]
+    clipped = _clip_polygon_to_bbox(square, 0, 0, 10, 10)
+    assert sorted(clipped) == sorted(square)
+
+
+def test_clip_polygon_to_bbox_cuts_a_polygon_that_pokes_outside():
+    square = [(-5, -5), (5, -5), (5, 5), (-5, 5)]   # centred on the clip box's own corner
+    clipped = _clip_polygon_to_bbox(square, 0, 0, 10, 10)
+    xs = [p[0] for p in clipped]
+    ys = [p[1] for p in clipped]
+    assert min(xs) >= 0 and min(ys) >= 0
+    assert max(xs) <= 5 and max(ys) <= 5   # nothing beyond where the square itself ended
+
+
+def test_clip_polygon_to_bbox_returns_empty_for_a_polygon_entirely_outside():
+    square = [(100, 100), (110, 100), (110, 110), (100, 110)]
+    assert _clip_polygon_to_bbox(square, 0, 0, 10, 10) == []
+
+
+def test_voronoi_cells_2d_returns_one_cell_per_point():
+    points = [(0, 0), (10, 0), (0, 10), (10, 10), (5, 5)]
+    cells = _voronoi_cells_2d(points)
+    assert {idx for idx, _poly in cells} == {0, 1, 2, 3, 4}
+    for _idx, poly in cells:
+        assert len(poly) >= 6   # at least a triangle -- 3 (x, y) pairs, flat
+
+
+def test_voronoi_cells_2d_cells_are_clipped_near_the_points_own_span():
+    points = [(0, 0), (10, 0), (0, 10), (10, 10), (5, 5)]
+    cells = _voronoi_cells_2d(points, bbox_pad=5.0)
+    for _idx, poly in cells:
+        xs, ys = poly[0::2], poly[1::2]
+        assert min(xs) >= -5.001 and max(xs) <= 15.001
+        assert min(ys) >= -5.001 and max(ys) <= 15.001
+
+
+def test_voronoi_cells_2d_handles_fewer_than_four_points():
+    assert _voronoi_cells_2d([(0, 0), (1, 1), (2, 0)]) == []
+
+
+def test_voronoi_cells_2d_handles_collinear_points_without_raising():
+    # the 4 real points alone are degenerate (no 2D Voronoi diagram exists
+    # for exactly-collinear input), but the far "ghost" points that bound
+    # every cell are deliberately off that line, so the COMBINED point set
+    # scipy.spatial.Voronoi actually sees is never degenerate -- this must
+    # not raise, and should still produce a (possibly strip-shaped) cell
+    # per point rather than silently dropping all of them.
+    cells = _voronoi_cells_2d([(0, 0), (1, 0), (2, 0), (3, 0)])
+    assert {idx for idx, _poly in cells} == {0, 1, 2, 3}
+
+
+# ── Voronoi tessellation render mode (app integration) ───────────────────────
+
+def test_voronoi_faces_off_by_default(app):
+    assert app.voronoi_faces.get() is False
+
+
+def test_voronoi_faces_draws_filled_polygons_for_force_mode(app):
+    app._analyze()
+    app.voronoi_faces.set(True)
+    app._draw()
+    faces = app.canvas.find_withtag('voronoi_face')
+    assert faces
+    for f in faces:
+        assert app.canvas.type(f) == 'polygon'
+
+
+def test_voronoi_faces_draws_for_utilization_mode_too(app):
+    app._analyze()
+    app.colour_by_force.set(False)
+    app.colour_by_util.set(True)
+    app.voronoi_faces.set(True)
+    app._draw()
+    assert app.canvas.find_withtag('voronoi_face')
+
+
+def test_voronoi_faces_draws_for_moment_mode_using_node_sites(app):
+    _make_rigid_fixed(app)
+    app.colour_by_force.set(False)
+    app.colour_by_moment.set(True)
+    app.voronoi_faces.set(True)
+    app._draw()
+    assert app.canvas.find_withtag('voronoi_face')
+
+
+def test_voronoi_faces_are_drawn_behind_the_wireframe(app):
+    app._analyze()
+    app.voronoi_faces.set(True)
+    app._draw()
+    order = app.canvas.find_withtag('all')
+    face_idx = min(order.index(i) for i in app.canvas.find_withtag('voronoi_face'))
+    member_idx = min(order.index(i) for i in app.canvas.find_withtag('member'))
+    assert face_idx < member_idx
+
+
+def test_voronoi_faces_is_a_no_op_before_analysis(app):
+    app.results = None
+    app.member_checks = None
+    app.voronoi_faces.set(True)
+    app._draw()   # must not raise
+    assert not app.canvas.find_withtag('voronoi_face')
+
+
+def test_voronoi_faces_legend_caption_appears_only_when_active(app):
+    app._analyze()
+    app.voronoi_faces.set(False)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert not any('Voronoi cells' in t for t in texts)
+
+    app.voronoi_faces.set(True)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any('Voronoi cells' in t for t in texts)

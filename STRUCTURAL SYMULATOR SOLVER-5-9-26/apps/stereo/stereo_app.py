@@ -157,6 +157,105 @@ def _point_segment_distance(px, py, ax, ay, bx, by):
     return math.hypot(px - nx, py - ny)
 
 
+def _clip_polygon_to_bbox(poly, xmin, ymin, xmax, ymax):
+    """Sutherland-Hodgman clip of a convex polygon (list of (x, y) points)
+    against an axis-aligned rectangle -- every Voronoi cell is convex, so
+    this is exact (no need for a general, non-convex clipper)."""
+    def clip_edge(points, inside, intersect):
+        if not points:
+            return []
+        out = []
+        prev = points[-1]
+        prev_in = inside(prev)
+        for cur in points:
+            cur_in = inside(cur)
+            if cur_in:
+                if not prev_in:
+                    out.append(intersect(prev, cur))
+                out.append(cur)
+            elif prev_in:
+                out.append(intersect(prev, cur))
+            prev, prev_in = cur, cur_in
+        return out
+
+    def inter_x(p0, p1, x):
+        t = (x - p0[0]) / (p1[0] - p0[0])
+        return (x, p0[1] + t * (p1[1] - p0[1]))
+
+    def inter_y(p0, p1, y):
+        t = (y - p0[1]) / (p1[1] - p0[1])
+        return (p0[0] + t * (p1[0] - p0[0]), y)
+
+    poly = clip_edge(poly, lambda p: p[0] >= xmin, lambda a, b: inter_x(a, b, xmin))
+    poly = clip_edge(poly, lambda p: p[0] <= xmax, lambda a, b: inter_x(a, b, xmax))
+    poly = clip_edge(poly, lambda p: p[1] >= ymin, lambda a, b: inter_y(a, b, ymin))
+    poly = clip_edge(poly, lambda p: p[1] <= ymax, lambda a, b: inter_y(a, b, ymax))
+    return poly
+
+
+def _voronoi_cells_2d(points, bbox_pad=40.0):
+    """2D Voronoi cells (screen-space) for `points` (a list of (x, y)
+    pairs) -- one convex polygon per input point, clipped to a padded
+    bounding box of the points themselves. Returns a list of (point
+    index, flat [x0, y0, x1, y1, ...] polygon) pairs, ready for
+    canvas.create_polygon; a point whose natural cell is degenerate after
+    clipping (fewer than 3 vertices survive) is simply omitted.
+
+    scipy.spatial.Voronoi's own regions are UNBOUNDED at the edge of the
+    point set (there is no natural boundary to a Voronoi diagram) --
+    plotting those directly would need infinite polygons. The standard
+    fix, used here: add a handful of "ghost" points far outside the real
+    data (>= 10x its own span away) purely to give every real point's
+    region a finite far boundary, then clip every resulting polygon down
+    to the actual padded bounding box. The ghost points themselves are
+    never returned as cells.
+
+    Returns [] outright for fewer than 4 points (scipy.spatial.Voronoi's
+    own minimum for a 2D diagram) rather than raising -- callers already
+    treat "nothing to draw" as a normal, silent outcome elsewhere in this
+    module (see e.g. _get_shaded_cells). An exactly-collinear real point
+    set does NOT hit this case despite having no 2D diagram of its own:
+    the off-axis ghost points make the COMBINED set non-degenerate, so
+    scipy still returns a (possibly strip-shaped) cell for every point.
+    """
+    if len(points) < 4:
+        return []
+    try:
+        from scipy.spatial import Voronoi, QhullError
+    except ImportError:
+        try:
+            import common as _common
+            _common._ensure_scipy()
+            from scipy.spatial import Voronoi, QhullError
+        except Exception:
+            return []
+
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    xmin, xmax = min(xs) - bbox_pad, max(xs) + bbox_pad
+    ymin, ymax = min(ys) - bbox_pad, max(ys) + bbox_pad
+    span = max(xmax - xmin, ymax - ymin, 1.0) * 10.0
+    cx, cy = (xmin + xmax) / 2.0, (ymin + ymax) / 2.0
+    ghosts = [(cx - span, cy - span), (cx + span, cy - span),
+             (cx - span, cy + span), (cx + span, cy + span),
+             (cx, cy - span), (cx, cy + span), (cx - span, cy), (cx + span, cy)]
+    try:
+        vor = Voronoi(list(points) + ghosts)
+    except (QhullError, ValueError):
+        return []   # degenerate (e.g. exactly collinear) input
+
+    out = []
+    for i in range(len(points)):
+        region = vor.regions[vor.point_region[i]]
+        if not region or -1 in region:
+            continue   # still-unbounded despite the ghosts -- skip rather than guess
+        poly = [tuple(vor.vertices[v]) for v in region]
+        clipped = _clip_polygon_to_bbox(poly, xmin, ymin, xmax, ymax)
+        if len(clipped) >= 3:
+            out.append((i, [c for pt in clipped for c in pt]))
+    return out
+
+
 def _lerp_hex(c1, c2, t):
     t = max(0.0, min(1.0, t))
     r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
@@ -449,6 +548,9 @@ class StereoApp(UnitsMixin):
                        command=self._draw).pack(side='left', padx=(6, 0))
         self.shaded_faces = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Shaded faces', variable=self.shaded_faces, bg=BG,
+                       command=self._draw).pack(side='left', padx=(6, 0))
+        self.voronoi_faces = tk.BooleanVar(value=False)
+        tk.Checkbutton(g, text='Voronoi tessellation', variable=self.voronoi_faces, bg=BG,
                        command=self._draw).pack(side='left', padx=(6, 0))
         self.flag_slender = tk.BooleanVar(value=False)
         # Short on purpose: the KL/r threshold itself is shown in the legend
@@ -3120,6 +3222,10 @@ class StereoApp(UnitsMixin):
                 self._draw_shaded_faces(c, proj, to_screen, frac, by_util, by_force,
                                         max_abs_N, by_moment, moment_by_node, max_abs_moment)
 
+            if self.voronoi_faces.get():
+                self._draw_voronoi_faces(c, proj, to_screen, frac, by_util, by_force,
+                                         max_abs_N, by_moment, moment_by_node, max_abs_moment)
+
             if self.show_node_labels.get():
                 labels = []
                 for i, (px, py, _) in enumerate(proj):
@@ -3227,6 +3333,64 @@ class StereoApp(UnitsMixin):
                 pts.extend((sx, sy))
             c.create_polygon(*pts, fill=color, outline='', tags='shaded_face')
         c.tag_lower('shaded_face')
+
+    def _draw_voronoi_faces(self, c, proj, to_screen, frac, by_util, by_force, max_abs_N,
+                            by_moment, moment_by_node, max_abs_moment):
+        """An alternative to _draw_shaded_faces that needs no mesh-topology
+        cells at all: a 2D Voronoi tessellation of whichever points the
+        active colour mode is actually about, each cell filled with that
+        point's own colour. Since it works from bare proximity rather
+        than find_cells's panels, it still produces a continuous-looking
+        shaded sheet on a mesh with no clean quad/triangle faces to find
+        (a sparse dome, a one-off rod added by hand, ...) -- the same
+        "read it as one sheet" goal as the shaded-faces mode, by a
+        different, cell-free means.
+
+        Moment mode's sites are the NODES themselves -- moment is a
+        nodal quantity, so this is the natural choice. Force/utilization
+        mode's sites are each member's own MIDPOINT: a member has no
+        single point that is uniquely "where its value lives", so this
+        is a reasonable but genuinely debatable stand-in, flagged as such
+        in the legend caption this mode adds rather than presented as
+        the one correct answer.
+
+        Same precedence as _draw_shaded_faces (utilization, then force,
+        then moment -- at most one fill layer at a time), same flat-
+        colour-per-cell caveat (Tk canvas polygons cannot blend a smooth
+        gradient across a cell), and drawn then tag_lower'd behind
+        everything else the same way.
+        """
+        points, colors = [], []
+        if by_util and self.member_checks is not None:
+            for i, m in enumerate(self.members):
+                if i >= len(self.member_checks) or not self.member_checks[i].get('checked'):
+                    continue
+                ax, ay, _ = proj[m['a']]
+                bx, byy, _ = proj[m['b']]
+                sx0, sy0 = to_screen(ax, ay)
+                sx1, sy1 = to_screen(bx, byy)
+                points.append(((sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0))
+                colors.append(util_color(self.member_checks[i]['util'] * frac))
+        elif by_force and self.results is not None:
+            for i, m in enumerate(self.members):
+                ax, ay, _ = proj[m['a']]
+                bx, byy, _ = proj[m['b']]
+                sx0, sy0 = to_screen(ax, ay)
+                sx1, sy1 = to_screen(bx, byy)
+                points.append(((sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0))
+                N = self.results['member_res'][i]['N'] * frac
+                colors.append(force_color(N, max_abs_N))
+        elif by_moment and moment_by_node:
+            for n, m_val in moment_by_node.items():
+                px, py, _ = proj[n]
+                points.append(to_screen(px, py))
+                colors.append(moment_color(m_val, max_abs_moment))
+        else:
+            return
+
+        for idx, poly in _voronoi_cells_2d(points):
+            c.create_polygon(*poly, fill=colors[idx], outline='', tags='voronoi_face')
+        c.tag_lower('voronoi_face')
 
     def _reference_grey(self):
         """The reference (rest) structure's adjustable grey shade, used
@@ -3511,6 +3675,8 @@ class StereoApp(UnitsMixin):
                 caption('Rods reading ~0 force are hidden entirely (not just dimmed)')
             if self.shaded_faces.get() and self.results is not None:
                 caption('Shaded faces: flat colour/panel (approx., not a shell FEA)')
+            if self.voronoi_faces.get() and self.results is not None:
+                caption('Voronoi cells: by node (moment) or rod midpoint (force/util.)')
             if self.flag_slender.get() and self.member_checks is not None:
                 row(SLENDER_HALO_COLOR, f'halo = slender compression member '
                                        f'(KL/r > {SLENDERNESS_LIMIT:.0f})', dashed=True)

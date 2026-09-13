@@ -25,6 +25,7 @@ from apps.stereo.stereo_app import (
     MODULE_DIM_COLOR, SUPPORT_DISABLED_COLOR, SLENDER_HALO_COLOR, SLENDERNESS_LIMIT,
     LOAD_PATH_COLOR, LOAD_PATH_ANIM_TICKS, LOAD_PATH_NEAR_ZERO_FRAC, NEAR_ZERO_COLOR,
     NEAR_ZERO_FRAC, STRESS_WIDTH_MIN, STRESS_WIDTH_MAX,
+    GRADIENT_SEGMENTS, GRADIENT_SEGMENTS_DENSE, GRADIENT_DENSE_MEMBERS,
     MOMENT_BACKDROP_COLOR, MOMENT_NODE_RADIUS_PX,
     TENSION_HIGH, COMPRESSION_HIGH,
     _clip_polygon_to_bbox, _voronoi_cells_2d,
@@ -2627,6 +2628,160 @@ def test_hide_zero_force_legend_caption_appears_only_when_active(app):
     texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
             if app.canvas.type(i) == 'text']
     assert any('hidden entirely' in t for t in texts)
+
+
+# ── smooth rod gradient ──────────────────────────────────────────────────────
+
+def _member_fills(app, tag='member'):
+    return [app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag(tag)]
+
+
+def _rigid_fixed(app):
+    """A model that actually develops node moments: rigid joints, fixed feet."""
+    app.sec_conn.set('rigid')
+    app._apply_sections()
+    for s in app.supports:
+        s['type'] = 'fixed'
+    app._analyze()
+
+
+def test_smooth_gradient_is_off_by_default(app):
+    assert app.smooth_gradient.get() is False
+
+
+def test_smooth_gradient_splits_each_rod_into_several_coloured_pieces(app):
+    app._analyze()
+    app.colour_by_force.set(True)
+    app._draw()
+    flat_items = len(app.canvas.find_withtag('member'))
+    flat_colours = len(set(_member_fills(app)))
+
+    app.smooth_gradient.set(True)
+    app._draw()
+    assert len(app.canvas.find_withtag('member')) == flat_items * app._gradient_segments()
+    assert len(set(_member_fills(app))) > flat_colours
+
+
+def test_smooth_gradient_gives_the_moment_view_coloured_rods(app):
+    # The point of the request: in moment mode the rods used to be a single
+    # flat backdrop grey, with the whole field carried by the node dots.
+    _rigid_fixed(app)
+    app.colour_by_force.set(False)
+    app.colour_by_moment.set(True)
+
+    app.smooth_gradient.set(False)
+    app._draw()
+    assert set(_member_fills(app)) == {MOMENT_BACKDROP_COLOR}
+
+    app.smooth_gradient.set(True)
+    app._draw()
+    fills = set(_member_fills(app))
+    assert len(fills) > 10
+    assert fills != {MOMENT_BACKDROP_COLOR}
+
+
+def test_smooth_gradient_colours_the_deformed_overlay(app):
+    app._analyze()
+    app.show_deformed.set(True)
+    app.deformed_only.set(True)
+    app._draw()
+    flat = len(set(_member_fills(app, 'deform')))
+
+    app.smooth_gradient.set(True)
+    app._draw()
+    assert len(set(_member_fills(app, 'deform'))) > flat
+
+
+def test_smooth_gradient_works_for_the_utilization_heat_map(app):
+    app._analyze()
+    app.colour_by_force.set(False)
+    app.colour_by_util.set(True)
+    app._draw()
+    flat = len(set(_member_fills(app)))
+
+    app.smooth_gradient.set(True)
+    app._draw()
+    assert len(set(_member_fills(app))) >= flat
+
+
+def test_smooth_gradient_is_a_no_op_before_analysis(app):
+    app.results = None
+    app.smooth_gradient.set(True)
+    app._draw()   # must not raise
+    n = len(app.canvas.find_withtag('member'))
+    app.smooth_gradient.set(False)
+    app._draw()
+    assert len(app.canvas.find_withtag('member')) == n
+
+
+def test_smooth_gradient_keeps_the_over_capacity_dashes(app):
+    app._analyze()
+    app.colour_by_force.set(True)
+    app.smooth_gradient.set(True)
+    # force a genuine over-capacity condition
+    for m in app.members:
+        m['A'] = 0.05
+    app._analyze()
+    app._draw()
+    dashed = [i for i in app.canvas.find_withtag('member')
+              if app.canvas.itemcget(i, 'dash') not in ('', None)]
+    assert dashed, 'over-capacity rods lost their dash once the gradient was on'
+
+
+def test_nodal_average_means_the_members_meeting_at_each_node():
+    members = [{'a': 0, 'b': 1}, {'a': 1, 'b': 2}]
+    values = [10.0, 20.0]
+    got = StereoApp._nodal_average(3, members, values)
+    assert got[0] == pytest.approx(10.0)    # only the first member
+    assert got[1] == pytest.approx(15.0)    # the mean of both
+    assert got[2] == pytest.approx(20.0)    # only the second
+
+
+def test_nodal_average_leaves_an_unconnected_node_at_zero():
+    got = StereoApp._nodal_average(3, [{'a': 0, 'b': 1}], [8.0])
+    assert got[2] == pytest.approx(0.0)     # no members, and no divide by zero
+
+
+def test_gradient_uses_fewer_segments_on_a_dense_model(app):
+    # the segment count multiplies canvas items directly, so a big grid
+    # deliberately drops to the coarser run
+    app.grid_family.set(FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(3); app.fg_ny.set(3)
+    app._generate()
+    assert len(app.members) <= GRADIENT_DENSE_MEMBERS
+    assert app._gradient_segments() == GRADIENT_SEGMENTS
+
+    app.fg_nx.set(20); app.fg_ny.set(20)
+    app._generate()
+    assert len(app.members) > GRADIENT_DENSE_MEMBERS
+    assert app._gradient_segments() == GRADIENT_SEGMENTS_DENSE
+
+
+def test_smooth_gradient_legend_caption_appears_only_when_active(app):
+    app._analyze()
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert not any('blend' in t.lower() for t in texts)
+
+    app.smooth_gradient.set(True)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any('blend' in t.lower() for t in texts)
+
+
+def test_moment_legend_stops_claiming_the_rods_are_faded_when_they_are_not(app):
+    _rigid_fixed(app)
+    app.colour_by_force.set(False)
+    app.colour_by_moment.set(True)
+    app.smooth_gradient.set(True)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert not any('faded to backdrop' in t for t in texts)
+    assert any('rods carry the same moment field' in t for t in texts)
 
 
 # ── thickness by stress ──────────────────────────────────────────────────────

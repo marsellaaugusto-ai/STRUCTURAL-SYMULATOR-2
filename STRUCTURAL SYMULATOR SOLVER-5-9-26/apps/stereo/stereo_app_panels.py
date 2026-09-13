@@ -67,6 +67,12 @@ class StereoPanelsMixin:
         self.colour_by_util = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Utilization heat-map', variable=self.colour_by_util, bg=BG,
                        command=self._draw).pack(side='left', padx=(6, 0))
+        self.smooth_gradient = tk.BooleanVar(value=False)
+        # Applies to whichever colour spectrum is active -- force,
+        # utilization, node moment or deformation -- rather than being a
+        # mode of its own, so it composes with the rest of this row.
+        tk.Checkbutton(g, text='Smooth gradient', variable=self.smooth_gradient,
+                       bg=BG, command=self._draw).pack(side='left', padx=(6, 0))
         self.thickness_by_stress = tk.BooleanVar(value=False)
         # Sits with the colour modes because it answers the same question
         # ("how hard is this rod working?") through a second, independent

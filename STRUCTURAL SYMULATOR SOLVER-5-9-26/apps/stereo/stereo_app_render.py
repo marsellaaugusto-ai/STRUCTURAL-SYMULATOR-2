@@ -36,6 +36,7 @@ from apps.stereo.stereo_app_constants import (
     DEFORM_MODE_FORCE, SLENDER_HALO_COLOR, SLENDERNESS_LIMIT,
     LOAD_PATH_COLOR, LOAD_PATH_NEAR_ZERO_FRAC, LOAD_PATH_ARROW_HALF_PX,
     LOAD_PATH_ANIM_TICKS, STRESS_WIDTH_MIN, STRESS_WIDTH_MAX,
+    GRADIENT_SEGMENTS, GRADIENT_SEGMENTS_DENSE, GRADIENT_DENSE_MEMBERS,
     MOMENT_ZERO_COLOR, MOMENT_NODE_OUTLINE, MOMENT_BACKDROP_COLOR,
     MOMENT_NODE_RADIUS_PX,
 )
@@ -98,6 +99,109 @@ class StereoRenderMixin:
         if N >= 0:
             return ((t_prog * 0.5, 1), (1.0 - t_prog * 0.5, -1))
         return ((0.5 - t_prog * 0.5, -1), (0.5 + t_prog * 0.5, 1))
+
+    def _moment_field_by_node(self, frac):
+        """Signed nodal moment for every joint that carries one, plus the
+        largest magnitude present. Returns ({node: value}, max_abs).
+
+        Every rigid (moment-transmitting) joint gets a value, not just the
+        supports: a support's own reaction Mx/My/Mz (SOMETHING must transfer
+        moment into it -- a rigid connection scheme, or a directly applied
+        point moment), and every ordinary interior joint touched by at least
+        one rigid member gets sm.node_moment_vectors's own value (the
+        largest-magnitude incident member end, expressed in the same global
+        axes the reactions already use -- see that function's docstring for
+        why a plain sum across incident members would be wrong here).
+
+        A purely pin-jointed model reacts to force alone, so every node
+        reads ~0 regardless of load: an accurate reflection of the physics,
+        not a sign the feature is broken on that kind of model.
+
+        The maximum spans the WHOLE grid (supports and interior joints
+        alike), so any one node's colour is always relative to every other
+        node currently in the structure rather than to the supports alone.
+        """
+        moment_by_node, max_abs = {}, 0.0
+        if self.results is None or not self.nodes:
+            return moment_by_node, max_abs
+        moment_axis = self.moment_axis.get()
+        # The structure's own planar centroid -- see reaction_moment_signed's
+        # docstring for why the RESULTANT mode's sign is projected relative
+        # to it (symmetric nodes must read the same colour, which a raw
+        # Mx/My component cannot guarantee).
+        centroid_xy = (sum(n[0] for n in self.nodes) / len(self.nodes),
+                      sum(n[1] for n in self.nodes) / len(self.nodes))
+        support_nodes = {s['node'] for s in self.supports
+                        if any(sm.support_restraints(s).values())}
+        for i in support_nodes:
+            r = self.results['reactions'].get(i)
+            if r is not None:
+                node_xy = (self.nodes[i][0], self.nodes[i][1])
+                m = reaction_moment_signed(r, moment_axis, node_xy, centroid_xy) * frac
+                moment_by_node[i] = m
+                max_abs = max(max_abs, abs(m))
+        node_vecs = sm.node_moment_vectors(self.nodes, self.members,
+                                           self.results['member_res'])
+        for i, vec in node_vecs.items():
+            if i in moment_by_node:
+                continue   # a support's own reaction already wins
+            node_xy = (self.nodes[i][0], self.nodes[i][1])
+            m = reaction_moment_signed(vec, moment_axis, node_xy, centroid_xy) * frac
+            moment_by_node[i] = m
+            max_abs = max(max_abs, abs(m))
+        return moment_by_node, max_abs
+
+    @staticmethod
+    def _nodal_average(n_nodes, members, values):
+        """Average a per-MEMBER quantity onto the nodes, for the smooth
+        gradient.
+
+        Axial force and utilization are properties of a rod, not of a
+        joint, so a continuous field over the structure needs a value at
+        each joint: the mean over the rods meeting there. This is ordinary
+        nodal averaging, the same smoothing an FEA post-processor applies
+        to element results before contouring them -- honest as a picture of
+        how load hands over at a joint, but note it is a SMOOTHED reading,
+        not raw data: a joint where a heavily loaded chord meets three idle
+        braces averages down to something neither rod actually carries.
+        Node moment and displacement need none of this -- they are nodal
+        quantities already, so their gradient interpolates real values.
+
+        A node with no members keeps 0.0 rather than dividing by zero.
+        """
+        total = [0.0] * n_nodes
+        count = [0] * n_nodes
+        for i, m in enumerate(members):
+            v = values[i]
+            for end in (m['a'], m['b']):
+                total[end] += v
+                count[end] += 1
+        return [total[k] / count[k] if count[k] else 0.0 for k in range(n_nodes)]
+
+    def _gradient_segments(self):
+        """How many straight pieces each rod is split into for the smooth
+        gradient. A rod is drawn as a run of short lines, each a slightly
+        different colour, so the count is a direct multiplier on canvas
+        items -- dense models drop to a coarser run rather than paying
+        eight times the item count for a blend that is only a few pixels
+        long anyway."""
+        return (GRADIENT_SEGMENTS if len(self.members) <= GRADIENT_DENSE_MEMBERS
+                else GRADIENT_SEGMENTS_DENSE)
+
+    def _draw_gradient_line(self, c, sx0, sy0, sx1, sy1, va, vb, color_fn,
+                            width, tags, dash=None, segments=None):
+        """One rod drawn as a colour blend from `va` at its first end to
+        `vb` at its second, instead of a single flat colour."""
+        n = segments or self._gradient_segments()
+        for k in range(n):
+            t0, t1 = k / n, (k + 1) / n
+            x0, y0 = sx0 + (sx1 - sx0) * t0, sy0 + (sy1 - sy0) * t0
+            x1, y1 = sx0 + (sx1 - sx0) * t1, sy0 + (sy1 - sy0) * t1
+            kw = {'fill': color_fn(va + (vb - va) * (t0 + t1) / 2.0),
+                  'width': width, 'tags': tags, 'capstyle': tk.ROUND}
+            if dash:
+                kw['dash'] = dash
+            c.create_line(x0, y0, x1, y1, **kw)
 
     @staticmethod
     def _stress_widths(members, member_res):
@@ -196,6 +300,39 @@ class StereoRenderMixin:
             stress_widths = self._stress_widths(self.members,
                                                 self.results['member_res'])
 
+        # The node-moment field is needed BEFORE the member loop as well as
+        # after it: with the smooth gradient on, the rods carry the moment
+        # blend between their two joints, and only then do the node dots go
+        # on top of them.
+        moment_by_node = {}
+        if by_moment and not deformed_only:
+            moment_by_node, max_abs_moment = self._moment_field_by_node(frac)
+
+        # Smooth gradient: instead of one flat colour per rod, blend each rod
+        # between the values at its own two ends, so the field reads as
+        # continuous across joints. For moment (and, in the deformed overlay,
+        # displacement) the end values are genuine nodal results; for force
+        # and utilization they are averaged onto the joints -- see
+        # _nodal_average on what that averaging does and does not claim.
+        gradient = self.smooth_gradient.get() and self.results is not None
+        grad_values = grad_color_fn = None
+        if gradient and not deformed_only:
+            n_nodes = len(self.nodes)
+            if by_util and self.member_checks is not None:
+                utils = [(self.member_checks[i]['util'] * frac
+                          if i < len(self.member_checks) and self.member_checks[i]
+                          and self.member_checks[i].get('checked') else 0.0)
+                         for i in range(len(self.members))]
+                grad_values = self._nodal_average(n_nodes, self.members, utils)
+                grad_color_fn = util_color
+            elif by_force:
+                forces = [mr['N'] * frac for mr in self.results['member_res']]
+                grad_values = self._nodal_average(n_nodes, self.members, forces)
+                grad_color_fn = lambda v: force_color(v, max_abs_N)
+            elif by_moment:
+                grad_values = [moment_by_node.get(i, 0.0) for i in range(n_nodes)]
+                grad_color_fn = lambda v: moment_color(v, max_abs_moment)
+
         if not deformed_only:
             # While comparing against the deformed overlay, the reference
             # structure fades to a single adjustable grey (rather than its
@@ -287,10 +424,16 @@ class StereoRenderMixin:
                         and chk.get('slenderness', 0.0) > SLENDERNESS_LIMIT:
                     c.create_line(sx0, sy0, sx1, sy1, fill=SLENDER_HALO_COLOR,
                                  width=width + 5, dash=(4, 3), tags='member')
-                kw = {'fill': color, 'width': width, 'tags': 'member'}
-                if over:
-                    kw['dash'] = (5, 3)
-                c.create_line(sx0, sy0, sx1, sy1, **kw)
+                if grad_values is not None and ref_grey is None:
+                    self._draw_gradient_line(c, sx0, sy0, sx1, sy1,
+                                             grad_values[m['a']], grad_values[m['b']],
+                                             grad_color_fn, width, 'member',
+                                             dash=(5, 3) if over else None)
+                else:
+                    kw = {'fill': color, 'width': width, 'tags': 'member'}
+                    if over:
+                        kw['dash'] = (5, 3)
+                    c.create_line(sx0, sy0, sx1, sy1, **kw)
                 if i == self.selected_member:
                     # A halo drawn on top so the selected member reads
                     # clearly regardless of whatever colour mode is active.
@@ -334,48 +477,6 @@ class StereoRenderMixin:
 
             support_nodes = {s['node'] for s in self.supports
                              if any(sm.support_restraints(s).values())}
-            # Nodes-by-moment: every rigid (moment-transmitting) joint in
-            # the grid gets its own value, not just supports -- a support's
-            # own reaction Mx/My/Mz (SOMETHING must transfer moment into it:
-            # a rigid connection scheme, or a directly-applied point
-            # moment), and every ordinary interior joint touched by at
-            # least one rigid member gets sm.node_moment_vectors's own
-            # value (the largest-magnitude incident member end, expressed
-            # in the same global axes reactions already use -- see that
-            # function's own docstring for why a plain sum across incident
-            # members would be wrong here). A purely pin-jointed model
-            # reacts to force alone, so every node reads ~0 here regardless
-            # of load -- an accurate reflection of the physics, not a sign
-            # the feature is broken on that kind of model. max_abs_moment
-            # spans the WHOLE grid (supports and interior joints alike) so
-            # the colour of any one node is always relative to every other
-            # node currently in the structure, not to supports alone.
-            moment_by_node = {}
-            if by_moment:
-                moment_axis = self.moment_axis.get()
-                # The structure's own planar centroid -- see
-                # reaction_moment_signed's own docstring for why the
-                # RESULTANT mode's sign is projected relative to it
-                # (symmetric nodes must read the same colour, which a raw
-                # Mx/My component cannot guarantee).
-                centroid_xy = (sum(n[0] for n in self.nodes) / len(self.nodes),
-                              sum(n[1] for n in self.nodes) / len(self.nodes))
-                for i in support_nodes:
-                    r = self.results['reactions'].get(i)
-                    if r is not None:
-                        node_xy = (self.nodes[i][0], self.nodes[i][1])
-                        m = reaction_moment_signed(r, moment_axis, node_xy, centroid_xy) * frac
-                        moment_by_node[i] = m
-                        max_abs_moment = max(max_abs_moment, abs(m))
-                node_vecs = sm.node_moment_vectors(self.nodes, self.members,
-                                                   self.results['member_res'])
-                for i, vec in node_vecs.items():
-                    if i in moment_by_node:
-                        continue   # a support's own reaction already wins
-                    node_xy = (self.nodes[i][0], self.nodes[i][1])
-                    m = reaction_moment_signed(vec, moment_axis, node_xy, centroid_xy) * frac
-                    moment_by_node[i] = m
-                    max_abs_moment = max(max_abs_moment, abs(m))
             # Same empty-iterable trick as `order` above for show_members --
             # keeps every per-node branch (selection, support box, moment
             # colouring) at its existing indentation regardless of the toggle.
@@ -657,12 +758,32 @@ class StereoRenderMixin:
         if by_force_mode:
             max_abs_N = max((abs(mr['N']) for mr in self.results['member_res']), default=0.0)
 
+        # The displacement gradient needs no averaging: displacement IS a
+        # nodal result, so each rod interpolates between two real solved
+        # values. Colouring by force instead averages onto the joints the
+        # same way the rest structure does.
+        gradient = self.smooth_gradient.get()
+        grad_values = grad_color_fn = None
+        if gradient:
+            if by_force_mode:
+                forces = [mr['N'] * frac for mr in self.results['member_res']]
+                grad_values = self._nodal_average(len(self.nodes), self.members, forces)
+                grad_color_fn = lambda v: force_color(v, max_abs_N)
+            else:
+                grad_values = list(disp_mm)
+                grad_color_fn = lambda v: deform_color(v, max_disp)
+
         for i, m in enumerate(self.members):
             a, b = m['a'], m['b']
             ax, ay, _ = proj_def[a]
             bx, by, _ = proj_def[b]
             sx0, sy0 = to_screen(ax, ay)
             sx1, sy1 = to_screen(bx, by)
+            if grad_values is not None:
+                self._draw_gradient_line(c, sx0, sy0, sx1, sy1,
+                                         grad_values[a], grad_values[b],
+                                         grad_color_fn, 2, 'deform')
+                continue
             if by_force_mode:
                 color = force_color(self.results['member_res'][i]['N'] * frac, max_abs_N)
             else:
@@ -899,6 +1020,9 @@ class StereoRenderMixin:
             row('#555555', 'dashed = over capacity (utilization > 1.0)', dashed=True)
             if self.hide_zero_force.get() and self.results is not None:
                 caption('Rods reading ~0 force are hidden entirely (not just dimmed)')
+            if self.smooth_gradient.get() and self.results is not None:
+                caption('Rods blend between their two end values — joint values '
+                       'are exact for moment/deformation, averaged for force/util.')
             if self.thickness_by_stress.get() and self.results is not None:
                 caption(f'Rod thickness = axial stress |N|/A vs the model\'s own '
                        f'max (capped at {STRESS_WIDTH_MAX:.0f}px)')
@@ -917,7 +1041,16 @@ class StereoRenderMixin:
                 colorbar(lambda m: moment_color(m, max_abs_moment), -max_abs_moment, max_abs_moment,
                         [(-max_abs_moment, f'−{max_abs_moment:.1f}'), (0.0, '0'),
                          (max_abs_moment, f'+{max_abs_moment:.1f}')])
-                row(MOMENT_BACKDROP_COLOR, 'members faded to backdrop (node colour is the content)')
+                # With the smooth gradient on, the rods carry the moment field
+                # themselves rather than fading out of the way of the nodes,
+                # so the backdrop note would be describing the opposite of
+                # what is on screen.
+                if self.smooth_gradient.get():
+                    row(MOMENT_BACKDROP_COLOR, 'rods carry the same moment field, blended '
+                                               'between their joints', outline='#999999')
+                else:
+                    row(MOMENT_BACKDROP_COLOR,
+                        'members faded to backdrop (node colour is the content)')
             if self._disabled_supports & {s['node'] for s in self.supports}:
                 row(SUPPORT_DISABLED_COLOR, 'sandbox: support disabled (excluded from Analyze)',
                    dashed=True)

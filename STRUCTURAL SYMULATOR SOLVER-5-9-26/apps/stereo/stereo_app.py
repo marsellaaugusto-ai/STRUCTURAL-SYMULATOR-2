@@ -47,6 +47,14 @@ CANVAS_BG = '#ffffff'
 PANEL_W = 300
 MODULE_PANEL_W = 300
 MODULE_CANVAS_SIZE = 260
+MODULE_RING_COLOR = '#333333'
+MODULE_APEX_EDGE_COLOR = '#c0392b'
+MODULE_APEX_NODE_COLOR = '#c0392b'
+MODULE_FACE_FILL = '#cfe0fb'
+MODULE_STUB_COLOR = '#9aa5b1'
+MODULE_STUB_FRAC = 0.5   # how far a context stub is drawn toward its real far node
+MODULE_NEIGHBOR_EDGE_COLOR = '#d9887c'
+MODULE_NEIGHBOR_NODE_COLOR = '#d9887c'
 
 NODE_COLOR = '#1a1a1a'
 NODE_SEL_COLOR = '#e0522b'
@@ -201,7 +209,7 @@ MOMENT_AXIS_MZ = 'Mz'
 MOMENT_AXES = (MOMENT_AXIS_RESULTANT, MOMENT_AXIS_MX, MOMENT_AXIS_MY, MOMENT_AXIS_MZ)
 
 
-def reaction_moment_signed(reaction, axis=MOMENT_AXIS_RESULTANT):
+def reaction_moment_signed(reaction, axis=MOMENT_AXIS_RESULTANT, node_xy=None, centroid_xy=None):
     """One signed scalar (kN*m) from a solved reaction's own Mx/My/Mz, for
     moment_color. `axis` picks which:
 
@@ -209,16 +217,37 @@ def reaction_moment_signed(reaction, axis=MOMENT_AXIS_RESULTANT):
                   lets you look at one specific bending direction in
                   isolation (e.g. the moment resisting bending about the
                   span's own transverse axis) instead of a blend of all
-                  three.
+                  three. Unaffected by node_xy/centroid_xy below -- this
+                  is a deliberately literal single-component view.
     'Resultant (dominant)' (default) : the RESULTANT magnitude
-                  (sqrt(Mx^2+My^2+Mz^2)), signed by whichever of the three
-                  components has the largest magnitude at that support --
-                  one number combining all three without picking an axis
-                  up front (which could read ~0 everywhere if a model's
-                  real bending happens to be about a different axis than
-                  the one chosen) or reporting an unsigned magnitude
-                  (which cannot show as "negative" at all, and this is
-                  specifically meant to)."""
+                  (sqrt(Mx^2+My^2+Mz^2)). The SIGN comes from `node_xy`
+                  and `centroid_xy` when both are given: the horizontal
+                  moment's component TANGENTIAL to the line from the
+                  structure's own planar centroid out to this node (or
+                  sign(Mz) when Mz itself is the larger part of the
+                  moment). This matters because Mx/My are components of
+                  an axial vector: under a proper 180-degree rotation
+                  about Z -- exactly the relationship between two
+                  diagonally-opposite, physically identically-loaded
+                  nodes of a symmetric grid -- BOTH Mx and My flip sign,
+                  even though the physical bending intensity at the two
+                  nodes is identical. Confirmed numerically on a
+                  symmetric 4-corner-fixed grid under symmetric
+                  self-weight: corner (0,0) came out Mx=+0.02/My=-0.02
+                  and its diagonal opposite (9,9) Mx=-0.02/My=+0.02 --
+                  same magnitude, everything flipped -- which used to
+                  paint two equally-loaded, symmetric nodes as opposite
+                  colours (orange vs. violet). The tangential projection
+                  is invariant under exactly this kind of rotation (the
+                  moment vector and the local tangential direction
+                  corotate together), so symmetric nodes read the same
+                  sign, matching the "sagging/hogging" scalar convention
+                  every statics course actually uses instead of a raw,
+                  basis-dependent vector component. Falls back to the
+                  old "whichever component is largest" sign when either
+                  geometry argument is omitted, or the node sits exactly
+                  at the centroid (no tangential direction is defined
+                  there)."""
     mx = reaction.get('Mx', 0.0)
     my = reaction.get('My', 0.0)
     mz = reaction.get('Mz', 0.0)
@@ -229,6 +258,16 @@ def reaction_moment_signed(reaction, axis=MOMENT_AXIS_RESULTANT):
     if axis == MOMENT_AXIS_MZ:
         return mz
     resultant = math.sqrt(mx * mx + my * my + mz * mz)
+    if node_xy is not None and centroid_xy is not None:
+        rx, ry = node_xy[0] - centroid_xy[0], node_xy[1] - centroid_xy[1]
+        rnorm = math.hypot(rx, ry)
+        if rnorm > 1e-9:
+            tx, ty = -ry / rnorm, rx / rnorm
+            horiz_mag = math.hypot(mx, my)
+            if abs(mz) >= horiz_mag:
+                return resultant if mz >= 0 else -resultant
+            tangential = mx * tx + my * ty
+            return resultant if tangential >= 0 else -resultant
     dominant = max((mx, my, mz), key=abs)
     return resultant if dominant >= 0 else -resultant
 
@@ -1411,30 +1450,115 @@ class StereoApp(UnitsMixin):
         depth = yr * math.sin(el) + zr * math.cos(el)
         return xr, -depth, y2
 
+    def _me_ring_context(self, cell_nodes):
+        """Beyond the cell's own ring, every OTHER node in the model that
+        connects to it, split into three kinds:
+
+        'apex'      : {node_id: [ring node ids]} for a node connected to
+                      EVERY one of the ring's own nodes -- for the classic
+                      offset square-pyramid module (a top chord square
+                      ring, 4 diagonals converging to ONE bottom apex),
+                      this is exactly that apex, reconstructed from
+                      whichever ring the caller happens to have selected
+                      (the quad face itself, or any one of its 4
+                      triangular side faces) -- rendered as part of the
+                      module's own SOLID (shaded triangular faces to the
+                      ring, not just thin lines).
+        'neighbors' : {node_id: [ring node ids]} for a node connected to
+                      TWO OR MORE but not ALL of the ring's own nodes --
+                      typically a NEIGHBOURING module's own apex, which
+                      happens to also touch one shared top-chord edge of
+                      this ring. Drawn as plain (unshaded) edges to
+                      whichever ring nodes it touches, so it reads as
+                      real context without being mistaken for this
+                      module's own apex.
+        'stubs'     : [(ring_node_id, external_node_id), ...] for a node
+                      connected to exactly ONE ring node -- a
+                      continuation of the grid beyond this module (the
+                      next top-chord bar), drawn as a short partial piece
+                      for context, not the full member.
+
+        Purely topological (this model's own member connectivity), so it
+        degrades gracefully for a family with no pyramid structure at all
+        (e.g. a single-layer triangulated dome): nothing qualifies as an
+        apex there beyond whatever coplanar neighbours the mesh actually
+        has.
+        """
+        ring = set(cell_nodes)
+        n = len(cell_nodes)
+        touching = {}
+        for m in self.members:
+            a, b = m['a'], m['b']
+            if a in ring and b not in ring:
+                touching.setdefault(b, set()).add(a)
+            elif b in ring and a not in ring:
+                touching.setdefault(a, set()).add(b)
+        apex = {ext: sorted(ids) for ext, ids in touching.items() if len(ids) == n}
+        neighbors = {ext: sorted(ids) for ext, ids in touching.items() if 2 <= len(ids) < n}
+        stubs = [(next(iter(ids)), ext) for ext, ids in touching.items() if len(ids) == 1]
+        return apex, neighbors, stubs
+
     def _me_render_3d(self):
-        """A true 3D rendering of the CURRENT cell -- its actual geometry
-        (real edge lengths/angles, from the model's own coordinates, not
-        the flattened view's local u/v plane), topology (exactly the ring
-        edges plus any diagonal that currently exists -- nothing assumed
-        or simplified) and proportions (fit to the panel preserving
-        aspect ratio, never stretched). Nodes use each node's REAL world
-        (x, y, z) position, re-centred on the cell's own centroid so it
-        always sits nicely in view regardless of where the module
-        actually sits in the model, then this panel's own orbit camera
-        (see _me3d_project) and ZoomCanvas's own pan/zoom."""
+        """A true 3D rendering of the CURRENT module -- not just its own
+        flat ring (a triangle or quad silhouette), but the actual
+        repeating POLYHEDRON it belongs to: the ring's own edges, PLUS
+        the node(s) it connects to elsewhere in the model that give it
+        real depth (see _me_ring_context), rendered as a shaded solid
+        with the same real-world geometry (actual edge lengths/angles,
+        never a simplified or assumed shape) and proportions (fit to the
+        panel preserving aspect ratio) the flat rendering always used.
+        Also draws short partial-length CONTEXT STUBS toward whatever
+        else continues beyond the module (the next top-chord bar, a
+        neighbouring module's own apex) -- enough to show how this piece
+        connects onward without drawing full extra geometry. Nodes use
+        each node's REAL world (x, y, z) position, re-centred on the
+        module's own centroid (ring + any promoted apex) so it always
+        sits nicely in view, then this panel's own orbit camera (see
+        _me3d_project) and ZoomCanvas's own pan/zoom."""
         c = self.me3d_canvas
         c.delete('all')
         cell_nodes = self._me_current_cell_nodes()
         if cell_nodes is None:
             return
         n = len(cell_nodes)
-        pts = [self.nodes[nid] for nid in cell_nodes]
-        cx = sum(p[0] for p in pts) / n
-        cy = sum(p[1] for p in pts) / n
-        cz = sum(p[2] for p in pts) / n
-        proj = [self._me3d_project(p[0] - cx, p[1] - cy, p[2] - cz) for p in pts]
-        xs = [p[0] for p in proj]
-        ys = [p[1] for p in proj]
+        apex, neighbors, stubs = self._me_ring_context(cell_nodes)
+
+        centroid_pts = [self.nodes[nid] for nid in cell_nodes] + \
+            [self.nodes[e] for e in apex]
+        m = len(centroid_pts)
+        cx = sum(p[0] for p in centroid_pts) / m
+        cy = sum(p[1] for p in centroid_pts) / m
+        cz = sum(p[2] for p in centroid_pts) / m
+
+        def proj_of(nid):
+            p = self.nodes[nid]
+            return self._me3d_project(p[0] - cx, p[1] - cy, p[2] - cz)
+
+        ring_proj = [proj_of(nid) for nid in cell_nodes]
+        apex_proj = {e: proj_of(e) for e in apex}
+        neighbor_proj = {e: proj_of(e) for e in neighbors}
+
+        # a stub is drawn only PART of the way to its real far node, so it
+        # reads as "a piece of the next rod", not a full extra member
+        stub_proj = {}
+        for ring_id, ext_id in stubs:
+            rp, ep = self.nodes[ring_id], self.nodes[ext_id]
+            far = tuple(rp[k] + (ep[k] - rp[k]) * MODULE_STUB_FRAC for k in range(3))
+            stub_proj[(ring_id, ext_id)] = self._me3d_project(far[0] - cx, far[1] - cy,
+                                                              far[2] - cz)
+
+        # an edge directly between two apex/neighbour nodes (e.g. the far
+        # square edge of a pyramid reconstructed from just one triangular
+        # face) completes the ring visually regardless of which single
+        # face was originally selected
+        solid_set = set(apex) | set(neighbors)
+        extra_ring_edges = [(m2['a'], m2['b']) for m2 in self.members
+                           if m2['a'] in solid_set and m2['b'] in solid_set]
+
+        all_proj = ring_proj + list(apex_proj.values()) + list(neighbor_proj.values()) \
+            + list(stub_proj.values())
+        xs = [p[0] for p in all_proj]
+        ys = [p[1] for p in all_proj]
         span = max(max(xs) - min(xs), max(ys) - min(ys), 1e-6)
 
         size = MODULE_CANVAS_SIZE
@@ -1447,7 +1571,7 @@ class StereoApp(UnitsMixin):
             return self.me3d_zc.w2s(wx, wy)
 
         cx0, cy0 = self.me3d_zc.w2s(0.0, 0.0)
-        # re-centre the ZoomCanvas's own pan so (0, 0) (the cell's own
+        # re-centre the ZoomCanvas's own pan so (0, 0) (the module's own
         # centroid) sits in the middle of the panel rather than its
         # top-left corner, the same correction the main canvas's own
         # _reset_view applies for the same reason.
@@ -1456,10 +1580,43 @@ class StereoApp(UnitsMixin):
             self.me3d_zc.pan_y += (size / 2.0 - cy0) / self.me3d_zc.zoom
             self._me3d_centered = True
 
+        pos_of = {nid: i for i, nid in enumerate(cell_nodes)}
+
+        # -- solid faces first, underneath everything else -- one shaded
+        # triangle per (ring edge, apex) pair, so a quad ring reconstructs
+        # all 4 pyramid sides. A triangle ring IS itself one flat face of
+        # the pyramid, so it gets shaded directly rather than needing an
+        # apex of its own (its 3rd node already IS the apex in that case).
+        if n == 3:
+            a_scr = to_screen(*ring_proj[0][:2])
+            b_scr = to_screen(*ring_proj[1][:2])
+            e_scr = to_screen(*ring_proj[2][:2])
+            c.create_polygon(a_scr[0], a_scr[1], b_scr[0], b_scr[1], e_scr[0], e_scr[1],
+                            fill=MODULE_FACE_FILL, outline='')
+        for e in apex:   # connects to EVERY ring node, by construction
+            for i in range(n):
+                a_scr = to_screen(*ring_proj[i][:2])
+                b_scr = to_screen(*ring_proj[(i + 1) % n][:2])
+                e_scr = to_screen(*apex_proj[e][:2])
+                c.create_polygon(a_scr[0], a_scr[1], b_scr[0], b_scr[1], e_scr[0], e_scr[1],
+                                fill=MODULE_FACE_FILL, outline='')
+
+        # -- ring edges --
         for i in range(n):
-            ax, ay = to_screen(*proj[i][:2])
-            bx, by = to_screen(*proj[(i + 1) % n][:2])
-            c.create_line(ax, ay, bx, by, fill='#333333', width=2)
+            ax, ay = to_screen(*ring_proj[i][:2])
+            bx, by = to_screen(*ring_proj[(i + 1) % n][:2])
+            c.create_line(ax, ay, bx, by, fill=MODULE_RING_COLOR, width=2.5)
+
+        # -- the far ring edge(s), completed via a direct member between
+        # two apex/neighbour nodes (e.g. the square's far edge, seen from
+        # just one of its triangular faces) --
+        for a_id, b_id in extra_ring_edges:
+            a_proj = apex_proj.get(a_id, neighbor_proj.get(a_id))
+            b_proj = apex_proj.get(b_id, neighbor_proj.get(b_id))
+            ax, ay = to_screen(*a_proj[:2])
+            bx, by = to_screen(*b_proj[:2])
+            c.create_line(ax, ay, bx, by, fill=MODULE_RING_COLOR, width=2.5)
+
         # any diagonal a quad currently has, drawn distinctly (thinner,
         # grey) from the ring edges -- exactly what find_cells' own
         # "never report a quad with an existing diagonal" rule guarantees
@@ -1468,14 +1625,50 @@ class StereoApp(UnitsMixin):
             for pos_a, pos_b in ((0, 2), (1, 3)):
                 a_id, b_id = cell_nodes[pos_a], cell_nodes[pos_b]
                 if any({m2['a'], m2['b']} == {a_id, b_id} for m2 in self.members):
-                    ax, ay = to_screen(*proj[pos_a][:2])
-                    bx, by = to_screen(*proj[pos_b][:2])
+                    ax, ay = to_screen(*ring_proj[pos_a][:2])
+                    bx, by = to_screen(*ring_proj[pos_b][:2])
                     c.create_line(ax, ay, bx, by, fill='#888888', width=1.5, dash=(3, 2))
+
+        # -- apex node(s): solid diagonal edges + a prominent marker --
+        for e, ring_ids in apex.items():
+            ex, ey = to_screen(*apex_proj[e][:2])
+            for r in ring_ids:
+                pos = pos_of.get(r)
+                if pos is not None:
+                    rx, ry = to_screen(*ring_proj[pos][:2])
+                    c.create_line(rx, ry, ex, ey, fill=MODULE_APEX_EDGE_COLOR, width=2.2)
+            c.create_oval(ex - 5, ey - 5, ex + 5, ey + 5, fill=MODULE_APEX_NODE_COLOR,
+                         outline='')
+
+        # -- neighbouring modules' own apex/nodes: plain (unshaded) edges
+        # to whichever ring nodes they touch, so they read as real
+        # context without being mistaken for THIS module's own apex --
+        for e, ring_ids in neighbors.items():
+            ex, ey = to_screen(*neighbor_proj[e][:2])
+            for r in ring_ids:
+                pos = pos_of.get(r)
+                if pos is not None:
+                    rx, ry = to_screen(*ring_proj[pos][:2])
+                    c.create_line(rx, ry, ex, ey, fill=MODULE_NEIGHBOR_EDGE_COLOR, width=1.4)
+            c.create_oval(ex - 3.5, ey - 3.5, ex + 3.5, ey + 3.5,
+                         fill=MODULE_NEIGHBOR_NODE_COLOR, outline='')
+
+        # -- context stubs: short partial pieces of whatever continues
+        # beyond this module (the next top-chord bar) -- enough to show
+        # connectivity without full extra geometry --
+        for (ring_id, ext_id), sp in stub_proj.items():
+            pos = pos_of[ring_id]
+            rx, ry = to_screen(*ring_proj[pos][:2])
+            sx, sy = to_screen(*sp[:2])
+            c.create_line(rx, ry, sx, sy, fill=MODULE_STUB_COLOR, width=1.3)
+            c.create_oval(sx - 3, sy - 3, sx + 3, sy + 3, fill=MODULE_STUB_COLOR, outline='')
+
+        # -- ring nodes + numbers, drawn last so they stay on top --
         for i in range(n):
-            px, py = to_screen(*proj[i][:2])
-            c.create_oval(px - 5, py - 5, px + 5, py + 5, fill='#333333', outline='')
+            px, py = to_screen(*ring_proj[i][:2])
+            c.create_oval(px - 5, py - 5, px + 5, py + 5, fill=MODULE_RING_COLOR, outline='')
             c.create_text(px, py - 12, text=str(i), font=('Helvetica', 8, 'bold'),
-                         fill='#333333')
+                         fill=MODULE_RING_COLOR)
 
     def _me_show_selection_info(self, cell_nodes, coords):
         sel = self._me_selection
@@ -2546,10 +2739,18 @@ class StereoApp(UnitsMixin):
             max_abs_moment = 0.0
             if by_moment:
                 moment_axis = self.moment_axis.get()
+                # The structure's own planar centroid -- see
+                # reaction_moment_signed's own docstring for why the
+                # RESULTANT mode's sign is projected relative to it
+                # (symmetric nodes must read the same colour, which a raw
+                # Mx/My component cannot guarantee).
+                centroid_xy = (sum(n[0] for n in self.nodes) / len(self.nodes),
+                              sum(n[1] for n in self.nodes) / len(self.nodes))
                 for i in support_nodes:
                     r = self.results['reactions'].get(i)
                     if r is not None:
-                        m = reaction_moment_signed(r, moment_axis) * frac
+                        node_xy = (self.nodes[i][0], self.nodes[i][1])
+                        m = reaction_moment_signed(r, moment_axis, node_xy, centroid_xy) * frac
                         moment_by_node[i] = m
                         max_abs_moment = max(max_abs_moment, abs(m))
                 node_vecs = sm.node_moment_vectors(self.nodes, self.members,
@@ -2557,7 +2758,8 @@ class StereoApp(UnitsMixin):
                 for i, vec in node_vecs.items():
                     if i in moment_by_node:
                         continue   # a support's own reaction already wins
-                    m = reaction_moment_signed(vec, moment_axis) * frac
+                    node_xy = (self.nodes[i][0], self.nodes[i][1])
+                    m = reaction_moment_signed(vec, moment_axis, node_xy, centroid_xy) * frac
                     moment_by_node[i] = m
                     max_abs_moment = max(max_abs_moment, abs(m))
             for i, (px, py, _) in enumerate(proj):

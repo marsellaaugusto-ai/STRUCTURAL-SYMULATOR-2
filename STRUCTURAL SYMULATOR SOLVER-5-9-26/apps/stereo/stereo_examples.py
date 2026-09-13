@@ -16,6 +16,12 @@ lasso click:
   5-6. Two independently-defined surfaces connected as a top/bottom
        double layer -- #5 a dish over a flat plane (Cartesian, square),
        #6 two concentric domes (Polar, diagonal).
+  7-8. The dedicated curved-shell generators (stereo_geometry's own
+       barrel_vault/dome, not the Custom Surface Wizard) shown directly,
+       each pinned along the support lines its own docstring calls out
+       as the structurally correct base -- #7 a circular-arch barrel
+       vault along its two springing lines, #8 a Schwedler-rib dome
+       along its base ring.
 
 Each function returns the shared {'nodes','members','support_candidates'}
 mesh dict, exactly like every stereo_geometry generator, so it drops
@@ -147,10 +153,23 @@ def single_surface_truss_2():
     y=4sin(v), z=4cos(v)), a shape no height field z=f(x,y) could
     express (a cylinder is vertical at its own springing lines) --
     sampled with the isometric (60-degree/equilateral-triangle) module
-    pattern into a 3D space truss."""
+    pattern into a 3D space truss.
+
+    q_range is centred on v=0 (-pi/2+eps to +pi/2-eps), not (eps, pi-eps):
+    with y=4sin(v)/z=4cos(v), v=0 is the CROWN (y=0, z=+4, the top of the
+    circle) and v=+-pi/2 are the two SPRINGING lines (y=+-4, z=0, where
+    the cylinder's surface is locally vertical -- the docstring's own
+    point). The earlier (eps, pi-eps) range instead put v=pi/2 -- a
+    springing line -- in the MIDDLE and swept from near the true crown
+    (v~0) past it to near the circle's BOTTOM (v~pi, z=-4): half the
+    surface ended up below the ground plane, y never went negative, and
+    the shape read as an arch opening sideways (toward +y) rather than
+    arching upward, since what should have been the crown was rendered
+    at one end, not the peak."""
     surface = sg.make_parametric_surface('u', '4*sin(v)', '4*cos(v)')
     return sg.custom_surface_grid(surface, coord='cartesian', pattern='isometric',
-                                  p_range=(0.0, 10.0), q_range=(0.3, math.pi - 0.3),
+                                  p_range=(0.0, 10.0),
+                                  q_range=(-math.pi / 2.0 + 0.3, math.pi / 2.0 - 0.3),
                                   n1=10, n2=8, module='3d', depth=0.5,
                                   offset_side='top')
 
@@ -179,6 +198,25 @@ def two_surface_truss_2():
                                      n1=6, n2=12)
 
 
+def barrel_vault_example():
+    """A circular-arch barrel vault (stereo_geometry.barrel_vault directly,
+    not the Custom Surface Wizard), double layer, pinned along its two
+    springing lines -- the vault's own actual structural base (see that
+    function's docstring for why the two long edges, not the two short
+    end faces, is where a real barrel vault bears)."""
+    mesh = sg.barrel_vault(span=12.0, rise=3.0, length=18.0, n_arch=8, n_bays=6,
+                           double_layer=True, depth=0.5)
+    return mesh
+
+
+def dome_example():
+    """A Schwedler-rib dome (stereo_geometry.dome directly), pinned along
+    its base ring -- every meridian rib lands there, the dome's own
+    structural base."""
+    mesh = sg.dome(base_radius=8.0, rise=4.0, n_rings=5, n_sectors=16)
+    return mesh
+
+
 EXAMPLES = (
     ('Planar grid + columns (1-tier) + beam', planar_grid_with_columns_1),
     ('Planar grid + columns (2-tier) + multilayer beam', planar_grid_with_columns_2),
@@ -186,4 +224,6 @@ EXAMPLES = (
     ('Single-surface truss: half-cylinder (isometric)', single_surface_truss_2),
     ('Two-surface truss: dish over flat plane (square)', two_surface_truss_1),
     ('Two-surface truss: concentric domes (polar, diagonal)', two_surface_truss_2),
+    ('Barrel vault (circular arch), pinned at both springing lines', barrel_vault_example),
+    ('Schwedler dome, pinned at the base ring', dome_example),
 )

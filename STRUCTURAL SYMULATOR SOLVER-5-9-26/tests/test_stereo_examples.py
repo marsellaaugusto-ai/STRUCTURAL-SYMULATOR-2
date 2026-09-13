@@ -20,10 +20,10 @@ def _solves(mesh):
     return err
 
 
-def test_examples_table_has_six_distinct_entries():
-    assert len(sx.EXAMPLES) == 6
+def test_examples_table_has_eight_distinct_entries():
+    assert len(sx.EXAMPLES) == 8
     labels = [label for label, _builder in sx.EXAMPLES]
-    assert len(set(labels)) == 6
+    assert len(set(labels)) == 8
 
 
 @pytest.mark.parametrize('label,builder', sx.EXAMPLES)
@@ -126,3 +126,32 @@ def test_two_surface_examples_connect_two_distinct_surfaces():
     # the two surfaces differ by exactly +1.0 in z (dish+1.0 over flat=0)
     zs = [z for x, y, z in mesh['nodes']]
     assert max(zs) - min(zs) > 0.5
+
+
+def test_half_cylinder_example_arches_upward_not_sideways():
+    # the actual bug report this guards: q_range used to sweep v from near
+    # the true crown (v~0) past a springing line (v=pi/2) to near the
+    # circle's own BOTTOM (v~pi) instead of being centred on the crown, so
+    # half the "vault" sat below the ground plane and the whole shape read
+    # as an arch opening sideways (toward +y) rather than pointing up.
+    mesh = sx.single_surface_truss_2()
+    zs = [z for _x, _y, z in mesh['nodes']]
+    ys = [y for _x, y, _z in mesh['nodes']]
+    assert min(zs) >= 0.0   # nothing below the ground plane
+    assert min(ys) < 0.0 < max(ys)   # the arc straddles its own centreline
+
+
+def test_barrel_vault_example_rise_is_along_z():
+    mesh = sx.barrel_vault_example()
+    zs = [z for _x, _y, z in mesh['nodes']]
+    ys = [y for _x, y, _z in mesh['nodes']]
+    assert max(zs) - min(zs) > 2.0   # a real rise, not a flattened arc
+    assert min(ys) < 0.0 < max(ys)   # springs on both sides of the centreline
+
+
+def test_dome_example_apex_is_the_highest_point():
+    mesh = sx.dome_example()
+    nodes = mesh['nodes']
+    apex = max(range(len(nodes)), key=lambda i: nodes[i][2])
+    assert abs(nodes[apex][0]) < 1e-6 and abs(nodes[apex][1]) < 1e-6   # apex sits on the axis
+    assert apex not in mesh['support_candidates']   # the base ring, not the apex, is supported

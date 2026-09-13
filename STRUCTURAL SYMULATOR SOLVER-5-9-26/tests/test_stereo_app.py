@@ -475,6 +475,58 @@ def test_load_arrows_are_drawn_for_a_point_load_and_hidden_by_the_toggle(app):
     assert len(app.canvas.find_withtag('load')) == 0
 
 
+# ── XYZ axis gizmo + z=0 ground reference ────────────────────────────────────
+
+def test_axes_are_shown_by_default_and_hidden_by_the_toggle(app):
+    app._draw()
+    assert len(app.canvas.find_withtag('axes')) > 0
+
+    app.show_axes.set(False)
+    app._draw()
+    assert len(app.canvas.find_withtag('axes')) == 0
+
+
+def test_axes_gizmo_has_three_coloured_arrows_and_a_four_sided_ground_outline(app):
+    app.show_axes.set(True)
+    app._draw()
+    items = app.canvas.find_withtag('axes')
+    lines = [i for i in items if app.canvas.type(i) == 'line']
+    texts = [i for i in items if app.canvas.type(i) == 'text']
+    # 3 axis arrows + 4 ground-outline segments = 7 lines; X/Y/Z labels
+    assert len(lines) == 7
+    assert {app.canvas.itemcget(i, 'text') for i in texts} == {'X', 'Y', 'Z'}
+    colors = {app.canvas.itemcget(i, 'fill') for i in lines}
+    assert StereoApp.AXIS_COLOR_X in colors
+    assert StereoApp.AXIS_COLOR_Y in colors
+    assert StereoApp.AXIS_COLOR_Z in colors
+
+
+def test_axes_scale_with_the_models_own_footprint(app):
+    # a bigger structure should get a longer gizmo, not a fixed pixel size
+    import math
+    from apps.stereo import stereo_examples as sx
+    app.show_axes.set(True)
+    app._draw()
+
+    def x_arrow_length():
+        items = app.canvas.find_withtag('axes')
+        for i in items:
+            if app.canvas.type(i) == 'line' and \
+               app.canvas.itemcget(i, 'fill') == StereoApp.AXIS_COLOR_X:
+                x0, y0, x1, y1 = app.canvas.coords(i)
+                return math.hypot(x1 - x0, y1 - y0)
+        return None
+
+    small = x_arrow_length()
+    label, builder = sx.EXAMPLES[0]
+    app._load_example(builder, label)
+    app._reset_view()
+    app._draw()
+    big = x_arrow_length()
+    assert small is not None and big is not None
+    assert small != pytest.approx(big, rel=0.01)
+
+
 # ── force gradient coloring ──────────────────────────────────────────────────
 
 def test_force_color_is_red_for_tension_and_blue_for_compression():

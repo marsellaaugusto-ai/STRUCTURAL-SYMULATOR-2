@@ -1380,8 +1380,8 @@ def test_every_column_style_can_be_added_from_the_panel(app, style):
     app._add_column()
     assert len(app.nodes) > n0 and len(app.members) > m0
     added = len(app.supports) - sup0
-    assert added == (1 if style == sg.COLUMN_SHAFT else 4), \
-        f'{style} pinned {added} feet'
+    expected = {sg.COLUMN_SHAFT: 1, sg.COLUMN_TRIPOD: 3}.get(style, 4)
+    assert added == expected, f'{style} pinned {added} feet'
     app._analyze()
     assert app.err is None, f'{style} did not solve from the panel: {app.err}'
 
@@ -1403,6 +1403,49 @@ def test_every_beam_profile_can_be_added_from_the_panel(app, profile):
     assert len(app.nodes) > n0
     app._analyze()
     assert app.err is None, f'{profile} did not solve from the panel: {app.err}'
+
+
+@pytest.mark.parametrize('law', sg.BEAM_DEPTH_LAWS)
+def test_every_depth_law_can_be_added_from_the_panel(app, law):
+    app.grid_family.set(FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(8); app.fg_ny.set(6)
+    app._generate()
+    ys = sorted({round(y, 6) for x, y, z in app.nodes if abs(z) < 1e-6})
+    app.selected_nodes = {i for i, (x, y, z) in enumerate(app.nodes)
+                          if abs(z) < 1e-6 and round(y, 6) in (ys[2], ys[3])}
+    app.beam_profile.set(sg.BEAM_GRID_STRIP)
+    app.beam_depth_law.set(law)
+    app.beam_depth.set(1.6)
+    app.beam_tiers.set(1)
+    app._add_reinforcement_beam()
+    app._analyze()
+    assert app.err is None, f'{law} did not solve from the panel: {app.err}'
+
+
+def test_a_vierendeel_keeps_rigid_joints_when_the_section_panel_says_pin(app):
+    """_apply_sections sets every member's connection from one panel choice.
+    A Vierendeel carries its load by BENDING its members, so pinned it is a
+    mechanism and the solver returns a singular matrix rather than a result."""
+    app.grid_family.set(FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(8); app.fg_ny.set(6)
+    app._generate()
+    ys = sorted({round(y, 6) for x, y, z in app.nodes if abs(z) < 1e-6})
+    app.selected_nodes = {i for i, (x, y, z) in enumerate(app.nodes)
+                          if abs(z) < 1e-6 and round(y, 6) in (ys[2], ys[3])}
+    app.beam_profile.set(sg.BEAM_VIERENDEEL)
+    app.beam_depth.set(1.6)
+    app._add_reinforcement_beam()
+    app.sec_conn.set('pin')
+    app._apply_sections()
+    forced = [m for m in app.members if m.get('rigid_required')]
+    assert forced, 'the Vierendeel marked nothing as needing rigid joints'
+    assert all(m['conn'] == 'rigid' for m in forced)
+    assert any(m['conn'] == 'pin' for m in app.members), \
+        'the panel choice stopped reaching the ordinary members'
+    app._analyze()
+    assert app.err is None, app.err
 
 
 def test_add_column_2tier_capital_via_the_ui(app):

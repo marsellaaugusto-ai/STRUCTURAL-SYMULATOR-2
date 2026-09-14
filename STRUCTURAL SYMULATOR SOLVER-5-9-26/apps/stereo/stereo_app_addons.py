@@ -112,7 +112,8 @@ class StereoAddonsMixin:
         try:
             nodes, members, apex = sg.reinforcement_beam(
                 self.nodes, self.members, edge_a, edge_b, depth, direction,
-                tiers=tiers, profile=self.beam_profile.get())
+                tiers=tiers, profile=self.beam_profile.get(),
+                depth_law=self.beam_depth_law.get())
         except ValueError as exc:
             messagebox.showerror('Reinforcement beam', str(exc))
             return

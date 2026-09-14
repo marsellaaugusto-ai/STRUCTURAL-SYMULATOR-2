@@ -881,7 +881,25 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Label(prof_row, text='Profile:', bg=BG, width=16, anchor='w',
                 font=('Helvetica', 9)).pack(side='left')
         ttk.Combobox(prof_row, textvariable=self.beam_profile, state='readonly',
-                     width=18, values=list(sg.BEAM_PROFILES)).pack(side='left')
+                     width=22, values=list(sg.BEAM_PROFILES)).pack(side='left')
+        # The depth law is a separate question from the cross-section, and
+        # combinable with any of them, so it gets its own control rather than
+        # doubling the profile list.
+        self.beam_depth_law = tk.StringVar(value=sg.BEAM_DEPTH_CONSTANT)
+        law_row = tk.Frame(beam, bg=BG)
+        law_row.pack(fill='x', padx=6, pady=(3, 0))
+        tk.Label(law_row, text='Depth along span:', bg=BG, width=16, anchor='w',
+                font=('Helvetica', 9)).pack(side='left')
+        ttk.Combobox(law_row, textvariable=self.beam_depth_law, state='readonly',
+                     width=22, values=list(sg.BEAM_DEPTH_LAWS)).pack(side='left')
+        tk.Label(beam, text='Grid strip puts the offset chord under each '
+                           'MODULE centre, so every bay is the same half-'
+                           'octahedron the flat grid is built from. '
+                           'Vierendeel forces its own joints rigid -- pinned '
+                           'it is a mechanism, not a frame.',
+                bg=BG, font=('Helvetica', 8), fg='#666',
+                wraplength=PANEL_W - 40, justify='left'
+                ).pack(anchor='w', padx=4, pady=(2, 0))
         self.beam_depth = tk.DoubleVar(value=1.0)
         self.beam_dir = tk.StringVar(value='Down (-Z)')
         self.beam_tiers = tk.IntVar(value=1)

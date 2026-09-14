@@ -33,42 +33,97 @@ from apps.stereo.stereo_geometry_core import _add_member
 #   LEGS      four inclined struts from a square footprint up to one head --
 #             the "candelabra" support: no lattice to fabricate, but the
 #             splayed feet give it the base width a single pin cannot.
+#   TRIPOD    the same, on THREE feet at 120 degrees. Three points always
+#             define a plane, so a tripod cannot rock on an uneven footing
+#             the way a four-footed column can, and it is the natural
+#             footing under a triangular or hexagonal grid.
 COLUMN_SHAFT = 'Single shaft'
 COLUMN_LATTICE = 'Latticed (4 chords)'
 COLUMN_TAPERED = 'Latticed, tapered'
 COLUMN_LEGS = 'Four inclined legs'
-COLUMN_STYLES = (COLUMN_SHAFT, COLUMN_LATTICE, COLUMN_TAPERED, COLUMN_LEGS)
+COLUMN_TRIPOD = 'Tripod (3 legs)'
+COLUMN_STYLES = (COLUMN_SHAFT, COLUMN_LATTICE, COLUMN_TAPERED,
+                 COLUMN_LEGS, COLUMN_TRIPOD)
 
-# The reinforcement beam's CROSS-SECTION, as lateral positions across the two
-# base rows: 0.0 is the midline between them, +-1.0 is directly under each.
+# The reinforcement beam's CROSS-SECTION. The first three are described by
+# lateral positions across the two base rows: 0.0 is the midline between
+# them, +-1.0 is directly under each. The last two are not, and are built
+# separately.
 #
-#   TRIANGLE  one chord on the midline. The lightest section for its depth
-#             and the one that needs no bottom bracing, since a single chord
-#             cannot lozenge -- but its whole bottom flange is one member, so
-#             it is the weakest of the three in lateral bending.
-#   BOX       two chords, one under each base row: a closed rectangular
-#             girder. Twice the bottom flange area and far stiffer about the
-#             vertical axis, at the cost of a second chord line and the
-#             bracing that keeps the bottom plane square.
-#   TRAPEZOID two chords at half the base width -- the compromise, and the
-#             section most often rolled for a roof girder, because the
-#             inclined side faces shed water and the narrower bottom needs
-#             less bracing than a full box.
+#   TRIANGLE   one chord on the midline. The lightest section for its depth
+#              and the one that needs no bottom bracing, since a single chord
+#              cannot lozenge -- but its whole bottom flange is one member,
+#              so it is the weakest of the three in lateral bending.
+#   BOX        two chords, one under each base row: a closed rectangular
+#              girder. Twice the bottom flange area and far stiffer about the
+#              vertical axis, at the cost of a second chord line and the
+#              bracing that keeps the bottom plane square.
+#   TRAPEZOID  two chords at half the base width -- the compromise, and the
+#              section most often rolled for a roof girder, because the
+#              inclined side faces shed water and the narrower bottom needs
+#              less bracing than a full box.
+#   GRID_STRIP a one-module-wide strip of the double-layer grid itself,
+#              mirrored: the offset chord sits under each module's CENTRE
+#              rather than under each station, so every bay is a half-
+#              octahedron -- the same module the flat grid is built from,
+#              and the reason a space frame and its own beams can be
+#              fabricated from one family of parts.
+#   VIERENDEEL a box with no diagonals at all: rectangular openings you can
+#              run services through. It carries load by BENDING its members
+#              rather than by axial force, so its joints are forced rigid --
+#              pinned, it is a mechanism, not a stiff frame.
 BEAM_TRIANGLE = 'Triangular'
 BEAM_BOX = 'Box (rectangular)'
 BEAM_TRAPEZOID = 'Trapezoidal'
-BEAM_PROFILES = (BEAM_TRIANGLE, BEAM_BOX, BEAM_TRAPEZOID)
+BEAM_GRID_STRIP = 'Grid strip (1 x n module)'
+BEAM_VIERENDEEL = 'Vierendeel (no diagonals)'
+BEAM_PROFILES = (BEAM_TRIANGLE, BEAM_BOX, BEAM_TRAPEZOID,
+                 BEAM_GRID_STRIP, BEAM_VIERENDEEL)
 BEAM_PROFILE_OFFSETS = {BEAM_TRIANGLE: (0.0,),
                         BEAM_BOX: (-1.0, 1.0),
-                        BEAM_TRAPEZOID: (-0.5, 0.5)}
+                        BEAM_TRAPEZOID: (-0.5, 0.5),
+                        BEAM_VIERENDEEL: (-1.0, 1.0)}
+
+# How the beam's DEPTH varies along its span -- a separate question from the
+# cross-section, and combinable with any of them.
+#
+#   CONSTANT   the same depth end to end. Simplest to fabricate: every
+#              station is the same part.
+#   PARABOLIC  deepest at midspan and shallowest at the ends, following the
+#              bending moment of a simply supported span. The same stiffness
+#              for noticeably less steel, at the cost of every station being
+#              a different part. The ends keep BEAM_DEPTH_MIN of the full
+#              depth rather than running to nothing: a beam of zero depth at
+#              its support has no shear path at all, and the members there
+#              would collapse onto the base rows.
+BEAM_DEPTH_CONSTANT = 'Constant'
+BEAM_DEPTH_PARABOLIC = 'Parabolic (fish-belly)'
+BEAM_DEPTH_LAWS = (BEAM_DEPTH_CONSTANT, BEAM_DEPTH_PARABOLIC)
+BEAM_DEPTH_MIN = 0.25
 
 
-def _square_ring(nodes, cx, cy, z, half):
-    """Four new nodes on a square of side 2*half, centred on (cx, cy) at z."""
+def _depth_at(depth, law, s):
+    """The beam's depth at fraction `s` (0..1) along its span."""
+    if law == BEAM_DEPTH_PARABOLIC:
+        shape = 1.0 - (2.0 * s - 1.0) ** 2          # 0 at the ends, 1 at mid
+        return depth * (BEAM_DEPTH_MIN + (1.0 - BEAM_DEPTH_MIN) * shape)
+    return depth
+
+
+def _foot_ring(nodes, cx, cy, z, half, count=4):
+    """`count` new nodes evenly round a circle of radius `half` at z.
+
+    Square for four (the lattice's own four chord lines), and at 120 degrees
+    for three. Started at -45 degrees so the four-foot case comes out axis-
+    aligned, which is what makes a latticed column line up with the grid it
+    carries rather than sitting askew under it.
+    """
     ring = []
-    for dx, dy in ((-half, -half), (half, -half), (half, half), (-half, half)):
+    r = half * math.sqrt(2.0) if count == 4 else half
+    for k in range(count):
+        ang = -math.pi / 4.0 + 2.0 * math.pi * k / count
         ring.append(len(nodes))
-        nodes.append((cx + dx, cy + dy, z))
+        nodes.append((cx + r * math.cos(ang), cy + r * math.sin(ang), z))
     return ring
 
 
@@ -76,8 +131,8 @@ def _build_shaft(nodes, members, seen, style, cx, cy, head, head_z, foot_z,
                  width, panels):
     """Everything between the capital head and the ground, per style.
 
-    Returns the list of FOUNDATION nodes -- four of them for every style but
-    the single shaft. A latticed or splay-footed column standing on one pin
+    Returns the list of FOUNDATION nodes -- three for a tripod, four for the
+    other multi-footed styles, one for the single shaft. A latticed or splay-footed column standing on one pin
     is a mechanism: the lattice is rigid as a body, so a single point of
     restraint leaves it three rotations short, which the solver reports as a
     mechanism rather than a result. The caller pins every foot returned.
@@ -88,13 +143,14 @@ def _build_shaft(nodes, members, seen, style, cx, cy, head, head_z, foot_z,
         _add_member(members, seen, base, head, role='column_shaft')
         return [base]
 
-    if style == COLUMN_LEGS:
-        feet = _square_ring(nodes, cx, cy, foot_z, width / 2.0)
+    if style in (COLUMN_LEGS, COLUMN_TRIPOD):
+        feet = _foot_ring(nodes, cx, cy, foot_z, width / 2.0,
+                          3 if style == COLUMN_TRIPOD else 4)
         for f in feet:
             _add_member(members, seen, f, head, role='column_shaft')
-        # The feet are tied into a closed square. Without it each leg is a
-        # two-force member between one pin and one shared head, and the four
-        # of them fold about the head like an umbrella.
+        # The feet are tied into a closed ring. Without it each leg is a
+        # two-force member between one pin and one shared head, and they
+        # fold about the head like an umbrella.
         for a, b in zip(feet, feet[1:] + feet[:1]):
             _add_member(members, seen, a, b, role='column_tie')
         return feet
@@ -107,7 +163,7 @@ def _build_shaft(nodes, members, seen, style, cx, cy, head, head_z, foot_z,
         t = k / panels                       # 0 at the foot, 1 at the head
         z = foot_z + t * (head_z - foot_z)
         half = 0.5 * width * (taper + (1.0 - taper) * t)
-        levels.append(_square_ring(nodes, cx, cy, z, half))
+        levels.append(_foot_ring(nodes, cx, cy, z, half))
     for ring in levels:                      # horizontal ties at every level
         for a, b in zip(ring, ring[1:] + ring[:1]):
             _add_member(members, seen, a, b, role='column_tie')
@@ -274,7 +330,8 @@ def add_column(nodes, members, target_nodes, height, tiers=1,
 
 
 def reinforcement_beam(nodes, members, edge_a, edge_b, depth, direction=(0.0, 0.0, -1.0),
-                       tiers=1, profile=BEAM_TRIANGLE):
+                       tiers=1, profile=BEAM_TRIANGLE,
+                       depth_law=BEAM_DEPTH_CONSTANT):
     """Attach a linear space-truss reinforcement beam to TWO existing,
     parallel rows of nodes (`edge_a`, `edge_b` -- same length, each in
     order along the row, e.g. two adjacent bottom-chord rows of a
@@ -321,6 +378,9 @@ def reinforcement_beam(nodes, members, edge_a, edge_b, depth, direction=(0.0, 0.
                      consecutive tiers only ADD stiffness on top of that,
                      never substitute for a tier's own bracing.
 
+    depth_law      : how the depth VARIES along the span, one of
+                     BEAM_DEPTH_LAWS. Orthogonal to the cross-section: any
+                     profile can be built constant or fish-belly.
     profile        : the CROSS-SECTION, one of BEAM_PROFILES -- see that
                      table for what each is and what it trades. Triangular
                      puts one chord on the midline; the other two put a pair
@@ -355,69 +415,135 @@ def reinforcement_beam(nodes, members, edge_a, edge_b, depth, direction=(0.0, 0.
     members = list(members)
     seen = {(min(m['a'], m['b']), max(m['a'], m['b'])) for m in members}
 
-    if profile not in BEAM_PROFILE_OFFSETS:
+    if profile not in BEAM_PROFILES:
         raise ValueError(f'unknown beam profile {profile!r}.')
-    offsets = BEAM_PROFILE_OFFSETS[profile]
+    if depth_law not in BEAM_DEPTH_LAWS:
+        raise ValueError(f'unknown depth law {depth_law!r}.')
 
     n = len(edge_a)
+    rigid = profile == BEAM_VIERENDEEL
+
+    def base_point(k):
+        ax, ay, az = nodes[edge_a[k]]
+        bx, by, bz = nodes[edge_b[k]]
+        return (ax, ay, az), (bx, by, bz)
+
+    def offset_node(k_from, k_to, blend, lateral, d):
+        """A node `d` away from the base, `blend` of the way between two
+        stations and `lateral` of the way across them."""
+        (ax, ay, az), (bx, by, bz) = base_point(k_from)
+        (cx2, cy2, cz2), (dx2, dy2, dz2) = base_point(k_to)
+        ax, ay, az = (ax + blend * (cx2 - ax), ay + blend * (cy2 - ay),
+                      az + blend * (cz2 - az))
+        bx, by, bz = (bx + blend * (dx2 - bx), by + blend * (dy2 - by),
+                      bz + blend * (dz2 - bz))
+        mx, my, mz = (ax + bx) / 2.0, (ay + by) / 2.0, (az + bz) / 2.0
+        return (mx + lateral * (bx - ax) / 2.0 + dx * d,
+                my + lateral * (by - ay) / 2.0 + dy * d,
+                mz + lateral * (bz - az) / 2.0 + dz * d)
+
+    def web(a, b):
+        _add_member(members, seen, a, b, role='reinf_web',
+                    **({'conn': 'rigid', 'rigid_required': True} if rigid else {}))
+
+    def chord(a, b):
+        _add_member(members, seen, a, b, role='reinf_chord',
+                    **({'conn': 'rigid', 'rigid_required': True} if rigid else {}))
+
+    if profile == BEAM_GRID_STRIP:
+        # One offset node per BAY rather than per station, sitting under the
+        # module's own centre: every bay is then a half-octahedron on the two
+        # base rows -- the exact module a double-layer flat grid is built
+        # from, mirrored. Which is why a space frame and the beams stiffening
+        # it can come out of one family of parts.
+        apex_tiers = []
+        for t in range(1, tiers + 1):
+            row = []
+            for k in range(n - 1):
+                s_mid = (k + 0.5) / max(n - 1, 1)
+                d_t = _depth_at(depth, depth_law, s_mid) * t / tiers
+                row.append(len(nodes))
+                nodes.append(offset_node(k, k + 1, 0.5, 0.0, d_t))
+            apex_tiers.append([row])
+        for rows in apex_tiers:
+            row = rows[0]
+            for k in range(n - 1):
+                for j in (edge_a[k], edge_b[k], edge_a[k + 1], edge_b[k + 1]):
+                    web(j, row[k])
+            for k in range(n - 2):
+                chord(row[k], row[k + 1])
+        for k in range(n - 1):
+            chord(edge_a[k], edge_a[k + 1])
+            chord(edge_b[k], edge_b[k + 1])
+        for t in range(len(apex_tiers) - 1):
+            for k in range(n - 1):
+                web(apex_tiers[t][0][k], apex_tiers[t + 1][0][k])
+        return nodes, members, [a for tier in apex_tiers for row in tier for a in row]
+
+    offsets = BEAM_PROFILE_OFFSETS[profile]
     # apex_tiers[t] is a list of ROWS, one per offset chord in the section.
     apex_tiers = []
     for t in range(1, tiers + 1):
-        d_t = depth * t / tiers
         rows = []
         for f in offsets:
             row = []
             for k in range(n):
-                ax, ay, az = nodes[edge_a[k]]
-                bx, by, bz = nodes[edge_b[k]]
-                mx, my, mz = (ax + bx) / 2.0, (ay + by) / 2.0, (az + bz) / 2.0
-                # f runs from the midline (0) out to either base row (+-1)
-                px = mx + f * (bx - ax) / 2.0 + dx * d_t
-                py = my + f * (by - ay) / 2.0 + dy * d_t
-                pz = mz + f * (bz - az) / 2.0 + dz * d_t
+                s_k = k / max(n - 1, 1)
+                d_t = _depth_at(depth, depth_law, s_k) * t / tiers
                 row.append(len(nodes))
-                nodes.append((px, py, pz))
+                nodes.append(offset_node(k, k, 0.0, f, d_t))
             rows.append(row)
         apex_tiers.append(rows)
 
     for rows in apex_tiers:
         for row in rows:
             for k in range(n):
+                if rigid:
+                    # A Vierendeel has ONE vertical per station and no
+                    # diagonal at all -- that is the whole point of it. The
+                    # far tie would be a diagonal.
+                    web(edge_a[k] if row is rows[0] else edge_b[k], row[k])
+                    continue
                 # Every offset node ties to BOTH base rows, not just the one
                 # above it. On a box section the near tie alone is a plain
                 # vertical, and the cross-section is then a four-bar linkage
                 # that shears flat; the far tie is the diagonal that squares
                 # it.
-                _add_member(members, seen, edge_a[k], row[k], role='reinf_web')
-                _add_member(members, seen, edge_b[k], row[k], role='reinf_web')
+                web(edge_a[k], row[k])
+                web(edge_b[k], row[k])
             for k in range(n - 1):
-                _add_member(members, seen, row[k], row[k + 1], role='reinf_chord')
+                chord(row[k], row[k + 1])
+                if rigid:
+                    continue
                 # crossed bracing both ways per bay -- needed to stop the
                 # whole chain from twisting about the base's own axis, the
                 # same "spin" mechanism the single-row version needed
                 # both-direction X-bracing to kill.
-                _add_member(members, seen, edge_a[k], row[k + 1], role='reinf_web')
-                _add_member(members, seen, row[k], edge_a[k + 1], role='reinf_web')
-                _add_member(members, seen, edge_b[k], row[k + 1], role='reinf_web')
-                _add_member(members, seen, row[k], edge_b[k + 1], role='reinf_web')
+                web(edge_a[k], row[k + 1])
+                web(row[k], edge_a[k + 1])
+                web(edge_b[k], row[k + 1])
+                web(row[k], edge_b[k + 1])
         for k in range(n - 1):
-            _add_member(members, seen, edge_a[k], edge_a[k + 1], role='reinf_chord')
-            _add_member(members, seen, edge_b[k], edge_b[k + 1], role='reinf_chord')
+            chord(edge_a[k], edge_a[k + 1])
+            chord(edge_b[k], edge_b[k + 1])
         # A section with two bottom chords has a bottom PLANE, and a plane of
         # parallelograms lozenges. Tie the pair at every station and brace
-        # each bay of it.
+        # each bay of it -- except on a Vierendeel, whose rigid joints are
+        # what hold it square instead.
         for lo, hi in zip(rows, rows[1:]):
             for k in range(n):
-                _add_member(members, seen, lo[k], hi[k], role='reinf_web')
+                web(lo[k], hi[k])
+            if rigid:
+                continue
             for k in range(n - 1):
-                _add_member(members, seen, lo[k], hi[k + 1], role='reinf_web')
-                _add_member(members, seen, hi[k], lo[k + 1], role='reinf_web')
+                web(lo[k], hi[k + 1])
+                web(hi[k], lo[k + 1])
 
     # tie consecutive tiers together station by station -- pure ADDED
     # thickness/stiffness; each tier is already independently rigid above.
     for t in range(len(apex_tiers) - 1):
         for lo_row, hi_row in zip(apex_tiers[t], apex_tiers[t + 1]):
             for k in range(n):
-                _add_member(members, seen, lo_row[k], hi_row[k], role='reinf_web')
+                web(lo_row[k], hi_row[k])
 
     return nodes, members, [a for tier in apex_tiers for row in tier for a in row]

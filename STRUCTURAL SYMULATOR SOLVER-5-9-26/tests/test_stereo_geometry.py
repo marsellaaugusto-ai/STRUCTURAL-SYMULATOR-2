@@ -693,7 +693,8 @@ def test_every_column_style_solves_once_all_its_feet_are_pinned(style):
                                                 height=4.0, style=style,
                                                 capital_height=1.0, width=1.2, panels=3)
     assert bases, 'a column with no foot at all'
-    assert len(bases) == (1 if style == sg.COLUMN_SHAFT else 4)
+    expected_feet = {sg.COLUMN_SHAFT: 1, sg.COLUMN_TRIPOD: 3}.get(style, 4)
+    assert len(bases) == expected_feet
     assert all(nodes[b][2] < nodes[head][2] for b in bases), 'a foot above the head'
     for m in members:
         m.setdefault('E', 200e3); m.setdefault('A', 20.0)
@@ -842,10 +843,20 @@ def test_every_beam_profile_solves_and_adds_the_chords_it_promises(profile):
     nodes, members, apex = sg.reinforcement_beam(mesh['nodes'], mesh['members'],
                                                  edge_a, edge_b, depth=1.6,
                                                  profile=profile)
-    expected_rows = 1 if profile == sg.BEAM_TRIANGLE else 2
-    assert len(apex) == expected_rows * len(edge_a)
+    if profile == sg.BEAM_GRID_STRIP:
+        # one offset node per BAY, under each module's own centre
+        assert len(apex) == len(edge_a) - 1
+    else:
+        expected_rows = 1 if profile == sg.BEAM_TRIANGLE else 2
+        assert len(apex) == expected_rows * len(edge_a)
+    if profile == sg.BEAM_VIERENDEEL:
+        assert all(m.get('conn') == 'rigid' for m in members
+                   if m.get('rigid_required')), 'a Vierendeel member came out pinned'
     for m in members:
         m.setdefault('E', 200e3); m.setdefault('A', 20.0)
+        # a Vierendeel carries load in BENDING, so its members need a second
+        # moment and a torsion constant or the matrix is singular
+        m.setdefault('I', 5000.0); m.setdefault('J', 8000.0)
     supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
     loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
     _res, err = sm.analyze(nodes, members, loads, supports)
@@ -870,6 +881,103 @@ def test_a_box_profile_is_wider_at_the_bottom_than_a_trapezoidal_one():
     assert widths[sg.BEAM_BOX] > widths[sg.BEAM_TRAPEZOID]
     base_width = abs(mesh['nodes'][edge_b[0]][1] - mesh['nodes'][edge_a[0]][1])
     assert widths[sg.BEAM_BOX] == pytest.approx(base_width)
+
+
+@pytest.mark.parametrize('profile', sg.BEAM_PROFILES)
+def test_a_parabolic_beam_is_deepest_at_midspan(profile):
+    """The depth law is orthogonal to the cross-section: any profile can be
+    built constant or fish-belly."""
+    mesh = sg.flat_grid(span_x=16.0, span_y=12.0, depth=1.0, module=2.0)
+    rows = {}
+    for i, (x, y, z) in enumerate(mesh['nodes']):
+        if abs(z) < 1e-9:
+            rows.setdefault(round(y, 6), []).append(i)
+    ys = sorted(rows)
+    mid = len(ys) // 2
+    edge_a = sorted(rows[ys[mid]], key=lambda i: mesh['nodes'][i][0])
+    edge_b = sorted(rows[ys[mid + 1]], key=lambda i: mesh['nodes'][i][0])
+    got = {}
+    for law in sg.BEAM_DEPTH_LAWS:
+        nodes, _members, apex = sg.reinforcement_beam(
+            mesh['nodes'], mesh['members'], edge_a, edge_b, depth=1.6,
+            profile=profile, depth_law=law)
+        xs = sorted({round(nodes[a][0], 4) for a in apex})
+        by_x = {}
+        for a in apex:
+            by_x.setdefault(round(nodes[a][0], 4), []).append(-nodes[a][2])
+        got[law] = [max(by_x[x]) for x in xs]
+    flat = got[sg.BEAM_DEPTH_CONSTANT]
+    belly = got[sg.BEAM_DEPTH_PARABOLIC]
+    assert len(set(round(d, 6) for d in flat)) == 1, 'a constant beam varied'
+    span_mid = len(belly) // 2
+    assert belly[span_mid] > belly[0], 'the fish-belly is not deepest at midspan'
+    assert belly[0] > 0.0, 'a beam of zero depth at its support has no shear path'
+    assert max(belly) <= max(flat) + 1e-9
+
+
+def test_a_grid_strip_puts_its_chord_under_the_module_centre():
+    """The mirrored 1 x n grid: every bay is a half-octahedron on the two
+    base rows, the same module the flat grid itself is built from -- so the
+    offset node sits BETWEEN two stations, not under one."""
+    mesh = sg.flat_grid(span_x=12.0, span_y=12.0, depth=1.0, module=2.0)
+    rows = {}
+    for i, (x, y, z) in enumerate(mesh['nodes']):
+        if abs(z) < 1e-9:
+            rows.setdefault(round(y, 6), []).append(i)
+    ys = sorted(rows)
+    mid = len(ys) // 2
+    edge_a = sorted(rows[ys[mid]], key=lambda i: mesh['nodes'][i][0])
+    edge_b = sorted(rows[ys[mid + 1]], key=lambda i: mesh['nodes'][i][0])
+    nodes, members, apex = sg.reinforcement_beam(
+        mesh['nodes'], mesh['members'], edge_a, edge_b, depth=1.6,
+        profile=sg.BEAM_GRID_STRIP)
+    station_x = {round(mesh['nodes'][i][0], 4) for i in edge_a}
+    for a in apex:
+        assert round(nodes[a][0], 4) not in station_x, \
+            'an offset node sits under a station, not under a module centre'
+    # and each one reaches all four corners of its own module
+    by_node = {}
+    for m in members:
+        by_node.setdefault(m['a'], set()).add(m['b'])
+        by_node.setdefault(m['b'], set()).add(m['a'])
+    base = set(edge_a) | set(edge_b)
+    for a in apex:
+        assert len(by_node[a] & base) == 4, 'a bay is not a half-octahedron'
+
+
+def test_a_vierendeel_has_no_diagonals_and_keeps_its_rigid_joints():
+    mesh = sg.flat_grid(span_x=12.0, span_y=12.0, depth=1.0, module=2.0)
+    rows = {}
+    for i, (x, y, z) in enumerate(mesh['nodes']):
+        if abs(z) < 1e-9:
+            rows.setdefault(round(y, 6), []).append(i)
+    ys = sorted(rows)
+    mid = len(ys) // 2
+    edge_a = sorted(rows[ys[mid]], key=lambda i: mesh['nodes'][i][0])
+    edge_b = sorted(rows[ys[mid + 1]], key=lambda i: mesh['nodes'][i][0])
+    n0 = len(mesh['members'])
+    nodes, members, _apex = sg.reinforcement_beam(
+        mesh['nodes'], mesh['members'], edge_a, edge_b, depth=1.6,
+        profile=sg.BEAM_VIERENDEEL)
+    added = members[n0:]
+    assert added
+    for m in added:
+        if not m.get('rigid_required'):
+            continue
+        ax, ay, az = nodes[m['a']]
+        bx, by, bz = nodes[m['b']]
+        # every member runs along exactly one axis: a diagonal would move in
+        # the span direction AND across or down at the same time
+        moves = sum(1 for d in (abs(bx - ax), abs(by - ay), abs(bz - az)) if d > 1e-6)
+        assert moves == 1, f'a diagonal slipped into the Vierendeel: {m}'
+
+
+def test_an_unknown_depth_law_is_refused():
+    mesh = sg.flat_grid(span_x=8.0, span_y=8.0, depth=1.0, module=2.0)
+    ids = [i for i, (x, y, z) in enumerate(mesh['nodes']) if abs(z) < 1e-9][:6]
+    with pytest.raises(ValueError):
+        sg.reinforcement_beam(mesh['nodes'], mesh['members'], ids[:3], ids[3:],
+                              depth=1.0, depth_law='not a law')
 
 
 def test_an_unknown_beam_profile_is_refused():

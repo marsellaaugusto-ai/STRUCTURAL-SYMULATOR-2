@@ -94,8 +94,11 @@ from apps.stereo.stereo_geometry_domes import (
 from apps.stereo.stereo_geometry_bridges import truss_bridge
 from apps.stereo.stereo_geometry_addons import (          # noqa: F401
     add_column, reinforcement_beam,
-    COLUMN_SHAFT, COLUMN_LATTICE, COLUMN_TAPERED, COLUMN_LEGS, COLUMN_STYLES,
-    BEAM_TRIANGLE, BEAM_BOX, BEAM_TRAPEZOID, BEAM_PROFILES,
+    COLUMN_SHAFT, COLUMN_LATTICE, COLUMN_TAPERED, COLUMN_LEGS, COLUMN_TRIPOD,
+    COLUMN_STYLES,
+    BEAM_TRIANGLE, BEAM_BOX, BEAM_TRAPEZOID, BEAM_GRID_STRIP,
+    BEAM_VIERENDEEL, BEAM_PROFILES,
+    BEAM_DEPTH_CONSTANT, BEAM_DEPTH_PARABOLIC, BEAM_DEPTH_LAWS,
 )
 from apps.stereo.stereo_geometry_custom_surface import (
     make_height_field_surface, make_parametric_surface,

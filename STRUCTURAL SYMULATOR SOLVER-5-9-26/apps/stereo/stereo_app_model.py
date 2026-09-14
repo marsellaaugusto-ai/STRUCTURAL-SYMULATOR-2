@@ -213,7 +213,13 @@ class StereoModelMixin:
                   J=self.web_J.get(), Fy=self.web_Fy.get(), Fu=self.web_Fu.get(),
                   K=self.web_K.get(), r_gyr=self.web_r.get())
         for m in members:
-            m['conn'] = conn
+            # A Vierendeel beam carries its load by BENDING its members, so
+            # its joints are not a preference -- pinned, it is a mechanism
+            # rather than a stiff frame, and the solver returns a singular
+            # matrix instead of a result. Members that say they need rigid
+            # joints keep them whatever this panel is set to.
+            if not m.get('rigid_required'):
+                m['conn'] = conn
             m.update(chord if m.get('role') in CHORD_ROLES else web)
         if redraw:
             self.results = None

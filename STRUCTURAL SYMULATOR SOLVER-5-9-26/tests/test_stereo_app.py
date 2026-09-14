@@ -36,6 +36,8 @@ from apps.stereo.stereo_app import (
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_voronoi_surface as svs
+from apps.stereo import stereo_app_constants as sc
+from apps.stereo import stereo_app_module_editor as me
 
 
 @pytest.fixture(autouse=True)
@@ -271,6 +273,258 @@ def test_area_load_can_be_turned_off(app):
     app.self_weight_on.set(False)
     app.loads = []
     assert app._all_loads() == []
+
+
+# ── a point load quoted as a size and a direction ───────────────────────────
+
+def test_resolving_a_point_load_fills_the_three_force_boxes(app):
+    app.ld_mag.set(40.0)
+    app.ld_dir.set('+X')
+    app._resolve_point_load()
+    assert app.ld_fx.get() == pytest.approx(40.0)
+    assert app.ld_fy.get() == pytest.approx(0.0)
+    assert app.ld_fz.get() == pytest.approx(0.0)
+
+
+def test_a_resolved_point_load_keeps_its_magnitude(app):
+    """A skew direction must not inflate the load: the vector is normalised
+    first, so |F| is the P that was typed whatever direction it points."""
+    app.ld_mag.set(25.0)
+    app.ld_dir.set('Custom')
+    app.ld_dx.set(1.0)
+    app.ld_dy.set(2.0)
+    app.ld_dz.set(-2.0)
+    app._resolve_point_load()
+    assert math.hypot(app.ld_fx.get(), app.ld_fy.get(), app.ld_fz.get()) \
+        == pytest.approx(25.0)
+
+
+def test_resolving_does_not_apply_the_load_by_itself(app):
+    """It writes the boxes; Add/update is still what puts a load on the
+    model, so a resolved vector can be checked before it lands."""
+    before = list(app.loads)
+    app.ld_mag.set(12.0)
+    app.ld_dir.set('Up (+Z)')
+    app._resolve_point_load()
+    assert app.loads == before
+    app.selected_nodes = []
+    app.ld_node_var.set(0)
+    app._apply_load()
+    applied = [ld for ld in app.loads if ld['node'] == 0][0]
+    assert applied['fz'] == pytest.approx(12.0)
+
+
+def test_resolving_leaves_the_moments_alone(app):
+    """A direction says nothing about a couple; clearing Mx/My/Mz here
+    would quietly discard one someone had already typed."""
+    app.ld_mx.set(3.0)
+    app.ld_my.set(-4.0)
+    app.ld_mz.set(5.0)
+    app.ld_mag.set(10.0)
+    app.ld_dir.set('Down (\u2212Z)')
+    app._resolve_point_load()
+    assert (app.ld_mx.get(), app.ld_my.get(), app.ld_mz.get()) == (3.0, -4.0, 5.0)
+
+
+def test_a_zero_custom_direction_is_refused_not_silently_zeroed(app, monkeypatch):
+    seen = []
+    monkeypatch.setattr('apps.stereo.stereo_app.messagebox.showerror',
+                        lambda *a, **k: seen.append(a))
+    app.ld_fz.set(-99.0)
+    app.ld_mag.set(10.0)
+    app.ld_dir.set('Custom')
+    app.ld_dx.set(0.0)
+    app.ld_dy.set(0.0)
+    app.ld_dz.set(0.0)
+    app._resolve_point_load()
+    assert seen, 'a zero direction was accepted'
+    assert app.ld_fz.get() == pytest.approx(-99.0), 'the boxes were clobbered anyway'
+
+
+def test_a_point_load_applies_to_every_selected_node_at_once(app):
+    """The multi-select half of "add a load to the nodes": a lasso-picked
+    group takes the same vector in one shot."""
+    picked = [1, 2, 3]
+    app.selected_nodes = list(picked)
+    app.ld_fx.set(0.0)
+    app.ld_fy.set(0.0)
+    app.ld_fz.set(-7.0)
+    app._apply_load()
+    got = {ld['node']: ld['fz'] for ld in app.loads if ld['node'] in picked}
+    assert sorted(got) == picked
+    assert all(v == pytest.approx(-7.0) for v in got.values())
+
+
+def test_the_custom_direction_row_only_shows_for_custom(app):
+    app.ld_dir.set('+Y')
+    app._on_point_dir_change()
+    assert app.frame_ld_dir.winfo_manager() == ''
+    app.ld_dir.set('Custom')
+    app._on_point_dir_change()
+    assert app.frame_ld_dir.winfo_manager() != ''
+
+
+# ── the area load's law, direction and scope ────────────────────────────────
+
+def _fz_by_x(app):
+    """Mean downward load at each distinct x -- the shape of the pressure
+    across the structure, which is what a law is actually claiming."""
+    from collections import defaultdict
+    rows = defaultdict(list)
+    for ld in app._all_loads():
+        rows[round(app.nodes[ld['node']][0], 3)].append(abs(ld.get('fz', 0.0)))
+    return {x: sum(v) / len(v) for x, v in sorted(rows.items())}
+
+
+@pytest.fixture
+def area_app(app):
+    app.area_load_on.set(True)
+    app.self_weight_on.set(False)
+    app.loads = []
+    return app
+
+
+def test_the_uniform_law_loads_every_node_at_the_same_pressure(area_app):
+    area_app.area_law.set(sc.AREA_UNIFORM)
+    area_app.area_load_var.set(3.0)
+    per_m2 = {ld['node']: abs(ld['fz']) / area_app._load_nodes[ld['node']]
+              for ld in area_app._all_loads()}
+    assert per_m2
+    assert all(v == pytest.approx(3.0) for v in per_m2.values())
+
+
+def test_the_gradient_law_ramps_across_the_axis_it_is_given(area_app):
+    """A drift, a one-sided wind: the load must grow monotonically along the
+    chosen axis, not merely integrate to the right total."""
+    area_app.area_law.set(sc.AREA_GRADIENT)
+    area_app.area_axis.set('X')
+    area_app.area_q_min.set(0.0)
+    area_app.area_q_max.set(10.0)
+    rows = _fz_by_x(area_app)
+    assert len(rows) >= 3
+    values = list(rows.values())
+    assert values == sorted(values)
+    assert values[-1] > values[0] * 1.5, 'the ramp is too flat to be a ramp'
+
+
+def test_the_gradient_law_follows_the_axis_it_is_switched_to(area_app):
+    area_app.area_law.set(sc.AREA_GRADIENT)
+    area_app.area_q_min.set(0.0)
+    area_app.area_q_max.set(10.0)
+    area_app.area_axis.set('X')
+    across_x = _fz_by_x(area_app)
+    area_app.area_axis.set('Y')
+    along_y = _fz_by_x(area_app)
+    assert across_x != pytest.approx(along_y), \
+        'switching the gradient axis changed nothing'
+
+
+def test_the_expression_law_applies_the_field_that_was_typed(area_app):
+    area_app.area_law.set(sc.AREA_FIELD)
+    area_app.area_expr.set('1 + 0.5*x')
+    per_m2 = {ld['node']: abs(ld['fz']) / area_app._load_nodes[ld['node']]
+              for ld in area_app._all_loads()}
+    assert per_m2
+    for node, q in per_m2.items():
+        assert q == pytest.approx(1.0 + 0.5 * area_app.nodes[node][0])
+
+
+def test_an_expression_that_will_not_compile_reports_instead_of_loading(area_app):
+    """Silently falling back to zero would look exactly like a structure
+    that carries its own weight beautifully."""
+    area_app.area_law.set(sc.AREA_FIELD)
+    area_app.area_expr.set('sin(')
+    assert area_app._all_loads() == []
+    assert 'Area load' in area_app.area_status.cget('text')
+
+
+def test_a_good_expression_clears_a_previous_error(area_app):
+    area_app.area_law.set(sc.AREA_FIELD)
+    area_app.area_expr.set('sin(')
+    area_app._all_loads()
+    area_app.area_expr.set('2.0')
+    assert area_app._all_loads()
+    assert area_app.area_status.cget('text') == ''
+
+
+def test_the_area_load_pushes_the_way_the_direction_says(area_app):
+    area_app.area_law.set(sc.AREA_UNIFORM)
+    area_app.area_load_var.set(2.0)
+    area_app.area_dir.set('Down (\u2212Z)')
+    down = area_app._all_loads()
+    area_app.area_dir.set('+X')
+    sideways = area_app._all_loads()
+    assert sum(ld.get('fx', 0.0) for ld in down) == pytest.approx(0.0)
+    assert sum(ld.get('fz', 0.0) for ld in sideways) == pytest.approx(0.0)
+    assert sum(ld.get('fx', 0.0) for ld in sideways) == \
+        pytest.approx(-sum(ld.get('fz', 0.0) for ld in down))
+
+
+def test_a_custom_direction_vector_is_used_and_normalised(area_app):
+    area_app.area_law.set(sc.AREA_UNIFORM)
+    area_app.area_load_var.set(2.0)
+    area_app.area_dir.set('Custom')
+    area_app.area_dx.set(3.0)
+    area_app.area_dy.set(0.0)
+    area_app.area_dz.set(4.0)
+    loads = area_app._all_loads()
+    total = 2.0 * sum(area_app._load_nodes.values())
+    assert sum(ld['fx'] for ld in loads) == pytest.approx(total * 0.6)
+    assert sum(ld['fz'] for ld in loads) == pytest.approx(total * 0.8)
+
+
+def test_scoping_the_area_load_to_the_selection_loads_only_those_nodes(area_app):
+    area_app.area_law.set(sc.AREA_UNIFORM)
+    area_app.area_load_var.set(2.0)
+    whole = sum(abs(ld['fz']) for ld in area_app._all_loads())
+    picked = sorted(area_app._load_nodes)[:3]
+    area_app.selected_nodes = list(picked)
+    area_app.area_scope.set(sc.AREA_SCOPE_SELECTED)
+    part = area_app._all_loads()
+    assert sorted(ld['node'] for ld in part) == picked
+    assert 0 < sum(abs(ld['fz']) for ld in part) < whole
+
+
+def _shown(frame):
+    """Packed or not. winfo_ismapped needs a real idle cycle and a visible
+    toplevel; the geometry manager answers straight away."""
+    return frame.winfo_manager() != ''
+
+
+def test_the_custom_direction_fields_only_appear_when_they_are_needed(area_app):
+    area_app.area_dir.set('Down (\u2212Z)')
+    area_app._on_area_law_change()
+    assert not _shown(area_app.frame_area_dir)
+    area_app.area_dir.set('Custom')
+    area_app._on_area_law_change()
+    assert _shown(area_app.frame_area_dir)
+
+
+def test_each_law_shows_only_its_own_fields(area_app):
+    area_app.area_law.set(sc.AREA_UNIFORM)
+    area_app._on_area_law_change()
+    assert not _shown(area_app.frame_area_gradient)
+    assert not _shown(area_app.frame_area_field)
+
+    area_app.area_law.set(sc.AREA_GRADIENT)
+    area_app._on_area_law_change()
+    assert _shown(area_app.frame_area_gradient)
+    assert not _shown(area_app.frame_area_field)
+
+    area_app.area_law.set(sc.AREA_FIELD)
+    area_app._on_area_law_change()
+    assert _shown(area_app.frame_area_field)
+    assert not _shown(area_app.frame_area_gradient)
+
+
+def test_a_varying_area_load_still_solves(area_app):
+    """A load case is only worth having if the solver accepts it."""
+    area_app.area_law.set(sc.AREA_GRADIENT)
+    area_app.area_axis.set('X')
+    area_app.area_q_min.set(0.0)
+    area_app.area_q_max.set(6.0)
+    area_app._analyze()
+    assert area_app.results is not None
 
 
 def test_importing_excel_clears_the_area_load_surface(app, tmp_path, monkeypatch):
@@ -1357,6 +1611,37 @@ def test_add_reinforcement_beam_triangulates_an_apex_over_two_rows(app):
     assert app.err is None
 
 
+def test_a_plain_column_can_be_added_under_a_single_node(app):
+    """The panel's 3-node gate exists for the capital; the plain strut has
+    none, so one selected node is a column."""
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.col_height.set(4.0)
+    app.selected_nodes = {0}
+    n0, m0 = len(app.nodes), len(app.members)
+    app._add_column()
+    assert len(app.nodes) == n0 + 1
+    assert len(app.members) == m0 + 1
+    assert app.nodes[-1][2] == pytest.approx(app.nodes[0][2] - 4.0)
+
+
+def test_a_capital_column_under_a_single_node_is_still_refused(app, dialogs):
+    app.col_style.set(sg.COLUMN_LATTICE)
+    app.selected_nodes = {0}
+    n0 = len(app.nodes)
+    app._add_column()
+    assert len(app.nodes) == n0
+    assert any(k == 'showerror' for k, *_ in dialogs)
+
+
+def test_adding_a_column_with_nothing_selected_says_so(app, dialogs):
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = set()
+    n0 = len(app.nodes)
+    app._add_column()
+    assert len(app.nodes) == n0
+    assert any(k == 'showerror' for k, *_ in dialogs)
+
+
 @pytest.mark.parametrize('style', sg.COLUMN_STYLES)
 def test_every_column_style_can_be_added_from_the_panel(app, style):
     app.grid_family.set(FAMILY_LABEL['flat_grid'])
@@ -1369,8 +1654,9 @@ def test_every_column_style_can_be_added_from_the_panel(app, style):
     cx = sum(app.nodes[i][0] for i in bottom) / len(bottom)
     cy = sum(app.nodes[i][1] for i in bottom) / len(bottom)
     bottom.sort(key=lambda i: (app.nodes[i][0] - cx) ** 2 + (app.nodes[i][1] - cy) ** 2)
-    app.selected_nodes = set(bottom[:9])
-    assert len(app.selected_nodes) >= 3
+    picked = set(bottom[:9])
+    app.selected_nodes = set(picked)
+    assert len(picked) >= 3
     n0, m0, sup0 = len(app.nodes), len(app.members), len(app.supports)
     app.col_style.set(style)
     app.col_height.set(4.0)
@@ -1380,7 +1666,9 @@ def test_every_column_style_can_be_added_from_the_panel(app, style):
     app._add_column()
     assert len(app.nodes) > n0 and len(app.members) > m0
     added = len(app.supports) - sup0
-    expected = {sg.COLUMN_SHAFT: 1, sg.COLUMN_TRIPOD: 3}.get(style, 4)
+    # the plain strut has no capital: one post, and one foot, per node picked
+    expected = {sg.COLUMN_PLAIN: len(picked), sg.COLUMN_SHAFT: 1,
+                sg.COLUMN_TRIPOD: 3}.get(style, 4)
     assert added == expected, f'{style} pinned {added} feet'
     app._analyze()
     assert app.err is None, f'{style} did not solve from the panel: {app.err}'
@@ -1929,14 +2217,136 @@ def test_wizard_generated_mesh_is_undoable(app):
 
 # ── Module Editor ────────────────────────────────────────────────────────────
 
+def _edit_mode(app, role_id=0):
+    """Leave the frozen base module and select a MEASURED one, which is what
+    the edit actions act on. The panel opens on the base by design -- it is
+    the grid's reference -- so every editing test has to step off it first."""
+    app._me_role_id = role_id
+    app._me_selection = None
+    app._me_render()
+    return role_id
+
+
 def test_module_editor_populates_roles_after_the_default_flat_grid(app):
     assert app._me_roles   # flat_grid always has at least one role
-    assert app._me_role_id == 0
+    assert app._me_role_id == me.ME_BASE_ROLE   # the reference, by default
     assert app.me_role_combo['values']
     # the default flat_grid (offset=True) has both pyramidal-web triangles
     # and flat square chords -- two distinct shapes, so at least one
     # keystone/singular entry besides the dominant role 0
     assert app.me_keystone_list.size() >= 1
+
+
+# ── the base module is a reference, not a measurement ───────────────────────
+
+def test_the_module_list_opens_on_the_frozen_base_module(app):
+    assert app._me_base is not None
+    assert app._me_role_id == me.ME_BASE_ROLE
+    assert app.me_role_combo['values'][0].startswith('Base module')
+    assert 'Measured' in app.me_role_combo['values'][1]
+
+
+def test_the_base_module_does_not_change_when_a_node_is_moved(app):
+    """The complaint this answers: dragging one node in the editor rewrote
+    what the panel called the base module."""
+    before = dict(app._me_base)
+    _edit_mode(app)
+    items = app.me_canvas.find_withtag('node')
+    x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
+    app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
+    app.me_du.set(0.4); app.me_dv.set(0.2); app.me_dn.set(0.3)
+    app._me_apply_move()
+    assert app.nodes != before, 'the fixture did not actually move anything'
+    assert app._me_base == before
+
+
+def test_the_base_module_does_not_change_when_a_beam_is_added(app):
+    """And the other half of it: bolting a reinforcement beam onto one edge
+    used to be able to hand the title to the beam's own cell."""
+    before = dict(app._me_base)
+    n0 = len(app.members)
+    app.selected_nodes = {0, 1, 2, 11, 12, 13}
+    app.beam_depth.set(1.2)
+    app._add_reinforcement_beam()
+    assert len(app.members) > n0, 'no beam was added'
+    assert app._me_base == before
+
+
+def test_generating_a_new_grid_takes_a_new_base_module(app):
+    """Frozen is not stuck: a new mesh is a new reference."""
+    before = dict(app._me_base)
+    app.grid_family.set(FAMILY_LABEL['dome'])
+    app._on_generator_change()
+    app._generate()
+    assert app._me_base != before
+    assert app._me_role_id == me.ME_BASE_ROLE
+
+
+def test_a_single_layer_surface_grid_shows_a_flat_base_module(app):
+    """"When generating a surface mesh grid the base module remains in 3D
+    when it should be a 2D element": a single-layer shell's module is a
+    plate, and comes back exactly coplanar."""
+    app.grid_family.set(FAMILY_LABEL['dome'])
+    app._on_generator_change()
+    app._generate()
+    assert app._me_base['planar'] is True
+    assert all(p[2] == 0.0 for p in app._me_base['nodes'])
+
+
+def test_a_double_layer_grid_still_shows_its_solid_base_module(app):
+    assert app._me_base['planar'] is False
+    assert app._me_base['apexes'] == 1
+
+
+def test_the_base_module_is_drawn_from_its_own_frozen_geometry(app):
+    """Not from the live mesh: the 3D panel must keep drawing the reference
+    after the model underneath it has been edited."""
+    app._me_render()
+    before = len(app.me3d_canvas.find_all())
+    assert before > 0
+    role = _edit_mode(app)
+    app.me_rescale.set(2.0)
+    app._me_apply_rescale()
+    app._me_role_id = me.ME_BASE_ROLE
+    app._me_selection = None
+    app._me_render()
+    nodes, members = app._me_source()
+    assert nodes is app._me_base['nodes']
+    assert members is app._me_base['members']
+    assert role == 0
+
+
+def test_editing_the_base_module_is_refused_and_says_why(app, dialogs):
+    app._me_role_id = me.ME_BASE_ROLE
+    app._me_selection = ('node', 0)
+    app.me_du.set(1.0)
+    nodes_before = list(app.nodes)
+    app._me_apply_move()
+    assert app.nodes == nodes_before
+    assert any(k == 'showinfo' for k, *_ in dialogs)
+
+
+def test_every_edit_action_refuses_the_base_module(app, dialogs):
+    app._me_role_id = me.ME_BASE_ROLE
+    nodes_before, members_before = list(app.nodes), list(app.members)
+    app._me_selection = ('node', 0)
+    app._me_apply_move()
+    app._me_selection = ('edge', (0, 1))
+    app.me_length.set(9.0)
+    app._me_apply_length()
+    app._me_selection = ('toggle', (0, 2))
+    app._me_apply_toggle()
+    app.me_rescale.set(2.0)
+    app._me_apply_rescale()
+    assert app.nodes == nodes_before
+    assert app.members == members_before
+
+
+def test_the_panel_says_the_base_module_is_a_reference(app):
+    app._me_role_id = me.ME_BASE_ROLE
+    app._me_selection = None
+    app._me_render()
+    assert 'BASE MODULE' in app.me_warning.cget('text')
 
 
 def test_module_editor_3d_panel_is_separate_and_above_the_flattened_view(app):
@@ -2158,6 +2568,7 @@ def test_module_editor_clicking_a_rod_selects_it_and_shows_the_edge_box(app):
 
 
 def test_module_editor_move_propagates_and_keeps_the_role_grouping_stable(app):
+    _edit_mode(app)
     items = app.me_canvas.find_withtag('node')
     x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
     app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
@@ -2175,6 +2586,7 @@ def test_module_editor_move_propagates_and_keeps_the_role_grouping_stable(app):
 
 
 def test_module_editor_set_length_changes_the_actual_mesh_distance(app):
+    _edit_mode(app)
     items = app.me_canvas.find_withtag('edge')
     x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
     app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
@@ -2191,6 +2603,7 @@ def test_module_editor_set_length_changes_the_actual_mesh_distance(app):
 
 
 def test_module_editor_lock_prevents_setting_the_length(app, dialogs):
+    _edit_mode(app)
     items = app.me_canvas.find_withtag('edge')
     x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
     app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
@@ -2226,7 +2639,7 @@ def test_module_editor_toggle_adds_and_removes_a_diagonal(app):
 
 
 def test_module_editor_rescale_changes_the_role_dimensions(app):
-    role_id = app._me_role_id
+    role_id = _edit_mode(app)
     cell_nodes = app._me_cells[app._me_roles[role_id][0]]['nodes']
     import math
     before = math.dist(app.nodes[cell_nodes[0]], app.nodes[cell_nodes[1]])
@@ -2239,6 +2652,7 @@ def test_module_editor_rescale_changes_the_role_dimensions(app):
 
 
 def test_module_editor_edits_are_undoable(app):
+    _edit_mode(app)
     n0 = len(app.nodes)
     items = app.me_canvas.find_withtag('node')
     x0, y0, x1, y1 = app.me_canvas.bbox(items[0])

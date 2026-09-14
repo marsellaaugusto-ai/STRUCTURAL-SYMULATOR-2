@@ -599,6 +599,47 @@ def area_load_to_nodal_loads(load_nodes, q_kN_m2, direction=(0.0, 0.0, -1.0)):
     return loads
 
 
+def varying_area_load_to_nodal_loads(node_coords, load_nodes, q_at,
+                                     direction=(0.0, 0.0, -1.0), only=None):
+    """A pressure that VARIES over the surface, as nodal loads.
+
+    Same tributary areas as area_load_to_nodal_loads -- the exact ones a
+    generator hands back in `load_nodes` -- but the pressure is sampled per
+    node instead of being one number for the whole roof. `q_at(x, y, z)`
+    returns kN/m2 at that point, which is what lets a drift, a wind
+    distribution or any other non-uniform field be applied without inventing
+    a load case format: the caller builds the function, this only integrates
+    it over the areas.
+
+    `only` restricts the load to a set of node indices -- a snow drift on
+    half a roof, a live load over one bay -- and nodes outside it are left
+    alone rather than loaded with zero, so combine_loads can still layer
+    another field on top of them.
+
+    The direction is a fixed vector, not a per-node surface normal: a
+    pressure that always acts along the local normal is a different load
+    case (an inflation, a hydrostatic push) and would need the surface's own
+    orientation, which a node's tributary area does not carry.
+    """
+    dx, dy, dz = direction
+    norm = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if norm < 1e-12:
+        raise ValueError('direction must be a nonzero vector')
+    dx, dy, dz = dx / norm, dy / norm, dz / norm
+    loads = []
+    for node, area in load_nodes.items():
+        if only is not None and node not in only:
+            continue
+        if not (0 <= node < len(node_coords)):
+            continue
+        x, y, z = node_coords[node]
+        P = float(q_at(x, y, z)) * area
+        if P == 0.0:
+            continue
+        loads.append({'node': node, 'fx': P * dx, 'fy': P * dy, 'fz': P * dz})
+    return loads
+
+
 def combine_loads(*load_lists):
     """Merge several load lists (e.g. applied loads + self_weight_loads)
     into one, summing contributions that land on the same node instead of

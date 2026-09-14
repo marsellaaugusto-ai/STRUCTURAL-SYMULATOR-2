@@ -27,8 +27,46 @@ from apps.stereo.stereo_app_constants import (
 )
 
 
+# The frozen reference module's own "role id". It is deliberately not one of
+# classify_cell_roles' ids (which count up from 0), because it is not a role:
+# no cell of the live model belongs to it.
+ME_BASE_ROLE = -1
+
+
 class StereoModuleEditorMixin:
     """Module Editor panel: cell/role detection display and role-wide edits."""
+
+    # ── the base module: a reference, frozen at generation ──────────────────
+    def _me_capture_base_module(self):
+        """Freeze the grid's theoretical module the moment a mesh is built.
+
+        The panel used to show whichever cell sat first in the dominant role
+        of the CURRENT mesh, which meant the "base module" was really a
+        measurement: nudge one node and it moved, bolt a reinforcement beam
+        onto one edge and the beam's own cell could take the title. A
+        reference drawing that changes when the drawing's subject changes is
+        not a reference. So this is taken once, from the mesh as generated,
+        and left alone until the next generate/load.
+        """
+        self._me_base = sg.base_module(self.nodes, self.members) if self.nodes else None
+        if self._me_base is not None:
+            self._me_role_id = ME_BASE_ROLE
+
+    def _me_showing_base(self):
+        return self._me_role_id == ME_BASE_ROLE and getattr(self, '_me_base', None)
+
+    def _me_source(self):
+        """The (nodes, members) the module views read from: the frozen base
+        module's own little mesh when the base is selected, the live model
+        when a measured module is."""
+        if self._me_showing_base():
+            return self._me_base['nodes'], self._me_base['members']
+        return self.nodes, self.members
+
+    def _me_base_label(self):
+        base = self._me_base
+        kind = 'flat' if base['planar'] else f"solid, {base['apexes']} apex"
+        return f"Base module -- {base['shape']}, {kind} (reference)"
 
     def _build_module_editor_panel(self, parent):
         """The right-hand 'Module Editor' panel: shows one representative
@@ -188,21 +226,32 @@ class StereoModuleEditorMixin:
         self._me_cells = sg.find_cells(self.nodes, self.members)
         classified = sg.classify_cell_roles(self.nodes, self._me_cells)
         self._me_roles = classified['roles']
-        if self._me_role_id not in self._me_roles:
+        if not self._me_showing_base() and self._me_role_id not in self._me_roles:
             self._me_role_id = 0 if self._me_roles else None
         self._me_selection = None
         self._me_populate_role_list()
         self._me_render()
 
     def _me_role_label(self, role_id):
+        if role_id == ME_BASE_ROLE:
+            return self._me_base_label()
         n = len(self._me_roles.get(role_id, ()))
         shape = 'triangle' if self._me_cells and self._me_roles.get(role_id) and \
             len(self._me_cells[self._me_roles[role_id][0]]['nodes']) == 3 else 'quad'
         tag = ' (dominant)' if role_id == 0 else ''
-        return f'Module {role_id} -- {shape}, {n} cell(s){tag}'
+        return f'Measured {role_id} -- {shape}, {n} cell(s){tag}'
+
+    def _me_role_ids(self):
+        """Every entry in the module list, in the order it is shown: the
+        frozen base module first when there is one, then the measured
+        modules the live mesh actually has."""
+        ids = sorted(self._me_roles)
+        if getattr(self, '_me_base', None) is not None:
+            ids = [ME_BASE_ROLE] + ids
+        return ids
 
     def _me_populate_role_list(self):
-        role_ids = sorted(self._me_roles)
+        role_ids = self._me_role_ids()
         labels = [self._me_role_label(r) for r in role_ids]
         self.me_role_combo['values'] = labels
         if self._me_role_id is not None and self._me_role_id in role_ids:
@@ -213,14 +262,17 @@ class StereoModuleEditorMixin:
         else:
             self.me_role_var.set('')
 
+        # the keystone list stays what it has always been: the SINGULAR
+        # shapes, so neither the base (not a role) nor the dominant role
+        # belongs in it
         self.me_keystone_list.delete(0, tk.END)
         for r in role_ids:
-            if r == 0:
+            if r in (0, ME_BASE_ROLE):
                 continue
             self.me_keystone_list.insert(tk.END, self._me_role_label(r))
 
     def _me_on_role_picked(self):
-        role_ids = sorted(self._me_roles)
+        role_ids = self._me_role_ids()
         try:
             idx = self.me_role_combo['values'].index(self.me_role_var.get())
             self._me_role_id = role_ids[idx]
@@ -242,6 +294,8 @@ class StereoModuleEditorMixin:
 
     # -- rendering --------------------------------------------------------
     def _me_current_cell_nodes(self):
+        if self._me_showing_base():
+            return self._me_base['ring']
         if self._me_role_id is None or self._me_role_id not in self._me_roles:
             return None
         idxs = self._me_roles[self._me_role_id]
@@ -261,6 +315,8 @@ class StereoModuleEditorMixin:
         single-layer triangulated dome, which has no pyramid structure to
         reconstruct)."""
         cell_nodes = self._me_current_cell_nodes()
+        if self._me_showing_base():
+            return cell_nodes   # already the whole module; nothing to promote
         if cell_nodes is None or len(cell_nodes) != 3:
             return cell_nodes
         current = set(cell_nodes)
@@ -271,7 +327,8 @@ class StereoModuleEditorMixin:
         return cell_nodes
 
     def _me_to_screen_fn(self, cell_nodes):
-        coords = [sg.cell_local_coords(self.nodes, cell_nodes, k)
+        source_nodes, _members = self._me_source()
+        coords = [sg.cell_local_coords(source_nodes, cell_nodes, k)
                  for k in range(len(cell_nodes))]
         us = [p[0] for p in coords] + [0.0]
         vs = [p[1] for p in coords] + [0.0]
@@ -298,7 +355,14 @@ class StereoModuleEditorMixin:
         if cell_nodes is None:
             self.me_info.config(text='(no module to show yet -- generate a grid)')
             return
-        if self._me_role_id != 0:
+        if self._me_showing_base():
+            self.me_warning.config(
+                text='The BASE MODULE is the reference the grid was generated from -- '
+                    'it does not change when you move a node or add a beam, and nothing '
+                    'here edits the model. Pick a measured module from the list above to '
+                    'edit the real cells.')
+            self.me_warning.pack(fill='x', padx=6, pady=(0, 4), before=self.me3d_zc)
+        elif self._me_role_id != 0:
             self.me_warning.config(
                 text='Editing a KEYSTONE/SINGULAR module: this shape does not repeat '
                     'elsewhere, so an edit here only affects this one spot -- but it can '
@@ -412,7 +476,8 @@ class StereoModuleEditorMixin:
         ring = set(cell_nodes)
         n = len(cell_nodes)
         touching = {}
-        for m in self.members:
+        _nodes, source_members = self._me_source()
+        for m in source_members:
             a, b = m['a'], m['b']
             if a in ring and b not in ring:
                 touching.setdefault(b, set()).add(a)
@@ -475,16 +540,17 @@ class StereoModuleEditorMixin:
             return
         n = len(cell_nodes)
         apex = self._me_ring_context(cell_nodes)
+        source_nodes, source_members = self._me_source()
 
-        centroid_pts = [self.nodes[nid] for nid in cell_nodes] + \
-            [self.nodes[e] for e in apex]
+        centroid_pts = [source_nodes[nid] for nid in cell_nodes] + \
+            [source_nodes[e] for e in apex]
         m = len(centroid_pts)
         cx = sum(p[0] for p in centroid_pts) / m
         cy = sum(p[1] for p in centroid_pts) / m
         cz = sum(p[2] for p in centroid_pts) / m
 
         def proj_of(nid):
-            p = self.nodes[nid]
+            p = source_nodes[nid]
             return self._me3d_project(p[0] - cx, p[1] - cy, p[2] - cz)
 
         ring_proj = [proj_of(nid) for nid in cell_nodes]
@@ -545,7 +611,7 @@ class StereoModuleEditorMixin:
         if n == 4:
             for pos_a, pos_b in ((0, 2), (1, 3)):
                 a_id, b_id = cell_nodes[pos_a], cell_nodes[pos_b]
-                if any({m2['a'], m2['b']} == {a_id, b_id} for m2 in self.members):
+                if any({m2['a'], m2['b']} == {a_id, b_id} for m2 in source_members):
                     ax, ay = ring_scr[pos_a]
                     bx, by = ring_scr[pos_b]
                     c.create_line(ax, ay, bx, by, fill='#888888', width=1.5, dash=(3, 2))
@@ -574,19 +640,19 @@ class StereoModuleEditorMixin:
         # angle between two adjacent diagonals at the apex --
         for i in (0, 1) if n >= 2 else ():
             j = (i + 1) % n
-            real_len = math.dist(self.nodes[cell_nodes[i]], self.nodes[cell_nodes[j]])
+            real_len = math.dist(source_nodes[cell_nodes[i]], source_nodes[cell_nodes[j]])
             self._me_draw_dimension(c, ring_scr[i], ring_scr[j], f'{real_len:.2f}m',
                                     centroid_scr)
         for e, ring_ids in apex.items():
             r0 = ring_ids[0]
             pos0 = cell_nodes.index(r0)
-            real_len = math.dist(self.nodes[r0], self.nodes[e])
+            real_len = math.dist(source_nodes[r0], source_nodes[e])
             self._me_draw_dimension(c, ring_scr[pos0], apex_scr[e], f'{real_len:.2f}m',
                                     centroid_scr)
 
-            centroid_world = tuple(sum(self.nodes[nid][k] for nid in cell_nodes) / n
+            centroid_world = tuple(sum(source_nodes[nid][k] for nid in cell_nodes) / n
                                    for k in range(3))
-            height = math.dist(centroid_world, self.nodes[e])
+            height = math.dist(centroid_world, source_nodes[e])
             # a plain vertical callout pinned to the LEFT of the whole
             # drawing (like the course's own "1.77m" side dimension),
             # rather than offset from the centroid-apex line itself --
@@ -608,8 +674,8 @@ class StereoModuleEditorMixin:
             if n >= 2:
                 r1 = ring_ids[1 % len(ring_ids)] if len(ring_ids) > 1 else ring_ids[0]
                 if r1 != r0:
-                    v0 = tuple(self.nodes[r0][k] - self.nodes[e][k] for k in range(3))
-                    v1 = tuple(self.nodes[r1][k] - self.nodes[e][k] for k in range(3))
+                    v0 = tuple(source_nodes[r0][k] - source_nodes[e][k] for k in range(3))
+                    v1 = tuple(source_nodes[r1][k] - source_nodes[e][k] for k in range(3))
                     dot = sum(v0[k] * v1[k] for k in range(3))
                     n0 = math.sqrt(sum(v0[k] ** 2 for k in range(3)))
                     n1 = math.sqrt(sum(v1[k] ** 2 for k in range(3)))
@@ -637,7 +703,9 @@ class StereoModuleEditorMixin:
             self.me_node_box.pack(fill='x', padx=6, pady=4, after=self.me_info)
         elif kind == 'edge':
             pos_a, pos_b = payload
-            length = math.dist(self.nodes[cell_nodes[pos_a]], self.nodes[cell_nodes[pos_b]])
+            source_nodes, _members = self._me_source()
+            length = math.dist(source_nodes[cell_nodes[pos_a]],
+                               source_nodes[cell_nodes[pos_b]])
             locked = (self._me_role_id, min(pos_a, pos_b), max(pos_a, pos_b)) \
                 in self._me_locked_edges
             self.me_info.config(text=f'Rod {pos_a}-{pos_b}: {length:.3f} m'
@@ -724,7 +792,24 @@ class StereoModuleEditorMixin:
                         break
         return idxs
 
+    def _me_block_base_edit(self):
+        """True (and says so) when an edit was aimed at the frozen reference.
+
+        Its node numbers are its own, not the model's, so an edit here has
+        nothing to propagate to; and a reference that could be edited into
+        disagreeing with the grid would be worse than none.
+        """
+        if not self._me_showing_base():
+            return False
+        messagebox.showinfo('Module Editor',
+                            'The base module is the grid\'s reference drawing, not one '
+                            'of its cells -- pick a measured module from the list to '
+                            'edit the model.')
+        return True
+
     def _me_apply_move(self):
+        if self._me_block_base_edit():
+            return
         if self._me_selection is None or self._me_selection[0] != 'node':
             return
         position = self._me_selection[1]
@@ -759,6 +844,8 @@ class StereoModuleEditorMixin:
         self._refresh_all()
 
     def _me_apply_length(self):
+        if self._me_block_base_edit():
+            return
         if self._me_selection is None or self._me_selection[0] != 'edge':
             return
         pos_a, pos_b = self._me_selection[1]
@@ -785,6 +872,9 @@ class StereoModuleEditorMixin:
         self._refresh_all()
 
     def _me_toggle_lock(self):
+        if self._me_showing_base():
+            self.me_locked_var.set(False)
+            return
         if self._me_selection is None or self._me_selection[0] != 'edge':
             self.me_locked_var.set(False)
             return
@@ -797,6 +887,8 @@ class StereoModuleEditorMixin:
         self._me_render()
 
     def _me_apply_toggle(self):
+        if self._me_block_base_edit():
+            return
         if self._me_selection is None or self._me_selection[0] != 'toggle':
             return
         pos_a, pos_b = self._me_selection[1]
@@ -809,6 +901,8 @@ class StereoModuleEditorMixin:
         self._refresh_all()
 
     def _me_apply_rescale(self):
+        if self._me_block_base_edit():
+            return
         if self._me_role_id is None:
             return
         try:

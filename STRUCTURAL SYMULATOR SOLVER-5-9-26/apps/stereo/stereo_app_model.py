@@ -11,6 +11,7 @@ unrestricted: _apply_support can restrain any combination of a node's six
 DOFs, and the quick presets are only a shortcut that writes the same
 per-DOF flags -- no node is ever ineligible for any support.
 """
+import math
 import tkinter as tk
 from tkinter import messagebox
 
@@ -23,6 +24,7 @@ from apps.stereo.stereo_app_constants import (
     DOF_LABELS, FAMILY_KEY, PATTERN_KEY, CHORD_ROLES,
     QUICK_SUPPORT_CUSTOM, QUICK_SUPPORT_PIN, QUICK_SUPPORT_FIXED,
     QUICK_SUPPORT_CLEAR,
+    AREA_GRADIENT, AREA_FIELD, AREA_SCOPE_ALL, LOAD_DIRECTIONS,
 )
 
 
@@ -177,6 +179,10 @@ class StereoModelMixin:
             self.nodes, svs.panels_of(self.nodes, self.members)) or 1.0
         self.voronoi_cut.set(self._voronoi_cut_last)
         self._apply_sections(members=self.members, redraw=False)
+        # The reference module of the grid AS GENERATED -- before a node is
+        # nudged, a column raised or a beam bolted on. Taken here and nowhere
+        # else, which is exactly what keeps it a reference.
+        self._me_capture_base_module()
         self.supports = [{'node': i, 'type': 'pin'} for i in self._support_candidates]
         self.sup_quick_var.set(QUICK_SUPPORT_PIN)
         self._disabled_supports = set()
@@ -339,6 +345,35 @@ class StereoModelMixin:
         self.member_checks = None
         self._refresh_all()
 
+    def _on_point_dir_change(self):
+        """The typed vector is only for 'Custom'; a preset already is one."""
+        if self.ld_dir.get() == 'Custom':
+            self.frame_ld_dir.pack(fill='x')
+        else:
+            self.frame_ld_dir.pack_forget()
+
+    def _resolve_point_load(self):
+        """Turn "P kN in this direction" into the three force components.
+
+        It fills the Fx/Fy/Fz boxes rather than applying anything: the load
+        is still added by Add/update, so a resolved vector can be checked --
+        and adjusted -- before it goes on the model. Moments are left alone;
+        a direction does not imply one.
+        """
+        preset = LOAD_DIRECTIONS.get(self.ld_dir.get())
+        if preset is None:
+            vec = (self.ld_dx.get(), self.ld_dy.get(), self.ld_dz.get())
+        else:
+            vec = preset
+        norm = math.sqrt(sum(c * c for c in vec))
+        if norm < 1e-12:
+            messagebox.showerror('Load', 'The direction vector cannot be zero.')
+            return
+        P = float(self.ld_mag.get())
+        self.ld_fx.set(round(P * vec[0] / norm, 6))
+        self.ld_fy.set(round(P * vec[1] / norm, 6))
+        self.ld_fz.set(round(P * vec[2] / norm, 6))
+
     def _remove_load(self):
         nodes = self._target_nodes(self.ld_node_var)
         if not nodes:
@@ -354,15 +389,71 @@ class StereoModelMixin:
         self.member_checks = None
         self._refresh_all()
 
+    def _on_area_law_change(self):
+        """Show only the fields the chosen law and direction actually use."""
+        for frame in (self.frame_area_gradient, self.frame_area_field,
+                      self.frame_area_dir):
+            frame.pack_forget()
+        law = self.area_law.get()
+        if law == AREA_GRADIENT:
+            self.frame_area_gradient.pack(fill='x')
+        elif law == AREA_FIELD:
+            self.frame_area_field.pack(fill='x')
+        if self.area_dir.get() == 'Custom':
+            self.frame_area_dir.pack(fill='x')
+
+    def _area_direction(self):
+        """The unit-ish vector the area load pushes along."""
+        preset = LOAD_DIRECTIONS.get(self.area_dir.get())
+        if preset is not None:
+            return preset
+        return (float(self.area_dx.get()), float(self.area_dy.get()),
+                float(self.area_dz.get()))
+
+    def _area_pressure_fn(self):
+        """q(x, y, z) in kN/m2 for the chosen law.
+
+        Returns None and puts the reason in the panel when a typed
+        expression will not compile -- an area load that silently fell back
+        to zero would look exactly like a structure that carries its own
+        weight beautifully.
+        """
+        law = self.area_law.get()
+        if law == AREA_GRADIENT:
+            axis = 'XYZ'.index(self.area_axis.get())
+            lo = min(n[axis] for n in self.nodes) if self.nodes else 0.0
+            hi = max(n[axis] for n in self.nodes) if self.nodes else 1.0
+            span = (hi - lo) or 1.0
+            q0, q1 = float(self.area_q_min.get()), float(self.area_q_max.get())
+
+            def q_at(x, y, z, axis=axis, lo=lo, span=span, q0=q0, q1=q1):
+                t = ((x, y, z)[axis] - lo) / span
+                return q0 + (q1 - q0) * min(1.0, max(0.0, t))
+            return q_at
+        if law == AREA_FIELD:
+            try:
+                fn = em.compile_expression(self.area_expr.get(), ('x', 'y', 'z'))
+            except em.ExpressionError as exc:
+                self.area_status.config(text=f'Area load: {exc}')
+                return None
+            self.area_status.config(text='')
+            return lambda x, y, z: fn(x, y, z)
+        q = float(self.area_load_var.get())
+        return lambda x, y, z: q
+
     def _all_loads(self):
-        """Point loads + (optionally) the area load spread over the roof/
-        shell surface + (optionally) self-weight -- combined once here so
-        _analyze and _export_excel never have to agree on the recipe
-        twice."""
+        """Point loads + (optionally) the area load over the roof/shell
+        surface + (optionally) self-weight -- combined once here so _analyze
+        and _export_excel never have to agree on the recipe twice."""
         loads = list(self.loads)
         if self.area_load_on.get() and self._load_nodes:
-            loads = sm.combine_loads(loads, sm.area_load_to_nodal_loads(
-                self._load_nodes, self.area_load_var.get()))
+            q_at = self._area_pressure_fn()
+            if q_at is not None:
+                only = (set(self.selected_nodes)
+                        if self.area_scope.get() != AREA_SCOPE_ALL else None)
+                loads = sm.combine_loads(loads, sm.varying_area_load_to_nodal_loads(
+                    self.nodes, self._load_nodes, q_at,
+                    direction=self._area_direction(), only=only))
         if self.self_weight_on.get():
             loads = sm.combine_loads(loads, sm.self_weight_loads(
                 self.nodes, self.members, self.unit_weight_var.get()))

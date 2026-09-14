@@ -193,3 +193,37 @@ MOMENT_AXIS_MX = 'Mx'
 MOMENT_AXIS_MY = 'My'
 MOMENT_AXIS_MZ = 'Mz'
 MOMENT_AXES = (MOMENT_AXIS_RESULTANT, MOMENT_AXIS_MX, MOMENT_AXIS_MY, MOMENT_AXIS_MZ)
+
+
+# How an area load varies over the surface it is applied to.
+#
+#   UNIFORM   one pressure everywhere -- a dead load, a code snow load.
+#   GRADIENT  a straight ramp from one end of the chosen axis to the other:
+#             a drift, a one-sided wind, a water depth on a fall.
+#   FIELD     q as a typed expression in x, y and z, compiled by expr_math
+#             against the same whitelist the Custom Surface Wizard uses. The
+#             general case, and the reason the other two do not need to grow
+#             options: anything they cannot say, this can.
+AREA_UNIFORM = 'Uniform'
+AREA_GRADIENT = 'Linear gradient'
+AREA_FIELD = 'q(x, y, z) expression'
+AREA_LAWS = (AREA_UNIFORM, AREA_GRADIENT, AREA_FIELD)
+
+# Which way an area load pushes. Presets for the cases that come up, plus a
+# typed vector for everything else -- a wind on a sloping face, a seismic
+# component, a pull normal to one wall.
+LOAD_DIRECTIONS = {
+    'Down (−Z)': (0.0, 0.0, -1.0),
+    'Up (+Z)': (0.0, 0.0, 1.0),
+    '+X': (1.0, 0.0, 0.0),
+    '−X': (-1.0, 0.0, 0.0),
+    '+Y': (0.0, 1.0, 0.0),
+    '−Y': (0.0, -1.0, 0.0),
+    'Custom': None,
+}
+LOAD_DIRECTION_NAMES = tuple(LOAD_DIRECTIONS)
+
+# Where an area load lands.
+AREA_SCOPE_ALL = 'Whole roof/shell surface'
+AREA_SCOPE_SELECTED = 'Selected nodes only'
+AREA_SCOPES = (AREA_SCOPE_ALL, AREA_SCOPE_SELECTED)

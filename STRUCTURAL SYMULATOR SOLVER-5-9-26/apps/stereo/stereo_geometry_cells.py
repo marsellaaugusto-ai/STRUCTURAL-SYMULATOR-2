@@ -14,7 +14,13 @@ which generator built it or what it named the members' `role` field.
 """
 import math
 
-from apps.stereo.stereo_geometry_core import _add_member
+from apps.stereo.stereo_geometry_core import _add_member, ROUND
+
+# How far off a ring's own plane a node joined to all of its corners has
+# to sit before it counts as that module's apex rather than as a
+# neighbour on the same single-layer fabric -- as a fraction of the
+# ring's own mean edge length, so it scales with the module.
+APEX_DEPTH_FRACTION = 0.15
 
 
 def find_cells(nodes, members):
@@ -388,3 +394,134 @@ def toggle_role_member(members, cells, roles, role_id, pos_a, pos_b):
                           if (min(m['a'], m['b']), max(m['a'], m['b'])) != key]
             seen.discard(key)
     return new_members
+
+
+def _ring_apexes(members, ring):
+    """Every node outside `ring` that is connected to ALL of it -- the
+    bottom apex of the classic offset square-pyramid module, and nothing at
+    all on a single-layer grid, which is exactly the distinction the base
+    module needs to know whether it is a solid or a flat element."""
+    ring_set = set(ring)
+    touching = {}
+    for m in members:
+        a, b = m['a'], m['b']
+        if a in ring_set and b not in ring_set:
+            touching.setdefault(b, set()).add(a)
+        elif b in ring_set and a not in ring_set:
+            touching.setdefault(a, set()).add(b)
+    return sorted(ext for ext, ids in touching.items() if len(ids) == len(ring))
+
+
+def _local_frame_fn(nodes, ring):
+    """A function mapping any node id into `ring`'s own (u, v, n) frame."""
+    origin, eu, ev, en = cell_local_basis(nodes, ring)
+
+    def local(nid):
+        p = nodes[nid]
+        dx, dy, dz = p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]
+        return (dx * eu[0] + dy * eu[1] + dz * eu[2],
+                dx * ev[0] + dy * ev[1] + dz * ev[2],
+                dx * en[0] + dy * en[1] + dz * en[2])
+    return local
+
+
+def _real_apexes(nodes, members, ring, local):
+    """The apexes of `ring` that are genuinely off its own plane."""
+    n = len(ring)
+    edge = sum(math.dist(nodes[ring[i]], nodes[ring[(i + 1) % n]])
+               for i in range(n)) / n
+    floor = APEX_DEPTH_FRACTION * max(edge, 1e-9)
+    return [ext for ext in _ring_apexes(members, ring)
+            if abs(local(ext)[2]) >= floor]
+
+
+def base_module(nodes, members):
+    """The grid's THEORETICAL repeating module, frozen as its own little mesh.
+
+    This is the reference drawing of the structure -- "a 3.00 m square on
+    top, one apex 1.50 m below it" -- not a measurement of any particular
+    cell. That distinction is the whole reason this function exists: the
+    Module Editor used to show whichever cell happened to sit first in the
+    dominant role of the CURRENT mesh, so nudging one node, or bolting a
+    reinforcement beam onto one edge, silently redefined what the panel
+    called the base module. A reference that moves when the model moves is
+    not a reference.
+
+    So the caller freezes this at generation time and keeps it: measured
+    variants of the real cells stay available beside it, as their own
+    entries, and the base stays put.
+
+    Two further things it settles, which a raw cell does not:
+
+    * It is returned in the cell's OWN local frame (see cell_local_basis),
+      not in world coordinates, so the module of a dome panel reads upright
+      instead of tipped over at whatever latitude that panel happened to
+      sit at.
+    * A ring with no apex -- a single-layer surface grid -- is a flat
+      element, so it comes back FLATTENED (n = 0 at every corner). A warped
+      quad off a curved surface would otherwise draw as a little 3D solid,
+      which is not what the grid's module is: its module is a plate, and
+      the curvature belongs to the surface, not to the module.
+
+    An apex has to be genuinely OFF the ring's own plane to count. On a
+    single-layer Schwedler dome a neighbouring surface node can be joined to
+    all four corners of a panel and so passes the purely topological test,
+    while sitting 0.05 m out of a 2.14 m panel -- a neighbour on the same
+    fabric, not a module below it. Taking it for an apex is what would make
+    a single-layer dome claim a solid module.
+
+    Returns None when the mesh has no closed cell at all, otherwise
+    {'nodes', 'members', 'ring', 'apexes', 'planar', 'shape'} where `nodes`
+    and `members` are a standalone mesh numbered from zero.
+    """
+    cells = find_cells(nodes, members)
+    if not cells:
+        return None
+    roles = classify_cell_roles(nodes, cells)['roles']
+    if not roles:
+        return None
+    dominant = cells[roles[0][0]]['nodes']
+    candidates = [dominant]
+    if len(dominant) == 3:
+        # A triangle can be one FACE of a pyramid rather than a module in its
+        # own right; the quad it shares an edge with is then what carries the
+        # whole module. Only prefer that quad if it turns out to have a real
+        # apex, though -- on a single-layer vault the triangles and quads are
+        # both just panels of the same fabric, and promoting one to the other
+        # would invent a solid the grid does not have.
+        shared = set(dominant)
+        candidates += [c['nodes'] for c in cells
+                       if len(c['nodes']) == 4 and len(shared & set(c['nodes'])) >= 2]
+
+    ring, apexes, local = dominant, [], None
+    for candidate in candidates:
+        cand_local = _local_frame_fn(nodes, candidate)
+        found = _real_apexes(nodes, members, candidate, cand_local)
+        if found or local is None:
+            ring, apexes, local = candidate, found, cand_local
+        if found:
+            break
+
+    ring_n = len(ring)
+    planar = not apexes
+    out_nodes = []
+    index = {}
+    for nid in list(ring) + apexes:
+        u, v, n = local(nid)
+        index[nid] = len(out_nodes)
+        out_nodes.append((round(u, ROUND), round(v, ROUND),
+                          0.0 if planar else round(n, ROUND)))
+
+    out_members = [{'a': i, 'b': (i + 1) % ring_n} for i in range(ring_n)]
+    have = {frozenset((m['a'], m['b'])) for m in members}
+    if ring_n == 4:
+        for pos_a, pos_b in ((0, 2), (1, 3)):
+            if frozenset((ring[pos_a], ring[pos_b])) in have:
+                out_members.append({'a': pos_a, 'b': pos_b})
+    for ext in apexes:
+        for i in range(ring_n):
+            out_members.append({'a': i, 'b': index[ext]})
+
+    return {'nodes': out_nodes, 'members': out_members,
+            'ring': tuple(range(ring_n)), 'apexes': len(apexes),
+            'planar': planar, 'shape': 'triangle' if ring_n == 3 else 'quad'}

@@ -146,6 +146,10 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         # neither nodes nor members and would make that work for nothing).
         self._me_cells = []
         self._me_roles = {}
+        # The grid's theoretical module, frozen by _me_capture_base_module
+        # the moment a mesh is generated and shown as the reference the list
+        # opens on -- see that method for why it is not re-derived.
+        self._me_base = None
         self._me_role_id = 0
         self._me_selection = None   # ('node', position) or ('edge', (pos_a, pos_b))
         self._me_locked_edges = set()   # {(role_id, min(pos_a,pos_b), max(pos_a,pos_b))}

@@ -29,10 +29,19 @@ class StereoAddonsMixin:
 
     def _add_column(self):
         targets = sorted(self.selected_nodes)
-        if len(targets) < 3:
+        # The plain strut has no capital to attach, so it needs no footprint
+        # to attach one to -- one node is a column, and each node selected
+        # gets its own post.
+        plain = self.col_style.get() == sg.COLUMN_PLAIN
+        if not targets:
+            messagebox.showerror('Column', 'Select the node(s) the column stands under '
+                                           'first.')
+            return
+        if not plain and len(targets) < 3:
             messagebox.showerror('Column',
                                  'Select at least 3 nodes (a lasso box) for the capital '
-                                 'to attach to first.')
+                                 'to attach to first -- or choose the plain vertical '
+                                 'strut, which needs no capital.')
             return
         try:
             height = float(self.col_height.get())

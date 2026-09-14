@@ -15,10 +15,19 @@ import math
 
 from apps.stereo.stereo_geometry_core import _add_member
 
-# How the column carries the capital down to the ground. Every style ends in
-# the SAME capital fan -- what differs is the structure between the head and
-# the foundation, which is what a real space-frame column actually varies.
+# How the column carries the capital down to the ground. Every style but the
+# first ends in the SAME capital fan -- what differs is the structure between
+# the head and the foundation, which is what a real space-frame column
+# actually varies.
 #
+#   PLAIN     no capital at all: one vertical strut straight down from EACH
+#             selected node to its own foundation. The simplest support
+#             there is, and the honest way to model a grid that really does
+#             land on individual posts (a canopy on a row of tubes, a
+#             temporary prop, a mullion). It concentrates its whole reaction
+#             on the one joint above it -- which is exactly why the capital
+#             styles below exist -- so it takes one selected node or many,
+#             but gives each one its own post rather than fanning.
 #   SHAFT     one strut. The reference case: a round or square section
 #             column, the steel doing its work inside the section rather
 #             than in a lattice (the red columns and the yellow tree column
@@ -37,12 +46,13 @@ from apps.stereo.stereo_geometry_core import _add_member
 #             define a plane, so a tripod cannot rock on an uneven footing
 #             the way a four-footed column can, and it is the natural
 #             footing under a triangular or hexagonal grid.
+COLUMN_PLAIN = 'Plain vertical strut (no capital)'
 COLUMN_SHAFT = 'Single shaft'
 COLUMN_LATTICE = 'Latticed (4 chords)'
 COLUMN_TAPERED = 'Latticed, tapered'
 COLUMN_LEGS = 'Four inclined legs'
 COLUMN_TRIPOD = 'Tripod (3 legs)'
-COLUMN_STYLES = (COLUMN_SHAFT, COLUMN_LATTICE, COLUMN_TAPERED,
+COLUMN_STYLES = (COLUMN_PLAIN, COLUMN_SHAFT, COLUMN_LATTICE, COLUMN_TAPERED,
                  COLUMN_LEGS, COLUMN_TRIPOD)
 
 # The reinforcement beam's CROSS-SECTION. The first three are described by
@@ -201,7 +211,9 @@ def add_column(nodes, members, target_nodes, height, tiers=1,
 
     target_nodes : >= 3 existing node indices the capital attaches to
                    (e.g. every node of one or a few grid modules, selected
-                   with a lasso box in the UI).
+                   with a lasso box in the UI). The PLAIN style has no
+                   capital and takes any number from one upward, giving each
+                   selected node its own vertical post.
     height       : shaft length (m), from the foundation up to the head
                    (tiers=1) or the intermediate ring (tiers=2).
     style        : one of COLUMN_STYLES -- what carries the head down to the
@@ -251,8 +263,10 @@ def add_column(nodes, members, target_nodes, height, tiers=1,
     returned has to be restrained.
     """
     target_nodes = list(target_nodes)
-    if len(target_nodes) < 3:
+    if style != COLUMN_PLAIN and len(target_nodes) < 3:
         raise ValueError('a capital needs at least 3 attachment nodes to distribute load usefully.')
+    if not target_nodes:
+        raise ValueError('select at least one node for the column to stand under.')
     for j in target_nodes:
         if not (0 <= j < len(nodes)):
             raise ValueError(f'target node {j} does not exist.')
@@ -267,6 +281,23 @@ def add_column(nodes, members, target_nodes, height, tiers=1,
         raise ValueError('capital height must be positive.')
     if width is not None and width <= 0:
         raise ValueError('column width must be positive.')
+
+    if style == COLUMN_PLAIN:
+        # No head, no fan: each selected node gets its own post straight
+        # down. Returning every foot keeps the caller's "pin every base"
+        # rule working unchanged, and `head` is the FIRST node the posts
+        # carry, since there is no head node to report.
+        nodes = list(nodes)
+        members = list(members)
+        seen = {(min(m['a'], m['b']), max(m['a'], m['b'])) for m in members}
+        bases = []
+        for j in target_nodes:
+            x, y, z = nodes[j]
+            foot = len(nodes)
+            nodes.append((x, y, z - height))
+            _add_member(members, seen, foot, j, role='column_shaft')
+            bases.append(foot)
+        return nodes, members, bases, target_nodes[0]
 
     cx = sum(nodes[j][0] for j in target_nodes) / len(target_nodes)
     cy = sum(nodes[j][1] for j in target_nodes) / len(target_nodes)

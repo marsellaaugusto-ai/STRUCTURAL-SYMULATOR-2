@@ -14,6 +14,7 @@ import pytest
 
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
+from apps.stereo import stereo_geometry_addons as ga
 
 
 def _assert_mesh_is_sane(mesh):
@@ -646,6 +647,72 @@ def test_area_load_to_nodal_loads_rejects_a_zero_direction():
         sm.area_load_to_nodal_loads({0: 1.0}, q_kN_m2=1.0, direction=(0.0, 0.0, 0.0))
 
 
+# ── a pressure that varies over the surface ─────────────────────────────────
+
+def test_a_varying_pressure_is_sampled_at_each_node():
+    """The whole point of the varying form: two nodes with the SAME
+    tributary area must still get different loads when the field differs
+    over them."""
+    coords = [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0)]
+    loads = sm.varying_area_load_to_nodal_loads(
+        coords, {0: 2.0, 1: 2.0}, lambda x, y, z: 1.0 + 0.5 * x)
+    by_node = {ld['node']: ld for ld in loads}
+    assert by_node[0]['fz'] == pytest.approx(-2.0)    # q=1.0 over 2 m2
+    assert by_node[1]['fz'] == pytest.approx(-12.0)   # q=6.0 over 2 m2
+
+
+def test_a_constant_field_matches_the_plain_area_load():
+    """The uniform law is not a separate code path -- it is this function
+    with a constant q -- so the two must agree to the last digit."""
+    coords = [(0.0, 0.0, 0.0), (3.0, 0.0, 1.0), (6.0, 2.0, 0.5)]
+    areas = {0: 4.0, 1: 6.5, 2: 1.25}
+    plain = sm.area_load_to_nodal_loads(areas, q_kN_m2=2.5)
+    varying = sm.varying_area_load_to_nodal_loads(coords, areas, lambda x, y, z: 2.5)
+    assert {ld['node']: ld['fz'] for ld in varying} == \
+        pytest.approx({ld['node']: ld['fz'] for ld in plain})
+
+
+def test_a_varying_pressure_pushes_along_the_direction_given():
+    coords = [(0.0, 0.0, 0.0)]
+    loads = sm.varying_area_load_to_nodal_loads(
+        coords, {0: 10.0}, lambda x, y, z: 2.0, direction=(3.0, 0.0, 4.0))
+    assert loads[0]['fx'] == pytest.approx(20.0 * 0.6)   # the vector is normalised
+    assert loads[0]['fz'] == pytest.approx(20.0 * 0.8)
+
+
+def test_a_varying_pressure_rejects_a_zero_direction():
+    with pytest.raises(ValueError):
+        sm.varying_area_load_to_nodal_loads(
+            [(0.0, 0.0, 0.0)], {0: 1.0}, lambda x, y, z: 1.0, direction=(0.0, 0.0, 0.0))
+
+
+def test_only_restricts_the_load_and_leaves_the_rest_unloaded():
+    """A drift over half a roof. Nodes outside the set must carry NO entry
+    at all, not a zero one, so combine_loads can still layer another field
+    onto them without a phantom zero winning."""
+    coords = [(0.0, 0.0, 0.0), (5.0, 0.0, 0.0), (10.0, 0.0, 0.0)]
+    loads = sm.varying_area_load_to_nodal_loads(
+        coords, {0: 1.0, 1: 1.0, 2: 1.0}, lambda x, y, z: 3.0, only={0, 2})
+    assert sorted(ld['node'] for ld in loads) == [0, 2]
+
+
+def test_a_node_the_field_zeroes_carries_no_load():
+    """A wind that reverses across a ridge crosses zero somewhere; the node
+    it crosses at gets no entry rather than a 0.0 kN one."""
+    coords = [(0.0, 0.0, 0.0), (4.0, 0.0, 0.0)]
+    loads = sm.varying_area_load_to_nodal_loads(
+        coords, {0: 1.0, 1: 1.0}, lambda x, y, z: x - 4.0)
+    assert [ld['node'] for ld in loads] == [0]
+
+
+def test_a_tributary_area_for_a_node_that_no_longer_exists_is_skipped():
+    """load_nodes outliving its mesh is exactly the Excel-import failure the
+    app guards against; the maths must not index off the end either."""
+    loads = sm.varying_area_load_to_nodal_loads(
+        [(0.0, 0.0, 0.0)], {0: 1.0, 7: 5.0}, lambda x, y, z: 1.0)
+    assert [ld['node'] for ld in loads] == [0]
+
+
 # ── add-on features: column (shaft + capital) and reinforcement beam ────────
 
 def _flat_grid_with_degrees():
@@ -693,7 +760,9 @@ def test_every_column_style_solves_once_all_its_feet_are_pinned(style):
                                                 height=4.0, style=style,
                                                 capital_height=1.0, width=1.2, panels=3)
     assert bases, 'a column with no foot at all'
-    expected_feet = {sg.COLUMN_SHAFT: 1, sg.COLUMN_TRIPOD: 3}.get(style, 4)
+    # the plain strut has no capital: it is one post per selected node
+    expected_feet = {sg.COLUMN_PLAIN: len(top), sg.COLUMN_SHAFT: 1,
+                     sg.COLUMN_TRIPOD: 3}.get(style, 4)
     assert len(bases) == expected_feet
     assert all(nodes[b][2] < nodes[head][2] for b in bases), 'a foot above the head'
     for m in members:
@@ -703,6 +772,52 @@ def test_every_column_style_solves_once_all_its_feet_are_pinned(style):
     loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
     _res, err = sm.analyze(nodes, members, loads, supports)
     assert err is None, f'{style} did not solve: {err}'
+
+
+def test_a_plain_vertical_column_is_one_post_under_one_node():
+    """The simplest support there is: no head, no capital fan, just a strut
+    from the node straight down to its own foundation."""
+    mesh, degree = _flat_grid_with_degrees()
+    target = sorted(degree, key=degree.get, reverse=True)[0]
+    n0, m0 = len(mesh['nodes']), len(mesh['members'])
+    nodes, members, bases, head = sg.add_column(mesh['nodes'], mesh['members'], [target],
+                                                height=4.0, style=sg.COLUMN_PLAIN)
+    assert len(nodes) == n0 + 1
+    assert len(members) == m0 + 1
+    assert len(bases) == 1
+    assert head == target
+    foot = nodes[bases[0]]
+    assert foot[:2] == pytest.approx(mesh['nodes'][target][:2]), 'the post is not vertical'
+    assert foot[2] == pytest.approx(mesh['nodes'][target][2] - 4.0)
+    assert not [m for m in members if m.get('role') == 'capital'], 'it grew a capital'
+
+
+def test_a_plain_column_gives_every_selected_node_its_own_post():
+    mesh, degree = _flat_grid_with_degrees()
+    targets = sorted(degree, key=degree.get, reverse=True)[:4]
+    nodes, members, bases, _head = sg.add_column(mesh['nodes'], mesh['members'], targets,
+                                                 height=3.0, style=sg.COLUMN_PLAIN)
+    assert len(bases) == len(targets)
+    shafts = [m for m in members if m.get('role') == 'column_shaft']
+    assert len(shafts) == len(targets)
+    assert {m['b'] for m in shafts} == set(targets)
+
+
+def test_a_plain_column_still_needs_a_node_to_stand_under():
+    mesh, _degree = _flat_grid_with_degrees()
+    with pytest.raises(ValueError):
+        sg.add_column(mesh['nodes'], mesh['members'], [], height=3.0,
+                      style=sg.COLUMN_PLAIN)
+
+
+def test_the_capital_styles_still_demand_a_footprint():
+    """Relaxing the count for the plain strut must not relax it for the
+    styles whose whole point is spreading the reaction."""
+    mesh, degree = _flat_grid_with_degrees()
+    one = [sorted(degree, key=degree.get, reverse=True)[0]]
+    for style in (sg.COLUMN_SHAFT, sg.COLUMN_LATTICE, sg.COLUMN_TRIPOD):
+        with pytest.raises(ValueError):
+            sg.add_column(mesh['nodes'], mesh['members'], one, height=3.0, style=style)
 
 
 def test_pinning_only_one_foot_of_a_latticed_column_is_a_mechanism():
@@ -1465,3 +1580,129 @@ def test_reinforcement_beam_rejects_a_nonpositive_tier_count():
     with pytest.raises(ValueError):
         sg.reinforcement_beam(mesh['nodes'], mesh['members'], edge_a, edge_b, depth=1.0,
                               tiers=0)
+
+
+# ── the grid's theoretical base module ──────────────────────────────────────
+
+def test_the_base_module_of_a_flat_double_layer_grid_is_its_half_octahedron():
+    """The reference drawing of the classic offset grid: a square the size
+    of the module, one apex a depth below its centre, and the four web
+    diagonals that reach it."""
+    mesh = sg.flat_grid(span_x=12.0, span_y=12.0, depth=1.5, module=3.0)
+    bm = sg.base_module(mesh['nodes'], mesh['members'])
+    assert bm['shape'] == 'quad'
+    assert bm['apexes'] == 1
+    assert bm['planar'] is False
+    assert len(bm['nodes']) == 5
+    assert len(bm['members']) == 8          # 4 ring edges + 4 diagonals
+    ring = [bm['nodes'][i] for i in bm['ring']]
+    assert all(abs(p[2]) < 1e-9 for p in ring), 'the ring is the top chord plane'
+    for i in range(4):
+        assert math.dist(ring[i], ring[(i + 1) % 4]) == pytest.approx(3.0)
+    assert abs(bm['nodes'][4][2]) == pytest.approx(1.5)
+
+
+def test_a_single_layer_grids_base_module_is_a_flat_element():
+    """The user-visible half of this: a surface mesh's module is a plate.
+    Its corners come back exactly coplanar even though the real panel is
+    warped around the shell -- the curvature belongs to the surface, not to
+    the module."""
+    mesh = sg.dome(base_radius=6.0, rise=2.0, n_rings=3, n_sectors=10)
+    bm = sg.base_module(mesh['nodes'], mesh['members'])
+    assert bm['planar'] is True
+    assert bm['apexes'] == 0
+    assert all(p[2] == 0.0 for p in bm['nodes'])
+
+
+def test_a_surface_neighbour_is_not_mistaken_for_an_apex():
+    """On a single-layer Schwedler dome a neighbouring node can be joined to
+    all four corners of a panel and so passes the purely topological apex
+    test -- while sitting 0.05 m out of a 2.14 m panel. Taking it would make
+    a single-layer dome claim a solid module."""
+    mesh = sg.dome(base_radius=6.0, rise=2.0, n_rings=3, n_sectors=10)
+    cells = sg.find_cells(mesh['nodes'], mesh['members'])
+    from apps.stereo import stereo_geometry_cells as gc
+    trapped = [c for c in cells if gc._ring_apexes(mesh['members'], c['nodes'])]
+    assert trapped, 'the fixture no longer has the trap'
+    # every one of those "apexes" is a neighbour on the same single-layer
+    # fabric, so the module this dome reports must still be flat
+    assert sg.base_module(mesh['nodes'], mesh['members'])['apexes'] == 0
+
+
+def test_the_base_module_is_expressed_in_its_own_frame_not_world_space():
+    """A dome panel's module has to read upright whatever latitude the panel
+    sits at, so corner 0 is the origin and corner 1 lies along +u."""
+    mesh = sg.dome(base_radius=6.0, rise=2.0, n_rings=3, n_sectors=10)
+    bm = sg.base_module(mesh['nodes'], mesh['members'])
+    assert bm['nodes'][0] == (0.0, 0.0, 0.0)
+    assert bm['nodes'][1][1] == pytest.approx(0.0, abs=1e-9)
+    assert bm['nodes'][1][0] > 0.0
+
+
+def test_the_base_module_reads_the_same_wherever_its_cell_sits():
+    """Expressed in its own frame, the module of a dome panel at the crown
+    and of one at the springing are the same drawing -- which is what makes
+    it usable as a reference at all."""
+    mesh = sg.dome(base_radius=6.0, rise=2.0, n_rings=3, n_sectors=10)
+    cells = sg.find_cells(mesh['nodes'], mesh['members'])
+    roles = sg.classify_cell_roles(mesh['nodes'], cells)['roles']
+    dominant = roles[0]
+    assert len(dominant) >= 2, 'the fixture has only one cell in its main role'
+    from apps.stereo import stereo_geometry_cells as gc
+    first = gc._local_frame_fn(mesh['nodes'], cells[dominant[0]]['nodes'])
+    other = gc._local_frame_fn(mesh['nodes'], cells[dominant[-1]]['nodes'])
+    a = [first(n) for n in cells[dominant[0]]['nodes']]
+    b = [other(n) for n in cells[dominant[-1]]['nodes']]
+    for pa, pb in zip(a, b):
+        assert pa == pytest.approx(pb, abs=1e-6)
+
+
+def test_the_base_module_survives_the_edits_that_used_to_redefine_it():
+    """A reinforcement beam adds cells of its own; the grid's module is
+    still the grid's module. (The app additionally FREEZES this at
+    generation -- see StereoModuleEditorMixin._me_capture_base_module --
+    because a shape signature alone cannot promise that for every edit.)"""
+    mesh = sg.flat_grid(span_x=12.0, span_y=12.0, depth=1.5, module=3.0)
+    before = sg.base_module(mesh['nodes'], mesh['members'])
+    nodes, members = list(mesh['nodes']), list(mesh['members'])
+    edge_a = sorted((i for i, p in enumerate(nodes)
+                     if abs(p[1]) < 1e-9 and abs(p[2]) < 1e-9), key=lambda i: nodes[i][0])
+    edge_b = sorted((i for i, p in enumerate(nodes)
+                     if abs(p[1] - 12.0) < 1e-9 and abs(p[2]) < 1e-9),
+                    key=lambda i: nodes[i][0])
+    nodes, members = ga.reinforcement_beam(nodes, members, edge_a, edge_b, 2.0)[:2]
+    assert len(members) > len(mesh['members']), 'the beam added nothing'
+    assert sg.base_module(nodes, members) == before
+
+
+def test_a_mesh_with_no_closed_cell_has_no_base_module():
+    nodes = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    members = [{'a': 0, 'b': 1}, {'a': 1, 'b': 2}]
+    assert sg.base_module(nodes, members) is None
+
+
+def test_every_generator_yields_a_usable_base_module():
+    meshes = {
+        'flat_grid': sg.flat_grid(12.0, 12.0, 1.5, 3.0),
+        'hypar_shell': sg.hypar_shell(12.0, 12.0, 1.5, 3.0, 2.0),
+        'hip_roof_grid': sg.hip_roof_grid(12.0, 12.0, 1.5, 3.0, 2.0),
+        'groin_vault': sg.groin_vault(12.0, 3.0, 1.5, 3.0),
+        'circular_flat_grid': sg.circular_flat_grid(8.0, 1.5, 3, 12),
+        'barrel_vault': sg.barrel_vault(10.0, 2.5, 15.0),
+        'parabolic_vault': sg.parabolic_vault(10.0, 2.5, 15.0),
+        'elliptic_vault': sg.elliptic_vault(10.0, 2.5, 15.0),
+        'dome': sg.dome(6.0, 2.0, 3, 10),
+        'cone_roof': sg.cone_roof(6.0, 3.0, 3, 10),
+        'paraboloid_dish': sg.paraboloid_dish(6.0, 2.0, 3, 10),
+        'elliptic_dome': sg.elliptic_dome(6.0, 4.0, 2.0, 3, 10),
+        'sphere_shell': sg.sphere_shell(6.0, 3, 10),
+        'truss_bridge': sg.truss_bridge(24.0, 3.0, 6.0),
+    }
+    assert set(meshes) <= set(sg.GENERATORS), 'a generator was renamed'
+    for name, mesh in meshes.items():
+        bm = sg.base_module(mesh['nodes'], mesh['members'])
+        assert bm is not None, f'{name} has no base module'
+        assert len(bm['nodes']) >= 3, name
+        assert bm['members'], name
+        assert all(0 <= m['a'] < len(bm['nodes']) and 0 <= m['b'] < len(bm['nodes'])
+                   for m in bm['members']), f'{name} points off its own node list'

@@ -29,6 +29,8 @@ from apps.stereo.stereo_app_constants import (
     FILL_NONE, FILL_SHADED, FILL_VORONOI, FILL_MODES,
     SCALE_P95, SCALE_MODES,
     FILL_DENSITIES, FILL_DENSITY_DEFAULT,
+    AREA_UNIFORM, AREA_GRADIENT, AREA_FIELD, AREA_LAWS,
+    LOAD_DIRECTION_NAMES, AREA_SCOPE_ALL, AREA_SCOPES,
 )
 
 
@@ -712,12 +714,81 @@ class StereoPanelsMixin(_ToolbarModes):
         self.area_load_var = tk.DoubleVar(value=2.0)
         tk.Entry(row, textvariable=self.area_load_var, width=8).pack(side='left', padx=4)
 
+        # How the pressure varies, which way it pushes, and where it lands.
+        # Three separate questions, so three separate controls rather than
+        # one list of every combination.
+        self.area_law = tk.StringVar(value=AREA_UNIFORM)
+        row = tk.Frame(box, bg=BG)
+        row.pack(fill='x', padx=6, pady=(2, 0))
+        tk.Label(row, text='Varies:', bg=BG, width=9, anchor='w',
+                font=('Helvetica', 9)).pack(side='left')
+        law_box = ttk.Combobox(row, textvariable=self.area_law, state='readonly',
+                               width=20, values=list(AREA_LAWS))
+        law_box.pack(side='left')
+        law_box.bind('<<ComboboxSelected>>', lambda e: self._on_area_law_change())
+
+        # gradient: q runs from one end of the chosen axis to the other
+        self.area_axis = tk.StringVar(value='X')
+        self.area_q_min = tk.DoubleVar(value=0.0)
+        self.area_q_max = tk.DoubleVar(value=4.0)
+        self.frame_area_gradient = tk.Frame(box, bg=BG)
+        grow = tk.Frame(self.frame_area_gradient, bg=BG)
+        grow.pack(fill='x', padx=6, pady=(2, 0))
+        tk.Label(grow, text='along', bg=BG, font=('Helvetica', 8)).pack(side='left')
+        ttk.Combobox(grow, textvariable=self.area_axis, state='readonly', width=2,
+                     values=('X', 'Y', 'Z')).pack(side='left', padx=2)
+        tk.Label(grow, text='from', bg=BG, font=('Helvetica', 8)).pack(side='left')
+        tk.Entry(grow, textvariable=self.area_q_min, width=6).pack(side='left', padx=2)
+        tk.Label(grow, text='to', bg=BG, font=('Helvetica', 8)).pack(side='left')
+        tk.Entry(grow, textvariable=self.area_q_max, width=6).pack(side='left', padx=2)
+        tk.Label(grow, text='kN/m²', bg=BG, font=('Helvetica', 8)).pack(side='left')
+
+        # field: q as a typed expression, same parser as the wizard
+        self.area_expr = tk.StringVar(value='2.0')
+        self.frame_area_field = tk.Frame(box, bg=BG)
+        frow = tk.Frame(self.frame_area_field, bg=BG)
+        frow.pack(fill='x', padx=6, pady=(2, 0))
+        tk.Label(frow, text='q(x,y,z) =', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        tk.Entry(frow, textvariable=self.area_expr).pack(side='left', fill='x',
+                                                         expand=True, padx=2)
+
+        row = tk.Frame(box, bg=BG)
+        row.pack(fill='x', padx=6, pady=(2, 0))
+        tk.Label(row, text='Pushes:', bg=BG, width=9, anchor='w',
+                font=('Helvetica', 9)).pack(side='left')
+        self.area_dir = tk.StringVar(value='Down (−Z)')
+        dir_box = ttk.Combobox(row, textvariable=self.area_dir, state='readonly',
+                               width=11, values=list(LOAD_DIRECTION_NAMES))
+        dir_box.pack(side='left')
+        dir_box.bind('<<ComboboxSelected>>', lambda e: self._on_area_law_change())
+        self.area_dx = tk.DoubleVar(value=0.0)
+        self.area_dy = tk.DoubleVar(value=0.0)
+        self.area_dz = tk.DoubleVar(value=-1.0)
+        self.frame_area_dir = tk.Frame(box, bg=BG)
+        drow = tk.Frame(self.frame_area_dir, bg=BG)
+        drow.pack(fill='x', padx=6, pady=(2, 0))
+        for lbl, var in (('dx', self.area_dx), ('dy', self.area_dy), ('dz', self.area_dz)):
+            tk.Label(drow, text=lbl, bg=BG, font=('Helvetica', 8)).pack(side='left')
+            tk.Entry(drow, textvariable=var, width=5).pack(side='left', padx=(1, 5))
+
+        row = tk.Frame(box, bg=BG)
+        row.pack(fill='x', padx=6, pady=(2, 0))
+        tk.Label(row, text='Over:', bg=BG, width=9, anchor='w',
+                font=('Helvetica', 9)).pack(side='left')
+        self.area_scope = tk.StringVar(value=AREA_SCOPE_ALL)
+        ttk.Combobox(row, textvariable=self.area_scope, state='readonly',
+                     width=20, values=list(AREA_SCOPES)).pack(side='left')
+
         row = tk.Frame(box, bg=BG)
         row.pack(fill='x', padx=6, pady=(0, 4))
         self.area_load_on = tk.BooleanVar(value=True)
-        tk.Checkbutton(row, text='Apply area load to the roof/shell surface',
+        tk.Checkbutton(row, text='Apply area load',
                        variable=self.area_load_on, bg=BG, font=('Helvetica', 8)
                       ).pack(anchor='w')
+        self.area_status = tk.Label(box, text='', bg=BG, fg='#a3241a',
+                                    font=('Helvetica', 8), wraplength=PANEL_W - 30,
+                                    justify='left')
+        self.area_status.pack(anchor='w', padx=6)
         # Off by default: the area load above already covers the roof/
         # shell surface (top layer only -- see stereo_geometry's load_nodes
         # docstring), so the DEFAULT view shows load only there, not also
@@ -752,6 +823,36 @@ class StereoPanelsMixin(_ToolbarModes):
                          ('Fz (kN):', self.ld_fz), ('Mx (kN·m):', self.ld_mx),
                          ('My (kN·m):', self.ld_my), ('Mz (kN·m):', self.ld_mz)):
             self._labeled_entry(adv, lbl, var)
+
+        # Size and direction, the way a load is usually quoted -- "40 kN down
+        # the slope" rather than three components someone has to resolve by
+        # hand. It WRITES into Fx/Fy/Fz above rather than becoming a second
+        # way to store a load, so the six boxes stay the single truth and
+        # what it computed is visible and still editable afterwards.
+        mag = tk.LabelFrame(adv, text='Set Fx, Fy, Fz from a size and a direction',
+                            bg=BG, font=('Helvetica', 8, 'bold'))
+        mag.pack(fill='x', padx=4, pady=(2, 2))
+        row = tk.Frame(mag, bg=BG)
+        row.pack(fill='x', padx=4, pady=2)
+        tk.Label(row, text='P (kN):', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        self.ld_mag = tk.DoubleVar(value=10.0)
+        tk.Entry(row, textvariable=self.ld_mag, width=7).pack(side='left', padx=(2, 6))
+        self.ld_dir = tk.StringVar(value=LOAD_DIRECTION_NAMES[0])
+        dir_box = ttk.Combobox(row, textvariable=self.ld_dir, state='readonly',
+                               width=10, values=list(LOAD_DIRECTION_NAMES))
+        dir_box.pack(side='left')
+        dir_box.bind('<<ComboboxSelected>>', lambda e: self._on_point_dir_change())
+        self.frame_ld_dir = tk.Frame(mag, bg=BG)
+        drow = tk.Frame(self.frame_ld_dir, bg=BG)
+        drow.pack(fill='x', padx=4, pady=2)
+        self.ld_dx = tk.DoubleVar(value=0.0)
+        self.ld_dy = tk.DoubleVar(value=0.0)
+        self.ld_dz = tk.DoubleVar(value=-1.0)
+        for lbl, var in (('dx', self.ld_dx), ('dy', self.ld_dy), ('dz', self.ld_dz)):
+            tk.Label(drow, text=lbl, bg=BG, font=('Helvetica', 8)).pack(side='left')
+            tk.Entry(drow, textvariable=var, width=5).pack(side='left', padx=(1, 5))
+        tk.Button(mag, text='Resolve into Fx, Fy, Fz',
+                  command=self._resolve_point_load).pack(anchor='w', padx=4, pady=(0, 4))
 
         btn_row = tk.Frame(adv, bg=BG)
         btn_row.pack(fill='x', padx=4, pady=(2, 4))

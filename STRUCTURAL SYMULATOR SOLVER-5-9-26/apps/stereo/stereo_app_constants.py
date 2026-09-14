@@ -108,6 +108,18 @@ CLIP_MARK_DASH = (2, 3)
 # Cell outlines in the Voronoi "Cells" view -- drawn over the fill along the
 # rods where ownership changes, which is what makes the cells read as cells
 # rather than as a continuous colour field.
+# How opaque a fill is drawn. A Tk canvas polygon has no alpha channel, so
+# "see-through" is a stipple pattern: at gray25 a quarter of the pixels are
+# the fill and the rest is whatever is behind it. The trade runs both ways --
+# solid lets the nearest patch hide every patch behind it and the shape loses
+# all depth, while the sparsest pattern washes the dark end of the colour ramp
+# out towards the canvas. Offered as a control rather than settled here,
+# because which end matters depends on the model and on the reader.
+FILL_DENSITY_STIPPLE = {'Light': 'gray25', 'Medium': 'gray50',
+                        'Heavy': 'gray75', 'Solid': ''}
+FILL_DENSITIES = tuple(FILL_DENSITY_STIPPLE)
+FILL_DENSITY_DEFAULT = 'Light'
+
 CELL_EDGE_COLOR = '#33414d'
 CELL_EDGE_WIDTH = 1
 
@@ -164,7 +176,11 @@ FAMILY_LABEL = {key: label for key, label in GRID_FAMILIES}
 # together). A role not listed here defaults to the web section, which is
 # always the more numerous and lighter-loaded member family in practice.
 CHORD_ROLES = {'bottom_chord', 'top_chord', 'outer_rib', 'inner_rib', 'purlin',
-              'hoop', 'meridian', 'reinf_chord', 'surface_chord'}
+              'hoop', 'meridian', 'reinf_chord', 'surface_chord',
+              # a latticed column's four verticals are its chords in exactly
+              # the same sense the grid's are: the primary framing carrying
+              # the load, with the ties and X-bracing as its webs
+              'column_chord', 'column_shaft'}
 
 QUICK_SUPPORT_CUSTOM = 'Custom (edit per node below)'
 QUICK_SUPPORT_PIN = 'All suggested nodes: pinned'

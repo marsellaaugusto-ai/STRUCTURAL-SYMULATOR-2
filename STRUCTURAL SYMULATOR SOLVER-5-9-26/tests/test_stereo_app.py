@@ -24,7 +24,7 @@ from apps.stereo.stereo_app import (
     MOMENT_AXIS_RESULTANT, MOMENT_AXIS_MX, MOMENT_AXIS_MY, MOMENT_AXIS_MZ,
     MODULE_DIM_COLOR, SUPPORT_DISABLED_COLOR, SLENDER_HALO_COLOR, SLENDERNESS_LIMIT,
     LOAD_PATH_ANIM_TICKS, LOAD_PATH_NEAR_ZERO_FRAC, NEAR_ZERO_COLOR,
-    SCALE_PEAK, SCALE_P95,
+    SCALE_PEAK, SCALE_P95, FILL_DENSITY_STIPPLE,
     NEAR_ZERO_FRAC, STRESS_WIDTH_MIN, STRESS_WIDTH_MAX,
     COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT,
     FILL_NONE, FILL_SHADED, FILL_VORONOI,
@@ -33,6 +33,7 @@ from apps.stereo.stereo_app import (
     TENSION_HIGH, COMPRESSION_HIGH,
     _clip_polygon_to_bbox, _voronoi_cells_2d,
 )
+from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_voronoi_surface as svs
 
@@ -1354,6 +1355,54 @@ def test_add_reinforcement_beam_triangulates_an_apex_over_two_rows(app):
 
     app._analyze()
     assert app.err is None
+
+
+@pytest.mark.parametrize('style', sg.COLUMN_STYLES)
+def test_every_column_style_can_be_added_from_the_panel(app, style):
+    app.grid_family.set(FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(6); app.fg_ny.set(6)
+    app._generate()
+    # the bottom-layer nodes nearest the middle of the grid -- the footprint
+    # a lasso box round one module would give
+    bottom = [i for i, (x, y, z) in enumerate(app.nodes) if abs(z) < 1e-6]
+    cx = sum(app.nodes[i][0] for i in bottom) / len(bottom)
+    cy = sum(app.nodes[i][1] for i in bottom) / len(bottom)
+    bottom.sort(key=lambda i: (app.nodes[i][0] - cx) ** 2 + (app.nodes[i][1] - cy) ** 2)
+    app.selected_nodes = set(bottom[:9])
+    assert len(app.selected_nodes) >= 3
+    n0, m0, sup0 = len(app.nodes), len(app.members), len(app.supports)
+    app.col_style.set(style)
+    app.col_height.set(4.0)
+    app.col_capital.set(1.0)
+    app.col_width.set(1.2)
+    app.col_panels.set(3)
+    app._add_column()
+    assert len(app.nodes) > n0 and len(app.members) > m0
+    added = len(app.supports) - sup0
+    assert added == (1 if style == sg.COLUMN_SHAFT else 4), \
+        f'{style} pinned {added} feet'
+    app._analyze()
+    assert app.err is None, f'{style} did not solve from the panel: {app.err}'
+
+
+@pytest.mark.parametrize('profile', sg.BEAM_PROFILES)
+def test_every_beam_profile_can_be_added_from_the_panel(app, profile):
+    app.grid_family.set(FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(6); app.fg_ny.set(6)
+    app._generate()
+    ys = sorted({round(y, 6) for x, y, z in app.nodes if abs(z) < 1e-6})
+    app.selected_nodes = {i for i, (x, y, z) in enumerate(app.nodes)
+                          if abs(z) < 1e-6 and round(y, 6) in (ys[2], ys[3])}
+    n0 = len(app.nodes)
+    app.beam_profile.set(profile)
+    app.beam_depth.set(1.6)
+    app.beam_tiers.set(1)
+    app._add_reinforcement_beam()
+    assert len(app.nodes) > n0
+    app._analyze()
+    assert app.err is None, f'{profile} did not solve from the panel: {app.err}'
 
 
 def test_add_column_2tier_capital_via_the_ui(app):
@@ -3080,6 +3129,7 @@ def test_surface_and_cells_are_stippled_and_the_section_is_not(app):
     app._analyze()
     app.faces_mode.set(FILL_VORONOI)
     app._on_faces_mode_change()
+    app.fill_density.set('Heavy')
     for view, expected in ((svs.VIEW_SURFACE, 'gray75'),
                            (svs.VIEW_CELLS, 'gray75'),
                            (svs.VIEW_SECTION, '')):
@@ -3090,6 +3140,68 @@ def test_surface_and_cells_are_stippled_and_the_section_is_not(app):
         assert items, f'{view} drew nothing'
         got = {app.canvas.itemcget(i, 'stipple') for i in items}
         assert got == {expected}, f'{view} stipple {got}, expected {expected!r}'
+
+
+def test_the_shade_control_sets_how_see_through_a_fill_is(app):
+    """Tk has no alpha channel, so opacity is a stipple pattern. Which one
+    is a real choice: solid lets the nearest patch hide every patch behind
+    it, and the densest half-tone washes the dark end of the ramp out."""
+    app._analyze()
+    app.faces_mode.set(FILL_VORONOI)
+    app._on_faces_mode_change()
+    app.voronoi_view.set(svs.VIEW_SURFACE)
+    seen = {}
+    for name, pattern in FILL_DENSITY_STIPPLE.items():
+        app.fill_density.set(name)
+        app._draw()
+        got = {app.canvas.itemcget(i, 'stipple')
+               for i in app.canvas.find_withtag('voronoi_face')
+               if app.canvas.type(i) == 'polygon'}
+        assert got == {pattern}, f'{name} drew {got}, expected {pattern!r}'
+        seen[name] = pattern
+    assert len(set(seen.values())) == len(seen), 'two settings do the same thing'
+
+
+def test_the_shade_control_reaches_the_shaded_fill_too(app):
+    app._analyze()
+    app.faces_mode.set(FILL_SHADED)
+    app._on_faces_mode_change()
+    app.fill_density.set('Solid')
+    app._draw()
+    assert {app.canvas.itemcget(i, 'stipple')
+            for i in app.canvas.find_withtag('shaded_face')} == {''}
+    app.fill_density.set('Light')
+    app._draw()
+    assert {app.canvas.itemcget(i, 'stipple')
+            for i in app.canvas.find_withtag('shaded_face')} == {'gray25'}
+
+
+def test_a_column_shaft_is_covered_by_the_fill(app):
+    """A shaft closes no triangle or quad, so find_cells never sees it. Left
+    out of the domain the fill stopped at the underside of the grid and the
+    columns hung below it as bare lines -- the tessellation no longer
+    covering the structure it describes."""
+    from apps.stereo import stereo_examples as sx
+    label, builder = [(l, b) for l, b in sx.EXAMPLES if 'columns (1-tier)' in l][0]
+    app._load_example(builder, label)
+    app._analyze()
+    panels = app._get_shaded_cells()
+    lone = svs.lone_struts(app.members, panels)
+    assert lone, 'this example is supposed to have column shafts'
+    assert all(app.members[i].get('role') == 'column_shaft' for i in lone)
+
+    sites = [tuple((a + b) / 2.0 for a, b in
+                   zip(app.nodes[m['a']], app.nodes[m['b']]))
+             for m in app.members]
+    without = svs.build_surface(app.nodes, panels, sites,
+                                [list(p['members']) for p in panels])
+    with_struts = svs.build_surface(app.nodes, panels, sites,
+                                    [list(p['members']) for p in panels],
+                                    members=app.members)
+    assert len(with_struts) > len(without)
+    covered = {owner for _poly, owner in with_struts}
+    for i in lone:
+        assert i in covered, f'shaft {i} is still not covered by the fill'
 
 
 def test_the_cache_survives_orbiting_but_not_a_view_change(app):

@@ -15,6 +15,7 @@ from tkinter import ttk
 
 from common import ZoomCanvas, FlowBar, ScrollPanel
 
+from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_examples as sx
 from apps.stereo import stereo_voronoi_surface as svs
@@ -27,6 +28,7 @@ from apps.stereo.stereo_app_constants import (
     COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT, COLOUR_MODES,
     FILL_NONE, FILL_SHADED, FILL_VORONOI, FILL_MODES,
     SCALE_P95, SCALE_MODES,
+    FILL_DENSITIES, FILL_DENSITY_DEFAULT,
 )
 
 
@@ -182,6 +184,18 @@ class StereoPanelsMixin(_ToolbarModes):
             tk.Radiobutton(g, text=label, value=label, variable=self.faces_mode,
                            bg=BG, command=self._on_faces_mode_change
                            ).pack(side='left', padx=(0, 4))
+        # How opaque a fill is drawn. Tk has no alpha channel, so a fill is
+        # made see-through with a stipple pattern; this picks which one.
+        # Solid hides everything behind the nearest patch, and the densest
+        # half-tone flattens the dark end of the colour ramp, so the default
+        # sits between them.
+        tk.Label(g, text='shade', bg=BG, font=('Helvetica', 8), fg='#556')\
+            .pack(side='left', padx=(8, 2))
+        self.fill_density = tk.StringVar(value=FILL_DENSITY_DEFAULT)
+        dens = ttk.Combobox(g, textvariable=self.fill_density, state='readonly',
+                            width=7, values=list(FILL_DENSITIES))
+        dens.pack(side='left')
+        dens.bind('<<ComboboxSelected>>', lambda e: self._draw())
 
         # ── 6 · VORONOI ──────────────────────────────────────────────────────
         # Its own group because these only mean anything once FILL is set to
@@ -812,14 +826,36 @@ class StereoPanelsMixin(_ToolbarModes):
         box = tk.LabelFrame(parent, text='Add-ons', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=4)
 
-        col = tk.LabelFrame(box, text='Column (shaft + capital)', bg=BG,
+        col = tk.LabelFrame(box, text='Column', bg=BG,
                             font=('Helvetica', 8, 'bold'))
         col.pack(fill='x', padx=6, pady=(4, 4))
         tk.Label(col, text='Select >=3 nodes (lasso box) for the capital to '
                           'attach to, then:', bg=BG, font=('Helvetica', 8), fg='#666',
                 wraplength=PANEL_W - 40, justify='left').pack(anchor='w', padx=4, pady=(2, 0))
+        self.col_style = tk.StringVar(value=sg.COLUMN_SHAFT)
+        style_row = tk.Frame(col, bg=BG)
+        style_row.pack(fill='x', padx=6, pady=(3, 0))
+        tk.Label(style_row, text='Type:', bg=BG, width=16, anchor='w',
+                font=('Helvetica', 9)).pack(side='left')
+        ttk.Combobox(style_row, textvariable=self.col_style, state='readonly',
+                     width=20, values=list(sg.COLUMN_STYLES)).pack(side='left')
         self.col_height = tk.DoubleVar(value=3.0)
         self._labeled_entry(col, 'Shaft height (m):', self.col_height)
+        # The capital's own depth, adjustable rather than derived: it is the
+        # difference between a shallow wide-spreading capital and a deep
+        # steep one, and it moves load between the capital legs and the
+        # grid's own chords.
+        self.col_capital = tk.DoubleVar(value=0.9)
+        self._labeled_entry(col, 'Capital height (m):', self.col_capital)
+        self.col_width = tk.DoubleVar(value=0.6)
+        self._labeled_entry(col, 'Column width (m):', self.col_width)
+        self.col_panels = tk.IntVar(value=4)
+        self._labeled_entry(col, 'Lattice panels:', self.col_panels)
+        tk.Label(col, text='Width and panels apply to the latticed and '
+                          'inclined-leg types; those stand on FOUR pinned '
+                          'feet, not one.', bg=BG, font=('Helvetica', 8),
+                fg='#666', wraplength=PANEL_W - 40, justify='left'
+                ).pack(anchor='w', padx=4, pady=(2, 0))
         self.col_tiers = tk.IntVar(value=1)
         tier_row = tk.Frame(col, bg=BG)
         tier_row.pack(fill='x', padx=6, pady=(2, 0))
@@ -839,6 +875,13 @@ class StereoPanelsMixin(_ToolbarModes):
                           'spanning both rows), then:', bg=BG, font=('Helvetica', 8),
                 fg='#666', wraplength=PANEL_W - 40, justify='left'
                ).pack(anchor='w', padx=4, pady=(2, 0))
+        self.beam_profile = tk.StringVar(value=sg.BEAM_TRIANGLE)
+        prof_row = tk.Frame(beam, bg=BG)
+        prof_row.pack(fill='x', padx=6, pady=(3, 0))
+        tk.Label(prof_row, text='Profile:', bg=BG, width=16, anchor='w',
+                font=('Helvetica', 9)).pack(side='left')
+        ttk.Combobox(prof_row, textvariable=self.beam_profile, state='readonly',
+                     width=18, values=list(sg.BEAM_PROFILES)).pack(side='left')
         self.beam_depth = tk.DoubleVar(value=1.0)
         self.beam_dir = tk.StringVar(value='Down (-Z)')
         self.beam_tiers = tk.IntVar(value=1)

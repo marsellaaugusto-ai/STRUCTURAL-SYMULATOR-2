@@ -107,9 +107,9 @@ def planar_grid_with_columns_1():
     supports = []
     for cx, cy in ((3.0, 3.0), (9.0, 3.0), (3.0, 9.0), (9.0, 9.0)):
         targets = _nodes_near(nodes, cx, cy, z=0.0, k=4)
-        nodes, members, base, _head = sg.add_column(nodes, members, targets,
-                                                     height=3.0, tiers=1)
-        supports.append(base)
+        nodes, members, bases, _head = sg.add_column(nodes, members, targets,
+                                                      height=3.0, tiers=1)
+        supports.extend(bases)
     edge_a = _row_at(nodes, 1, 4.0, 0.0)
     edge_b = _row_at(nodes, 1, 6.0, 0.0)
     nodes, members, _apex = sg.reinforcement_beam(nodes, members, edge_a, edge_b,
@@ -149,9 +149,9 @@ def planar_grid_with_columns_2():
     xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
     supports = [i for i in perim if nodes[i][0] in (xmin, xmax) and nodes[i][1] in (ymin, ymax)]
     targets = _nodes_within(nodes, 8.0, 8.0, 0.0, radius=3.1)
-    nodes, members, base, _head = sg.add_column(nodes, members, targets,
-                                                height=4.0, tiers=2)
-    supports.append(base)
+    nodes, members, bases, _head = sg.add_column(nodes, members, targets,
+                                                 height=4.0, tiers=2)
+    supports.extend(bases)
     edge_a = _row_at(nodes, 1, 2.0, 0.0)
     edge_b = _row_at(nodes, 1, 4.0, 0.0)
     nodes, members, _apex = sg.reinforcement_beam(nodes, members, edge_a, edge_b,

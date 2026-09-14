@@ -37,22 +37,31 @@ class StereoAddonsMixin:
         try:
             height = float(self.col_height.get())
             tiers = int(self.col_tiers.get())
+            capital_height = float(self.col_capital.get())
+            width = float(self.col_width.get())
+            panels = int(self.col_panels.get())
         except (tk.TclError, ValueError):
-            messagebox.showerror('Column', 'Enter a valid shaft height.')
+            messagebox.showerror('Column', 'Enter valid column dimensions.')
             return
         try:
-            nodes, members, base, head = sg.add_column(self.nodes, self.members, targets,
-                                                        height, tiers=tiers)
+            nodes, members, bases, head = sg.add_column(
+                self.nodes, self.members, targets, height, tiers=tiers,
+                style=self.col_style.get(), capital_height=capital_height,
+                width=width, panels=panels)
         except ValueError as exc:
             messagebox.showerror('Column', str(exc))
             return
         self._push_undo('add column')
         self.nodes, self.members = nodes, members
-        self._support_candidates = list(self._support_candidates) + [base]
-        self.supports = [s for s in self.supports if s['node'] != base]
-        self.supports.append({'node': base, 'type': 'pin'})
+        # EVERY foot is pinned, not just the first. A latticed or splay-
+        # footed column is rigid as a body, so restraining one node of it
+        # leaves three rotations free and the solver reports a mechanism
+        # instead of a result.
+        self._support_candidates = list(self._support_candidates) + list(bases)
+        self.supports = [s for s in self.supports if s['node'] not in set(bases)]
+        self.supports.extend({'node': b, 'type': 'pin'} for b in bases)
         self._apply_sections(members=self.members, redraw=False)
-        self.selected_nodes = {base}
+        self.selected_nodes = set(bases)
         self.results = None
         self.member_checks = None
         self._refresh_all()
@@ -101,9 +110,9 @@ class StereoAddonsMixin:
             return
         direction = self.BEAM_DIRECTIONS[self.beam_dir.get()]
         try:
-            nodes, members, apex = sg.reinforcement_beam(self.nodes, self.members,
-                                                          edge_a, edge_b, depth, direction,
-                                                          tiers=tiers)
+            nodes, members, apex = sg.reinforcement_beam(
+                self.nodes, self.members, edge_a, edge_b, depth, direction,
+                tiers=tiers, profile=self.beam_profile.get())
         except ValueError as exc:
             messagebox.showerror('Reinforcement beam', str(exc))
             return

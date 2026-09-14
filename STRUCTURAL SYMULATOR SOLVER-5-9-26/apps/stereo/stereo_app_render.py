@@ -43,6 +43,7 @@ from apps.stereo.stereo_app_constants import (
     MOMENT_NODE_RADIUS_PX,
     SCALE_P95, FORCE_SCALE_PERCENTILE, CLIP_MARK_COLOR, CLIP_MARK_DASH,
     CELL_EDGE_COLOR, CELL_EDGE_WIDTH,
+    FILL_DENSITY_STIPPLE, FILL_DENSITY_DEFAULT,
 )
 
 
@@ -727,9 +728,23 @@ class StereoRenderMixin:
                 depth += d
             drawn.append((depth / len(cell['nodes']), pts, color))
         drawn.sort(key=lambda t: -t[0])
+        stipple = self._fill_stipple()
         for _depth, pts, color in drawn:
-            c.create_polygon(*pts, fill=color, outline='', tags='shaded_face')
+            c.create_polygon(*pts, fill=color, outline='', stipple=stipple,
+                             tags='shaded_face')
         c.tag_lower('shaded_face')
+
+    def _fill_stipple(self):
+        """The Tk stipple pattern for the current 'shade' setting.
+
+        Read through the table rather than stored as a pattern name, so the
+        toolbar shows words a reader can choose between and the canvas gets
+        the Tk pattern it needs. An unrecognised value falls back to the
+        default rather than raising: the variable is a combobox, but nothing
+        stops a saved session or a test from putting something else in it.
+        """
+        return FILL_DENSITY_STIPPLE.get(self.fill_density.get(),
+                                        FILL_DENSITY_STIPPLE[FILL_DENSITY_DEFAULT])
 
     def _panel_color(self, cell, frac, by_util, by_force, max_abs_N,
                      by_moment, moment_by_node, max_abs_moment):
@@ -830,7 +845,8 @@ class StereoRenderMixin:
         # whole fill beneath every rod, node and glyph on the canvas.
         # The Section plane stays solid: it is a cut FACE, and a cut you can
         # see through no longer reads as one.
-        stipple = '' if self.voronoi_view.get() == svs.VIEW_SECTION else 'gray75'
+        stipple = '' if self.voronoi_view.get() == svs.VIEW_SECTION \
+            else self._fill_stipple()
         for _depth, pts, owner in drawn:
             c.create_polygon(*pts, fill=colours[owner], outline='',
                              stipple=stipple, tags='voronoi_face')
@@ -940,7 +956,13 @@ class StereoRenderMixin:
         else:
             key_field = 'members' if kind == 'member' else 'nodes'
             panel_sites = [list(p[key_field]) for p in panels]
-            patches = svs.build_surface(self.nodes, panels, sites, panel_sites)
+            # `members` is what lets the domain cover the rods no panel
+            # contains -- a column shaft closes no triangle or quad, so
+            # without this the fill stops at the underside of the grid and
+            # the columns hang below it as bare lines.
+            patches = svs.build_surface(self.nodes, panels, sites, panel_sites,
+                                        members=self.members,
+                                        per_node=(kind == 'node'))
             edges = []
             if view == svs.VIEW_CELLS and panels:
                 polys = svs.panel_polys(self.nodes, panels)

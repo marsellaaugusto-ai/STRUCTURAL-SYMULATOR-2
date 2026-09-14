@@ -665,7 +665,10 @@ def test_add_column_creates_a_shaft_and_a_capital_fanning_to_the_given_targets()
     # 4 well-connected nodes, standing in for a lasso-selected attachment set
     top = sorted(degree, key=degree.get, reverse=True)[:4]
     n0, m0 = len(mesh['nodes']), len(mesh['members'])
-    nodes, members, base, head = sg.add_column(mesh['nodes'], mesh['members'], top, height=3.0)
+    nodes, members, bases, head = sg.add_column(mesh['nodes'], mesh['members'],
+                                               top, height=3.0)
+    assert len(bases) == 1, 'a single shaft stands on one foot'
+    base = bases[0]
     assert len(nodes) == n0 + 2
     shaft = [m for m in members if m.get('role') == 'column_shaft']
     capital = [m for m in members if m.get('role') == 'capital']
@@ -677,6 +680,72 @@ def test_add_column_creates_a_shaft_and_a_capital_fanning_to_the_given_targets()
     # targets' own (average) elevation -- a genuine, non-degenerate shaft + capital
     avg_z = sum(mesh['nodes'][j][2] for j in top) / len(top)
     assert nodes[base][2] < nodes[head][2] < avg_z
+
+
+@pytest.mark.parametrize('style', sg.COLUMN_STYLES)
+def test_every_column_style_solves_once_all_its_feet_are_pinned(style):
+    """A latticed or splay-footed column is rigid as a BODY, so restraining
+    one node of it leaves three rotations free and the solver reports a
+    mechanism. Every foot the builder returns has to be pinned."""
+    mesh, degree = _flat_grid_with_degrees()
+    top = sorted(degree, key=degree.get, reverse=True)[:9]
+    nodes, members, bases, head = sg.add_column(mesh['nodes'], mesh['members'], top,
+                                                height=4.0, style=style,
+                                                capital_height=1.0, width=1.2, panels=3)
+    assert bases, 'a column with no foot at all'
+    assert len(bases) == (1 if style == sg.COLUMN_SHAFT else 4)
+    assert all(nodes[b][2] < nodes[head][2] for b in bases), 'a foot above the head'
+    for m in members:
+        m.setdefault('E', 200e3); m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    supports.extend({'node': b, 'type': 'pin'} for b in bases)
+    loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
+    _res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None, f'{style} did not solve: {err}'
+
+
+def test_pinning_only_one_foot_of_a_latticed_column_is_a_mechanism():
+    """The reason add_column returns a LIST of feet rather than one node."""
+    mesh, degree = _flat_grid_with_degrees()
+    top = sorted(degree, key=degree.get, reverse=True)[:9]
+    nodes, members, bases, _head = sg.add_column(mesh['nodes'], mesh['members'], top,
+                                                 height=4.0, style=sg.COLUMN_LATTICE)
+    for m in members:
+        m.setdefault('E', 200e3); m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    supports.append({'node': bases[0], 'type': 'pin'})
+    loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
+    _res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is not None
+
+
+def test_a_tapered_column_is_narrower_at_its_feet_than_at_its_head():
+    mesh, degree = _flat_grid_with_degrees()
+    top = sorted(degree, key=degree.get, reverse=True)[:9]
+    out = {}
+    for style in (sg.COLUMN_LATTICE, sg.COLUMN_TAPERED):
+        nodes, _members, bases, _head = sg.add_column(
+            mesh['nodes'], mesh['members'], top, height=4.0, style=style, width=1.2)
+        xs = [nodes[b][0] for b in bases]
+        out[style] = max(xs) - min(xs)
+    assert out[sg.COLUMN_TAPERED] < out[sg.COLUMN_LATTICE]
+
+
+def test_the_capital_height_is_the_drop_from_the_attachment_surface():
+    mesh, degree = _flat_grid_with_degrees()
+    top = sorted(degree, key=degree.get, reverse=True)[:9]
+    avg_z = sum(mesh['nodes'][j][2] for j in top) / len(top)
+    for cap in (0.4, 1.6):
+        nodes, _members, _bases, head = sg.add_column(
+            mesh['nodes'], mesh['members'], top, height=4.0, capital_height=cap)
+        assert nodes[head][2] == pytest.approx(avg_z - cap)
+
+
+def test_a_non_positive_capital_height_is_refused():
+    mesh, degree = _flat_grid_with_degrees()
+    top = sorted(degree, key=degree.get, reverse=True)[:9]
+    with pytest.raises(ValueError):
+        sg.add_column(mesh['nodes'], mesh['members'], top, height=3.0, capital_height=0.0)
 
 
 def test_add_column_rejects_a_target_node_that_does_not_exist():
@@ -720,11 +789,13 @@ def test_mesh_with_a_column_still_analyzes_once_the_base_is_pinned():
     # column capital always has a 2D spread footprint for exactly this
     # reason, so that is what this test exercises.
     top = [0, 1, 9, 10]
-    nodes, members, base, _head = sg.add_column(mesh['nodes'], mesh['members'], top, height=3.0)
+    nodes, members, bases, _head = sg.add_column(mesh['nodes'], mesh['members'],
+                                                top, height=3.0)
+    base = bases[0]
     for m in members:
         m.setdefault('E', 200e3); m.setdefault('A', 20.0)
     supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
-    supports.append({'node': base, 'type': 'pin'})
+    supports.extend({'node': b, 'type': 'pin'} for b in bases)
     loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
     res, err = sm.analyze(nodes, members, loads, supports)
     assert err is None
@@ -743,15 +814,70 @@ def test_a_capital_fanning_to_colinear_targets_is_a_genuine_mechanism():
     mesh, degree = _flat_grid_with_degrees()
     colinear = sorted(degree, key=degree.get, reverse=True)[:5]   # one straight row
     assert len({round(mesh['nodes'][j][1], 6) for j in colinear}) == 1   # sanity: same y
-    nodes, members, base, _head = sg.add_column(mesh['nodes'], mesh['members'], colinear,
+    nodes, members, bases, _head = sg.add_column(mesh['nodes'], mesh['members'], colinear,
                                                 height=3.0)
     for m in members:
         m.setdefault('E', 200e3); m.setdefault('A', 20.0)
     supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
-    supports.append({'node': base, 'type': 'pin'})
+    supports.extend({'node': b, 'type': 'pin'} for b in bases)
     loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
     res, err = sm.analyze(nodes, members, loads, supports)
     assert err is not None
+
+
+@pytest.mark.parametrize('profile', sg.BEAM_PROFILES)
+def test_every_beam_profile_solves_and_adds_the_chords_it_promises(profile):
+    """Triangular puts one chord on the midline; the paired-chord sections
+    put two out towards the base rows, which is only structurally sound once
+    the bottom PLANE they create is braced against lozenging."""
+    mesh = sg.flat_grid(span_x=12.0, span_y=12.0, depth=1.0, module=2.0)
+    rows = {}
+    for i, (x, y, z) in enumerate(mesh['nodes']):
+        if abs(z) < 1e-9:
+            rows.setdefault(round(y, 6), []).append(i)
+    ys = sorted(rows)
+    mid = len(ys) // 2
+    edge_a = sorted(rows[ys[mid]], key=lambda i: mesh['nodes'][i][0])
+    edge_b = sorted(rows[ys[mid + 1]], key=lambda i: mesh['nodes'][i][0])
+    nodes, members, apex = sg.reinforcement_beam(mesh['nodes'], mesh['members'],
+                                                 edge_a, edge_b, depth=1.6,
+                                                 profile=profile)
+    expected_rows = 1 if profile == sg.BEAM_TRIANGLE else 2
+    assert len(apex) == expected_rows * len(edge_a)
+    for m in members:
+        m.setdefault('E', 200e3); m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
+    _res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None, f'{profile} did not solve: {err}'
+
+
+def test_a_box_profile_is_wider_at_the_bottom_than_a_trapezoidal_one():
+    mesh = sg.flat_grid(span_x=12.0, span_y=12.0, depth=1.0, module=2.0)
+    rows = {}
+    for i, (x, y, z) in enumerate(mesh['nodes']):
+        if abs(z) < 1e-9:
+            rows.setdefault(round(y, 6), []).append(i)
+    ys = sorted(rows)
+    mid = len(ys) // 2
+    edge_a = sorted(rows[ys[mid]], key=lambda i: mesh['nodes'][i][0])
+    edge_b = sorted(rows[ys[mid + 1]], key=lambda i: mesh['nodes'][i][0])
+    widths = {}
+    for profile in (sg.BEAM_BOX, sg.BEAM_TRAPEZOID):
+        nodes, _members, apex = sg.reinforcement_beam(
+            mesh['nodes'], mesh['members'], edge_a, edge_b, depth=1.6, profile=profile)
+        widths[profile] = max(nodes[a][1] for a in apex) - min(nodes[a][1] for a in apex)
+    assert widths[sg.BEAM_BOX] > widths[sg.BEAM_TRAPEZOID]
+    base_width = abs(mesh['nodes'][edge_b[0]][1] - mesh['nodes'][edge_a[0]][1])
+    assert widths[sg.BEAM_BOX] == pytest.approx(base_width)
+
+
+def test_an_unknown_beam_profile_is_refused():
+    mesh = sg.flat_grid(span_x=8.0, span_y=8.0, depth=1.0, module=2.0)
+    ids = [i for i, (x, y, z) in enumerate(mesh['nodes']) if abs(z) < 1e-9][:6]
+    with pytest.raises(ValueError):
+        sg.reinforcement_beam(mesh['nodes'], mesh['members'], ids[:3], ids[3:],
+                              depth=1.0, profile='not a profile')
 
 
 def _two_adjacent_rows(mesh, n_stations):
@@ -1164,7 +1290,7 @@ def test_add_column_2tier_capital_fans_through_an_intermediate_ring():
     # module=3 -> row stride 9 for this 24x24 mesh)
     targets = [0, 1, 2, 9, 10, 11, 18, 19, 20]
     n0, m0 = len(mesh['nodes']), len(mesh['members'])
-    nodes, members, base, head = sg.add_column(mesh['nodes'], mesh['members'], targets,
+    nodes, members, bases, head = sg.add_column(mesh['nodes'], mesh['members'], targets,
                                                height=3.0, tiers=2)
     assert len(nodes) == n0 + 2 + 4         # base + head + 4 intermediates (4 quadrants)
     capital = [m for m in members if m.get('role') == 'capital']
@@ -1176,7 +1302,7 @@ def test_add_column_2tier_capital_fans_through_an_intermediate_ring():
     for m in members:
         m.setdefault('E', 200e3); m.setdefault('A', 20.0)
     supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
-    supports.append({'node': base, 'type': 'pin'})
+    supports.extend({'node': b, 'type': 'pin'} for b in bases)
     loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
     res, err = sm.analyze(nodes, members, loads, supports)
     assert err is None

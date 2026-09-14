@@ -190,8 +190,68 @@ def subdivide(tris, levels):
     return out
 
 
-def build_surface(nodes, panels, sites, panel_sites, target=TARGET_PATCHES):
+def lone_struts(members, panels):
+    """The rods that belong to no closed panel at all.
+
+    A space truss is mostly a surface, but a real model is not only a
+    surface: a column SHAFT runs from its foundation to the capital head and
+    closes no triangle or quad with anything, so find_cells never sees it.
+    Left out of the domain, the fill stops at the underside of the grid and
+    the columns hang below it as bare lines -- the tessellation no longer
+    covers the structure it is meant to be describing. The same applies to a
+    tie, a hanger, or any rod added by hand between two nodes.
+    """
+    used = set()
+    for p in panels:
+        used.update(p['members'])
+    return [i for i in range(len(members)) if i not in used]
+
+
+def strut_ribbons(nodes, members, indices, width, per_node=False):
+    """[(polygon, owner)] covering each lone rod with two crossed ribbons.
+
+    Two ribbons at right angles rather than one, because a single flat
+    ribbon in model space vanishes to a line as soon as the camera looks
+    along it -- and a column is exactly the thing you orbit around. Crossed,
+    the pair always presents area from any direction, at four polygons per
+    rod on a handful of rods.
+
+    `per_node` splits each rod at its midpoint so the two halves can carry
+    different owners, which is what the nodal spectra (moment, deformation)
+    need; the per-rod spectra take the rod's own index for the whole length.
+    """
+    pts = np.asarray(nodes, dtype=float)
+    out = []
+    for mi in indices:
+        m = members[mi]
+        a, b = pts[m['a']], pts[m['b']]
+        axis = b - a
+        length = float(np.linalg.norm(axis))
+        if length < 1e-9:
+            continue
+        axis = axis / length
+        # any vector not parallel to the rod gives a first perpendicular;
+        # the second is their cross product, so the two ribbons are square
+        seed = np.array([0.0, 0.0, 1.0]) if abs(axis[2]) < 0.9 \
+            else np.array([1.0, 0.0, 0.0])
+        u = np.cross(axis, seed)
+        u = u / np.linalg.norm(u) * (width / 2.0)
+        v = np.cross(axis, u / np.linalg.norm(u)) * (width / 2.0)
+        spans = (((a, b), mi),) if not per_node else \
+            (((a, (a + b) / 2.0), m['a']), (((a + b) / 2.0, b), m['b']))
+        for (p0, p1), owner in spans:
+            for w in (u, v):
+                out.append((np.array([p0 - w, p0 + w, p1 + w, p1 - w]), int(owner)))
+    return out
+
+
+def build_surface(nodes, panels, sites, panel_sites, target=TARGET_PATCHES,
+                  members=None, per_node=False):
     """[(polygon, site_index)] covering the whole fabric, in model space.
+
+    Pass `members` to have the rods that belong to no panel -- a column
+    shaft, a hand-added tie -- covered too; without it the fill stops at the
+    surface and those rods are left bare.
 
     A panel is emitted whole when the mesh is already finer than the cell
     spacing; otherwise it is subdivided and each sub-patch goes to the
@@ -199,8 +259,12 @@ def build_surface(nodes, panels, sites, panel_sites, target=TARGET_PATCHES):
     neighbours' -- which sharpens a cell boundary that falls mid-panel
     while keeping every candidate a short walk away across the surface.
     """
-    if not panels or len(sites) == 0:
+    if len(sites) == 0:
         return []
+    if not panels:
+        return (strut_ribbons(nodes, members, range(len(members)),
+                              _strut_width(nodes, panels, members), per_node)
+                if members else [])
     polys = panel_polys(nodes, panels)
     cen = panel_centroids(polys)
     adj, _ = panel_adjacency(panels)
@@ -219,7 +283,26 @@ def build_surface(nodes, panels, sites, panel_sites, target=TARGET_PATCHES):
         for tri in subdivide(fan_triangles(poly), levels):
             k = cand[int(np.argmin(((cs - tri.mean(axis=0)) ** 2).sum(axis=1)))]
             out.append((tri, k))
+    if members:
+        out += strut_ribbons(nodes, members, lone_struts(members, panels),
+                             _strut_width(nodes, panels, members), per_node)
     return out
+
+
+def _strut_width(nodes, panels, members):
+    """How thick to draw a lone rod's ribbon.
+
+    A fraction of the panel the structure is built from, so a shaft reads as
+    a member of the same structure rather than as a slab or a hair. Falls
+    back to the rod lengths themselves when there are no panels to measure.
+    """
+    polys = panel_polys(nodes, panels)
+    if polys:
+        sizes = [float(np.linalg.norm(p[1] - p[0])) for p in polys]
+    else:
+        pts = np.asarray(nodes, dtype=float)
+        sizes = [float(np.linalg.norm(pts[m['b']] - pts[m['a']])) for m in members]
+    return 0.18 * float(np.median(sizes)) if sizes else 0.1
 
 
 def cell_boundary_edges(nodes, members, panels, owners):

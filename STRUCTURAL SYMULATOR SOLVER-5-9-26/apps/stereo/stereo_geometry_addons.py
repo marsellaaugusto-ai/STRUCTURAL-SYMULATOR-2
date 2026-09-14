@@ -15,8 +15,115 @@ import math
 
 from apps.stereo.stereo_geometry_core import _add_member
 
+# How the column carries the capital down to the ground. Every style ends in
+# the SAME capital fan -- what differs is the structure between the head and
+# the foundation, which is what a real space-frame column actually varies.
+#
+#   SHAFT     one strut. The reference case: a round or square section
+#             column, the steel doing its work inside the section rather
+#             than in a lattice (the red columns and the yellow tree column
+#             in the reference photos).
+#   LATTICE   four chords on a square footprint, tied at intervals and
+#             X-braced on all four faces -- a space truss in its own right,
+#             which is how a tall or heavily loaded space-frame column is
+#             normally built, and what the lattice-portal reference photos
+#             show. It bears on FOUR feet, not one.
+#   TAPERED   the same lattice narrowing towards the ground, so the column
+#             reads as a branching tree under the grid it carries.
+#   LEGS      four inclined struts from a square footprint up to one head --
+#             the "candelabra" support: no lattice to fabricate, but the
+#             splayed feet give it the base width a single pin cannot.
+COLUMN_SHAFT = 'Single shaft'
+COLUMN_LATTICE = 'Latticed (4 chords)'
+COLUMN_TAPERED = 'Latticed, tapered'
+COLUMN_LEGS = 'Four inclined legs'
+COLUMN_STYLES = (COLUMN_SHAFT, COLUMN_LATTICE, COLUMN_TAPERED, COLUMN_LEGS)
 
-def add_column(nodes, members, target_nodes, height, tiers=1):
+# The reinforcement beam's CROSS-SECTION, as lateral positions across the two
+# base rows: 0.0 is the midline between them, +-1.0 is directly under each.
+#
+#   TRIANGLE  one chord on the midline. The lightest section for its depth
+#             and the one that needs no bottom bracing, since a single chord
+#             cannot lozenge -- but its whole bottom flange is one member, so
+#             it is the weakest of the three in lateral bending.
+#   BOX       two chords, one under each base row: a closed rectangular
+#             girder. Twice the bottom flange area and far stiffer about the
+#             vertical axis, at the cost of a second chord line and the
+#             bracing that keeps the bottom plane square.
+#   TRAPEZOID two chords at half the base width -- the compromise, and the
+#             section most often rolled for a roof girder, because the
+#             inclined side faces shed water and the narrower bottom needs
+#             less bracing than a full box.
+BEAM_TRIANGLE = 'Triangular'
+BEAM_BOX = 'Box (rectangular)'
+BEAM_TRAPEZOID = 'Trapezoidal'
+BEAM_PROFILES = (BEAM_TRIANGLE, BEAM_BOX, BEAM_TRAPEZOID)
+BEAM_PROFILE_OFFSETS = {BEAM_TRIANGLE: (0.0,),
+                        BEAM_BOX: (-1.0, 1.0),
+                        BEAM_TRAPEZOID: (-0.5, 0.5)}
+
+
+def _square_ring(nodes, cx, cy, z, half):
+    """Four new nodes on a square of side 2*half, centred on (cx, cy) at z."""
+    ring = []
+    for dx, dy in ((-half, -half), (half, -half), (half, half), (-half, half)):
+        ring.append(len(nodes))
+        nodes.append((cx + dx, cy + dy, z))
+    return ring
+
+
+def _build_shaft(nodes, members, seen, style, cx, cy, head, head_z, foot_z,
+                 width, panels):
+    """Everything between the capital head and the ground, per style.
+
+    Returns the list of FOUNDATION nodes -- four of them for every style but
+    the single shaft. A latticed or splay-footed column standing on one pin
+    is a mechanism: the lattice is rigid as a body, so a single point of
+    restraint leaves it three rotations short, which the solver reports as a
+    mechanism rather than a result. The caller pins every foot returned.
+    """
+    if style == COLUMN_SHAFT:
+        base = len(nodes)
+        nodes.append((cx, cy, foot_z))
+        _add_member(members, seen, base, head, role='column_shaft')
+        return [base]
+
+    if style == COLUMN_LEGS:
+        feet = _square_ring(nodes, cx, cy, foot_z, width / 2.0)
+        for f in feet:
+            _add_member(members, seen, f, head, role='column_shaft')
+        # The feet are tied into a closed square. Without it each leg is a
+        # two-force member between one pin and one shared head, and the four
+        # of them fold about the head like an umbrella.
+        for a, b in zip(feet, feet[1:] + feet[:1]):
+            _add_member(members, seen, a, b, role='column_tie')
+        return feet
+
+    # ── the two latticed styles ──────────────────────────────────────────
+    taper = 0.45 if style == COLUMN_TAPERED else 1.0
+    panels = max(1, int(panels))
+    levels = []
+    for k in range(panels + 1):
+        t = k / panels                       # 0 at the foot, 1 at the head
+        z = foot_z + t * (head_z - foot_z)
+        half = 0.5 * width * (taper + (1.0 - taper) * t)
+        levels.append(_square_ring(nodes, cx, cy, z, half))
+    for ring in levels:                      # horizontal ties at every level
+        for a, b in zip(ring, ring[1:] + ring[:1]):
+            _add_member(members, seen, a, b, role='column_tie')
+    for lo, hi in zip(levels, levels[1:]):   # chords and X bracing per face
+        for i in range(4):
+            j = (i + 1) % 4
+            _add_member(members, seen, lo[i], hi[i], role='column_chord')
+            _add_member(members, seen, lo[i], hi[j], role='column_web')
+            _add_member(members, seen, lo[j], hi[i], role='column_web')
+    for n in levels[-1]:                     # the top ring carries the head
+        _add_member(members, seen, n, head, role='column_chord')
+    return levels[0]
+
+
+def add_column(nodes, members, target_nodes, height, tiers=1,
+               style=COLUMN_SHAFT, capital_height=None, width=None, panels=4):
     """Add a column supporting the mesh at `target_nodes`: a vertical SHAFT
     from a new ground-level node up to a new "head" node just below the
     surface, and a CAPITAL fanning from that head out to EVERY node in
@@ -39,8 +146,24 @@ def add_column(nodes, members, target_nodes, height, tiers=1):
     target_nodes : >= 3 existing node indices the capital attaches to
                    (e.g. every node of one or a few grid modules, selected
                    with a lasso box in the UI).
-    height       : shaft length (m), from the new base node up to the head
+    height       : shaft length (m), from the foundation up to the head
                    (tiers=1) or the intermediate ring (tiers=2).
+    style        : one of COLUMN_STYLES -- what carries the head down to the
+                   ground. See that table for what each one is and why it
+                   bears on the number of feet it does.
+    capital_height : how far the head sits BELOW the attachment surface, and
+                   so how deep the capital fan is (m). None derives the old
+                   default, 0.3 x the shaft height, which is what every
+                   caller got before this was adjustable. Setting it is the
+                   difference between a shallow, wide-spreading capital and
+                   a deep, steep one, and it changes the load path: a
+                   shallower capital drives more force into the capital legs
+                   and less into the grid's own chords.
+    width        : across-flats of a latticed or splay-footed column (m).
+                   None takes a fifth of the shaft height, which keeps the
+                   proportions of the reference photos at any scale.
+    panels       : how many horizontal ties a latticed column is divided
+                   into over its height.
     tiers        : 1 (default) -- a single inverted-pyramid module: the
                    head fans DIRECTLY to every node in `target_nodes`, the
                    plain capital under one module's worth of load.
@@ -64,8 +187,12 @@ def add_column(nodes, members, target_nodes, height, tiers=1):
                    fixed by ONE tie between each pair of neighbouring
                    intermediate nodes.
 
-    Returns (nodes, members, base_node, head_node) -- new lists, the
-    mesh's own node/member lists are not mutated in place.
+    Returns (nodes, members, base_nodes, head_node) -- new lists, the mesh's
+    own node/member lists are not mutated in place. `base_nodes` is a LIST
+    because only the single-shaft style stands on one point: a latticed or
+    splay-footed column is rigid as a body, so pinning one node of it leaves
+    three rotations free and the solver reports a mechanism. Every foot
+    returned has to be restrained.
     """
     target_nodes = list(target_nodes)
     if len(target_nodes) < 3:
@@ -78,6 +205,13 @@ def add_column(nodes, members, target_nodes, height, tiers=1):
     if tiers not in (1, 2):
         raise ValueError('tiers must be 1 or 2.')
 
+    if style not in COLUMN_STYLES:
+        raise ValueError(f'unknown column style {style!r}.')
+    if capital_height is not None and capital_height <= 0:
+        raise ValueError('capital height must be positive.')
+    if width is not None and width <= 0:
+        raise ValueError('column width must be positive.')
+
     cx = sum(nodes[j][0] for j in target_nodes) / len(target_nodes)
     cy = sum(nodes[j][1] for j in target_nodes) / len(target_nodes)
     cz = sum(nodes[j][2] for j in target_nodes) / len(target_nodes)
@@ -87,21 +221,22 @@ def add_column(nodes, members, target_nodes, height, tiers=1):
     seen = {(min(m['a'], m['b']), max(m['a'], m['b'])) for m in members}
 
     # The head sits a short distance below the (average) attachment
-    # surface -- never AT it, or the "shaft" would be zero-length -- so
-    # the capital legs are genuinely inclined -- legs coplanar with the
-    # attachment nodes would carry no vertical component at all.
-    head_drop = min(0.3 * height, max(0.3, height))
+    # surface -- never AT it, or the capital legs would be coplanar with the
+    # nodes they reach and carry no vertical component at all.
+    head_drop = capital_height if capital_height is not None \
+        else min(0.3 * height, max(0.3, height))
     head = len(nodes)
     nodes.append((cx, cy, cz - head_drop))
-    base = len(nodes)
-    nodes.append((cx, cy, cz - head_drop - height))
-
-    _add_member(members, seen, base, head, role='column_shaft')
+    foot_z = cz - head_drop - height
+    bases = _build_shaft(nodes, members, seen, style, cx, cy, head,
+                         cz - head_drop, foot_z,
+                         width if width is not None else max(0.2 * height, 0.4),
+                         panels)
 
     if tiers == 1:
         for j in target_nodes:
             _add_member(members, seen, head, j, role='capital')
-        return nodes, members, base, head
+        return nodes, members, bases, head
 
     buckets = {}
     for j in target_nodes:
@@ -135,11 +270,11 @@ def add_column(nodes, members, target_nodes, height, tiers=1):
     for a, b in zip(order, order[1:] + order[:1]):
         _add_member(members, seen, inter_by_q[a], inter_by_q[b], role='capital_ring')
 
-    return nodes, members, base, head
+    return nodes, members, bases, head
 
 
 def reinforcement_beam(nodes, members, edge_a, edge_b, depth, direction=(0.0, 0.0, -1.0),
-                       tiers=1):
+                       tiers=1, profile=BEAM_TRIANGLE):
     """Attach a linear space-truss reinforcement beam to TWO existing,
     parallel rows of nodes (`edge_a`, `edge_b` -- same length, each in
     order along the row, e.g. two adjacent bottom-chord rows of a
@@ -186,8 +321,17 @@ def reinforcement_beam(nodes, members, edge_a, edge_b, depth, direction=(0.0, 0.
                      consecutive tiers only ADD stiffness on top of that,
                      never substitute for a tier's own bracing.
 
+    profile        : the CROSS-SECTION, one of BEAM_PROFILES -- see that
+                     table for what each is and what it trades. Triangular
+                     puts one chord on the midline; the other two put a pair
+                     of chords out towards the base rows, which roughly
+                     doubles the bottom flange and stiffens the girder about
+                     its vertical axis, at the cost of having to brace the
+                     bottom plane against lozenging.
+
     Returns (nodes, members, apex_node_ids) -- apex_node_ids lists every
-    tier's nodes in order (tier 1 first, closest to the base rows).
+    tier's nodes in order (tier 1 first, closest to the base rows), and
+    within a tier every offset chord in turn.
     """
     edge_a = list(edge_a)
     edge_b = list(edge_b)
@@ -211,40 +355,69 @@ def reinforcement_beam(nodes, members, edge_a, edge_b, depth, direction=(0.0, 0.
     members = list(members)
     seen = {(min(m['a'], m['b']), max(m['a'], m['b'])) for m in members}
 
+    if profile not in BEAM_PROFILE_OFFSETS:
+        raise ValueError(f'unknown beam profile {profile!r}.')
+    offsets = BEAM_PROFILE_OFFSETS[profile]
+
     n = len(edge_a)
+    # apex_tiers[t] is a list of ROWS, one per offset chord in the section.
     apex_tiers = []
     for t in range(1, tiers + 1):
         d_t = depth * t / tiers
-        apex = []
-        for k in range(n):
-            ax, ay, az = nodes[edge_a[k]]
-            bx, by, bz = nodes[edge_b[k]]
-            mx, my, mz = (ax + bx) / 2.0, (ay + by) / 2.0, (az + bz) / 2.0
-            apex.append(len(nodes))
-            nodes.append((mx + dx * d_t, my + dy * d_t, mz + dz * d_t))
-        apex_tiers.append(apex)
+        rows = []
+        for f in offsets:
+            row = []
+            for k in range(n):
+                ax, ay, az = nodes[edge_a[k]]
+                bx, by, bz = nodes[edge_b[k]]
+                mx, my, mz = (ax + bx) / 2.0, (ay + by) / 2.0, (az + bz) / 2.0
+                # f runs from the midline (0) out to either base row (+-1)
+                px = mx + f * (bx - ax) / 2.0 + dx * d_t
+                py = my + f * (by - ay) / 2.0 + dy * d_t
+                pz = mz + f * (bz - az) / 2.0 + dz * d_t
+                row.append(len(nodes))
+                nodes.append((px, py, pz))
+            rows.append(row)
+        apex_tiers.append(rows)
 
-    for apex in apex_tiers:
-        for k in range(n):
-            _add_member(members, seen, edge_a[k], apex[k], role='reinf_web')
-            _add_member(members, seen, edge_b[k], apex[k], role='reinf_web')
+    for rows in apex_tiers:
+        for row in rows:
+            for k in range(n):
+                # Every offset node ties to BOTH base rows, not just the one
+                # above it. On a box section the near tie alone is a plain
+                # vertical, and the cross-section is then a four-bar linkage
+                # that shears flat; the far tie is the diagonal that squares
+                # it.
+                _add_member(members, seen, edge_a[k], row[k], role='reinf_web')
+                _add_member(members, seen, edge_b[k], row[k], role='reinf_web')
+            for k in range(n - 1):
+                _add_member(members, seen, row[k], row[k + 1], role='reinf_chord')
+                # crossed bracing both ways per bay -- needed to stop the
+                # whole chain from twisting about the base's own axis, the
+                # same "spin" mechanism the single-row version needed
+                # both-direction X-bracing to kill.
+                _add_member(members, seen, edge_a[k], row[k + 1], role='reinf_web')
+                _add_member(members, seen, row[k], edge_a[k + 1], role='reinf_web')
+                _add_member(members, seen, edge_b[k], row[k + 1], role='reinf_web')
+                _add_member(members, seen, row[k], edge_b[k + 1], role='reinf_web')
         for k in range(n - 1):
             _add_member(members, seen, edge_a[k], edge_a[k + 1], role='reinf_chord')
             _add_member(members, seen, edge_b[k], edge_b[k + 1], role='reinf_chord')
-            _add_member(members, seen, apex[k], apex[k + 1], role='reinf_chord')
-            # crossed bracing both ways per bay -- needed to stop the
-            # whole apex chain from twisting about the base's own axis,
-            # the same "spin" mechanism the single-row version needed
-            # both-direction X-bracing to kill.
-            _add_member(members, seen, edge_a[k], apex[k + 1], role='reinf_web')
-            _add_member(members, seen, apex[k], edge_a[k + 1], role='reinf_web')
-            _add_member(members, seen, edge_b[k], apex[k + 1], role='reinf_web')
-            _add_member(members, seen, apex[k], edge_b[k + 1], role='reinf_web')
+        # A section with two bottom chords has a bottom PLANE, and a plane of
+        # parallelograms lozenges. Tie the pair at every station and brace
+        # each bay of it.
+        for lo, hi in zip(rows, rows[1:]):
+            for k in range(n):
+                _add_member(members, seen, lo[k], hi[k], role='reinf_web')
+            for k in range(n - 1):
+                _add_member(members, seen, lo[k], hi[k + 1], role='reinf_web')
+                _add_member(members, seen, hi[k], lo[k + 1], role='reinf_web')
 
     # tie consecutive tiers together station by station -- pure ADDED
     # thickness/stiffness; each tier is already independently rigid above.
     for t in range(len(apex_tiers) - 1):
-        for k in range(n):
-            _add_member(members, seen, apex_tiers[t][k], apex_tiers[t + 1][k], role='reinf_web')
+        for lo_row, hi_row in zip(apex_tiers[t], apex_tiers[t + 1]):
+            for k in range(n):
+                _add_member(members, seen, lo_row[k], hi_row[k], role='reinf_web')
 
-    return nodes, members, [a for tier in apex_tiers for a in tier]
+    return nodes, members, [a for tier in apex_tiers for row in tier for a in row]

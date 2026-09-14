@@ -2696,6 +2696,25 @@ def test_every_voronoi_view_and_domain_draws(app, view, domain):
     assert app.canvas.find_withtag('voronoi_face'), f'{view}/{domain} drew nothing'
 
 
+def test_skin_and_cells_are_stippled_so_the_rods_stay_visible(app):
+    """Both wrap the OUTSIDE of the structure, so a solid fill hides the far
+    half of the model -- back rods, far supports, load arrows. The Section
+    plane is the exception: it is a cut face, and a see-through cut does not
+    read as one."""
+    app._analyze()
+    app.faces_mode.set(FILL_VORONOI)
+    app._on_faces_mode_change()
+    for view, expected in ((sv3.VIEW_SKIN, 'gray50'),
+                           (sv3.VIEW_CELLS, 'gray50'),
+                           (sv3.VIEW_SECTION, '')):
+        app.voronoi_view.set(view)
+        app._draw()
+        items = app.canvas.find_withtag('voronoi_face')
+        assert items, f'{view} drew nothing'
+        got = {app.canvas.itemcget(i, 'stipple') for i in items}
+        assert got == {expected}, f'{view} stipple {got}, expected {expected!r}'
+
+
 def test_voronoi_works_for_every_colour_system(app):
     app.sec_conn.set('rigid')
     app._apply_sections()

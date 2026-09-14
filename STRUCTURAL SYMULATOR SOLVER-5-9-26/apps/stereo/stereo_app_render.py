@@ -705,7 +705,13 @@ class StereoRenderMixin:
             drawn.append((depth / max(1, len(poly)), pts, owner))
         drawn.sort(key=lambda t: -t[0])
 
-        stipple = 'gray50' if self.voronoi_view.get() == sv3.VIEW_CELLS else ''
+        # Skin and Cells are both drawn STIPPLED: they wrap the outside of
+        # the structure, so a solid fill hides everything on the far side of
+        # it -- the back rods, the far supports, the load arrows. A 50%
+        # stipple keeps the fill readable as a field while leaving the
+        # structure visible through it. The Section plane stays solid: it is
+        # a cut FACE, and a cut you can see through no longer reads as one.
+        stipple = '' if self.voronoi_view.get() == sv3.VIEW_SECTION else 'gray50'
         for _depth, pts, owner in drawn:
             c.create_polygon(*pts, fill=colours[owner], outline='',
                              stipple=stipple, tags='voronoi_face')

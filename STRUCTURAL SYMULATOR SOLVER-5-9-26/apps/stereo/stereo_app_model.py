@@ -165,6 +165,11 @@ class StereoModelMixin:
         self.members = mesh['members']
         self._support_candidates = mesh['support_candidates']
         self._load_nodes = mesh.get('load_nodes', {})
+        # The settings that produced this mesh, if it came from an example
+        # or from the wizard itself -- what the Custom Surface Wizard opens
+        # pre-filled with. Cleared for a mesh that carries none, so the
+        # wizard never shows the previous model's surfaces.
+        self._wizard_recipe = mesh.get('wizard')
         # The Voronoi band's radius is a length in MODEL units, so a default
         # carried over from a 9 m grid would be meaningless on a 40 m bridge.
         # Re-derived from the new mesh's own rod spacing instead.

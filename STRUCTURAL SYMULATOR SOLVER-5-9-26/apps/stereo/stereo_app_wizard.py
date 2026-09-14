@@ -10,10 +10,12 @@ stereo_geometry_custom_surface.py -- this module is only the dialog.
 """
 import math
 import tkinter as tk
+from tkinter import ttk
 
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import expr_math as em
 from apps.stereo.stereo_app_constants import BG
+from apps.stereo import stereo_app_wizard_keypad as keypad
 
 
 class StereoWizardMixin:
@@ -32,7 +34,36 @@ class StereoWizardMixin:
         """
         win = tk.Toplevel(self.root)
         win.title('Custom Surface Wizard')
-        win.geometry('660x800')
+        win.geometry('680x800')
+
+        # Everything is built into a SCROLLING body rather than straight into
+        # the Toplevel. In two-surface mode the dialog carries two surface
+        # panels with a keypad each and needs 829px of height -- past the
+        # window, which left the Generate button off the bottom edge with no
+        # scrollbar and no way to reach it. The window still sizes itself to
+        # its content where the screen allows; the scrollbar is what makes
+        # the dialog finishable when it does not.
+        body_canvas = tk.Canvas(win, bg=BG, highlightthickness=0)
+        body_sb = tk.Scrollbar(win, orient='vertical', command=body_canvas.yview)
+        body_canvas.configure(yscrollcommand=body_sb.set)
+        body_sb.pack(side='right', fill='y')
+        body_canvas.pack(side='left', fill='both', expand=True)
+        body = tk.Frame(body_canvas, bg=BG)
+        body_window = body_canvas.create_window((0, 0), window=body, anchor='nw')
+
+        def _fit_body(_event=None):
+            body_canvas.configure(scrollregion=body_canvas.bbox('all'))
+            body_canvas.itemconfigure(body_window, width=body_canvas.winfo_width())
+
+        body.bind('<Configure>', _fit_body)
+        body_canvas.bind('<Configure>', _fit_body)
+        for seq in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
+            body_canvas.bind_all(seq, lambda e: body_canvas.yview_scroll(
+                -1 if getattr(e, 'delta', 0) > 0 or e.num == 4 else 1, 'units')
+                if body_canvas.winfo_exists() else None)
+        win.bind('<Destroy>', lambda e: [body_canvas.unbind_all(sq) for sq in
+                                         ('<MouseWheel>', '<Button-4>', '<Button-5>')]
+                 if e.widget is win else None)
 
         # Every tk.*Var below is created with master=win explicitly, not
         # left to default: a StringVar/IntVar/etc. with no master binds
@@ -57,6 +88,22 @@ class StereoWizardMixin:
                 w.icursor(w.index(tk.INSERT) - cursor_back)
             w.focus_set()
 
+        def backspace():
+            """Delete the character before the caret, like the ⌫ key on
+            GeoGebra's own keyboard. Without it the palette can only ever
+            add, and a mistyped function has to be fixed with the physical
+            keyboard -- which is the workflow the palette exists to avoid."""
+            w = active_entry['widget']
+            if w is None:
+                return
+            if w.selection_present():
+                w.delete('sel.first', 'sel.last')
+            else:
+                at = w.index(tk.INSERT)
+                if at > 0:
+                    w.delete(at - 1, at)
+            w.focus_set()
+
         def make_expr_row(parent, label_text, var):
             row = tk.Frame(parent, bg=BG)
             row.pack(fill='x', padx=6, pady=2)
@@ -68,28 +115,33 @@ class StereoWizardMixin:
             return entry
 
         def make_palette(parent):
+            """GeoGebra's own keyboard, tab for tab.
+
+            The keys carry real notation -- √, π, x², |x|, × -- and insert the
+            ASCII expr_math compiles, so the expression reads like the
+            mathematics while staying inside the parser's whitelist. See
+            stereo_app_wizard_keypad for the layout and for why GeoGebra's
+            Greek and logic tabs are not reproduced.
+            """
             box = tk.LabelFrame(parent, text='Insert (into the last-focused field above)',
                                 bg=BG, font=('Helvetica', 8, 'bold'))
             box.pack(fill='x', padx=6, pady=(2, 6))
-            buttons = [
-                ('x', 'x', 0), ('y', 'y', 0), ('u', 'u', 0), ('v', 'v', 0),
-                ('pi', 'pi', 0), ('e', 'e', 0),
-                ('+', '+', 0), ('-', '-', 0), ('*', '*', 0), ('/', '/', 0), ('^', '^', 0),
-                ('(', '(', 0), (')', ')', 0),
-                ('sin', 'sin()', 1), ('cos', 'cos()', 1), ('tan', 'tan()', 1),
-                ('sqrt', 'sqrt()', 1), ('exp', 'exp()', 1), ('log', 'log()', 1),
-                ('abs', 'abs()', 1),
-                ('atan2', 'atan2(,)', 2), ('min', 'min(,)', 2),
-                ('max', 'max(,)', 2), ('hypot', 'hypot(,)', 2),
-            ]
-            row = None
-            for idx, (label, text, back) in enumerate(buttons):
-                if idx % 8 == 0:
-                    row = tk.Frame(box, bg=BG)
+            book = ttk.Notebook(box)
+            book.pack(fill='x', padx=3, pady=3)
+            for tab_name, rows in keypad.TABS:
+                page = tk.Frame(book, bg=BG)
+                book.add(page, text=tab_name)
+                for keys in rows:
+                    row = tk.Frame(page, bg=BG)
                     row.pack(anchor='w')
-                tk.Button(row, text=label, width=5, font=('Helvetica', 8),
-                         command=lambda t=text, b=back: insert_token(t, b)
-                        ).pack(side='left', padx=1, pady=1)
+                    for label, text, back in keys:
+                        if text is None:          # the ⌫ key deletes, never inserts
+                            cmd = backspace
+                        else:
+                            cmd = (lambda t=text, b=back: insert_token(t, b))
+                        tk.Button(row, text=label, width=5,
+                                 font=('DejaVu Sans', 9), command=cmd
+                                 ).pack(side='left', padx=1, pady=1)
 
         def make_surface_panel(parent, title):
             """One surface's own definition block: height-field or
@@ -142,11 +194,23 @@ class StereoWizardMixin:
                 if surf_type.get() == 'height':
                     return sg.make_height_field_surface(z_var.get())
                 return sg.make_parametric_surface(x_var.get(), y_var.get(), zp_var.get())
-            return build
+
+            def fill(kind, expressions):
+                """Put an example's own surface back into these fields."""
+                surf_type.set('height' if kind == 'height' else 'param')
+                if kind == 'height':
+                    z_var.set(expressions.get('z', '0'))
+                else:
+                    x_var.set(expressions.get('x', 'u'))
+                    y_var.set(expressions.get('y', 'v'))
+                    zp_var.set(expressions.get('z', '0'))
+                toggle()
+
+            return build, fill
 
         # ── mode: one surface, or two connected as a top/bottom double layer ──
         mode_var = tk.StringVar(master=win, value='single')
-        mode_row = tk.Frame(win, bg=BG)
+        mode_row = tk.Frame(body, bg=BG)
         mode_row.pack(fill='x', padx=6, pady=(6, 2))
         tk.Radiobutton(mode_row, text='Single surface', value='single', variable=mode_var,
                       bg=BG, command=lambda: on_mode_change()).pack(side='left', padx=(0, 12))
@@ -154,17 +218,18 @@ class StereoWizardMixin:
                       variable=mode_var, bg=BG, command=lambda: on_mode_change()
                      ).pack(side='left')
 
-        surfaces_frame = tk.Frame(win, bg=BG)
+        surfaces_frame = tk.Frame(body, bg=BG)
         surfaces_frame.pack(fill='x')
         single_frame = tk.Frame(surfaces_frame, bg=BG)
-        single_build = make_surface_panel(single_frame, 'Surface')
+        single_build, single_fill = make_surface_panel(single_frame, 'Surface')
         between_frame = tk.Frame(surfaces_frame, bg=BG)
-        top_build = make_surface_panel(between_frame, 'Top surface')
-        bottom_build = make_surface_panel(between_frame, 'Bottom surface')
+        top_build, top_fill = make_surface_panel(between_frame, 'Top surface')
+        bottom_build, bottom_fill = make_surface_panel(between_frame,
+                                                       'Bottom surface')
         single_frame.pack(fill='x')
 
         # ── domain ──────────────────────────────────────────────────────────
-        domain_box = tk.LabelFrame(win, text='Domain', bg=BG, font=('Helvetica', 9, 'bold'))
+        domain_box = tk.LabelFrame(body, text='Domain', bg=BG, font=('Helvetica', 9, 'bold'))
         domain_box.pack(fill='x', padx=6, pady=4)
         coord_var = tk.StringVar(master=win, value='cartesian')
         coord_row = tk.Frame(domain_box, bg=BG)
@@ -229,7 +294,7 @@ class StereoWizardMixin:
         on_coord_change()
 
         # ── pattern ─────────────────────────────────────────────────────────
-        pattern_box = tk.LabelFrame(win, text='Module pattern', bg=BG,
+        pattern_box = tk.LabelFrame(body, text='Module pattern', bg=BG,
                                     font=('Helvetica', 9, 'bold'))
         pattern_box.pack(fill='x', padx=6, pady=4)
         pattern_var = tk.StringVar(master=win, value='square')
@@ -239,7 +304,7 @@ class StereoWizardMixin:
                           bg=BG, font=('Helvetica', 9)).pack(side='left', padx=6)
 
         # ── module (single-surface mode only) ──────────────────────────────
-        module_box = tk.LabelFrame(win, text='Module', bg=BG, font=('Helvetica', 9, 'bold'))
+        module_box = tk.LabelFrame(body, text='Module', bg=BG, font=('Helvetica', 9, 'bold'))
         module_var = tk.StringVar(master=win, value='2d')
         mrow = tk.Frame(module_box, bg=BG)
         mrow.pack(fill='x', padx=6, pady=2)
@@ -283,8 +348,13 @@ class StereoWizardMixin:
                 between_frame.pack(fill='x')
                 module_box.pack_forget()
 
+        note_var = tk.StringVar(master=win, value='')
+        tk.Label(body, textvariable=note_var, bg=BG, fg='#2f6f4f', wraplength=620,
+                justify='left', font=('Helvetica', 8, 'italic')
+                ).pack(fill='x', padx=6, pady=(4, 0))
+
         status_var = tk.StringVar(master=win, value='')
-        status_label = tk.Label(win, textvariable=status_var, bg=BG, fg='#a3241a',
+        status_label = tk.Label(body, textvariable=status_var, bg=BG, fg='#a3241a',
                                 wraplength=620, justify='left', font=('Helvetica', 9))
         status_label.pack(fill='x', padx=6, pady=(2, 4))
 
@@ -311,5 +381,62 @@ class StereoWizardMixin:
             self._load_mesh(mesh, push_undo=True, undo_label='custom surface wizard')
             win.destroy()
 
-        tk.Button(win, text='Generate', font=('Helvetica', 9, 'bold'), bg='#dff0d8',
+        def load_recipe(recipe):
+            """Show the settings that produced the model currently loaded.
+
+            Loading an example is the quickest way to see what this tab can
+            build, and the next question is always "how would I make one like
+            it?" -- so the wizard opens already filled in with the example's
+            own surfaces and node configuration.
+
+            Several examples are NOT wizard surfaces: they come straight from
+            a stereo_geometry generator, and no expression in these fields
+            would reproduce them. Those carry only a note naming the generator
+            and its arguments, and the fields are left at their defaults
+            rather than filled with something that would quietly generate a
+            different structure.
+            """
+            if not recipe:
+                return
+            note_var.set(recipe.get('note', ''))
+            if not recipe.get('mode'):
+                return
+            mode_var.set(recipe['mode'])
+            on_mode_change()
+            exprs = {k: recipe[k] for k in ('x', 'y', 'z') if k in recipe}
+            kind = recipe.get('kind', 'height')
+            if recipe['mode'] == 'single':
+                single_fill(kind, exprs)
+            else:
+                top_fill(kind, exprs)
+                bottom_fill(recipe.get('bottom_kind', 'height'),
+                            {'z': recipe.get('bottom_z', '0')})
+            coord_var.set(recipe.get('coord', 'cartesian'))
+            on_coord_change()
+            pattern_var.set(recipe.get('pattern', 'square'))
+            p_range = recipe.get('p_range', (-5.0, 5.0))
+            q_range = recipe.get('q_range', (-5.0, 5.0))
+            p0_var.set(p_range[0]); p1_var.set(p_range[1])
+            q0_var.set(q_range[0]); q1_var.set(q_range[1])
+            n1_var.set(int(recipe.get('n1', 8)))
+            n2_var.set(int(recipe.get('n2', 8)))
+            module_var.set(recipe.get('module', '2d'))
+            depth_var.set(float(recipe.get('depth', 0.5)))
+            side_var.set(recipe.get('side', 'top'))
+            on_module_change()
+
+        load_recipe(getattr(self, '_wizard_recipe', None))
+
+        tk.Button(body, text='Generate', font=('Helvetica', 9, 'bold'), bg='#dff0d8',
                  command=on_generate).pack(pady=8)
+
+        # Grow to fit rather than clipping: two surfaces with a keypad each
+        # need more height than one, and the mode is switchable at any time.
+        def _size_to_content(_event=None):
+            win.update_idletasks()
+            need = body.winfo_reqheight() + 16
+            room = int(win.winfo_screenheight() * 0.92)
+            win.geometry(f'{max(680, body.winfo_reqwidth() + 24)}x{min(need, room)}')
+
+        _size_to_content()
+        mode_var.trace_add('write', lambda *_a: _size_to_content())

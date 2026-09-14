@@ -122,6 +122,8 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         self._voronoi_cache = None
         self._voronoi_note = ''
         self._voronoi_cut_last = 1.0   # last section thickness that was a real length
+        self._wizard_recipe = None     # the Custom Surface Wizard settings
+                                        # behind the model now loaded, if any
 
         self.azimuth = 35.0
         self.elevation = 22.0

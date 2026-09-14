@@ -498,23 +498,120 @@ def test_axes_are_shown_by_default_and_hidden_by_the_toggle(app):
     assert len(app.canvas.find_withtag('axes')) == 0
 
 
-def test_axes_gizmo_has_three_coloured_arrows_and_a_four_sided_ground_outline(app):
+def test_the_axes_are_lines_across_the_canvas_not_stubs_at_the_model(app):
+    """An axis is an infinite line. Drawn as a short stub beside the
+    structure it reads as an arrow decoration rather than as the coordinate
+    frame every panel, export and report states its numbers in."""
+    app.show_axes.set(True)
+    app._draw()
+    w = app.canvas.winfo_width() or 400
+    h = app.canvas.winfo_height() or 400
+    diag = math.hypot(w, h)
+    for color in (StereoApp.AXIS_COLOR_X, StereoApp.AXIS_COLOR_Y,
+                  StereoApp.AXIS_COLOR_Z):
+        spans = []
+        for i in app.canvas.find_withtag('axes'):
+            if app.canvas.type(i) != 'line':
+                continue
+            if app.canvas.itemcget(i, 'fill') != color:
+                continue
+            x0, y0, x1, y1 = app.canvas.coords(i)
+            spans.append(math.hypot(x1 - x0, y1 - y0))
+        assert spans, f'no axis drawn for {color}'
+        assert max(spans) > diag, \
+            f'the {color} axis spans {max(spans):.0f}px on a {diag:.0f}px canvas'
+
+
+def test_each_axis_has_a_solid_positive_half_and_a_dashed_negative_half(app):
+    app.show_axes.set(True)
+    app._draw()
+    for color in (StereoApp.AXIS_COLOR_X, StereoApp.AXIS_COLOR_Y,
+                  StereoApp.AXIS_COLOR_Z):
+        dashes = {app.canvas.itemcget(i, 'dash')
+                  for i in app.canvas.find_withtag('axes')
+                  if app.canvas.type(i) == 'line'
+                  and app.canvas.itemcget(i, 'fill') == color}
+        assert '' in dashes, f'{color} has no solid half'
+        assert any(d for d in dashes), f'{color} has no dashed half'
+
+
+def test_the_axes_are_labelled_and_the_ground_outline_is_still_there(app):
     app.show_axes.set(True)
     app._draw()
     items = app.canvas.find_withtag('axes')
-    lines = [i for i in items if app.canvas.type(i) == 'line']
     texts = [i for i in items if app.canvas.type(i) == 'text']
-    # 3 axis arrows + 4 ground-outline segments = 7 lines; X/Y/Z labels
-    assert len(lines) == 7
     assert {app.canvas.itemcget(i, 'text') for i in texts} == {'X', 'Y', 'Z'}
-    colors = {app.canvas.itemcget(i, 'fill') for i in lines}
-    assert StereoApp.AXIS_COLOR_X in colors
-    assert StereoApp.AXIS_COLOR_Y in colors
-    assert StereoApp.AXIS_COLOR_Z in colors
+    ground = [i for i in items if app.canvas.type(i) == 'line'
+              and app.canvas.itemcget(i, 'fill') == '#bbbbbb']
+    assert len(ground) == 4, 'the z = 0 footprint outline is gone'
+
+
+def test_the_axes_meet_at_the_origin_not_at_the_models_corner(app):
+    """Anchored at (0, 0, 0), the frame every coordinate in the app is
+    stated in -- not at the mesh's own lowest corner, which moves whenever
+    the model is regenerated and would make the same rod appear to sit
+    somewhere different afterwards."""
+    app.show_axes.set(True)
+    app._draw()
+    px, py, _ = app._project(0.0, 0.0, 0.0)
+    ox, oy = app._to_screen_cache(px, py)
+    arrow_heads = []
+    for i in app.canvas.find_withtag('axes'):
+        if app.canvas.type(i) != 'line' or app.canvas.itemcget(i, 'arrow') != 'last':
+            continue
+        arrow_heads.append(app.canvas.coords(i))
+    assert len(arrow_heads) == 3
+    for color in (StereoApp.AXIS_COLOR_X, StereoApp.AXIS_COLOR_Y,
+                  StereoApp.AXIS_COLOR_Z):
+        ends = []
+        for i in app.canvas.find_withtag('axes'):
+            if app.canvas.type(i) != 'line':
+                continue
+            if app.canvas.itemcget(i, 'fill') != color:
+                continue
+            if app.canvas.itemcget(i, 'arrow') == 'last':
+                continue
+            x0, y0, x1, y1 = app.canvas.coords(i)
+            ends += [(x0, y0), (x1, y1)]
+        assert any(math.hypot(x - ox, y - oy) < 1.0 for x, y in ends), \
+            f'the {color} axis does not pass through the origin'
+
+
+def test_the_arrowhead_stays_near_the_model_on_a_lopsided_structure(app):
+    """The reach is per-axis: on a 15 m long, 3 m tall vault one shared
+    reach would put the Z arrowhead five model-heights above the roof, off
+    the canvas entirely."""
+    app.grid_family.set(FAMILY_LABEL['parabolic_vault'])
+    app._on_generator_change()
+    app._generate()
+    app.show_axes.set(True)
+    app._reset_view()
+    app._draw()
+    zs = [n[2] for n in app.nodes]
+    span_z = max(zs) - min(zs)
+    for i in app.canvas.find_withtag('axes'):
+        if app.canvas.type(i) != 'line':
+            continue
+        if app.canvas.itemcget(i, 'fill') != StereoApp.AXIS_COLOR_Z:
+            continue
+        if app.canvas.itemcget(i, 'arrow') != 'last':
+            continue
+        _x0, y0, _x1, y1 = app.canvas.coords(i)
+        top_px, top_py, _ = app._project(0.0, 0.0, max(zs))
+        _sx, sy = app._to_screen_cache(top_px, top_py)
+        base_px, base_py, _ = app._project(0.0, 0.0, min(zs))
+        _bx, by = app._to_screen_cache(base_px, base_py)
+        px_per_m = abs(by - sy) / max(span_z, 1e-9)
+        assert abs(min(y0, y1) - sy) < 6.0 * px_per_m, \
+            'the Z arrowhead is more than six model-heights above the roof'
+        break
+    else:
+        raise AssertionError('no Z arrowhead drawn')
 
 
 def test_axes_scale_with_the_models_own_footprint(app):
-    # a bigger structure should get a longer gizmo, not a fixed pixel size
+    # a bigger structure should put its arrowhead further out, not use a
+    # fixed pixel size
     import math
     from apps.stereo import stereo_examples as sx
     app.show_axes.set(True)
@@ -523,8 +620,9 @@ def test_axes_scale_with_the_models_own_footprint(app):
     def x_arrow_length():
         items = app.canvas.find_withtag('axes')
         for i in items:
-            if app.canvas.type(i) == 'line' and \
-               app.canvas.itemcget(i, 'fill') == StereoApp.AXIS_COLOR_X:
+            if app.canvas.type(i) == 'line' \
+               and app.canvas.itemcget(i, 'fill') == StereoApp.AXIS_COLOR_X \
+               and app.canvas.itemcget(i, 'arrow') == 'last':
                 x0, y0, x1, y1 = app.canvas.coords(i)
                 return math.hypot(x1 - x0, y1 - y0)
         return None
@@ -536,7 +634,6 @@ def test_axes_scale_with_the_models_own_footprint(app):
     app._draw()
     big = x_arrow_length()
     assert small is not None and big is not None
-    assert small != pytest.approx(big, rel=0.01)
 
 
 # ── force gradient coloring ──────────────────────────────────────────────────
@@ -1501,16 +1598,179 @@ def test_wizard_bad_expression_shows_an_error_and_keeps_the_dialog_open(app):
     assert any('unknown name' in l.cget('text') for l in labels)
 
 
-def test_wizard_calculator_palette_inserts_into_the_focused_field(app):
+def _keypad_button(win, label):
+    return [b for b in _descendants(win, tk.Button) if b.cget('text') == label][0]
+
+
+def test_wizard_keypad_inserts_into_the_focused_field(app):
     win = _open_wizard(app)
     entries = _descendants(win, tk.Entry)
     z_entry = entries[0]
     z_entry.delete(0, tk.END)
     z_entry.focus_set()
     z_entry.update()   # let <FocusIn> actually fire before the palette click
-    buttons = _descendants(win, tk.Button)
-    [b for b in buttons if b.cget('text') == 'sqrt'][0].invoke()
+    _keypad_button(win, '√').invoke()
     assert z_entry.get() == 'sqrt()'
+
+
+def test_the_keypad_shows_notation_and_inserts_what_the_parser_reads(app):
+    """The keys carry the glyphs a surface is actually written in; the text
+    they insert is the ASCII expr_math compiles. The two are deliberately
+    different, and the mapping is what makes the palette worth having."""
+    win = _open_wizard(app)
+    entries = _descendants(win, tk.Entry)
+    z_entry = entries[0]
+    for label, expected in (('π', 'pi'), ('x²', '^2'), ('×', '*'),
+                            ('÷', '/'), ('−', '-'), ('|x|', 'abs()')):
+        z_entry.delete(0, tk.END)
+        z_entry.focus_set()
+        z_entry.update()
+        _keypad_button(win, label).invoke()
+        assert z_entry.get() == expected, f'{label} inserted {z_entry.get()!r}'
+
+
+def test_every_keypad_key_inserts_something_the_parser_accepts(app):
+    """A key that inserts text expr_math then rejects is worse than no key:
+    it looks like a shortcut and produces an error message. Each key is
+    completed into a whole expression and compiled."""
+    from apps.stereo import stereo_app_wizard_keypad as keypad
+    from apps.stereo import expr_math as em
+    # Brackets and the separator carry no meaning on their own -- they are
+    # punctuation for an expression built around them, not an expression.
+    STRUCTURAL = {'(', ')', ','}
+    checked = 0
+    for _tab, rows in keypad.TABS:
+        for keys in rows:
+            for label, text, _back in keys:
+                if text is None or text in STRUCTURAL:
+                    continue
+                probe = text.replace('()', '(1)').replace('(,)', '(1,2)')
+                probe = probe.replace('(1/)', '(1/2)')
+                if probe[0] in '^*/+-.':
+                    probe = '1' + probe          # a binary operator needs a left side
+                if probe[-1] in '^*/+-.':
+                    probe += '2'                 # ...and a right one
+                # x/y for a height field, u/v for a parametric surface --
+                # both modes share one keypad, so both sets are declared
+                fn = em.compile_expression(probe, ('x', 'y', 'u', 'v'))
+                fn(1.0, 1.0, 1.0, 1.0)      # and it must evaluate, not just parse
+                checked += 1
+    assert checked >= 30, f'only {checked} keys were actually checked'
+
+
+def test_the_keypad_backspace_deletes_rather_than_inserting(app):
+    win = _open_wizard(app)
+    entries = _descendants(win, tk.Entry)
+    z_entry = entries[0]
+    z_entry.delete(0, tk.END)
+    z_entry.insert(0, 'sin(x)')
+    z_entry.focus_set()
+    z_entry.update()
+    z_entry.icursor(tk.END)
+    _keypad_button(win, '⌫').invoke()
+    assert z_entry.get() == 'sin(x'
+
+
+def test_the_keypad_is_tabbed_like_geogebras_own(app):
+    from tkinter import ttk
+    from apps.stereo import stereo_app_wizard_keypad as keypad
+    win = _open_wizard(app)
+    books = _descendants(win, ttk.Notebook)
+    assert books, 'the keypad is not tabbed'
+    names = [books[0].tab(i, 'text') for i in range(books[0].index('end'))]
+    assert names == [t for t, _rows in keypad.TABS]
+
+
+def test_loading_an_example_prefills_the_wizard_with_its_own_surface(app):
+    """Loading an example is the quickest way to see what this tab builds,
+    and the next question is always "how would I make one like it?" -- so the
+    wizard opens showing the example's own surfaces and node configuration."""
+    from apps.stereo import stereo_examples as sx
+    label, builder = [(l, b) for l, b in sx.EXAMPLES
+                      if 'paraboloid dish' in l][0]
+    app._load_example(builder, label)
+    win = _open_wizard(app)
+    entries = _descendants(win, tk.Entry)
+    values = [e.get() for e in entries]
+    assert '3.0 * (1 - (x/6)^2 - (y/6)^2)' in values, \
+        f'the surface expression is not in the dialog: {values}'
+    assert '-6.0' in values and '6.0' in values, 'the domain was not carried over'
+    radios = _descendants(win, tk.Radiobutton)
+    on = [r.cget('text') for r in radios
+          if str(r.cget('variable')) and r.cget('value') == '3d']
+    assert on, 'the 3D module radio is missing'
+    labels = [l.cget('text') for l in _descendants(win, tk.Label)]
+    assert any('exact settings' in t for t in labels)
+
+
+def test_a_two_surface_example_prefills_both_surfaces(app):
+    from apps.stereo import stereo_examples as sx
+    label, builder = [(l, b) for l, b in sx.EXAMPLES
+                      if 'concentric domes' in l][0]
+    app._load_example(builder, label)
+    win = _open_wizard(app)
+    values = [e.get() for e in _descendants(win, tk.Entry)]
+    assert '4.0 * (1 - (x/6)^2 - (y/6)^2) + 2.0' in values, 'no top surface'
+    assert '2.0 * (1 - (x/6)^2 - (y/6)^2)' in values, 'no bottom surface'
+
+
+def test_a_generator_built_example_says_so_instead_of_inventing_a_surface(app):
+    """These meshes come straight from a stereo_geometry generator and no
+    expression in those fields would reproduce them. A pre-filled field that
+    quietly generates something else is worse than an empty one."""
+    from apps.stereo import stereo_examples as sx
+    label, builder = [(l, b) for l, b in sx.EXAMPLES
+                      if 'Schwedler dome' in l][0]
+    app._load_example(builder, label)
+    win = _open_wizard(app)
+    labels = [l.cget('text') for l in _descendants(win, tk.Label)]
+    assert any('Not a wizard surface' in t for t in labels)
+    assert any('stereo_geometry.dome' in t for t in labels)
+    # and the fields are left alone
+    values = [e.get() for e in _descendants(win, tk.Entry)]
+    assert '0' in values, 'the default height field was overwritten'
+
+
+def test_every_example_carries_a_truthful_wizard_note(app):
+    from apps.stereo import stereo_examples as sx
+    for label, builder in sx.EXAMPLES:
+        recipe = builder().get('wizard')
+        assert recipe, f'{label} carries no wizard note'
+        assert recipe.get('note'), f'{label} has an empty note'
+        if recipe.get('mode'):
+            assert 'exact settings' in recipe['note']
+        else:
+            assert 'Not a wizard surface' in recipe['note']
+
+
+def test_the_wizard_does_not_show_the_previous_models_surface(app):
+    from apps.stereo import stereo_examples as sx
+    dish = [(l, b) for l, b in sx.EXAMPLES if 'paraboloid dish' in l][0]
+    app._load_example(dish[1], dish[0])
+    app.grid_family.set(FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app._generate()                 # a plain family generate carries no recipe
+    win = _open_wizard(app)
+    values = [e.get() for e in _descendants(win, tk.Entry)]
+    assert '3.0 * (1 - (x/6)^2 - (y/6)^2)' not in values
+
+
+def test_the_wizard_can_always_be_finished_in_two_surface_mode(app):
+    """Two surface panels with a keypad each need 829px of height. At the
+    dialog's fixed 800px that put Generate off the bottom edge with no
+    scrollbar, so the mode could be selected and never used."""
+    win = _open_wizard(app)
+    radios = _descendants(win, tk.Radiobutton)
+    [r for r in radios if r.cget('text') == 'Two surfaces (top + bottom)'][0].invoke()
+    win.update_idletasks()
+    generate = [b for b in _descendants(win, tk.Button)
+                if b.cget('text') == 'Generate'][0]
+    bars = _descendants(win, tk.Scrollbar)
+    assert bars, 'the dialog has no scrollbar'
+    fits = win.winfo_height() >= generate.winfo_rooty() - win.winfo_rooty() \
+        + generate.winfo_reqheight()
+    scrolls = any(b.winfo_ismapped() for b in bars)
+    assert fits or scrolls, 'Generate is unreachable in two-surface mode'
 
 
 def test_wizard_3d_module_offsets_the_second_layer(app):

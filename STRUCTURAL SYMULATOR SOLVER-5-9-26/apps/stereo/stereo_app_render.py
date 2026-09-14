@@ -1126,25 +1126,38 @@ class StereoRenderMixin:
     AXIS_COLOR_X = '#c0392b'
     AXIS_COLOR_Y = '#1e8449'
     AXIS_COLOR_Z = '#2456c4'
+    # How far past the model each axis line is extended, as a multiple of
+    # the model's own reach from the origin. Large enough that both ends
+    # leave the canvas at any zoom a user would work at, which is what makes
+    # the axis read as an infinite line rather than a stub; not so large that
+    # the projected coordinates lose precision.
+    AXIS_REACH = 60.0
 
     def _draw_axes(self, c, to_screen):
-        """A small red/green/blue X/Y/Z gizmo anchored at the structure's
-        OWN lowest corner (not a fixed on-screen HUD), plus a light dashed
-        outline tracing the structure's own X/Y footprint at z=0 -- an
-        explicit "this is the ground, this is up" reference so a shell or
-        vault's own orientation is never ambiguous at a glance, regardless
-        of camera angle. Sized off the model's own plan diagonal so the
-        gizmo reads at a sensible scale whether the structure is 3m or
-        300m across, instead of a fixed pixel size that would be
-        imperceptible on a large model or overwhelming on a small one."""
+        """The Cartesian X/Y/Z axes as LINES, plus a light dashed outline
+        tracing the structure's own footprint at z = 0.
+
+        Each axis is drawn right across the canvas rather than as a short
+        stub at the model's corner: an axis is an infinite line, and a stub
+        reads as a little arrow decoration sitting beside the structure
+        instead of as the coordinate frame the model is measured in. The
+        line is extended in MODEL space until both its ends are off-screen,
+        so it stays a straight line under the projection and keeps arriving
+        at the right vanishing direction however the camera is orbited.
+
+        The frame is anchored at the true origin (0, 0, 0), which is what
+        the coordinates in every panel, the Excel export and the member
+        report are stated in -- not at the model's own lowest corner, which
+        moves whenever the mesh does and would make the same rod appear to
+        sit somewhere different after a regenerate.
+        """
         xs = [n[0] for n in self.nodes]
         ys = [n[1] for n in self.nodes]
         zs = [n[2] for n in self.nodes]
+        if not xs:
+            return
         x0, x1 = min(xs), max(xs)
         y0, y1 = min(ys), max(ys)
-        z0 = min(0.0, min(zs))
-        diag = math.hypot(x1 - x0, y1 - y0)
-        axis_len = max(1.0, diag * 0.15)
 
         corners = ((x0, y0, 0.0), (x1, y0, 0.0), (x1, y1, 0.0), (x0, y1, 0.0))
         pts = []
@@ -1156,18 +1169,51 @@ class StereoRenderMixin:
             sx1, sy1 = pts[(i + 1) % 4]
             c.create_line(sx0, sy0, sx1, sy1, fill='#bbbbbb', dash=(3, 3), tags='axes')
 
-        origin = (x0, y0, z0)
-        ox, oy, oz = origin
-        p0x, p0y, _ = self._project(ox, oy, oz)
-        s0 = to_screen(p0x, p0y)
-        for (dx, dy, dz), color, label in (((axis_len, 0.0, 0.0), self.AXIS_COLOR_X, 'X'),
-                                           ((0.0, axis_len, 0.0), self.AXIS_COLOR_Y, 'Y'),
-                                           ((0.0, 0.0, axis_len), self.AXIS_COLOR_Z, 'Z')):
-            p1x, p1y, _ = self._project(ox + dx, oy + dy, oz + dz)
-            s1 = to_screen(p1x, p1y)
-            c.create_line(s0[0], s0[1], s1[0], s1[1], fill=color, width=2,
-                         arrow=tk.LAST, arrowshape=(6, 7, 3), tags='axes')
-            c.create_text(s1[0], s1[1], text=label, fill=color,
+        # Long enough that the line always leaves the canvas: the model's own
+        # extent plus its distance from the origin, times a comfortable
+        # margin. Derived from the model rather than fixed, so the axes read
+        # at the same scale whether the structure is 3 m or 300 m across.
+        # Per axis, because a model is rarely the same size in all three:
+        # on a 15 m long, 3 m tall vault a single shared reach would put the
+        # Z arrowhead five model-heights above the roof, off the canvas.
+        reach = [max(abs(x0), abs(x1)), max(abs(y0), abs(y1)),
+                 max(abs(min(zs)), abs(max(zs)))]
+        span = max(x1 - x0, y1 - y0, max(zs) - min(zs), 1.0)
+        far = (max(reach) + span) * self.AXIS_REACH
+        tick = max(span * 0.08, 1e-3)
+
+        p0x, p0y, _ = self._project(0.0, 0.0, 0.0)
+        s_origin = to_screen(p0x, p0y)
+        for axis, color, label in ((0, self.AXIS_COLOR_X, 'X'),
+                                   (1, self.AXIS_COLOR_Y, 'Y'),
+                                   (2, self.AXIS_COLOR_Z, 'Z')):
+            ends = []
+            for sign in (-1.0, 1.0):
+                v = [0.0, 0.0, 0.0]
+                v[axis] = sign * far
+                px, py, _ = self._project(*v)
+                ends.append(to_screen(px, py))
+            # The negative half is drawn thin and the positive half solid, so
+            # which way the axis increases is readable without hunting for
+            # the arrowhead.
+            c.create_line(ends[0][0], ends[0][1], s_origin[0], s_origin[1],
+                         fill=color, width=1, dash=(4, 4), tags='axes')
+            c.create_line(s_origin[0], s_origin[1], ends[1][0], ends[1][1],
+                         fill=color, width=1, tags='axes')
+            # The arrowhead sits ON the axis a little way out from the model,
+            # not at the end of the line, which is off-screen by design.
+            at = max(reach[axis], span * 0.25) + tick
+            head = [0.0, 0.0, 0.0]
+            head[axis] = at + tick
+            hx, hy, _ = self._project(*head)
+            s_head = to_screen(hx, hy)
+            back = [0.0, 0.0, 0.0]
+            back[axis] = at
+            bx, by, _ = self._project(*back)
+            s_back = to_screen(bx, by)
+            c.create_line(s_back[0], s_back[1], s_head[0], s_head[1], fill=color,
+                         width=2, arrow=tk.LAST, arrowshape=(7, 8, 3), tags='axes')
+            c.create_text(s_head[0], s_head[1] - 9, text=label, fill=color,
                          font=('Helvetica', 9, 'bold'), tags='axes')
 
     def _draw_legend(self, c, by_force, show_def=False, deformed_only=False, by_util=False,

@@ -67,6 +67,25 @@ def _row_at(nodes, axis, value, z, tol=1e-6):
     return idxs
 
 
+def _wizard(mesh, note, **fields):
+    """Attach the Custom Surface Wizard settings that produce this example.
+
+    Loading an example is the fastest way to see what the tab can build, and
+    the obvious next question is "how do I make one of my own like it?".
+    The answer is the wizard's own controls, so each example carries them and
+    the wizard opens already filled in with them.
+
+    `note` is required and has to be TRUE of this particular example. Several
+    of these meshes are not built by the wizard at all -- they come straight
+    from a stereo_geometry generator -- and for those the note names the
+    generator and its arguments rather than inventing a surface expression
+    that would not reproduce the mesh. A pre-filled field that quietly
+    generates something else is worse than an empty one.
+    """
+    mesh['wizard'] = dict(note=note, **fields)
+    return mesh
+
+
 def planar_grid_with_columns_1():
     """A 12x12 m flat double-layer grid (square-on-square offset, 2 m
     module) on four single-tier columns at its quarter-points, with one
@@ -95,8 +114,12 @@ def planar_grid_with_columns_1():
     edge_b = _row_at(nodes, 1, 6.0, 0.0)
     nodes, members, _apex = sg.reinforcement_beam(nodes, members, edge_a, edge_b,
                                                   depth=1.0, tiers=1)
-    return {'nodes': nodes, 'members': members, 'support_candidates': supports,
-            'load_nodes': mesh.get('load_nodes', {})}
+    return _wizard(
+        {'nodes': nodes, 'members': members, 'support_candidates': supports,
+         'load_nodes': mesh.get('load_nodes', {})},
+        'Not a wizard surface -- flat_grid(12, 12, depth 1, module 2, square,\n'
+        'offset) with four single-tier add_column() bases and one\n'
+        'single-tier reinforcement_beam() built onto it.')
 
 
 def planar_grid_with_columns_2():
@@ -133,19 +156,29 @@ def planar_grid_with_columns_2():
     edge_b = _row_at(nodes, 1, 4.0, 0.0)
     nodes, members, _apex = sg.reinforcement_beam(nodes, members, edge_a, edge_b,
                                                   depth=1.5, tiers=2)
-    return {'nodes': nodes, 'members': members, 'support_candidates': supports,
-            'load_nodes': mesh.get('load_nodes', {})}
+    return _wizard(
+        {'nodes': nodes, 'members': members, 'support_candidates': supports,
+         'load_nodes': mesh.get('load_nodes', {})},
+        'Not a wizard surface -- flat_grid(16, 16, depth 1.2, module 2,\n'
+        'diagonal) with two-tier add_column() bases and a multilayer\n'
+        'reinforcement_beam() built onto it.')
 
 
 def single_surface_truss_1():
     """A paraboloid dish (a height field -- z = f(x, y)), Cartesian
     domain, square module pattern, sampled as a 3D (double-layer) space
     truss: the Custom Surface Wizard's simplest single-surface case."""
-    surface = sg.make_height_field_surface('3.0 * (1 - (x/6)^2 - (y/6)^2)')
-    return sg.custom_surface_grid(surface, coord='cartesian', pattern='square',
+    expr = '3.0 * (1 - (x/6)^2 - (y/6)^2)'
+    surface = sg.make_height_field_surface(expr)
+    mesh = sg.custom_surface_grid(surface, coord='cartesian', pattern='square',
                                   p_range=(-6.0, 6.0), q_range=(-6.0, 6.0),
                                   n1=8, n2=8, module='3d', depth=0.6,
                                   offset_side='top')
+    return _wizard(mesh, 'Built by the wizard. These are its exact settings.',
+                   mode='single', kind='height', z=expr,
+                   coord='cartesian', pattern='square',
+                   p_range=(-6.0, 6.0), q_range=(-6.0, 6.0), n1=8, n2=8,
+                   module='3d', depth=0.6, side='top')
 
 
 def single_surface_truss_2():
@@ -166,12 +199,18 @@ def single_surface_truss_2():
     the shape read as an arch opening sideways (toward +y) rather than
     arching upward, since what should have been the crown was rendered
     at one end, not the peak."""
-    surface = sg.make_parametric_surface('u', '4*sin(v)', '4*cos(v)')
-    return sg.custom_surface_grid(surface, coord='cartesian', pattern='isometric',
-                                  p_range=(0.0, 10.0),
-                                  q_range=(-math.pi / 2.0 + 0.3, math.pi / 2.0 - 0.3),
+    fx, fy, fz = 'u', '4*sin(v)', '4*cos(v)'
+    surface = sg.make_parametric_surface(fx, fy, fz)
+    q_range = (-math.pi / 2.0 + 0.3, math.pi / 2.0 - 0.3)
+    mesh = sg.custom_surface_grid(surface, coord='cartesian', pattern='isometric',
+                                  p_range=(0.0, 10.0), q_range=q_range,
                                   n1=10, n2=8, module='3d', depth=0.5,
                                   offset_side='top')
+    return _wizard(mesh, 'Built by the wizard. These are its exact settings.',
+                   mode='single', kind='parametric', x=fx, y=fy, z=fz,
+                   coord='cartesian', pattern='isometric',
+                   p_range=(0.0, 10.0), q_range=q_range, n1=10, n2=8,
+                   module='3d', depth=0.5, side='top')
 
 
 def two_surface_truss_1():
@@ -179,11 +218,18 @@ def two_surface_truss_1():
     surface, Cartesian domain, square pattern -- the Custom Surface
     Wizard's two-surface mode connecting two independently-defined
     surfaces into one double-layer grid."""
-    top = sg.make_height_field_surface('3.0 * (1 - (x/6)^2 - (y/6)^2) + 1.0')
-    bottom = sg.make_height_field_surface('0')
-    return sg.custom_surface_between(top, bottom, coord='cartesian', pattern='square',
+    top_expr = '3.0 * (1 - (x/6)^2 - (y/6)^2) + 1.0'
+    bottom_expr = '0'
+    top = sg.make_height_field_surface(top_expr)
+    bottom = sg.make_height_field_surface(bottom_expr)
+    mesh = sg.custom_surface_between(top, bottom, coord='cartesian', pattern='square',
                                      p_range=(-6.0, 6.0), q_range=(-6.0, 6.0),
                                      n1=8, n2=8)
+    return _wizard(mesh, 'Built by the wizard. These are its exact settings.',
+                   mode='between', kind='height', z=top_expr,
+                   bottom_kind='height', bottom_z=bottom_expr,
+                   coord='cartesian', pattern='square',
+                   p_range=(-6.0, 6.0), q_range=(-6.0, 6.0), n1=8, n2=8)
 
 
 def two_surface_truss_2():
@@ -191,11 +237,19 @@ def two_surface_truss_2():
     shallower one as the bottom), Polar domain, diagonal pattern -- the
     two-surface case exercised over a curved domain instead of a flat
     rectangle."""
-    top = sg.make_height_field_surface('4.0 * (1 - (x/6)^2 - (y/6)^2) + 2.0')
-    bottom = sg.make_height_field_surface('2.0 * (1 - (x/6)^2 - (y/6)^2)')
-    return sg.custom_surface_between(top, bottom, coord='polar', pattern='diagonal',
+    top_expr = '4.0 * (1 - (x/6)^2 - (y/6)^2) + 2.0'
+    bottom_expr = '2.0 * (1 - (x/6)^2 - (y/6)^2)'
+    top = sg.make_height_field_surface(top_expr)
+    bottom = sg.make_height_field_surface(bottom_expr)
+    mesh = sg.custom_surface_between(top, bottom, coord='polar', pattern='diagonal',
                                      p_range=(0.3, 6.0), q_range=(0.0, 2.0 * math.pi),
                                      n1=6, n2=12)
+    return _wizard(mesh, 'Built by the wizard. These are its exact settings.',
+                   mode='between', kind='height', z=top_expr,
+                   bottom_kind='height', bottom_z=bottom_expr,
+                   coord='polar', pattern='diagonal',
+                   p_range=(0.3, 6.0), q_range=(0.0, 2.0 * math.pi),
+                   n1=6, n2=12)
 
 
 def barrel_vault_example():
@@ -206,7 +260,10 @@ def barrel_vault_example():
     end faces, is where a real barrel vault bears)."""
     mesh = sg.barrel_vault(span=12.0, rise=3.0, length=18.0, n_arch=8, n_bays=6,
                            double_layer=True, depth=0.5)
-    return mesh
+    return _wizard(
+        mesh,
+        'Not a wizard surface -- this mesh comes straight from\n'
+        'stereo_geometry.barrel_vault(span=12, rise=3, length=18, n_arch=8, n_bays=6, double_layer=True, depth=0.5)')
 
 
 def dome_example():
@@ -214,7 +271,10 @@ def dome_example():
     its base ring -- every meridian rib lands there, the dome's own
     structural base."""
     mesh = sg.dome(base_radius=8.0, rise=4.0, n_rings=5, n_sectors=16)
-    return mesh
+    return _wizard(
+        mesh,
+        'Not a wizard surface -- this mesh comes straight from\n'
+        'stereo_geometry.dome(base_radius=8, rise=4, n_rings=5, n_sectors=16)')
 
 
 def cone_roof_example():
@@ -223,7 +283,10 @@ def cone_roof_example():
     straight-line (conical) profile instead of a curved one, pinned along
     its base ring."""
     mesh = sg.cone_roof(base_radius=7.0, rise=5.0, n_rings=4, n_sectors=14)
-    return mesh
+    return _wizard(
+        mesh,
+        'Not a wizard surface -- this mesh comes straight from\n'
+        'stereo_geometry.cone_roof(base_radius=7, rise=5, n_rings=4, n_sectors=14)')
 
 
 def groin_vault_example():
@@ -233,7 +296,11 @@ def groin_vault_example():
     plain barrel vault's two springing lines)."""
     mesh = sg.groin_vault(span=12.0, rise=3.0, module=1.5, depth=0.6,
                           offset=True, pattern='square')
-    return mesh
+    return _wizard(
+        mesh,
+        'Not a wizard surface -- this mesh comes straight from\n'
+        "stereo_geometry.groin_vault(span=12, rise=3, module=1.5, depth=0.6, "
+        "offset=True, pattern='square')")
 
 
 def truss_bridge_example():
@@ -243,7 +310,10 @@ def truss_bridge_example():
     span=40/depth=5/width=6/n_panels=4 coincidental critical-geometry
     mechanism documented in that function's own docstring."""
     mesh = sg.truss_bridge(span=42.0, depth=5.5, width=8.0, n_panels=7)
-    return mesh
+    return _wizard(
+        mesh,
+        'Not a wizard surface -- this mesh comes straight from\n'
+        'stereo_geometry.truss_bridge(span=42, depth=5.5, width=8, n_panels=7)')
 
 
 EXAMPLES = (

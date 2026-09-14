@@ -23,7 +23,8 @@ from apps.stereo.stereo_app import (
     moment_color, reaction_moment_signed, MOMENT_ZERO_COLOR, MOMENT_AXES,
     MOMENT_AXIS_RESULTANT, MOMENT_AXIS_MX, MOMENT_AXIS_MY, MOMENT_AXIS_MZ,
     MODULE_DIM_COLOR, SUPPORT_DISABLED_COLOR, SLENDER_HALO_COLOR, SLENDERNESS_LIMIT,
-    LOAD_PATH_COLOR, LOAD_PATH_ANIM_TICKS, LOAD_PATH_NEAR_ZERO_FRAC, NEAR_ZERO_COLOR,
+    LOAD_PATH_ANIM_TICKS, LOAD_PATH_NEAR_ZERO_FRAC, NEAR_ZERO_COLOR,
+    SCALE_PEAK, SCALE_P95,
     NEAR_ZERO_FRAC, STRESS_WIDTH_MIN, STRESS_WIDTH_MAX,
     COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT,
     FILL_NONE, FILL_SHADED, FILL_VORONOI,
@@ -33,7 +34,7 @@ from apps.stereo.stereo_app import (
     _clip_polygon_to_bbox, _voronoi_cells_2d,
 )
 from apps.stereo import stereo_math as sm
-from apps.stereo import stereo_voronoi3d as sv3
+from apps.stereo import stereo_voronoi_surface as svs
 
 
 @pytest.fixture(autouse=True)
@@ -977,8 +978,9 @@ def test_flag_slender_is_a_no_op_before_analysis(app):
 # ── load-path pulse animation ────────────────────────────────────────────────
 
 def _load_path_lines(app):
-    return [i for i in app.canvas.find_withtag('member')
-            if app.canvas.itemcget(i, 'fill') == LOAD_PATH_COLOR]
+    """Found by TAG, not by colour: the pulse is coloured by the force each
+    member is carrying, so there is no one flat fill to match on."""
+    return list(app.canvas.find_withtag('load_path'))
 
 
 def test_load_path_anim_is_off_by_default(app):
@@ -1004,8 +1006,8 @@ def test_load_path_anim_is_a_no_op_before_analysis(app):
 
 def _load_path_arrow_items(app):
     """The travelling arrowhead glyphs specifically -- excludes each
-    member's own static LOAD_PATH_COLOR guide line, which shares the
-    'member' tag and colour but has no arrowhead."""
+    member's own static guide line, which shares the 'load_path' tag but
+    has no arrowhead."""
     return [i for i in _load_path_lines(app) if app.canvas.itemcget(i, 'arrow') == 'last']
 
 
@@ -2271,11 +2273,44 @@ def test_force_colorbar_ends_match_the_actual_tension_compression_extremes(app):
 def test_force_colorbar_tick_labels_show_the_actual_max_force(app):
     app._analyze()
     app.colour_by_force.set(True)
+    app.force_scale.set(SCALE_PEAK)
     app._draw()
     max_abs_n = max(abs(mr['N']) for mr in app.results['member_res'])
     texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
             if app.canvas.type(i) == 'text']
     assert any(f'{max_abs_n:.0f}' in t for t in texts)
+
+
+def test_the_percentile_scale_says_its_ends_are_open(app):
+    """Anchored below the peak, the end colours no longer mean "this much and
+    no more" -- so the ticks say so, and the rods past the end are counted."""
+    app._analyze()
+    app.colour_by_force.set(True)
+    app.force_scale.set(SCALE_P95)
+    app._draw()
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    assert any(t.startswith('≥+') for t in texts), 'the open end was not marked'
+    anchor = app._force_anchor()
+    peak = max(abs(mr['N']) for mr in app.results['member_res'])
+    assert anchor < peak, 'the percentile anchor did not lower the scale'
+    assert app._clipped_members(anchor, 1.0), 'nothing was marked as clipped'
+
+
+def test_the_legend_counts_the_rods_it_paints_grey(app):
+    """Grey is a claim about the structure, so it is reported with a number
+    that can be checked against the member report -- otherwise a field of
+    grey panels reads as a failed drawing rather than as "these carry
+    nothing"."""
+    app._analyze()
+    app.colour_by_force.set(True)
+    app._draw()
+    n_grey, n_exact = app._near_zero_counts(app._force_anchor(), 1.0)
+    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
+            if app.canvas.type(i) == 'text']
+    if n_grey:
+        assert any(f'{n_grey} rods below' in t for t in texts)
+        assert n_exact <= n_grey
 
 
 def test_utilization_colorbar_is_a_continuous_gradient(app):
@@ -2666,88 +2701,138 @@ def test_every_toolbar_choice_redraws(app):
     assert app.canvas.find_all()          # a redraw happened, nothing raised
 
 
-# ── 3D Voronoi in the UI ─────────────────────────────────────────────────────
+# ── surface Voronoi in the UI ────────────────────────────────────────────────
 
-def test_voronoi_defaults_to_skin_of_the_hull(app):
-    assert app.voronoi_view.get() == sv3.VIEW_SKIN
-    assert app.voronoi_domain.get() == sv3.DOMAIN_HULL
+def test_voronoi_defaults_to_the_surface_view(app):
+    assert app.voronoi_view.get() == svs.VIEW_SURFACE
 
 
-def test_band_radius_is_re_derived_for_each_new_mesh(app):
+def test_the_hull_domain_is_gone(app):
+    """The convex hull bridged every concavity -- on the parabolic vault it
+    sealed the arch and laid a 15 x 10 m floor slab 2.01 m below the nearest
+    rod, and 27% of what the old Skin view drew was surface the structure
+    does not have. There is no domain control left at all: the domain is the
+    structure's own fabric."""
+    assert not hasattr(app, 'voronoi_domain')
+    assert not hasattr(app, 'voronoi_band')
+
+
+def test_the_cut_thickness_is_re_derived_for_each_new_mesh(app):
     app.grid_family.set(FAMILY_LABEL['flat_grid'])
     app._on_generator_change()
     app.fg_module.set(3.0)
     app._generate()
-    small = app.voronoi_band.get()
+    small = app.voronoi_cut.get()
     app.fg_module.set(9.0)                 # a much coarser grid
     app._generate()
-    assert app.voronoi_band.get() > small
+    assert app.voronoi_cut.get() > small
 
 
-@pytest.mark.parametrize('view', sv3.VIEWS)
-@pytest.mark.parametrize('domain', sv3.DOMAINS)
-def test_every_voronoi_view_and_domain_draws(app, view, domain):
+@pytest.mark.parametrize('view', svs.VIEWS)
+def test_every_voronoi_view_draws(app, view):
     app._analyze()
     app.faces_mode.set(FILL_VORONOI)
     app._on_faces_mode_change()
     app.voronoi_view.set(view)
-    app.voronoi_domain.set(domain)
     app._draw()
-    assert app.canvas.find_withtag('voronoi_face'), f'{view}/{domain} drew nothing'
+    assert app.canvas.find_withtag('voronoi_face'), f'{view} drew nothing'
 
 
-def test_skin_and_cells_are_stippled_so_the_rods_stay_visible(app):
-    """Both wrap the OUTSIDE of the structure, so a solid fill hides the far
-    half of the model -- back rods, far supports, load arrows. The Section
+def test_the_tessellation_stays_on_the_structure(app):
+    """The whole point of the surface domain: no patch may sit out in the
+    void a concave structure arches over. Every patch centre has to lie
+    within a panel's own reach of the fabric."""
+    import numpy as np
+    app.grid_family.set(FAMILY_LABEL['parabolic_vault'])
+    app._on_generator_change()
+    app._generate()
+    app._analyze()
+    panels = app._get_shaded_cells()
+    sites = [tuple((a + b) / 2.0 for a, b in
+                   zip(app.nodes[m['a']], app.nodes[m['b']]))
+             for m in app.members]
+    panel_sites = [list(p['members']) for p in panels]
+    patches = svs.build_surface(app.nodes, panels, sites, panel_sites)
+    assert patches
+    corners = np.array([c for poly, _ in patches for c in poly])
+    nodes = np.array(app.nodes, dtype=float)
+    lo, hi = nodes.min(axis=0), nodes.max(axis=0)
+    assert (corners >= lo - 1e-6).all() and (corners <= hi + 1e-6).all()
+    # and nothing down on the old invented floor: the bottom plane of the
+    # hull was 2.01 m from the nearest rod, so a patch centre out there
+    # would mean the domain had reverted to a hull
+    from apps.stereo import stereo_geometry as sg
+    centres = np.array([poly.mean(axis=0) for poly, _ in patches])
+    seg_a = nodes[[m['a'] for m in app.members]]
+    seg_b = nodes[[m['b'] for m in app.members]]
+    ab = seg_b - seg_a
+    L2 = np.maximum((ab * ab).sum(axis=1), 1e-12)
+    worst = 0.0
+    for q in centres[::7]:
+        t = np.clip(((q - seg_a) * ab).sum(axis=1) / L2, 0.0, 1.0)
+        d = np.linalg.norm(q - (seg_a + t[:, None] * ab), axis=1).min()
+        worst = max(worst, float(d))
+    assert worst < 1.0, f'a patch sits {worst:.2f} m from any rod'
+
+
+def test_a_top_panel_is_never_owned_by_the_other_layer(app):
+    """The metric has to follow the fabric. Measured in straight-line 3D on
+    this grid, a top panel's own chords are 1.500 m away and four web
+    diagonals 1.299 m -- an exact tie among the four -- so 0% of top panels
+    got a top-layer rod and the surface came out a chequerboard of noise."""
+    import numpy as np
+    app.grid_family.set(FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app._generate()
+    panels = app._get_shaded_cells()
+    nodes = np.array(app.nodes, dtype=float)
+    top_z = nodes[:, 2].max()
+    sites = np.array([(nodes[m['a']] + nodes[m['b']]) / 2.0 for m in app.members])
+    polys = svs.panel_polys(app.nodes, panels)
+    cen = svs.panel_centroids(polys)
+    adj, _ = svs.panel_adjacency(panels)
+    owners = svs.assign_owners(cen, [list(p['members']) for p in panels], sites, adj)
+    tops = [i for i in range(len(panels)) if abs(cen[i][2] - top_z) < 1e-6]
+    assert tops
+    for i in tops:
+        assert abs(sites[owners[i]][2] - top_z) < 1e-6, \
+            'a top-surface panel was captured by a rod on another layer'
+
+
+def test_cells_view_strokes_the_boundaries_between_owners(app):
+    app._analyze()
+    app.faces_mode.set(FILL_VORONOI)
+    app._on_faces_mode_change()
+    app.voronoi_view.set(svs.VIEW_SURFACE)
+    app._draw()
+    plain = len(app.canvas.find_withtag('voronoi_face'))
+    app.voronoi_view.set(svs.VIEW_CELLS)
+    app._draw()
+    assert len(app.canvas.find_withtag('voronoi_face')) > plain, \
+        'the Cells view drew no outlines, so it is just the Surface view'
+
+
+def test_surface_and_cells_are_stippled_and_the_section_is_not(app):
+    """The two surface views wrap the outside of the structure, so a solid
+    fill lets the nearest patch hide every patch behind it. The Section
     plane is the exception: it is a cut face, and a see-through cut does not
     read as one."""
     app._analyze()
     app.faces_mode.set(FILL_VORONOI)
     app._on_faces_mode_change()
-    for view, expected in ((sv3.VIEW_SKIN, 'gray50'),
-                           (sv3.VIEW_CELLS, 'gray50'),
-                           (sv3.VIEW_SECTION, '')):
+    for view, expected in ((svs.VIEW_SURFACE, 'gray75'),
+                           (svs.VIEW_CELLS, 'gray75'),
+                           (svs.VIEW_SECTION, '')):
         app.voronoi_view.set(view)
         app._draw()
-        items = app.canvas.find_withtag('voronoi_face')
+        items = [i for i in app.canvas.find_withtag('voronoi_face')
+                 if app.canvas.type(i) == 'polygon']
         assert items, f'{view} drew nothing'
         got = {app.canvas.itemcget(i, 'stipple') for i in items}
         assert got == {expected}, f'{view} stipple {got}, expected {expected!r}'
 
 
-def test_voronoi_works_for_every_colour_system(app):
-    app.sec_conn.set('rigid')
-    app._apply_sections()
-    for s in app.supports:
-        s['type'] = 'fixed'
-    app._analyze()
-    app.faces_mode.set(FILL_VORONOI)
-    app._on_faces_mode_change()
-    for mode in (COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT):
-        app.colour_mode.set(mode)
-        app._on_colour_mode_change()
-        assert app.canvas.find_withtag('voronoi_face'), f'no cells for {mode}'
-    # and for deformation, whose spectrum lives on the deformed overlay
-    app.colour_mode.set(COLOUR_NONE)
-    app._on_colour_mode_change()
-    app.show_deformed.set(True)
-    app._draw()
-    assert app.canvas.find_withtag('voronoi_face'), 'no cells for displacement'
-
-
-def test_voronoi_sites_are_nodes_for_moment_and_midpoints_for_force(app):
-    app._analyze()
-    app.faces_mode.set(FILL_VORONOI)
-    app._on_faces_mode_change()
-    app.colour_mode.set(COLOUR_FORCE)
-    app._on_colour_mode_change()
-    app._draw()
-    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
-            if app.canvas.type(i) == 'text']
-    assert any('rod midpoints' in t for t in texts)
-
-
-def test_voronoi_cache_survives_an_orbit_but_not_a_domain_change(app):
+def test_the_cache_survives_orbiting_but_not_a_view_change(app):
     app._analyze()
     app.faces_mode.set(FILL_VORONOI)
     app._on_faces_mode_change()
@@ -2759,89 +2844,75 @@ def test_voronoi_cache_survives_an_orbit_but_not_a_domain_change(app):
     app._draw()
     assert app._voronoi_cache is cached
 
-    app.voronoi_domain.set(sv3.DOMAIN_BAND)  # a domain change must
+    app.voronoi_view.set(svs.VIEW_CELLS)    # a view change must
     app._draw()
     assert app._voronoi_cache is not cached
 
 
-def test_typing_in_the_band_field_does_not_break_the_canvas(app):
-    # Regression: the radius is a typed Entry bound to a DoubleVar, and a
+def test_typing_in_the_cut_field_does_not_break_the_canvas(app):
+    # Regression: the thickness is a typed Entry bound to a DoubleVar, and a
     # redraw runs on far more than the Return key (orbit, any toggle, the
     # load slider). Reading it mid-edit raised TclError and broke the draw.
     app._analyze()
     app.faces_mode.set(FILL_VORONOI)
     app._on_faces_mode_change()
-    app.voronoi_domain.set(sv3.DOMAIN_BAND)
-    app.voronoi_band.set(1.0)
+    app.voronoi_view.set(svs.VIEW_SECTION)
+    app.voronoi_cut.set(1.0)
     app._draw()
 
     for typed in ('', 'abc', '-', '0.'):
-        app.voronoi_band._tk.globalsetvar(app.voronoi_band._name, typed)
+        app.voronoi_cut._tk.globalsetvar(app.voronoi_cut._name, typed)
         app._draw()          # must not raise
-    app.voronoi_band.set(1.0)
+    app.voronoi_cut.set(1.0)
 
 
-def test_a_negative_band_radius_is_refused_not_sampled(app):
-    # Regression: the sampling step is derived FROM r, so a negative radius
-    # drove it to its floor and asked for millions of samples per rod --
+def test_a_non_positive_cut_thickness_is_refused(app):
+    # Regression from the band radius this replaces: a negative value drove
+    # the sampler's step to its floor and asked for millions of samples,
     # which took the whole process out with an OOM kill.
-    nodes = [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0)]
-    members = [{'a': 0, 'b': 1}]
-    assert not sv3.within_band([(1.0, 0.0, 0.0)], nodes, members, -3.0).any()
-    assert not sv3.within_band([(1.0, 0.0, 0.0)], nodes, members, 0.0).any()
+    nodes = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)]
+    panels = [{'nodes': (0, 1, 2, 3), 'members': (0, 1, 2, 3)}]
+    quads = svs.section_plane(nodes, 2, 0.5)
+    assert not svs.section_mask(quads, nodes, panels, -3.0).any()
+    assert not svs.section_mask(quads, nodes, panels, 0.0).any()
 
 
-def test_the_band_field_keeps_the_last_good_radius(app):
+def test_the_cut_field_keeps_the_last_good_thickness(app):
     app._analyze()
     app.faces_mode.set(FILL_VORONOI)
     app._on_faces_mode_change()
-    app.voronoi_band.set(2.5)
+    app.voronoi_cut.set(2.5)
     app._draw()
-    app.voronoi_band._tk.globalsetvar(app.voronoi_band._name, 'nonsense')
-    assert app._voronoi_band_value() == pytest.approx(2.5)
-    app.voronoi_band.set(1.0)
+    app.voronoi_cut._tk.globalsetvar(app.voronoi_cut._name, 'nonsense')
+    assert app._voronoi_cut_value() == pytest.approx(2.5)
+    app.voronoi_cut.set(1.0)
 
 
 def test_the_empty_note_names_the_real_reason(app):
     # Regression: every empty result blamed model size, which sent you off
     # tuning a limit that was not the problem. Each cause must name itself.
     app._analyze()
-    many = [(0.0, 0.0, 0.0)] * (sv3.CELLS_SITE_LIMIT + 1)
-
-    app.voronoi_view.set(sv3.VIEW_CELLS)
-    assert str(sv3.CELLS_SITE_LIMIT) in app._voronoi_empty_reason(many)
-
-    app.voronoi_view.set(sv3.VIEW_SKIN)
-    assert 'Cells' not in app._voronoi_empty_reason(many)
-
-    app.voronoi_domain.set(sv3.DOMAIN_BAND)
-    assert 'radius' in app._voronoi_empty_reason([(0.0, 0.0, 0.0)])
-    app.voronoi_domain.set(sv3.DOMAIN_HULL)
-
-    flat = app.nodes
-    try:                                   # a mesh with no volume at all
-        app.nodes = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
-        assert 'flat' in app._voronoi_empty_reason([(0.0, 0.0, 0.0)])
-    finally:
-        app.nodes = flat
+    app.voronoi_view.set(svs.VIEW_SECTION)
+    assert 'cut plane' in app._voronoi_empty_reason([(0.0, 0.0, 0.0)])
+    app.voronoi_view.set(svs.VIEW_SURFACE)
+    assert 'nothing to tessellate yet' in app._voronoi_empty_reason([])
 
 
 def test_the_note_does_not_outlive_its_cause(app):
-    app.grid_family.set(FAMILY_LABEL['flat_grid'])
-    app._on_generator_change()
-    app.fg_nx.set(14); app.fg_ny.set(14)
-    app._generate(); app._analyze()
+    app._analyze()
     app.faces_mode.set(FILL_VORONOI)
     app._on_faces_mode_change()
-
-    app.voronoi_view.set(sv3.VIEW_CELLS)
+    app.voronoi_view.set(svs.VIEW_SECTION)
+    app.voronoi_slice.set(0)
+    app.voronoi_cut._tk.globalsetvar(app.voronoi_cut._name, '0.0001')
     app._draw()
-    assert app._voronoi_note, 'an over-limit Cells view explained nothing'
-    assert str(sv3.CELLS_SITE_LIMIT) in app._voronoi_note
-
-    app.voronoi_view.set(sv3.VIEW_SKIN)
+    note_then = app._voronoi_note
+    app.voronoi_cut.set(1.0)
+    app.voronoi_slice.set(50)
+    app.voronoi_view.set(svs.VIEW_SURFACE)
     app._draw()
-    assert app._voronoi_note == '', 'the note survived a switch to a view that works'
+    assert app._voronoi_note == '', \
+        f'the note {note_then!r} survived a switch to a view that works'
 
 
 def test_voronoi_is_a_no_op_before_analysis(app):
@@ -3231,10 +3302,10 @@ def test_voronoi_faces_legend_caption_appears_only_when_active(app):
     app._draw()
     texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
             if app.canvas.type(i) == 'text']
-    assert not any('3D Voronoi' in t for t in texts)
+    assert not any('Voronoi ·' in t for t in texts)
 
     app.voronoi_faces.set(True)
     app._draw()
     texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
             if app.canvas.type(i) == 'text']
-    assert any('3D Voronoi' in t for t in texts)
+    assert any('Voronoi ·' in t for t in texts)

@@ -17,7 +17,7 @@ from common import ZoomCanvas, FlowBar, ScrollPanel
 
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_examples as sx
-from apps.stereo import stereo_voronoi3d as sv3
+from apps.stereo import stereo_voronoi_surface as svs
 from apps.stereo.stereo_app_constants import (
     BG, CANVAS_BG, PANEL_W, MODULE_PANEL_W,
     DOF_LABELS, PRESET_NAMES, GRID_PATTERNS, PATTERN_LABEL, GRID_FAMILIES,
@@ -26,6 +26,7 @@ from apps.stereo.stereo_app_constants import (
     MOMENT_AXES, MOMENT_AXIS_RESULTANT,
     COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT, COLOUR_MODES,
     FILL_NONE, FILL_SHADED, FILL_VORONOI, FILL_MODES,
+    SCALE_P95, SCALE_MODES,
 )
 
 
@@ -127,6 +128,17 @@ class StereoPanelsMixin(_ToolbarModes):
             tk.Radiobutton(g, text=label, value=label, variable=self.colour_mode,
                            bg=BG, command=self._on_colour_mode_change
                            ).pack(side='left', padx=(0, 4))
+        # Where the force ramp's ends are pinned. Anchoring at the literal
+        # peak lets one extreme member set the scale for the whole model --
+        # the median rod carries 12-32% of it across the shipped families --
+        # so the percentile anchor is offered alongside, with the members
+        # above it marked rather than silently flattened against the end.
+        tk.Label(g, text='scale', bg=BG, font=('Helvetica', 8), fg='#556')\
+            .pack(side='left', padx=(8, 2))
+        self.force_scale = tk.StringVar(value=SCALE_P95)
+        for label in SCALE_MODES:
+            tk.Radiobutton(g, text=label, value=label, variable=self.force_scale,
+                           bg=BG, command=self._draw).pack(side='left', padx=(0, 3))
         self.moment_axis = tk.StringVar(value=MOMENT_AXIS_RESULTANT)
         moment_axis_box = ttk.Combobox(g, textvariable=self.moment_axis, state='readonly',
                                        width=15, values=MOMENT_AXES)
@@ -173,31 +185,19 @@ class StereoPanelsMixin(_ToolbarModes):
 
         # ── 6 · VORONOI ──────────────────────────────────────────────────────
         # Its own group because these only mean anything once FILL is set to
-        # Voronoi: the domain is which volume the cells may occupy, the view
-        # is how that solid is put on a flat screen.
+        # Voronoi. There is no DOMAIN control any more: the domain is the
+        # structure's own surface, which needs no choosing and no parameter
+        # (see stereo_voronoi_surface). Only Section is volumetric, so the
+        # cut controls belong to it alone.
         self.toolbar_flow.separator()
         g = self._tb_group('VORONOI')
-        tk.Label(g, text='domain', bg=BG, font=('Helvetica', 8), fg='#556')\
-            .pack(side='left', padx=(0, 2))
-        self.voronoi_domain = tk.StringVar(value=sv3.DOMAIN_HULL)
-        for label in sv3.DOMAINS:
-            tk.Radiobutton(g, text=label, value=label, variable=self.voronoi_domain,
-                           bg=BG, command=self._draw).pack(side='left', padx=(0, 3))
-        tk.Label(g, text='r(m)', bg=BG, font=('Helvetica', 8), fg='#556')\
-            .pack(side='left', padx=(2, 1))
-        self.voronoi_band = tk.DoubleVar(value=1.0)
-        band_entry = tk.Entry(g, textvariable=self.voronoi_band, width=5)
-        band_entry.pack(side='left')
-        band_entry.bind('<Return>', lambda e: self._draw())
-        band_entry.bind('<FocusOut>', lambda e: self._draw())
-
         tk.Label(g, text='view', bg=BG, font=('Helvetica', 8), fg='#556')\
-            .pack(side='left', padx=(8, 2))
-        self.voronoi_view = tk.StringVar(value=sv3.VIEW_SKIN)
-        for label in sv3.VIEWS:
+            .pack(side='left', padx=(0, 2))
+        self.voronoi_view = tk.StringVar(value=svs.VIEW_SURFACE)
+        for label in svs.VIEWS:
             tk.Radiobutton(g, text=label, value=label, variable=self.voronoi_view,
                            bg=BG, command=self._draw).pack(side='left', padx=(0, 3))
-        tk.Label(g, text='slice', bg=BG, font=('Helvetica', 8), fg='#556')\
+        tk.Label(g, text='section at', bg=BG, font=('Helvetica', 8), fg='#556')\
             .pack(side='left', padx=(8, 2))
         self.voronoi_axis = tk.StringVar(value='Z')
         axis_box = ttk.Combobox(g, textvariable=self.voronoi_axis, state='readonly',
@@ -208,6 +208,13 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Scale(g, from_=0, to=100, orient='horizontal', variable=self.voronoi_slice,
                 length=80, showvalue=False, command=lambda _v: self._draw()
                 ).pack(side='left')
+        tk.Label(g, text='cut(m)', bg=BG, font=('Helvetica', 8), fg='#556')\
+            .pack(side='left', padx=(4, 1))
+        self.voronoi_cut = tk.DoubleVar(value=1.0)
+        cut_entry = tk.Entry(g, textvariable=self.voronoi_cut, width=5)
+        cut_entry.pack(side='left')
+        cut_entry.bind('<Return>', lambda e: self._draw())
+        cut_entry.bind('<FocusOut>', lambda e: self._draw())
 
         # ── 7 · DEFORMED SHAPE ───────────────────────────────────────────────
         # Kept apart from COLOUR BY on purpose: this colours a DIFFERENT

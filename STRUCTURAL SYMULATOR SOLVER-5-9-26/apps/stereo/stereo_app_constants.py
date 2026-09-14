@@ -86,13 +86,38 @@ FILL_SHADED = 'Shaded cells'
 FILL_VORONOI = 'Voronoi'
 FILL_MODES = (FILL_NONE, FILL_SHADED, FILL_VORONOI)
 
+# How the force colourbar's ends are anchored.
+#
+# SCALE_PEAK is the literal maximum |N| in the model, which keeps the
+# legend's numbers true for every rod but lets a single extreme member set
+# the scale for all the others: measured across the 14 grid families the
+# MEDIAN member carries only 12-32% of the peak, so most of the structure
+# lands in the pale middle of the ramp.
+#
+# SCALE_P95 anchors at the 95th percentile of |N| instead, which lifts that
+# median from about 0.44 to 0.55 of the ramp. The few members above the
+# anchor are then off the top of the scale, so they are marked CLIPPED
+# rather than silently drawn the same as one exactly at the anchor.
+SCALE_PEAK = 'Peak force'
+SCALE_P95 = '95th percentile'
+SCALE_MODES = (SCALE_PEAK, SCALE_P95)
+FORCE_SCALE_PERCENTILE = 95
+CLIP_MARK_COLOR = '#111111'   # the hairline that marks a rod above the anchor
+CLIP_MARK_DASH = (2, 3)
+
+# Cell outlines in the Voronoi "Cells" view -- drawn over the fill along the
+# rods where ownership changes, which is what makes the cells read as cells
+# rather than as a continuous colour field.
+CELL_EDGE_COLOR = '#33414d'
+CELL_EDGE_WIDTH = 1
+
 GRADIENT_SEGMENTS = 8
 GRADIENT_SEGMENTS_DENSE = 4
 GRADIENT_DENSE_MEMBERS = 900
-LOAD_PATH_COLOR = '#00acc1'
 LOAD_PATH_NEAR_ZERO_FRAC = 0.02   # members below this fraction of the largest |N| stay still
 LOAD_PATH_ARROW_HALF_PX = 7   # half-length of each travelling arrowhead glyph
 LOAD_PATH_ANIM_TICKS = 24     # ticks per full loop (24 * LOAD_PATH_TICK_MS = 3.6s)
+LOAD_PATH_COLOR_FLOOR = 0.35  # least saturated a load-path arrow may be drawn
 MOMENT_NEG_HIGH = '#c46a12'   # saturated orange -- negative moment
 MOMENT_ZERO_COLOR = '#ffffff'   # white -- zero moment
 MOMENT_POS_HIGH = '#6a2ca0'   # saturated violet -- positive moment

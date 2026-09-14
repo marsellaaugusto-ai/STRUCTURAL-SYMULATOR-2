@@ -21,7 +21,7 @@ import math
 
 from apps.stereo.stereo_app_constants import (
     TENSION_LOW, TENSION_HIGH, COMPRESSION_LOW, COMPRESSION_HIGH, GAMMA,
-    NEAR_ZERO_COLOR, NEAR_ZERO_FRAC,
+    NEAR_ZERO_COLOR, NEAR_ZERO_FRAC, LOAD_PATH_COLOR_FLOOR,
     DEFORM_LOW, DEFORM_HIGH, DEFORM_GAMMA,
     UTIL_LOW, UTIL_MID, UTIL_HIGH,
     MOMENT_NEG_HIGH, MOMENT_ZERO_COLOR, MOMENT_POS_HIGH, MOMENT_GAMMA,
@@ -53,6 +53,27 @@ def force_color(N, max_abs_N):
     if frac < NEAR_ZERO_FRAC:
         return NEAR_ZERO_COLOR
     frac = min(1.0, frac) ** GAMMA
+    if N >= 0:
+        return _lerp_hex(TENSION_LOW, TENSION_HIGH, frac)
+    return _lerp_hex(COMPRESSION_LOW, COMPRESSION_HIGH, frac)
+
+
+def load_path_color(N, max_abs_N):
+    """force_color's own hues, floored so the moving pulse stays visible.
+
+    The load-path arrowheads are an ANIMATION on a white canvas. At
+    force_color's own low end -- a #f6cec4 that is nearly the background --
+    a travelling arrowhead cannot be seen at all, which defeats the point of
+    animating it. This keeps the identical red/tension, blue/compression
+    reading and the identical gamma, but never lets a member that IS carrying
+    load be drawn fainter than LOAD_PATH_COLOR_FLOOR along the ramp. Members
+    genuinely at ~0 are not drawn by the caller at all, so nothing here has
+    to represent "no force".
+    """
+    if max_abs_N < 1e-9:
+        return NEAR_ZERO_COLOR
+    frac = min(1.0, abs(N) / max_abs_N) ** GAMMA
+    frac = max(LOAD_PATH_COLOR_FLOOR, frac)
     if N >= 0:
         return _lerp_hex(TENSION_LOW, TENSION_HIGH, frac)
     return _lerp_hex(COMPRESSION_LOW, COMPRESSION_HIGH, frac)

@@ -242,7 +242,7 @@ class StereoViewMixin:
         if self.results is not None and i < len(self.results['member_res']):
             N = self.results['member_res'][i]['N'] * frac
             sense = 'tension' if N >= 0 else 'compression'
-            lines.append(f'N = {N:+.2f} kN ({sense})')
+            lines.append(f'N = {self.fmt("force", N, sign=True)} ({sense})')
             if self.member_checks and i < len(self.member_checks):
                 chk = self.member_checks[i]
                 if chk.get('checked'):

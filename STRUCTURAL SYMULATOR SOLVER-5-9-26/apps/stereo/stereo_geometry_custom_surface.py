@@ -45,18 +45,74 @@ def make_parametric_surface(expr_x, expr_y, expr_z):
     return lambda p, q: (fx(p, q), fy(p, q), fz(p, q))
 
 
-def _domain_to_xy(coord, p, q):
+def _domain_to_xy(coord, p, q, pole=(0.0, 0.0)):
     """Resolve one domain-lattice (p, q) pair to the flat 2-vector actually
     fed into the surface function. Cartesian: identity (p, q ARE the
     surface's own x, y or u, v). Polar: p is read as a RADIUS and q as an
     ANGLE (radians), converted the usual way -- so a Polar domain samples
     the same surface function over a disk/sector/annulus instead of a
-    rectangle."""
+    rectangle.
+
+    `pole` is where that disk is CENTRED in the surface's own parameter
+    plane, and it only means anything for a Polar domain. It used to be
+    hard-wired to the origin, which is right only when the surface's apex
+    happens to sit there: a polar grid's whole point is that its rings run
+    along the surface's own contours and its ribs run straight down the
+    fall, and both are true only about the summit. Put the pole at (0, 0)
+    on a surface whose summit is at (4, 4) and the rings cut across the
+    contours at an angle that changes as they go round -- the modules stop
+    being congruent and the ribs stop being the shortest way down.
+    """
     if coord == 'cartesian':
         return p, q
     if coord == 'polar':
-        return p * math.cos(q), p * math.sin(q)
+        return pole[0] + p * math.cos(q), pole[1] + p * math.sin(q)
     raise ValueError(f"coord must be 'cartesian' or 'polar', got {coord!r}")
+
+
+def surface_summits(surface, x_range, y_range, samples=41, kind='max'):
+    """Every local summit (or hollow) of `surface` over a rectangle of its
+    own parameter plane, strongest first.
+
+    A polar domain has exactly ONE pole, and a pole is a singular point of
+    the parameterisation: every rib meets there and the modules around it
+    are wedges, not squares. That is a perfect fit for a surface with one
+    summit and a nuisance on a surface with several -- a sinusoidal roof
+    over a 4 x 4 field of humps has sixteen of them, and no single polar
+    grid can be centred on more than one.
+
+    So this exists to make that a decision rather than an accident: it
+    counts the summits and says where they are, which is what tells you
+    whether a polar grid is the right chart at all (one summit: yes, put
+    the pole on it), or whether the surface wants a Cartesian/isometric
+    lattice (which has no pole and so does not care where the summits are),
+    or one polar patch per summit stitched along their shared valleys.
+
+    `kind` is 'max' for summits and 'min' for hollows. Detection is a plain
+    8-neighbour comparison on a sampled grid, so a summit narrower than the
+    sample spacing can be missed -- raise `samples` for a surface that
+    ripples fast. Points on the rectangle's own edge are never reported: a
+    domain boundary is not a summit of the surface, only of the window.
+
+    Returns [{'x', 'y', 'z'}, ...], highest (or deepest) first.
+    """
+    x0, x1 = x_range
+    y0, y1 = y_range
+    n = max(3, int(samples))
+    xs = [x0 + (x1 - x0) * i / (n - 1) for i in range(n)]
+    ys = [y0 + (y1 - y0) * j / (n - 1) for j in range(n)]
+    z = [[surface(x, y)[2] for y in ys] for x in xs]
+    better = (lambda a, b: a > b) if kind == 'max' else (lambda a, b: a < b)
+    found = []
+    for i in range(1, n - 1):
+        for j in range(1, n - 1):
+            here = z[i][j]
+            if all(better(here, z[i + di][j + dj])
+                   for di in (-1, 0, 1) for dj in (-1, 0, 1) if (di, dj) != (0, 0)):
+                sx, sy, sz = surface(xs[i], ys[j])
+                found.append({'x': sx, 'y': sy, 'z': sz})
+    found.sort(key=lambda s: s['z'], reverse=(kind == 'max'))
+    return found
 
 
 def _surface_normal(surface, p, q, eps=1e-4):
@@ -246,7 +302,8 @@ def _boundary_nodes(grid, imax, jmax, wrap_j):
 
 def custom_surface_grid(surface, coord='cartesian', pattern='square',
                         p_range=(0.0, 1.0), q_range=(0.0, 1.0), n1=8, n2=8,
-                        module='2d', depth=0.0, offset_side='top'):
+                        module='2d', depth=0.0, offset_side='top',
+                        pole=(0.0, 0.0)):
     """Sample an arbitrary `surface(p, q) -> (x, y, z)` (from
     make_height_field_surface or make_parametric_surface) into a mesh, via
     the domain/module wizard: `coord` picks the (p, q) domain's shape
@@ -267,6 +324,11 @@ def custom_surface_grid(surface, coord='cartesian', pattern='square',
                   rather than an open sector).
     n1, n2       : division counts along p and q (isometric derives its
                   own n2 -- see _domain_lattice).
+    pole         : where a POLAR domain's centre sits in the surface's own
+                  parameter plane; ignored for a Cartesian one. Put it on
+                  the summit the grid is meant to be about -- see
+                  surface_summits, and _domain_to_xy for what goes wrong
+                  when it sits anywhere else.
 
     A 2D module's 'square' and 'diagonal' patterns provide NO diagonal-
     plane bracing of their own (each is topologically just an orthogonal
@@ -305,7 +367,7 @@ def custom_surface_grid(surface, coord='cartesian', pattern='square',
     seen = set()
 
     def place(p, q, along_normal=0.0):
-        x, y = _domain_to_xy(coord, p, q)
+        x, y = _domain_to_xy(coord, p, q, pole)
         sx, sy, sz = surface(x, y)
         if along_normal:
             nx, ny, nz = _surface_normal(surface, x, y)
@@ -338,7 +400,8 @@ def custom_surface_grid(surface, coord='cartesian', pattern='square',
 
 
 def custom_surface_between(surface_top, surface_bottom, coord='cartesian', pattern='square',
-                           p_range=(0.0, 1.0), q_range=(0.0, 1.0), n1=8, n2=8):
+                           p_range=(0.0, 1.0), q_range=(0.0, 1.0), n1=8, n2=8,
+                           pole=(0.0, 0.0)):
     """Connect two INDEPENDENTLY-shaped surfaces with a double-layer grid,
     one designated `surface_top` and the other `surface_bottom` -- the
     general two-surface form of custom_surface_grid's own '3d' module,
@@ -360,7 +423,7 @@ def custom_surface_between(surface_top, surface_bottom, coord='cartesian', patte
 
     top, bottom = {}, {}
     for ij, (p, q) in grid_pq.items():
-        x, y = _domain_to_xy(coord, p, q)
+        x, y = _domain_to_xy(coord, p, q, pole)
         top[ij] = bank.add(*surface_top(x, y))
         bottom[ij] = bank.add(*surface_bottom(x, y))
 

@@ -84,7 +84,8 @@ class StereoReportsMixin:
 
         cols = ('idx', 'a', 'b', 'role', 'conn', 'N', 'mode', 'util', 'status', 'governing')
         headers = {'idx': '#', 'a': 'A', 'b': 'B', 'role': 'Role', 'conn': 'Conn',
-                  'N': 'N (kN)', 'mode': 'Mode', 'util': 'Util.', 'status': 'Status',
+                  'N': f'N ({self.u("force")})', 'mode': 'Mode', 'util': 'Util.',
+                  'status': 'Status',
                   'governing': 'Governing'}
         widths = {'idx': 40, 'a': 40, 'b': 40, 'role': 90, 'conn': 55, 'N': 75,
                  'mode': 90, 'util': 60, 'status': 60, 'governing': 220}
@@ -117,7 +118,9 @@ class StereoReportsMixin:
                 status = '—'
                 governing = chk.get('note', '')
             tv.insert('', 'end', values=(i, m['a'], m['b'], m.get('role', ''),
-                                        m.get('conn', 'pin'), f"{mr['N']:+.2f}",
+                                        m.get('conn', 'pin'),
+                                        self.fmt('force', mr['N'], sign=True,
+                                                 with_label=False),
                                         chk.get('mode', '') or '', util_text, status,
                                         governing),
                      tags=('over',) if status == 'OVER' else ())

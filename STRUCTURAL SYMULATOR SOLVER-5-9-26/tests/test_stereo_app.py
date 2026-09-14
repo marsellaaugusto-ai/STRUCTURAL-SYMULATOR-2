@@ -2205,6 +2205,122 @@ def test_wizard_polar_full_circle_and_isometric_pattern_generates_cleanly(app):
     assert len(app.members) > 0
 
 
+# ── where the polar grid's pole goes ────────────────────────────────────────
+
+def _labels(win):
+    return _descendants(win, tk.Label)
+
+
+def _label_text(win, needle):
+    for lb in _labels(win):
+        try:
+            text = lb.cget('text')
+        except tk.TclError:
+            continue
+        if needle in (text or ''):
+            return text
+    return None
+
+
+def _entry_after(win, label_text):
+    """The entries on the row whose leading label reads `label_text`."""
+    for lb in _labels(win):
+        if (lb.cget('text') or '') == label_text:
+            return [w for w in lb.master.winfo_children() if isinstance(w, tk.Entry)]
+    return []
+
+
+def test_the_pole_fields_only_appear_for_a_polar_domain(app):
+    win = _open_wizard(app)
+    radios = _descendants(win, tk.Radiobutton)
+    assert not _entry_after(win, 'pole at:') or \
+        _entry_after(win, 'pole at:')[0].master.master.winfo_manager() == ''
+    [r for r in radios if r.cget('text') == 'Polar'][0].invoke()
+    win.update_idletasks()
+    assert len(_entry_after(win, 'pole at:')) == 2
+    win.destroy()
+
+
+def test_finding_the_summit_moves_the_pole_onto_it(app):
+    """The user's question, answered in the dialog: a dome centred at
+    (4, 4) should put the pole at (4, 4), not leave it at the origin."""
+    win = _open_wizard(app)
+    radios = _descendants(win, tk.Radiobutton)
+    [r for r in radios if r.cget('text') == 'Polar'][0].invoke()
+    entries = _descendants(win, tk.Entry)
+    entries[0].delete(0, tk.END)
+    entries[0].insert(0, '3 - 0.1*((x-4)**2 + (y-4)**2)')
+    for box, value in zip(_entry_after(win, 'r range:'), ('0.01', '6')):
+        box.delete(0, tk.END)
+        box.insert(0, value)
+    win.update_idletasks()
+
+    [b for b in _descendants(win, tk.Button)
+     if 'summit' in b.cget('text')][0].invoke()
+    pole = [float(e.get()) for e in _entry_after(win, 'pole at:')]
+    assert pole == pytest.approx([4.0, 4.0], abs=0.25)
+    assert 'One summit' in _label_text(win, 'summit')
+    win.destroy()
+
+
+def test_a_many_summited_surface_says_one_pole_cannot_serve_them_all(app):
+    """A sinusoidal roof has a summit per hump. The dialog has to say so
+    rather than quietly centring on one of them."""
+    win = _open_wizard(app)
+    radios = _descendants(win, tk.Radiobutton)
+    [r for r in radios if r.cget('text') == 'Polar'][0].invoke()
+    entries = _descendants(win, tk.Entry)
+    entries[0].delete(0, tk.END)
+    entries[0].insert(0, 'sin(x)*sin(y)')
+    for box, value in zip(_entry_after(win, 'r range:'), ('0.01', '12')):
+        box.delete(0, tk.END)
+        box.insert(0, value)
+    win.update_idletasks()
+
+    [b for b in _descendants(win, tk.Button)
+     if 'summit' in b.cget('text')][0].invoke()
+    said = _label_text(win, 'summits')
+    assert said and 'cannot be centred' in said
+    assert 'Cartesian or isometric' in said
+    win.destroy()
+
+
+def test_a_surface_with_no_summit_says_so_instead_of_picking_a_corner(app):
+    win = _open_wizard(app)
+    radios = _descendants(win, tk.Radiobutton)
+    [r for r in radios if r.cget('text') == 'Polar'][0].invoke()
+    entries = _descendants(win, tk.Entry)
+    entries[0].delete(0, tk.END)
+    entries[0].insert(0, '0.5*x + 0.25*y')
+    win.update_idletasks()
+    [b for b in _descendants(win, tk.Button)
+     if 'summit' in b.cget('text')][0].invoke()
+    assert 'No summit' in _label_text(win, 'No summit')
+    assert [float(e.get()) for e in _entry_after(win, 'pole at:')] == [0.0, 0.0]
+    win.destroy()
+
+
+def test_the_wizard_builds_the_grid_about_the_pole_it_was_given(app):
+    win = _open_wizard(app)
+    radios = _descendants(win, tk.Radiobutton)
+    [r for r in radios if r.cget('text') == 'Polar'][0].invoke()
+    entries = _descendants(win, tk.Entry)
+    entries[0].delete(0, tk.END)
+    entries[0].insert(0, '3 - 0.1*((x-4)**2 + (y-4)**2)')
+    for box, value in zip(_entry_after(win, 'r range:'), ('0.01', '4')):
+        box.delete(0, tk.END)
+        box.insert(0, value)
+    [c for c in _descendants(win, tk.Checkbutton)
+     if 'Full circle' in c.cget('text')][0].invoke()
+    for box, value in zip(_entry_after(win, 'pole at:'), ('4', '4')):
+        box.delete(0, tk.END)
+        box.insert(0, value)
+    win.update_idletasks()
+    [b for b in _descendants(win, tk.Button)
+     if b.cget('text') == 'Generate'][0].invoke()
+    assert max(n[2] for n in app.nodes) == pytest.approx(3.0, abs=1e-3)
+
+
 def test_wizard_generated_mesh_is_undoable(app):
     n0 = len(app.nodes)
     win = _open_wizard(app)
@@ -3085,6 +3201,229 @@ def test_utilization_colorbar_is_a_continuous_gradient(app):
     app._draw()
     fills = [app.canvas.itemcget(i, 'fill') for i in _colorbar_rects(app)]
     assert len(set(fills)) > 10
+
+
+# ── the audit: the moment maths against statics, every ramp against itself ──
+
+@pytest.mark.parametrize('along', ['x', 'y', 'z'])
+def test_a_rigid_cantilevers_joint_moment_equals_its_own_reaction(along):
+    """The check the node-moment colouring rests on. A cantilever of length
+    L with a tip load P has exactly P*L at its fixed end, and
+    node_moment_vectors must reproduce the reaction it is drawn beside --
+    axis for axis, sign for sign, in all three orientations, since a member
+    running along Z exercises a different branch of the local-axis
+    transform than one along X."""
+    L, P = 4.0, -10.0
+    tip = {'x': (L, 0.0, 0.0), 'y': (0.0, L, 0.0), 'z': (0.0, 0.0, L)}[along]
+    nodes = [(0.0, 0.0, 0.0), tip]
+    members = [{'a': 0, 'b': 1, 'E': 200.0, 'A': 20.0, 'I': 400.0, 'J': 400.0,
+                'conn': 'rigid'}]
+    # a load across the member, whichever way it runs
+    loads = [{'node': 1, 'fx' if along == 'z' else 'fz': P}]
+    results, err = sm.analyze(nodes, members, loads, [{'node': 0, 'type': 'fixed'}])
+    assert err is None, err
+
+    reaction = results['reactions'][0]
+    joint = sm.node_moment_vectors(nodes, members, results['member_res'])
+    assert 0 in joint, 'the fixed joint carries no moment at all'
+    for key in ('Mx', 'My', 'Mz'):
+        assert joint[0][key] == pytest.approx(reaction.get(key, 0.0), abs=1e-6)
+    assert math.hypot(joint[0]['Mx'], joint[0]['My'], joint[0]['Mz']) \
+        == pytest.approx(abs(P) * L, rel=1e-6)
+    free = joint[1]
+    assert math.hypot(free['Mx'], free['My'], free['Mz']) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_pin_jointed_member_contributes_no_joint_moment():
+    """A pin transmits force only, so a pin-jointed model reads ~0 moment
+    everywhere -- physics, not a broken feature."""
+    nodes = [(0.0, 0.0, 0.0), (4.0, 0.0, 0.0)]
+    members = [{'a': 0, 'b': 1, 'E': 200.0, 'A': 20.0, 'conn': 'pin'}]
+    member_res = [{'N': 5.0, 'conn': 'pin', 'length_m': 4.0}]
+    assert sm.node_moment_vectors(nodes, members, member_res) == {}
+
+
+def _hexes(fn, values):
+    return [fn(v) for v in values]
+
+
+def _valid(color):
+    return (isinstance(color, str) and len(color) == 7 and color[0] == '#'
+            and all(ch in '0123456789abcdefABCDEF' for ch in color[1:]))
+
+
+def test_every_spectrum_returns_a_well_formed_colour_for_any_input():
+    """Including the inputs a real model produces at its edges: exactly
+    zero, exactly the maximum, past the maximum, and a maximum of zero."""
+    from apps.stereo.stereo_app_colors import load_path_color, util_color
+    extremes = (-1e9, -100.0, -1.0, -1e-12, 0.0, 1e-12, 1.0, 100.0, 1e9)
+    for scale in (0.0, 1e-12, 1.0, 1e6):
+        for v in extremes:
+            for fn in (force_color, load_path_color, moment_color):
+                assert _valid(fn(v, scale)), (fn.__name__, v, scale)
+            assert _valid(deform_color(abs(v), scale))
+    for u in (-5.0, 0.0, 0.25, 0.5, 0.999, 1.0, 1.0001, 50.0):
+        assert _valid(util_color(u))
+
+
+def test_each_ramp_approaches_its_own_saturated_end_without_doubling_back():
+    """A spectrum that doubles back reads two different magnitudes as the
+    same colour. Measured as RGB distance from the ramp's OWN saturated end
+    (not from zero: force_color's near-zero grey is off the ramp entirely,
+    by design, so distance-from-zero is not what the eye follows)."""
+    def dist(a, b):
+        return sum((int(a[i:i + 2], 16) - int(b[i:i + 2], 16)) ** 2
+                   for i in (1, 3, 5))
+
+    # start past the near-zero grey band so the flat step is not read as a
+    # reversal of a ramp it is not part of
+    steps = [0.2 + 0.8 * i / 20.0 for i in range(21)]
+    for fn in (lambda t: force_color(t, 1.0),
+               lambda t: force_color(-t, 1.0),
+               lambda t: deform_color(t, 1.0),
+               lambda t: moment_color(t, 1.0),
+               lambda t: moment_color(-t, 1.0)):
+        seen = [dist(fn(t), fn(1.0)) for t in steps]
+        assert all(b <= a for a, b in zip(seen, seen[1:])), seen
+        assert seen[0] > seen[-1], 'the ramp never actually moves'
+        assert seen[-1] == 0
+
+
+def test_util_colour_rises_with_utilisation_and_then_stays_at_over_capacity():
+    from apps.stereo.stereo_app_colors import util_color
+    reds = [util_color(u) for u in (0.0, 0.25, 0.5, 0.75, 1.0)]
+    assert len(set(reds)) == 5, 'two different utilisations read identically'
+    assert util_color(1.0) == util_color(2.0) == util_color(50.0)
+    assert util_color(-3.0) == util_color(0.0), 'a negative ratio is clamped, not wrapped'
+
+
+def test_every_spectrum_clamps_past_its_own_maximum():
+    """A member past the anchor (the 95th-percentile scale deliberately
+    leaves some) must saturate, never wrap round to the other end."""
+    assert force_color(5.0, 1.0) == force_color(1.0, 1.0)
+    assert force_color(-5.0, 1.0) == force_color(-1.0, 1.0)
+    assert moment_color(5.0, 1.0) == moment_color(1.0, 1.0)
+    assert moment_color(-5.0, 1.0) == moment_color(-1.0, 1.0)
+    assert deform_color(5.0, 1.0) == deform_color(1.0, 1.0)
+
+
+def test_the_two_diverging_spectra_never_confuse_their_two_halves():
+    """Tension must never be painted a compression colour at any magnitude,
+    and sagging never a hogging colour -- checked by hue, not by one
+    sample."""
+    def dominant(color):
+        r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+        return 'r' if r > b else ('b' if b > r else '=')
+
+    for t in (i / 20.0 for i in range(4, 21)):
+        assert dominant(force_color(t, 1.0)) == 'r', t
+        assert dominant(force_color(-t, 1.0)) == 'b', t
+        # orange is red-dominant, violet is blue-dominant
+        assert dominant(moment_color(-t, 1.0)) == 'r', t
+        assert dominant(moment_color(t, 1.0)) == 'b', t
+
+
+def test_the_moment_field_never_scales_a_node_past_its_own_maximum(app):
+    """max_abs is what every node's colour divides by, so no node may
+    exceed it -- otherwise some node saturates and the ramp above it is
+    dead."""
+    app.sec_conn.set('rigid')
+    app._on_connectivity_change()
+    app._apply_sections()
+    app._analyze()
+    field, max_abs = app._moment_field_by_node(1.0)
+    assert field, 'a rigid model produced no nodal moments at all'
+    assert max_abs > 0.0
+    assert max(abs(v) for v in field.values()) == pytest.approx(max_abs)
+
+
+def test_a_supports_reaction_wins_over_its_own_member_end_moment(app):
+    """A node cannot hold two different moment values; the documented rule
+    is that the support's own reaction is the one shown."""
+    app.sec_conn.set('rigid')
+    app._on_connectivity_change()
+    app._apply_sections()
+    app._analyze()
+    field, _max_abs = app._moment_field_by_node(1.0)
+    node = next(iter({s['node'] for s in app.supports} & set(field)), None)
+    assert node is not None, 'no support carried a moment'
+    from apps.stereo.stereo_app_colors import reaction_moment_signed
+    centroid = (sum(n[0] for n in app.nodes) / len(app.nodes),
+                sum(n[1] for n in app.nodes) / len(app.nodes))
+    expected = reaction_moment_signed(app.results['reactions'][node],
+                                      app.moment_axis.get(),
+                                      (app.nodes[node][0], app.nodes[node][1]), centroid)
+    assert field[node] == pytest.approx(expected)
+
+
+def test_the_colourbars_are_labelled_in_the_conventions_own_units(app):
+    """Found by the audit. Every colourbar caption hard-coded kN, kN·m and
+    mm, so under AISC -- the one convention that is a different SYSTEM, not
+    a different SI sub-unit -- the tables beside this legend said kip while
+    the legend said kN, with kN numbers under it."""
+    import units
+    app.sec_conn.set('rigid')
+    app._on_connectivity_change()
+    app._apply_sections()
+    app._analyze()
+    app.colour_by_moment.set(True)
+    app.show_deformed.set(True)
+
+    def captions():
+        return [app.canvas.itemcget(i, 'text') for i in app.canvas.find_all()
+                if app.canvas.type(i) == 'text']
+
+    def find(prefix):
+        return next(t for t in captions() if t.startswith(prefix))
+
+    before = units.current()
+    try:
+        units.set_current('cirsoc')
+        app._draw()
+        assert 'kN' in find('Axial force')
+        assert 'kN·m' in find('Node moment')
+        assert '(mm)' in find('Deformed shape')
+
+        units.set_current('aisc')
+        app._draw()
+        assert 'kip' in find('Axial force') and 'kN' not in find('Axial force')
+        assert 'kip·ft' in find('Node moment')
+        assert '(in)' in find('Deformed shape')
+    finally:
+        units.set_current(before.key if hasattr(before, 'key') else 'cirsoc')
+        app._draw()
+
+
+def test_the_force_tick_labels_are_converted_not_just_relabelled(app):
+    """Relabelling kN as kip without dividing by 4.448 would be worse than
+    leaving it wrong."""
+    import units
+    app._analyze()
+    app.colour_by_force.set(True)
+
+    def ticks():
+        out = []
+        for i in app.canvas.find_all():
+            if app.canvas.type(i) != 'text':
+                continue
+            t = app.canvas.itemcget(i, 'text')
+            if t and t[0] in '+−≤≥':
+                out.append(t)
+        return out
+
+    before = units.current()
+    try:
+        units.set_current('cirsoc')
+        app._draw()
+        si = ticks()
+        units.set_current('aisc')
+        app._draw()
+        imperial = ticks()
+    finally:
+        units.set_current(before.key if hasattr(before, 'key') else 'cirsoc')
+        app._draw()
+    assert si and imperial
+    assert si != imperial, 'the numbers did not change with the convention'
 
 
 def test_moment_colorbar_is_a_continuous_gradient(app):

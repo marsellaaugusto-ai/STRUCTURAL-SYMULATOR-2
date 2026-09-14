@@ -1263,6 +1263,16 @@ class StereoRenderMixin:
             c.create_text(x0, y, text=text, anchor='w', font=('Helvetica', 8, 'bold'), fill='#333')
             y += 13
 
+        def scaled(quantity, stored):
+            """A stored value written in the convention the rest of the tab
+            is using. The colourbar's own COLOURS stay in stored units --
+            force_color and friends only ever see a ratio, so converting
+            them would change nothing -- but its tick labels and its unit
+            word are read as numbers, and under AISC the tables beside this
+            legend say kip while these said kN."""
+            shown = self.show(quantity, stored)
+            return shown, ('.0f' if abs(shown) >= 10.0 else '.2f')
+
         def colorbar(color_fn, lo, hi, ticks, n_segs=44):
             # A CONTINUOUS gradient strip standing in for what used to be 2-3
             # flat, hand-picked swatches (e.g. "tension" / "compression" /
@@ -1304,10 +1314,12 @@ class StereoRenderMixin:
                 caption('Utilization (demand ÷ capacity):')
                 colorbar(util_color, 0.0, 1.2, [(0.0, '0'), (0.5, '0.5'), (1.0, '≥1.0 (over)')])
             elif by_force:
-                caption('Axial force, kN (+ tension / − compression):')
-                ends = (f'−{max_abs_N:.0f}', f'+{max_abs_N:.0f}')
+                caption(f'Axial force, {self.u("force")} '
+                        '(+ tension / − compression):')
+                shown_N, spec = scaled('force', max_abs_N)
+                ends = (f'−{shown_N:{spec}}', f'+{shown_N:{spec}}')
                 if self.force_scale.get() == SCALE_P95:
-                    ends = (f'≤−{max_abs_N:.0f}', f'≥+{max_abs_N:.0f}')
+                    ends = (f'≤−{shown_N:{spec}}', f'≥+{shown_N:{spec}}')
                 colorbar(lambda N: force_color(N, max_abs_N), -max_abs_N, max_abs_N,
                         [(-max_abs_N, ends[0]), (0.0, '0'), (max_abs_N, ends[1])])
                 # Grey is a claim about the structure, so the legend backs it
@@ -1362,10 +1374,11 @@ class StereoRenderMixin:
                 row(REACTION_COLOR, 'reaction (support pushing back)')
             if self.colour_by_moment.get() and self.results is not None:
                 axis_txt = self.moment_axis.get()
-                caption(f'Node moment, kN·m ({axis_txt}):')
+                caption(f'Node moment, {self.u("moment")} ({axis_txt}):')
+                shown_m, spec = scaled('moment', max_abs_moment)
                 colorbar(lambda m: moment_color(m, max_abs_moment), -max_abs_moment, max_abs_moment,
-                        [(-max_abs_moment, f'−{max_abs_moment:.1f}'), (0.0, '0'),
-                         (max_abs_moment, f'+{max_abs_moment:.1f}')])
+                        [(-max_abs_moment, f'−{shown_m:{spec}}'), (0.0, '0'),
+                         (max_abs_moment, f'+{shown_m:{spec}}')])
                 # With the smooth gradient on, the rods carry the moment field
                 # themselves rather than fading out of the way of the nodes,
                 # so the backdrop note would be describing the opposite of
@@ -1391,9 +1404,10 @@ class StereoRenderMixin:
             else:
                 _deformed, disp_mm = self._deformed_nodes_and_disp()
                 max_disp = max(disp_mm, default=0.0)
-                caption('Deformed shape, displacement (mm):')
+                caption(f'Deformed shape, displacement ({self.u("deflection")}):')
+                shown_d, spec = scaled('deflection', max_disp)
                 colorbar(lambda d: deform_color(d, max_disp), 0.0, max_disp,
-                        [(0.0, '0'), (max_disp, f'{max_disp:.1f}')])
+                        [(0.0, '0'), (max_disp, f'{shown_d:{spec}}')])
 
         if self.add_rod_mode.get():
             msg = ('Add rod: click a SECOND node to connect (dashed ring = pending)'

@@ -107,6 +107,8 @@ def util_color(util):
     if util <= 1.0:
         return _lerp_hex(UTIL_MID, UTIL_HIGH, (util - 0.5) / 0.5)
     return UTIL_HIGH
+
+
 def reaction_moment_signed(reaction, axis=MOMENT_AXIS_RESULTANT, node_xy=None, centroid_xy=None):
     """One signed scalar (kN*m) from a solved reaction's own Mx/My/Mz, for
     moment_color. `axis` picks which:

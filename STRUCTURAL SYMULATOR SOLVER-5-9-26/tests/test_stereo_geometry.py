@@ -1706,3 +1706,101 @@ def test_every_generator_yields_a_usable_base_module():
         assert bm['members'], name
         assert all(0 <= m['a'] < len(bm['nodes']) and 0 <= m['b'] < len(bm['nodes'])
                    for m in bm['members']), f'{name} points off its own node list'
+
+
+# ── where a polar grid's pole goes ──────────────────────────────────────────
+
+def _dome_at(cx, cy, peak=3.0, k=0.1):
+    return sg.make_height_field_surface(f'{peak} - {k}*((x-{cx})**2 + (y-{cy})**2)')
+
+
+def test_the_summit_of_a_single_peaked_surface_is_found_where_it_is():
+    summits = sg.surface_summits(_dome_at(4.0, 4.0), (0.0, 8.0), (0.0, 8.0))
+    assert len(summits) == 1
+    assert summits[0]['x'] == pytest.approx(4.0, abs=0.2)
+    assert summits[0]['y'] == pytest.approx(4.0, abs=0.2)
+    assert summits[0]['z'] == pytest.approx(3.0, abs=0.01)
+
+
+def test_a_sinusoidal_surface_reports_every_summit_it_has():
+    """The user's own question: a surface with MANY apexes. One polar grid
+    has one pole, so the count is what says a polar domain is the wrong
+    chart here."""
+    wavy = sg.make_height_field_surface('sin(x)*sin(y)')
+    span = (0.0, 4.0 * math.pi)
+    summits = sg.surface_summits(wavy, span, span, samples=81)
+    assert len(summits) == 8
+    assert all(s['z'] == pytest.approx(1.0, abs=0.02) for s in summits)
+
+
+def test_hollows_are_found_the_same_way_as_summits():
+    wavy = sg.make_height_field_surface('sin(x)*sin(y)')
+    span = (0.0, 4.0 * math.pi)
+    hollows = sg.surface_summits(wavy, span, span, samples=81, kind='min')
+    assert len(hollows) == 8
+    assert all(s['z'] == pytest.approx(-1.0, abs=0.02) for s in hollows)
+    assert hollows[0]['z'] <= hollows[-1]['z']
+
+
+def test_a_monotone_slope_has_no_summit_to_put_a_pole_on():
+    """A ramp rises only towards its own edge, and a domain boundary is not
+    a summit of the surface -- reporting one would send the pole to a corner."""
+    ramp = sg.make_height_field_surface('0.5*x + 0.25*y')
+    assert sg.surface_summits(ramp, (0.0, 8.0), (0.0, 8.0)) == []
+
+
+def test_the_pole_moves_the_polar_grid_onto_the_summit():
+    """The defect: the pole was hard-wired to the parameter origin, so a
+    surface whose summit is at (4, 4) got a grid that never reached it."""
+    surface = _dome_at(4.0, 4.0)
+    kw = dict(coord='polar', p_range=(0.01, 4.0), q_range=(0.0, 2.0 * math.pi),
+              n1=4, n2=12)
+    at_origin = sg.custom_surface_grid(surface, **kw)
+    on_summit = sg.custom_surface_grid(surface, pole=(4.0, 4.0), **kw)
+    assert max(n[2] for n in on_summit["nodes"]) == pytest.approx(3.0, abs=1e-3)
+    assert max(n[2] for n in at_origin['nodes']) < 2.9
+
+
+def test_the_pole_leaves_a_cartesian_domain_alone():
+    """It is a polar idea; a Cartesian lattice has no pole to move."""
+    surface = _dome_at(4.0, 4.0)
+    kw = dict(coord='cartesian', p_range=(0.0, 8.0), q_range=(0.0, 8.0), n1=4, n2=4)
+    assert sg.custom_surface_grid(surface, **kw)['nodes'] == \
+        sg.custom_surface_grid(surface, pole=(4.0, 4.0), **kw)['nodes']
+
+
+def test_a_polar_grid_about_its_summit_has_congruent_rings():
+    """What the pole is FOR. Centred on the summit of a surface of
+    revolution, every node of one ring sits at the same height -- the rings
+    follow the contours. Off-centre they do not."""
+    surface = _dome_at(4.0, 4.0)
+    kw = dict(coord='polar', p_range=(1.0, 4.0), q_range=(0.0, 2.0 * math.pi),
+              n1=3, n2=16)
+    centred = sg.custom_surface_grid(surface, pole=(4.0, 4.0), **kw)
+    off = sg.custom_surface_grid(surface, **kw)
+
+    def ring_spread(mesh):
+        zs = sorted(round(n[2], 6) for n in mesh['nodes'])
+        return max(zs) - min(zs), len(set(zs))
+
+    _spread_c, levels_c = ring_spread(centred)
+    _spread_o, levels_o = ring_spread(off)
+    assert levels_c == 4, 'n1=3 gives 4 rings, each at one height'
+    assert levels_o > 4 * levels_c, 'an off-centre grid should smear the rings'
+
+
+def test_two_surfaces_take_the_same_pole():
+    """A double layer is sampled over ONE domain, so the pole has to reach
+    both or the two layers would be built about different centres."""
+    top = _dome_at(4.0, 4.0, peak=3.0)
+    bottom = _dome_at(4.0, 4.0, peak=2.0)
+    kw = dict(coord='polar', p_range=(0.01, 4.0), q_range=(0.0, 2.0 * math.pi),
+              n1=3, n2=12)
+    mesh = sg.custom_surface_between(top, bottom, pole=(4.0, 4.0), **kw)
+    # Both layers peak over the pole -- 3.0 for the top, 2.0 for the bottom
+    # -- which they only do if the pole reached both. (r_min is 0.01, not 0,
+    # so each apex node sits a hair off its own summit.)
+    zs = [n[2] for n in mesh['nodes']]
+    assert any(abs(z - 3.0) < 1e-3 for z in zs), 'the top layer missed its apex'
+    assert any(abs(z - 2.0) < 1e-3 for z in zs), 'the bottom layer missed its apex'
+    assert max(zs) == pytest.approx(3.0, abs=1e-3)

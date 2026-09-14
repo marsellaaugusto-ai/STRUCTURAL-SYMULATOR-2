@@ -280,17 +280,96 @@ class StereoWizardMixin:
                                          variable=full_circle_var, bg=BG,
                                          command=on_full_circle)
 
+        # ── where the pole sits ─────────────────────────────────────────────
+        # A polar grid's rings follow the surface's contours and its ribs run
+        # straight down the fall -- both true only ABOUT THE SUMMIT. The pole
+        # used to be stuck at the parameter origin, so a surface whose summit
+        # is anywhere else got rings cutting across its contours at an angle
+        # that changed as they went round.
+        pole_frame = tk.Frame(domain_box, bg=BG)
+        pole_x_var = tk.DoubleVar(master=win, value=0.0)
+        pole_y_var = tk.DoubleVar(master=win, value=0.0)
+        polerow = tk.Frame(pole_frame, bg=BG)
+        polerow.pack(fill='x', padx=6, pady=2)
+        tk.Label(polerow, text='pole at:', bg=BG, width=10, anchor='w',
+                font=('Helvetica', 9)).pack(side='left')
+        tk.Entry(polerow, textvariable=pole_x_var, width=8).pack(side='left')
+        tk.Label(polerow, text=',', bg=BG).pack(side='left', padx=2)
+        tk.Entry(polerow, textvariable=pole_y_var, width=8).pack(side='left')
+        summit_label = tk.Label(pole_frame, text='', bg=BG, fg='#666',
+                                font=('Helvetica', 8), justify='left',
+                                wraplength=420)
+        summit_label.pack(anchor='w', padx=6)
+
+        def find_summits():
+            """Count the surface's summits and offer to sit the pole on the
+            highest. The COUNT is the real answer: one summit and a polar
+            grid is the right chart; several and no single pole can serve
+            them all, which is the moment to reach for a Cartesian or
+            isometric lattice (no pole at all) or one polar patch per
+            summit."""
+            try:
+                # whichever surface the wizard is currently defining -- in
+                # two-surface mode the TOP one is the shape whose summit a
+                # polar grid is laid out about
+                surface = (single_build() if mode_var.get() == 'single'
+                           else top_build())
+            except Exception as exc:          # a half-typed expression
+                summit_label.config(text=f'Cannot read the surface yet: {exc}')
+                return
+            try:
+                span = (float(p1_var.get()) - float(p0_var.get())) or 1.0
+                cx, cy = float(pole_x_var.get()), float(pole_y_var.get())
+            except (tk.TclError, ValueError):
+                summit_label.config(text='Enter a numeric range and pole first.')
+                return
+            window = (cx - abs(span), cx + abs(span)), (cy - abs(span), cy + abs(span))
+            try:
+                tops = sg.surface_summits(surface, window[0], window[1], samples=61)
+            except Exception as exc:
+                summit_label.config(text=f'Cannot sample the surface: {exc}')
+                return
+            if not tops:
+                summit_label.config(
+                    text='No summit inside this window -- the surface only rises '
+                         'towards its edge here, so there is nothing for a pole to '
+                         'sit on. A Cartesian domain suits this shape better.')
+                return
+            best = tops[0]
+            pole_x_var.set(round(best['x'], 4))
+            pole_y_var.set(round(best['y'], 4))
+            if len(tops) == 1:
+                summit_label.config(
+                    text=f"One summit, at ({best['x']:.3f}, {best['y']:.3f}), "
+                         f"z = {best['z']:.3f}. The pole is on it: rings now follow "
+                         f"the contours and ribs run down the fall.")
+            else:
+                summit_label.config(
+                    text=f"{len(tops)} summits in this window. The pole is on the "
+                         f"highest, ({best['x']:.3f}, {best['y']:.3f}), but ONE polar "
+                         f"grid cannot be centred on {len(tops)} -- the others get "
+                         f"rings cutting across their own contours. Either use a "
+                         f"Cartesian or isometric domain (no pole, so it does not "
+                         f"care where the summits are), or build one polar patch per "
+                         f"summit and join them along the valleys.")
+
+        tk.Button(pole_frame, text='Find the summit(s)', command=find_summits
+                 ).pack(anchor='w', padx=6, pady=(2, 4))
+
         def on_coord_change():
             if coord_var.get() == 'polar':
                 p_label_var.set('r range:')
                 q_label_var.set('theta range:')
-                coord_hint.config(text='Polar: p is read as radius, q as angle (radians).')
+                coord_hint.config(text='Polar: p is read as radius, q as angle '
+                                       '(radians), about the pole below.')
                 full_circle_chk.pack(anchor='w', padx=6, pady=(0, 4))
+                pole_frame.pack(fill='x')
             else:
                 p_label_var.set('p range:')
                 q_label_var.set('q range:')
                 coord_hint.config(text='Cartesian: p, q ARE the surface\'s own x, y (or u, v).')
                 full_circle_chk.pack_forget()
+                pole_frame.pack_forget()
         on_coord_change()
 
         # ── pattern ─────────────────────────────────────────────────────────
@@ -365,16 +444,18 @@ class StereoWizardMixin:
                 q_range = (float(q0_var.get()), float(q1_var.get()))
                 n1, n2 = int(n1_var.get()), int(n2_var.get())
                 coord, pattern = coord_var.get(), pattern_var.get()
+                pole = (float(pole_x_var.get()), float(pole_y_var.get()))
                 if mode_var.get() == 'single':
                     surface = single_build()
                     mesh = sg.custom_surface_grid(
                         surface, coord=coord, pattern=pattern, p_range=p_range,
                         q_range=q_range, n1=n1, n2=n2, module=module_var.get(),
-                        depth=float(depth_var.get()), offset_side=side_var.get())
+                        depth=float(depth_var.get()), offset_side=side_var.get(),
+                        pole=pole)
                 else:
                     mesh = sg.custom_surface_between(
                         top_build(), bottom_build(), coord=coord, pattern=pattern,
-                        p_range=p_range, q_range=q_range, n1=n1, n2=n2)
+                        p_range=p_range, q_range=q_range, n1=n1, n2=n2, pole=pole)
             except (em.ExpressionError, ValueError, tk.TclError) as exc:
                 status_var.set(str(exc))
                 return
@@ -423,6 +504,8 @@ class StereoWizardMixin:
             module_var.set(recipe.get('module', '2d'))
             depth_var.set(float(recipe.get('depth', 0.5)))
             side_var.set(recipe.get('side', 'top'))
+            pole = recipe.get('pole', (0.0, 0.0))
+            pole_x_var.set(pole[0]); pole_y_var.set(pole[1])
             on_module_change()
 
         load_recipe(getattr(self, '_wizard_recipe', None))

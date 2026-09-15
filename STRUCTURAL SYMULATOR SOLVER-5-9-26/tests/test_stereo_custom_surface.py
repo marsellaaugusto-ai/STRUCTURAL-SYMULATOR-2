@@ -268,7 +268,13 @@ def test_custom_surface_between_connects_corresponding_nodes():
 
 @pytest.mark.parametrize('pattern', ['square', 'diagonal', 'isometric'])
 def test_custom_surface_between_analyzes_under_self_weight(pattern):
-    top = sg.make_height_field_surface('2.0 * (1 - (x/5)^2 - (y/4)^2) + 1.0')
+    # The dish is written over TWICE the domain's own half-widths so it stays
+    # clear of the plane at the corners, which sit sqrt(5^2 + 4^2) = 6.40 m
+    # out while the edge midpoints are only 4-5 m out. Written over 5 and 4 it
+    # reached the plane inside the rectangle, and custom_surface_between now
+    # refuses that pair -- see surfaces_cross for why a crossed pair is not a
+    # truss at all.
+    top = sg.make_height_field_surface('2.0 * (1 - (x/10)^2 - (y/8)^2) + 1.0')
     bottom = sg.make_height_field_surface('0')
     mesh = sg.custom_surface_between(top, bottom, coord='cartesian', pattern=pattern,
                                      p_range=(-5.0, 5.0), q_range=(-4.0, 4.0), n1=5, n2=6)

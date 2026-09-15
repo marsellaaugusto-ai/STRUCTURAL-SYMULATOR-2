@@ -217,8 +217,22 @@ def two_surface_truss_1():
     """A shallow dish as the TOP surface over a flat plane as the BOTTOM
     surface, Cartesian domain, square pattern -- the Custom Surface
     Wizard's two-surface mode connecting two independently-defined
-    surfaces into one double-layer grid."""
-    top_expr = '3.0 * (1 - (x/6)^2 - (y/6)^2) + 1.0'
+    surfaces into one double-layer grid.
+
+    The dish is written over a 12 m half-width rather than the domain's own
+    6 m, so it is still 2.50 m clear of the plane at the CORNERS of the
+    square. That is the whole trap in two-surface design: the domain is a
+    square and the surfaces are radial, so the corners sit 8.49 m from the
+    centre while the edge midpoints sit 6.00 m. A dish that reached zero at
+    r = 6.93 -- comfortably clear all the way along each edge -- had already
+    crossed the plane by 2.00 m at every corner, and past a crossing the
+    webs invert and the truss is inside out. custom_surface_between now
+    refuses such a pair outright; see surfaces_cross.
+
+    The depth still varies, which is the point of defining two surfaces
+    rather than offsetting one: 4.00 m over the centre, 2.50 m at a corner.
+    """
+    top_expr = '3.0 * (1 - (x/12)^2 - (y/12)^2) + 1.0'
     bottom_expr = '0'
     top = sg.make_height_field_surface(top_expr)
     bottom = sg.make_height_field_surface(bottom_expr)

@@ -103,7 +103,7 @@ from apps.stereo.stereo_geometry_addons import (          # noqa: F401
 from apps.stereo.stereo_geometry_custom_surface import (
     make_height_field_surface, make_parametric_surface,
     custom_surface_grid, custom_surface_between, _domain_lattice,
-    surface_summits,
+    surface_summits, surfaces_cross,
 )
 from apps.stereo.stereo_geometry_cells import (
     find_cells, classify_cell_roles, cell_local_basis, cell_local_coords,
@@ -120,6 +120,7 @@ __all__ = [
     'add_column', 'reinforcement_beam',
     'make_height_field_surface', 'make_parametric_surface',
     'custom_surface_grid', 'custom_surface_between', 'surface_summits',
+    'surfaces_cross',
     'find_cells', 'classify_cell_roles', 'cell_local_basis',
     'cell_local_coords', 'project_onto_unlocked_directions', 'move_role_node',
     'rescale_role_cells', 'set_role_member_length', 'toggle_role_member',

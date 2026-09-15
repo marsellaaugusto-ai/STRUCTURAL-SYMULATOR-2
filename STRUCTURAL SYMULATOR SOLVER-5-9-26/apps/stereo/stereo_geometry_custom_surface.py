@@ -300,6 +300,116 @@ def _boundary_nodes(grid, imax, jmax, wrap_j):
     return sorted(out)
 
 
+# How dense a net to test a two-surface pair on, relative to the lattice the
+# mesh itself will use. A crossing that dips between two nodes still puts the
+# top layer's chords under the bottom layer's in that strip, so testing only
+# at the nodes would pass a truss that is locally inside out.
+CROSS_CHECK_REFINE = 3
+CROSS_CHECK_MIN = 24
+CROSS_CHECK_MAX = 90
+
+
+def _separation(surface_top, surface_bottom, x, y):
+    tx, ty, tz = surface_top(x, y)
+    bx, by, bz = surface_bottom(x, y)
+    return (tx - bx, ty - by, tz - bz)
+
+
+def surfaces_cross(surface_top, surface_bottom, coord='cartesian',
+                   p_range=(0.0, 1.0), q_range=(0.0, 1.0), n1=8, n2=8,
+                   pole=(0.0, 0.0)):
+    """Where, if anywhere, two surfaces touch or swap over inside a domain.
+
+    A double-layer grid is only a truss while its two layers stay on their
+    own sides of each other. Where they meet, the web joining them has zero
+    length -- a member with no direction, which is not a structure. Past
+    where they cross, every web is inverted: the surface called "top" is
+    underneath, the chords of one layer pass through the other, and the
+    model that comes out is inside out rather than wrong by a little.
+
+    That is easy to do by accident, because a domain is usually a RECTANGLE
+    and the surfaces are usually radial. Two paraboloids that stay a
+    comfortable 2 m apart out to r = 6 have already crossed at the corners
+    of the square -12 <= x, y <= 12, which are 8.49 m from the centre.
+
+    The test is local and needs no idea of which way is up, so it works for
+    a parametric pair as well as two height fields: sample the separation
+    vector (top - bottom) across the domain, and the surfaces have crossed
+    between two neighbouring samples exactly when those two vectors point
+    in opposite directions. A separation of zero is the crossing itself.
+
+    Sampled on a net `CROSS_CHECK_REFINE` times finer than the mesh lattice,
+    so a crossing that dips between two nodes is still caught; a crossing
+    narrower than that net can still slip through, which is why this returns
+    a report rather than claiming a proof.
+
+    Returns None when the two surfaces stay apart, otherwise
+    {'x', 'y', 'p', 'q', 'gap', 'count'} for the closest approach found --
+    `gap` is the distance between the layers there (0.0 at a true crossing)
+    and `count` how many sampled points were flagged.
+    """
+    n_p = max(CROSS_CHECK_MIN, min(CROSS_CHECK_MAX, int(n1) * CROSS_CHECK_REFINE))
+    n_q = max(CROSS_CHECK_MIN, min(CROSS_CHECK_MAX, int(n2) * CROSS_CHECK_REFINE))
+    p0, p1 = p_range
+    q0, q1 = q_range
+    full_turn = coord == 'polar' and abs((q1 - q0) - 2.0 * math.pi) < 1e-6
+
+    pts, sep = {}, {}
+    for i in range(n_p + 1):
+        p = p0 + (p1 - p0) * i / n_p
+        for j in range(n_q + 1):
+            q = q0 + (q1 - q0) * j / n_q
+            x, y = _domain_to_xy(coord, p, q, pole)
+            pts[(i, j)] = (x, y, p, q)
+            sep[(i, j)] = _separation(surface_top, surface_bottom, x, y)
+
+    def dot(u, v):
+        return u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
+
+    flagged = []
+    for ij, v in sep.items():
+        i, j = ij
+        here = math.sqrt(dot(v, v))
+        if here <= 1e-9:                      # the layers meet exactly here
+            flagged.append((0.0, ij))
+            continue
+        neighbours = [(i + 1, j), (i, j + 1)]
+        if full_turn and j == n_q - 1:
+            neighbours.append((i, 0))
+        for nb in neighbours:
+            w = sep.get(nb)
+            if w is None:
+                continue
+            if dot(v, w) < 0.0:               # the separation reversed
+                there = math.sqrt(dot(w, w))
+                flagged.append((min(here, there), ij if here <= there else nb))
+                break
+
+    if not flagged:
+        return None
+    flagged.sort(key=lambda f: f[0])
+    gap, ij = flagged[0]
+    x, y, p, q = pts[ij]
+    return {'x': x, 'y': y, 'p': p, 'q': q, 'gap': gap, 'count': len(flagged)}
+
+
+def _crossing_message(where, coord):
+    """The error a crossed pair raises -- it has to say WHERE, because the
+    fix is either a smaller domain or a different expression and the user
+    cannot choose between them without knowing which part of the domain is
+    the problem."""
+    place = (f"(x, y) = ({where['x']:.3f}, {where['y']:.3f})" if coord == 'cartesian'
+             else f"r = {where['p']:.3f}, theta = {where['q']:.3f} rad "
+                  f"-- (x, y) = ({where['x']:.3f}, {where['y']:.3f})")
+    return (f'The two surfaces meet or cross inside this domain, at {place} '
+            f'(the layers are {where["gap"]:.3f} m apart there, and '
+            f'{where["count"]} sampled points are affected). '
+            'Where they meet, the web between them has zero length; past it '
+            'the truss is inside out. Shrink the domain so it stays inside '
+            'the region where they are apart, or change one expression so '
+            'that surface stays clear of the other everywhere in it.')
+
+
 def custom_surface_grid(surface, coord='cartesian', pattern='square',
                         p_range=(0.0, 1.0), q_range=(0.0, 1.0), n1=8, n2=8,
                         module='2d', depth=0.0, offset_side='top',
@@ -382,6 +492,13 @@ def custom_surface_grid(surface, coord='cartesian', pattern='square',
         return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
                 'load_nodes': load_nodes}
 
+    # No crossing check here, and deliberately not: the offset layer is
+    # PARALLEL to the defined one by construction, so the two can never
+    # swap over the way two independently-typed surfaces can (which is what
+    # surfaces_cross tests, and what custom_surface_between raises on).
+    # What an offset CAN do is fold through itself, when `depth` exceeds the
+    # surface's own radius of curvature -- a different failure, and not one
+    # this module tests for.
     if offset_side == 'top':
         top = {ij: place(p, q) for ij, (p, q) in grid_pq.items()}
         bottom = {ij: place(p, q, along_normal=-depth) for ij, (p, q) in grid_pq.items()}
@@ -413,9 +530,20 @@ def custom_surface_between(surface_top, surface_bottom, coord='cartesian', patte
     two surfaces share domain settings; this function has no way to
     detect two surfaces that were meant to differ and does not try to.
 
+    The two surfaces must stay on their own sides of each other everywhere
+    in the domain, and this raises ValueError naming the place if they do
+    not -- see surfaces_cross for why a crossed pair is not a truss at all
+    and for the limits of the test.
+
     Returns the shared {'nodes','members','support_candidates','load_nodes'}
     dict, exactly like custom_surface_grid's own '3d' module.
     """
+    where = surfaces_cross(surface_top, surface_bottom, coord=coord,
+                           p_range=p_range, q_range=q_range, n1=n1, n2=n2,
+                           pole=pole)
+    if where is not None:
+        raise ValueError(_crossing_message(where, coord))
+
     grid_pq, imax, jmax, wrap_j = _domain_lattice(coord, pattern, p_range, q_range, n1, n2)
     bank = _NodeBank()
     members = []

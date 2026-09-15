@@ -1804,3 +1804,116 @@ def test_two_surfaces_take_the_same_pole():
     assert any(abs(z - 3.0) < 1e-3 for z in zs), 'the top layer missed its apex'
     assert any(abs(z - 2.0) < 1e-3 for z in zs), 'the bottom layer missed its apex'
     assert max(zs) == pytest.approx(3.0, abs=1e-3)
+
+
+# ── two surfaces that cross are not a truss ─────────────────────────────────
+
+def _height(expr):
+    return sg.make_height_field_surface(expr)
+
+
+def test_two_surfaces_that_cross_in_the_domain_are_refused():
+    """A dish reaching zero at r = 6.93 is clear of a flat plane all the way
+    along each edge of the square -6..6 -- and 2.00 m THROUGH it at every
+    corner, which sits 8.49 m out. Past a crossing the webs invert and the
+    truss is inside out, so this is a refusal, not a warning."""
+    with pytest.raises(ValueError) as exc:
+        sg.custom_surface_between(_height('3.0*(1-(x/6)**2-(y/6)**2)+1.0'), _height('0'),
+                                  coord='cartesian', p_range=(-6.0, 6.0),
+                                  q_range=(-6.0, 6.0), n1=8, n2=8)
+    assert 'cross' in str(exc.value)
+
+
+def test_the_refusal_says_where_the_crossing_is():
+    """The fix is either a smaller domain or a different expression, and
+    nobody can pick between them without knowing which part of the domain
+    is the problem."""
+    with pytest.raises(ValueError) as exc:
+        sg.custom_surface_between(_height('3.0*(1-(x/6)**2-(y/6)**2)+1.0'), _height('0'),
+                                  coord='cartesian', p_range=(-6.0, 6.0),
+                                  q_range=(-6.0, 6.0), n1=8, n2=8)
+    message = str(exc.value)
+    assert '(x, y)' in message
+    assert 'Shrink the domain' in message
+
+
+def test_two_surfaces_that_stay_apart_build_normally():
+    mesh = sg.custom_surface_between(_height('3.0*(1-(x/12)**2-(y/12)**2)+1.0'),
+                                     _height('0'), coord='cartesian',
+                                     p_range=(-6.0, 6.0), q_range=(-6.0, 6.0), n1=8, n2=8)
+    assert mesh['nodes'] and mesh['members']
+
+
+def test_the_same_pair_is_fine_over_a_domain_that_stops_short():
+    """The crossing is a property of the PAIR AND the domain, not of the
+    expressions alone -- the same two surfaces are a perfectly good truss
+    over a window that stops before they meet."""
+    top, bottom = _height('3.0*(1-(x/6)**2-(y/6)**2)+1.0'), _height('0')
+    with pytest.raises(ValueError):
+        sg.custom_surface_between(top, bottom, coord='cartesian',
+                                  p_range=(-6.0, 6.0), q_range=(-6.0, 6.0), n1=8, n2=8)
+    mesh = sg.custom_surface_between(top, bottom, coord='cartesian',
+                                     p_range=(-4.0, 4.0), q_range=(-4.0, 4.0), n1=8, n2=8)
+    assert mesh['nodes']
+
+
+def test_surfaces_that_merely_touch_are_refused_too():
+    """A tangency gives a web of zero length -- a member with no direction,
+    which the solver cannot use even though nothing has inverted yet."""
+    where = sg.surfaces_cross(_height('x**2'), _height('0'), coord='cartesian',
+                              p_range=(-2.0, 2.0), q_range=(-2.0, 2.0), n1=8, n2=8)
+    assert where is not None
+    assert where['gap'] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_crossing_between_two_nodes_is_still_caught():
+    """The check samples finer than the lattice on purpose: a crossing that
+    dips between two nodes still puts one layer's chords through the
+    other's in that strip."""
+    # crosses only in a narrow band around |x| = 3, which a 4-division
+    # lattice over -6..6 steps straight over (nodes at -6, -3, 0, 3, 6)
+    top = _height('1.0 - 4.0*exp(-((abs(x)-3.0)**2)/0.05)')
+    where = sg.surfaces_cross(top, _height('0'), coord='cartesian',
+                              p_range=(-6.0, 6.0), q_range=(-6.0, 6.0), n1=4, n2=4)
+    assert where is not None
+
+
+def test_a_polar_pair_is_checked_around_its_own_seam():
+    """A full-turn domain closes j = n2 back to j = 0, so the sample at one
+    end of the sweep is the neighbour of the sample at the other."""
+    top = _height('2.0 + 3.0*x')     # rises on one side, falls on the other
+    where = sg.surfaces_cross(top, _height('0'), coord='polar',
+                              p_range=(0.1, 4.0), q_range=(0.0, 2.0 * math.pi),
+                              n1=6, n2=12)
+    assert where is not None
+
+
+def test_concentric_domes_are_not_mistaken_for_a_crossing():
+    """Two strongly curved layers are NOT crossed just because their webs
+    point very different ways at the crown and at the rim -- the test is
+    local (each web against its neighbour), not against one fixed
+    direction."""
+    assert sg.surfaces_cross(_height('4.0*(1-(x/6)**2-(y/6)**2)+2.0'),
+                             _height('2.0*(1-(x/6)**2-(y/6)**2)'),
+                             coord='polar', p_range=(0.3, 6.0),
+                             q_range=(0.0, 2.0 * math.pi), n1=6, n2=12) is None
+
+
+def test_every_wizard_example_keeps_its_surfaces_apart():
+    """The regression this whole check exists for: the shipped two-surface
+    example crossed its own flat plane at all four corners."""
+    from apps.stereo import stereo_examples as sx
+    built = 0
+    for label, builder in sx.EXAMPLES:
+        mesh = builder()                 # raises if a pair crosses
+        assert mesh['nodes'], label
+        built += 1
+    assert built == len(sx.EXAMPLES)
+
+
+def test_the_dish_example_clears_the_plane_at_its_own_corners():
+    from apps.stereo import stereo_examples as sx
+    top = _height('3.0 * (1 - (x/12)**2 - (y/12)**2) + 1.0')
+    for x, y in ((-6.0, -6.0), (6.0, -6.0), (-6.0, 6.0), (6.0, 6.0)):
+        assert top(x, y)[2] > 2.0, 'the dish dips towards the plane at a corner'
+    assert top(0.0, 0.0)[2] == pytest.approx(4.0)

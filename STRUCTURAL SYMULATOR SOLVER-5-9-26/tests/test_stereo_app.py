@@ -2350,6 +2350,36 @@ def test_the_wizard_builds_the_grid_about_the_pole_it_was_given(app):
     assert max(n[2] for n in app.nodes) == pytest.approx(3.0, abs=1e-3)
 
 
+def test_the_wizard_reports_two_surfaces_that_cross_instead_of_crashing(app):
+    """A crossed pair raises out of the generator; the dialog has to turn
+    that into a message and stay open, like any other bad input."""
+    win = _open_wizard(app)
+    radios = _descendants(win, tk.Radiobutton)
+    [r for r in radios if 'Two surfaces' in r.cget('text')][0].invoke()
+    win.update_idletasks()
+    entries = [e for e in _descendants(win, tk.Entry)
+               if e.winfo_manager() != '' and e.master.winfo_manager() != '']
+    # the top surface's field is the first visible one, the bottom's the next
+    entries[0].delete(0, tk.END)
+    entries[0].insert(0, '3.0*(1-(x/6)^2-(y/6)^2)+1.0')
+    entries[1].delete(0, tk.END)
+    entries[1].insert(0, '0')
+    for box, value in zip(_entry_after(win, 'p range:'), ('-6', '6')):
+        box.delete(0, tk.END); box.insert(0, value)
+    for box, value in zip(_entry_after(win, 'q range:'), ('-6', '6')):
+        box.delete(0, tk.END); box.insert(0, value)
+    win.update_idletasks()
+
+    n0 = len(app.nodes)
+    [b for b in _descendants(win, tk.Button)
+     if b.cget('text') == 'Generate'][0].invoke()
+    assert win.winfo_exists(), 'the dialog closed on a bad pair'
+    assert len(app.nodes) == n0, 'a crossed pair was loaded anyway'
+    said = _label_text(win, 'cross')
+    assert said and 'Shrink the domain' in said
+    win.destroy()
+
+
 def test_wizard_generated_mesh_is_undoable(app):
     n0 = len(app.nodes)
     win = _open_wizard(app)

@@ -2038,6 +2038,35 @@ def test_every_keypad_key_inserts_something_the_parser_accepts(app):
     assert checked >= 30, f'only {checked} keys were actually checked'
 
 
+def test_the_keypad_types_into_a_field_before_anyone_clicks_one(app):
+    """A key pressed on a freshly-opened wizard has an obvious destination:
+    the field the palette sits under. It used to vanish -- the target was
+    set by a FocusIn event, so until the user clicked a field there was no
+    target at all and the button silently did nothing."""
+    win = _open_wizard(app)
+    z_entry = _descendants(win, tk.Entry)[0]
+    z_entry.delete(0, tk.END)
+    _keypad_button(win, 'π').invoke()
+    assert z_entry.get() == 'pi'
+    win.destroy()
+
+
+def test_switching_modes_re_aims_the_keypad_at_the_visible_panel(app):
+    """Otherwise it keeps typing into the panel that was just hidden."""
+    win = _open_wizard(app)
+    radios = _descendants(win, tk.Radiobutton)
+    [r for r in radios if 'Two surfaces' in r.cget('text')][0].invoke()
+    win.update_idletasks()
+    entries = [e for e in _descendants(win, tk.Entry)
+               if e.winfo_manager() != '' and e.master.winfo_manager() != '']
+    assert entries, 'no visible field in two-surface mode'
+    before = [e.get() for e in entries]
+    _keypad_button(win, 'π').invoke()
+    after = [e.get() for e in entries]
+    assert before != after, 'the key went into a field nobody can see'
+    win.destroy()
+
+
 def test_the_keypad_backspace_deletes_rather_than_inserting(app):
     win = _open_wizard(app)
     entries = _descendants(win, tk.Entry)

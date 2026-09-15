@@ -112,6 +112,14 @@ class StereoWizardMixin:
             entry = tk.Entry(row, textvariable=var, font=('Helvetica', 9))
             entry.pack(side='left', fill='x', expand=True)
             entry.bind('<FocusIn>', lambda e, w=entry: active_entry.__setitem__('widget', w))
+            # The keypad needs a target BEFORE anyone has clicked into a
+            # field, or the first key press vanishes with no feedback --
+            # pressing sqrt on a freshly-opened wizard has an obvious
+            # intended destination, and it is the field the palette sits
+            # under. Only the first row of each panel claims it; a click
+            # moves it anywhere via the FocusIn binding above.
+            if active_entry['widget'] is None:
+                active_entry['widget'] = entry
             return entry
 
         def make_palette(parent):
@@ -151,7 +159,11 @@ class StereoWizardMixin:
             (x, y, z) callable, raising expr_math.ExpressionError for a
             bad expression -- compiled fresh on every call (not once at
             panel-build time) so editing a field after an earlier failed
-            Generate attempt is picked up without reopening the dialog."""
+            Generate attempt is picked up without reopening the dialog.
+
+            Returns (build, fill, first_entry); `first_entry` is the panel's
+            own leading expression field, which is where the keypad types
+            when nobody has clicked into anything yet."""
             box = tk.LabelFrame(parent, text=title, bg=BG, font=('Helvetica', 9, 'bold'))
             box.pack(fill='x', padx=6, pady=4)
 
@@ -169,7 +181,7 @@ class StereoWizardMixin:
 
             z_var = tk.StringVar(master=win, value='0')
             height_frame = tk.Frame(box, bg=BG)
-            make_expr_row(height_frame, 'z(x,y) =', z_var)
+            first_entry = make_expr_row(height_frame, 'z(x,y) =', z_var)
 
             x_var = tk.StringVar(master=win, value='u')
             y_var = tk.StringVar(master=win, value='v')
@@ -206,7 +218,7 @@ class StereoWizardMixin:
                     zp_var.set(expressions.get('z', '0'))
                 toggle()
 
-            return build, fill
+            return build, fill, first_entry
 
         # ── mode: one surface, or two connected as a top/bottom double layer ──
         mode_var = tk.StringVar(master=win, value='single')
@@ -221,11 +233,13 @@ class StereoWizardMixin:
         surfaces_frame = tk.Frame(body, bg=BG)
         surfaces_frame.pack(fill='x')
         single_frame = tk.Frame(surfaces_frame, bg=BG)
-        single_build, single_fill = make_surface_panel(single_frame, 'Surface')
+        single_build, single_fill, single_first = make_surface_panel(
+            single_frame, 'Surface')
         between_frame = tk.Frame(surfaces_frame, bg=BG)
-        top_build, top_fill = make_surface_panel(between_frame, 'Top surface')
-        bottom_build, bottom_fill = make_surface_panel(between_frame,
-                                                       'Bottom surface')
+        top_build, top_fill, top_first = make_surface_panel(
+            between_frame, 'Top surface')
+        bottom_build, bottom_fill, _bottom_first = make_surface_panel(
+            between_frame, 'Bottom surface')
         single_frame.pack(fill='x')
 
         # ── domain ──────────────────────────────────────────────────────────
@@ -418,14 +432,19 @@ class StereoWizardMixin:
         on_module_change()
 
         def on_mode_change():
+            # Switching modes hides the panel the keypad was aimed at, so
+            # re-aim it at the first field of the one now showing rather
+            # than leaving it pointed into a frame nobody can see.
             if mode_var.get() == 'single':
                 between_frame.pack_forget()
                 single_frame.pack(fill='x')
                 module_box.pack(fill='x', padx=6, pady=4)
+                active_entry['widget'] = single_first
             else:
                 single_frame.pack_forget()
                 between_frame.pack(fill='x')
                 module_box.pack_forget()
+                active_entry['widget'] = top_first
 
         note_var = tk.StringVar(master=win, value='')
         tk.Label(body, textvariable=note_var, bg=BG, fg='#2f6f4f', wraplength=620,

@@ -4590,3 +4590,279 @@ def test_a_support_is_a_filled_white_box_under_its_node(app):
            if app.canvas.type(i) == 'oval'][0]
     assert order.index(box) < order.index(dot), \
         'the box is covering the node it marks'
+
+
+# ── Shape mode: the plan-shape mask ──────────────────────────────────────────
+
+def _flat_shape(app, n=6):
+    _mode(app, 'shape')
+    app.shape_two.set(False)
+    app.shape_z_top.set('0.3 * x')
+    app.shape_depth.set(1.0)
+    app.shape_p0.set(-6.0); app.shape_p1.set(6.0)
+    app.shape_q0.set(-6.0); app.shape_q1.set(6.0)
+    app.shape_n1.set(n); app.shape_n2.set(n)
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app.shape_plan.set('')
+
+
+def test_a_plan_rule_cuts_the_rectangle_the_ranges_describe(app):
+    """Two ranges can only describe a rectangle. The plan rule is how that
+    becomes a round, L-shaped or perforated roof."""
+    _flat_shape(app)
+    app._build_shape_mesh()
+    whole = len(app.nodes)
+    app.shape_plan.set('x^2 + y^2 < 16')
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == ''
+    assert len(app.nodes) < whole
+    assert 'removed' in app.shape_plan_note.cget('text')
+    assert max(math.hypot(x, y) for x, y, _z in app.nodes) < 6.5
+
+
+def test_an_l_shaped_plan_removes_one_quadrant(app):
+    """The cut is MODULE-granular, not node-granular: a bottom node that
+    survives keeps the top corners its webs hang from, even where one of
+    those corners is on the far side of the line. So the quadrant empties
+    except for one module's depth of framing along the cut -- which is the
+    point, since that framing is what stops the edge being ragged."""
+    _flat_shape(app)
+    app._build_shape_mesh()
+    whole = len(app.nodes)
+    app.shape_plan.set('not (x > 0 and y > 0)')
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == ''
+    module = (6.0 - -6.0) / 6
+    strays = [(x, y) for x, y, _z in app.nodes
+              if min(x, y) > module + 1e-6]
+    assert not strays, f'nodes survive more than one module into the cut: {strays}'
+    assert len(app.nodes) < whole * 0.9, 'the quadrant was barely touched'
+
+
+def test_a_cut_model_still_solves(app):
+    """A ragged edge of half-connected nodes would read as a mechanism. The
+    mask keeps the chords that bound the hole for exactly this reason."""
+    _flat_shape(app)
+    app.shape_plan.set('x^2 + y^2 < 16')
+    app._build_shape_mesh()
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_the_cut_edge_becomes_supportable(app):
+    """A cut creates a new free edge. Leaving the support candidates as the
+    old rectangle's perimeter would leave that edge with nothing to stand
+    on, in a model whose whole point is the new shape."""
+    _flat_shape(app)
+    app.shape_plan.set('x^2 + y^2 < 16')
+    app._build_shape_mesh()
+    assert app._support_candidates
+    rim = max(math.hypot(*app.nodes[i][:2]) for i in app._support_candidates)
+    assert rim > 2.5, 'the candidates are not on the new rim'
+
+
+def test_a_rule_that_keeps_everything_says_so_instead_of_looking_applied(app):
+    """A rule whose centre is outside the domain silently keeps the whole
+    rectangle, which looks exactly like having typed no rule at all."""
+    _flat_shape(app)
+    app.shape_plan.set('x > -999')
+    app._build_shape_mesh()
+    assert 'kept the whole domain' in app.shape_plan_note.cget('text')
+
+
+def test_a_rule_that_keeps_nothing_is_refused_not_built(app):
+    _flat_shape(app)
+    app._build_shape_mesh()
+    before = list(app.nodes)
+    app.shape_plan.set('x > 999')
+    app._build_shape_mesh()
+    assert 'removed the whole structure' in app.shape_status.cget('text')
+    assert app.nodes == before
+
+
+def test_a_plan_preset_is_written_against_the_current_domain(app):
+    """A circle typed in absolute metres is wrong the moment the domain
+    moves, so the presets are built from the ranges in the panel."""
+    _flat_shape(app)
+    app.shape_p0.set(0.0); app.shape_p1.set(10.0)
+    app.shape_q0.set(0.0); app.shape_q1.set(10.0)
+    app._set_plan_rule('(x - {cx})^2 + (y - {cy})^2 < {r}^2')
+    assert app.shape_plan.get() == '(x - 5)^2 + (y - 5)^2 < 5^2'
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == ''
+
+
+def test_clearing_the_plan_rule_restores_the_whole_rectangle(app):
+    _flat_shape(app)
+    app._build_shape_mesh()
+    whole = len(app.nodes)
+    app.shape_plan.set('x^2 + y^2 < 16')
+    app._build_shape_mesh()
+    assert len(app.nodes) < whole
+    app.shape_plan.set('')
+    app._build_shape_mesh()
+    assert len(app.nodes) == whole
+    assert app.shape_plan_note.cget('text') == ''
+
+
+def test_a_bad_plan_rule_is_reported_and_not_raised(app):
+    _flat_shape(app)
+    before = list(app.nodes)
+    app.shape_plan.set('x <')
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') != ''
+    assert app.nodes == before
+
+
+# ── a column has to actually carry the joint it stands under ─────────────────
+
+def test_a_column_takes_over_the_support_at_the_joint_it_carries(app):
+    """Regression, measured: a plain post under a pinned corner carried
+    exactly 0.00 kN with the old pin still there and 23.17 kN once it was
+    gone. A pin left at the head is a rigid path to ground in parallel with
+    the column, and it wins every time."""
+    _mode(app, 'addons')
+    target = app.supports[0]['node']
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.col_height.set(4.0)
+    app.selected_nodes = {target}
+    n_before = len(app.nodes)
+    app._add_column()
+    assert not any(s['node'] == target for s in app.supports), \
+        'the joint the column carries is still pinned in mid-air'
+    assert target not in app._support_candidates
+    feet = [s['node'] for s in app.supports if s['node'] >= n_before]
+    assert feet, 'the column foot is not pinned'
+    app._analyze()
+    assert app.err is None, app.err
+    shaft = next(i for i, m in enumerate(app.members)
+                 if m.get('role') == 'column_shaft')
+    assert abs(app.results['member_res'][shaft]['N']) > 1.0, \
+        'the column is in the model but carrying nothing'
+
+
+def test_the_column_says_which_supports_it_took_over(app):
+    """Removing a support is not something the user should have to discover
+    from a reaction that moved."""
+    _mode(app, 'addons')
+    target = app.supports[0]['node']
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {target}
+    app._add_column()
+    note = app.col_note.cget('text')
+    assert 'foot pinned' in note and str(target) in note
+
+
+def test_a_column_under_an_unsupported_joint_changes_no_supports(app):
+    """Nothing to take over means nothing to report -- the note must not
+    invent a boundary-condition change that did not happen."""
+    _mode(app, 'addons')
+    free = next(i for i in range(len(app.nodes))
+                if not any(s['node'] == i for s in app.supports))
+    before = {s['node'] for s in app.supports}
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {free}
+    n_before = len(app.nodes)
+    app._add_column()
+    feet = {s['node'] for s in app.supports if s['node'] >= n_before}
+    assert {s['node'] for s in app.supports} - feet == before
+    assert 'no longer pinned' not in app.col_note.cget('text')
+
+
+# ── fitting the 300 px panel, and the mode shortcuts ─────────────────────────
+
+def _too_wide(widget, room):
+    """Widgets whose requested width does not fit the panel they sit in.
+    winfo_reqwidth is what the widget ASKED for, which is what overflows --
+    winfo_width would report the clipped size and hide the problem."""
+    bad = []
+    for child in widget.winfo_children():
+        if child.winfo_manager() == 'pack' and child.winfo_reqwidth() > room:
+            bad.append((str(child), child.winfo_reqwidth(), room))
+        bad += _too_wide(child, room)
+    return bad
+
+
+@pytest.mark.parametrize('mode', ['build', 'shape', 'support', 'load',
+                                  'section', 'addons', 'module', 'results'])
+def test_no_panel_asks_for_more_width_than_the_panel_has(app, mode):
+    """Every field has to fit the context panel. A combobox that asks for a
+    fixed character width next to a fixed-width label overflowed it, and the
+    overflow is invisible until you look: Tk clips it silently."""
+    _mode(app, mode)
+    app.root.update_idletasks()
+    from apps.stereo.stereo_app_shell import PANEL_W
+    frame = app._mode_frames[mode]
+    assert not _too_wide(frame, PANEL_W), _too_wide(frame, PANEL_W)
+
+
+def _editable_entry(widget):
+    """The first entry in a panel that actually takes typing -- a readonly
+    combobox has a tk.Entry inside it that never does."""
+    for child in widget.winfo_children():
+        if isinstance(child, tk.Entry) and str(child.cget('state')) == 'normal':
+            return child
+        found = _editable_entry(child)
+        if found is not None:
+            return found
+    return None
+
+
+def test_alt_digit_jumps_to_each_mode_in_rail_order(app):
+    """Generated on the canvas, not the toplevel: a key event goes to the
+    FOCUS widget and then up its bindtags, so with no focus anywhere Tk
+    drops it and nothing fires. The binding still lives on the toplevel,
+    which is what puts it in every descendant's bindtags -- that is how it
+    reaches you from inside the entry you were editing."""
+    from apps.stereo.stereo_app_shell import MODES
+    app.canvas.focus_force()
+    app.root.update()
+    for n, (key, _g, _l, _t) in enumerate(MODES, start=1):
+        app.canvas.event_generate(f'<Alt-Key-{n}>', when='now')
+        app.root.update()
+        assert app.active_mode.get() == key, f'Alt+{n} did not reach {key}'
+
+
+def test_the_shortcut_works_from_inside_an_entry_without_typing_into_it(app):
+    """The case the shortcut exists for: you have just typed a column height
+    and want the next mode. Switching must not also leave a digit in the
+    field you were in."""
+    _mode(app, 'addons')
+    entry = _editable_entry(app._mode_frames['addons'])
+    assert entry is not None
+    entry.focus_force()
+    app.root.update()
+    before = entry.get()
+    entry.event_generate('<Alt-Key-2>', when='now')
+    app.root.update()
+    assert app.active_mode.get() == 'shape'
+    assert entry.get() == before, 'the shortcut typed into the field'
+
+
+def test_a_bare_digit_still_types_and_does_not_switch_mode(app):
+    """Half this tab's work is typing numbers, which is why the shortcut
+    takes Alt rather than the bare digit."""
+    _mode(app, 'addons')
+    entry = _editable_entry(app._mode_frames['addons'])
+    entry.focus_force()
+    app.root.update()
+    before = entry.get()
+    entry.event_generate('<Key-7>', when='now')
+    app.root.update()
+    assert app.active_mode.get() == 'addons', 'a bare digit switched mode'
+    assert entry.get() != before, 'the digit never reached the field'
+
+
+def test_the_mode_hotkey_stops_the_key_reaching_the_focused_entry(app):
+    """Without 'break', Alt+4 switches mode AND types a 4 into whatever
+    entry had focus."""
+    assert app._mode_hotkey('load') == 'break'
+    assert app.active_mode.get() == 'load'
+
+
+def test_the_rail_hint_advertises_the_shortcut(app):
+    """A key nobody is told about is a key nobody presses."""
+    app.hint_var.set('')
+    app._rail_buttons['support'][0].event_generate('<Enter>', when='now')
+    app.root.update()
+    assert 'Alt+3' in app.hint_var.get()

@@ -204,7 +204,10 @@ class StereoShellMixin:
         rail.pack_propagate(False)
         self.mode_rail = rail
 
-        for key, glyph, label, tip in MODES:
+        for n, (key, glyph, label, tip) in enumerate(MODES, start=1):
+            # The hint carries the shortcut: a key nobody is told about
+            # is a key nobody presses.
+            tip = f'{tip}   (Alt+{n})' if n <= 9 else tip
             item = tk.Frame(rail, bg=RAIL_BG, height=62, cursor='hand2')
             item.pack(fill='x', pady=(4, 0))
             item.pack_propagate(False)
@@ -223,6 +226,29 @@ class StereoShellMixin:
                 w.bind('<Button-1>', lambda _e, k=key: self._set_mode(k))
                 w.bind('<Enter>', lambda _e, t=tip: self.hint_var.set(t))
                 w.bind('<Leave>', lambda _e: self.hint_var.set(''))
+        self._bind_mode_keys()
+
+    def _bind_mode_keys(self):
+        """Alt+1..8 jump straight to a mode, in rail order.
+
+        Deliberately Alt and not the bare digit: half this tab's work is
+        typing numbers into entry fields, and a bare digit shortcut would
+        swallow them. The binding goes on the TOPLEVEL rather than the
+        canvas, because a mode switch is meaningful wherever the focus
+        happens to be -- including inside the entry you were just editing,
+        which is exactly when you want to move on to the next mode.
+        """
+        top = self.root.winfo_toplevel()
+        for n, (key, _glyph, _label, _tip) in enumerate(MODES, start=1):
+            if n > 9:
+                break
+            top.bind(f'<Alt-Key-{n}>', lambda _e, k=key: self._mode_hotkey(k))
+
+    def _mode_hotkey(self, key):
+        """'break' stops the keypress reaching the widget that had focus, so
+        Alt+4 switches mode instead of also typing a 4 into an entry."""
+        self._set_mode(key)
+        return 'break'
 
     def _set_mode(self, key):
         """Show one mode's panel and mark its rail item. Every other panel is

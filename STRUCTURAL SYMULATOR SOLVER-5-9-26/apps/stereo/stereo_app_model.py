@@ -246,11 +246,39 @@ class StereoModelMixin:
                 lattice=self.shape_lattice.get(), p_range=p_range, q_range=q_range,
                 n1=int(self.shape_n1.get()), n2=int(self.shape_n2.get()),
                 depth=float(self.shape_depth.get()), pole=pole)
+            # The plan rule runs AFTER the lattice, not instead of it: the
+            # generators lay out a rectangle because two ranges cannot
+            # describe anything else, and the cut is what turns that
+            # rectangle into a round, L-shaped or perforated roof.
+            keep = sg.make_domain_fn(self.shape_plan.get())
+            before = len(mesh['nodes'])
+            mesh = sg.apply_domain_mask(mesh, keep)
         except (em.ExpressionError, ValueError, tk.TclError) as exc:
             self.shape_status.config(text=str(exc))
             return
+        self._set_plan_cut_note(keep, before, len(mesh['nodes']))
         self._load_mesh(mesh, push_undo=True, undo_label='build surface')
         self._set_mode('shape')
+
+    def _set_plan_cut_note(self, keep, before, after):
+        """Say how much of the rectangle the plan rule actually removed.
+
+        A rule that silently keeps everything looks identical to no rule at
+        all, and a rule that removes almost everything is nearly always a
+        typo (metres mistaken for a fraction of the domain, or a centre left
+        at the origin when the domain does not contain it). Both are worth
+        knowing before reading anything off the model."""
+        note = getattr(self, 'shape_plan_note', None)
+        if note is None:
+            return
+        if keep is None:
+            note.config(text='')
+        elif after == before:
+            note.config(text='The rule kept the whole domain -- nothing was cut. '
+                             'Check its centre against the x/y ranges above.')
+        else:
+            note.config(text=f'Plan cut: {before - after} of {before} nodes removed, '
+                             f'{after} left.')
 
     def _load_example(self, builder, label):
         """Build and load one of stereo_examples.EXAMPLES -- a ready-made

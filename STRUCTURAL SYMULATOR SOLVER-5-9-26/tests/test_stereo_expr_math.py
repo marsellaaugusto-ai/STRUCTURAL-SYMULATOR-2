@@ -119,3 +119,47 @@ def test_list_comprehension_and_lambda_are_rejected():
 def test_string_and_bytes_literals_are_rejected():
     with pytest.raises(em.ExpressionError):
         em.compile_expression("'a'", ('x',))
+
+
+# ── comparisons and booleans (what makes a plan-shape rule expressible) ──────
+
+def test_a_comparison_is_a_region_not_a_height():
+    f = em.compile_expression('x^2 + y^2 < 36', ('x', 'y'))
+    assert f(0, 0) is True
+    assert f(6, 6) is False
+
+
+def test_and_or_not_compose_regions():
+    ell = em.compile_expression('not (x > 6 and y > 6)', ('x', 'y'))
+    assert ell(0, 0) and ell(7, 0) and ell(0, 7)
+    assert not ell(7, 7)
+    either = em.compile_expression('x < 1 or y < 1', ('x', 'y'))
+    assert either(0, 9) and not either(9, 9)
+
+
+def test_a_chained_comparison_reads_the_way_it_is_written():
+    """Python parses `0 < x < 6` as ONE node with two operators; evaluating
+    it as `(0 < x) < 6` would compare a bool against 6 and be true almost
+    everywhere."""
+    f = em.compile_expression('0 < x < 6', ('x',))
+    assert not f(-1)
+    assert f(3)
+    assert not f(9)
+
+
+def test_boolean_operators_short_circuit_past_an_undefined_branch():
+    """`x > 0 and sqrt(x) > 1` must not evaluate sqrt(-4). Short-circuiting
+    is what lets a rule guard its own domain."""
+    f = em.compile_expression('x > 0 and sqrt(x) > 1', ('x',))
+    assert f(-4) is False
+    assert f(4) is True
+
+
+@pytest.mark.parametrize('expr', ['x is y', 'x in y', 'x if y else 1',
+                                  'lambda x: x', '[x for x in y]'])
+def test_the_whitelist_still_refuses_everything_else(expr):
+    """Adding comparisons must not open the door to the rest of Python: the
+    node-type whitelist is what keeps eval() out of a field anyone can type
+    into."""
+    with pytest.raises(em.ExpressionError):
+        em.compile_expression(expr, ('x', 'y'))

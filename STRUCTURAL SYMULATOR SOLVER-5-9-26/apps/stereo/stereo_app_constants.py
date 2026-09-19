@@ -237,3 +237,27 @@ AREA_SCOPES = (AREA_SCOPE_ALL, AREA_SCOPE_SELECTED)
 # legible over whatever part of the structure lies behind them.
 LEGEND_CARD_BG = '#fbfcfd'
 LEGEND_CARD_EDGE = '#ccd4db'
+
+
+# Ready-made plan-shape rules for the Shape panel, written against the
+# domain the panel currently describes rather than in raw metres: {cx}/{cy}
+# are the domain's own centre, {r} half its shorter side, {rin} half of
+# that. A circle typed in absolute coordinates is wrong the moment the
+# domain moves, and nobody wants to re-derive the centre by hand to try a
+# round roof.
+SHAPE_PLAN_PRESETS = (
+    ('Round plan', '(x - {cx})^2 + (y - {cy})^2 < {r}^2'),
+    ('Ring (open middle)', 'hypot(x - {cx}, y - {cy}) > {rin}'),
+    ('L-shape (one quadrant out)', 'not (x > {cx} and y > {cy})'),
+    ('Clear the rule', ''),
+)
+
+
+# How wide wrapped text may be inside a group box NESTED in another group
+# box, which is where most of the panels' explanatory text lives. Each
+# LabelFrame level costs its own padding and border, and a Checkbutton also
+# spends about 20 px on its indicator before any text is drawn -- so
+# wrapping at PANEL_W and trusting it to fit overflows by exactly that
+# chrome. Measured rather than guessed: the support sandbox's checkbutton
+# asked for 288 px inside a 300 px panel.
+PANEL_TEXT_W = 244

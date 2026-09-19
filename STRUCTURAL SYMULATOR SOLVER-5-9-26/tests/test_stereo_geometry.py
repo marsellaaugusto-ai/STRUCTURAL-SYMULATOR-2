@@ -2043,3 +2043,96 @@ def test_a_polar_lattice_is_built_about_its_pole():
                                      p_range=(0.01, 4.0), q_range=(0.0, 2.0 * math.pi),
                                      n1=4, n2=12, depth=1.0, pole=(4.0, 4.0))
     assert max(n[2] for n in mesh['nodes']) == pytest.approx(3.0, abs=1e-3)
+
+
+# ── plan-shape domain mask ───────────────────────────────────────────────────
+
+def _lattice_12m(n=6):
+    # The top must stay clear of the bottom across the WHOLE domain, or the
+    # crossing check refuses the pair before any of this gets a chance to
+    # run: 0.2*x over -6..6 reaches -1.2, so a bottom at -1.0 would meet it.
+    top = sg.make_height_field_surface('0.2 * x')
+    bot = sg.make_height_field_surface('-3.0')
+    return sg.custom_surface_lattice(top, bot, lattice=sg.LATTICE_SOS_OFFSET,
+                                     p_range=(-6.0, 6.0), q_range=(-6.0, 6.0),
+                                     n1=n, n2=n)
+
+
+def test_an_empty_rule_is_no_rule_at_all():
+    """The no-mask case has to cost nothing, so every generator can pipe
+    through apply_domain_mask without checking first."""
+    assert sg.make_domain_fn('') is None
+    assert sg.make_domain_fn(None) is None
+    mesh = _lattice_12m()
+    assert sg.apply_domain_mask(mesh, None) is mesh
+
+
+def test_a_circular_rule_cuts_the_corners_off_a_square_domain():
+    mesh = _lattice_12m()
+    cut = sg.apply_domain_mask(mesh, sg.make_domain_fn('x^2 + y^2 < 16'))
+    assert len(cut['nodes']) < len(mesh['nodes'])
+    assert all(math.hypot(x, y) < 8.0 for x, y, _z in cut['nodes'])
+
+
+def test_the_mask_keeps_the_chords_that_frame_the_hole():
+    """A member survives only if BOTH ends do, and a node with no member
+    left is dropped -- which is what stops the cut leaving a rim of
+    half-connected nodes the solver would call a mechanism."""
+    mesh = _lattice_12m()
+    cut = sg.apply_domain_mask(mesh, sg.make_domain_fn('x^2 + y^2 < 16'))
+    n = len(cut['nodes'])
+    assert all(0 <= m['a'] < n and 0 <= m['b'] < n for m in cut['members'])
+    attached = set()
+    for m in cut['members']:
+        attached.add(m['a'])
+        attached.add(m['b'])
+    assert attached == set(range(n)), 'a node survived with nothing attached'
+
+
+def test_the_cut_edge_becomes_a_support_candidate():
+    """A cut makes a NEW free edge. Keeping only the old rectangle's
+    perimeter would leave the new rim with nothing to stand on."""
+    mesh = _lattice_12m()
+    cut = sg.apply_domain_mask(mesh, sg.make_domain_fn('x^2 + y^2 < 16'))
+    assert cut['support_candidates']
+    rim = [math.hypot(*cut['nodes'][i][:2]) for i in cut['support_candidates']]
+    assert max(rim) > 3.0
+
+
+def test_load_areas_follow_their_nodes_through_the_renumbering():
+    mesh = _lattice_12m()
+    cut = sg.apply_domain_mask(mesh, sg.make_domain_fn('x^2 + y^2 < 16'))
+    assert cut['load_nodes']
+    assert all(0 <= i < len(cut['nodes']) for i in cut['load_nodes'])
+    assert all(a > 0 for a in cut['load_nodes'].values())
+
+
+def test_a_rule_that_keeps_nothing_is_an_error_not_an_empty_mesh():
+    mesh = _lattice_12m()
+    with pytest.raises(ValueError, match='removed the whole structure'):
+        sg.apply_domain_mask(mesh, lambda x, y: False)
+
+
+def test_the_cut_is_module_granular_not_node_granular():
+    """A surviving bottom node keeps the top corners its webs hang from,
+    even across the line. The overshoot is bounded by one module -- that is
+    the framing around the opening, not a leak."""
+    mesh = _lattice_12m(n=6)
+    cut = sg.apply_domain_mask(mesh, sg.make_domain_fn('x < 0'))
+    module = 12.0 / 6
+    assert max(x for x, _y, _z in cut['nodes']) <= module + 1e-6
+
+
+def test_a_masked_lattice_still_solves():
+    mesh = _lattice_12m()
+    cut = sg.apply_domain_mask(mesh, sg.make_domain_fn('x^2 + y^2 < 16'))
+    members = [dict(m, A=20.0, E=200.0, Fy=235.0, r_gyr=4.0) for m in cut['members']]
+    loads = [{'node': i, 'fz': -5.0} for i in range(len(cut['nodes']))]
+    supports = [{'node': i, 'type': 'pin'} for i in cut['support_candidates']]
+    _res, err = sm.analyze(cut['nodes'], members, loads, supports)
+    assert err is None, err
+
+
+def test_a_domain_rule_may_name_the_domain_it_is_written_against():
+    keep = sg.make_domain_fn('x < Lx / 2', {'Lx': 12.0})
+    assert keep(5.0, 0.0) and not keep(7.0, 0.0)

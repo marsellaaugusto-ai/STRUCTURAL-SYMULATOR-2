@@ -69,11 +69,47 @@ class StereoAddonsMixin:
         self._support_candidates = list(self._support_candidates) + list(bases)
         self.supports = [s for s in self.supports if s['node'] not in set(bases)]
         self.supports.extend({'node': b, 'type': 'pin'} for b in bases)
+        # The nodes the column now carries must STOP being supports of their
+        # own. A pin left at the head is a rigid path to ground sitting in
+        # parallel with the column, and it wins every time: measured on a
+        # flat grid, a plain post under a pinned corner carried exactly
+        # 0.00 kN with the pin still there and 23.17 kN once it was gone.
+        # The column was in the picture and in the member list, and carried
+        # nothing. Standing a column under a joint is a statement about how
+        # that joint reaches the ground, so the old pin goes.
+        freed = sorted({s['node'] for s in self.supports} & set(targets))
+        if freed:
+            self.supports = [s for s in self.supports if s['node'] not in set(freed)]
+            self._support_candidates = [i for i in self._support_candidates
+                                        if i not in set(freed)]
+        self._set_column_note(freed, bases)
         self._apply_sections(members=self.members, redraw=False)
         self.selected_nodes = set(bases)
         self.results = None
         self.member_checks = None
         self._refresh_all()
+
+    def _set_column_note(self, freed, bases):
+        """Say what the column did to the boundary conditions.
+
+        Removing a support is not a detail the user should have to discover
+        from a reaction that moved: they asked for a column, and got a
+        different set of supports than they had. A dialog on every column
+        would be worse -- it is a normal consequence, not an error -- so it
+        is stated in the panel, next to the button that caused it.
+        """
+        note = getattr(self, 'col_note', None)
+        if note is None:
+            return
+        feet = f"{len(bases)} foot{'' if len(bases) == 1 else 's'} pinned"
+        if freed:
+            which = ', '.join(str(i) for i in freed[:6])
+            more = f" (+{len(freed) - 6} more)" if len(freed) > 6 else ''
+            note.config(text=f'{feet}. Node{"" if len(freed) == 1 else "s"} {which}'
+                             f'{more} no longer pinned -- the column carries '
+                             f'{"it" if len(freed) == 1 else "them"} to the ground now.')
+        else:
+            note.config(text=f'{feet}.')
 
     def _split_selection_into_two_rows(self):
         """Split the current lasso selection into two equal-length,

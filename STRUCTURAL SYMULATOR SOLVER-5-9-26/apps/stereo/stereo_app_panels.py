@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from common import ZoomCanvas, FlowBar, ScrollPanel
+from apps.stereo.stereo_app_shell import HINT_FG
 
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
@@ -30,6 +31,7 @@ from apps.stereo.stereo_app_constants import (
     FILL_DENSITIES, FILL_DENSITY_DEFAULT,
     AREA_UNIFORM, AREA_GRADIENT, AREA_FIELD, AREA_LAWS,
     LOAD_DIRECTION_NAMES, AREA_SCOPE_ALL, AREA_SCOPES,
+    SHAPE_PLAN_PRESETS, PANEL_TEXT_W,
 )
 
 
@@ -391,6 +393,24 @@ class StereoPanelsMixin(_ToolbarModes):
                                           justify='left')
         self.shape_summit_note.pack(anchor='w', padx=6, pady=(0, 4))
 
+        plan = self._pop_group(parent, 'Plan shape')
+        tk.Label(plan, text='The domain above is a rectangle (or, in polar, a '
+                            'sector), because two ranges cannot describe '
+                            'anything else. This cuts that rectangle to a real '
+                            'plan. Leave it empty to keep the whole of it.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_W - 40).pack(anchor='w', padx=6, pady=(2, 2))
+        self.shape_plan = tk.StringVar(value='')
+        self._shape_entry(plan, 'keep where:', self.shape_plan)
+        for label, rule in SHAPE_PLAN_PRESETS:
+            tk.Button(plan, text=label, font=('Helvetica', 8), anchor='w',
+                      command=lambda r=rule: self._set_plan_rule(r)
+                     ).pack(fill='x', padx=6, pady=1)
+        self.shape_plan_note = tk.Label(plan, text='', bg=BG, fg='#666',
+                                        font=('Helvetica', 8),
+                                        wraplength=PANEL_W - 44, justify='left')
+        self.shape_plan_note.pack(anchor='w', padx=6, pady=(2, 4))
+
         tk.Button(parent, text='Build this surface', font=('Helvetica', 9, 'bold'),
                   bg='#dff0d8', command=self._build_shape_mesh
                  ).pack(fill='x', padx=6, pady=(2, 4))
@@ -404,6 +424,22 @@ class StereoPanelsMixin(_ToolbarModes):
                  font=('Helvetica', 8, 'italic'), wraplength=PANEL_W - 30,
                  justify='left').pack(anchor='w', padx=6, pady=(4, 8))
         self._on_shape_mode_change()
+
+    def _set_plan_rule(self, rule):
+        """Drop a ready-made plan rule into the field, centred on the domain
+        the panel currently describes -- a circle written in raw metres is
+        wrong the moment the domain moves, and nobody wants to re-derive
+        the centre by hand to try a round roof."""
+        try:
+            x0, x1 = float(self.shape_p0.get()), float(self.shape_p1.get())
+            y0, y1 = float(self.shape_q0.get()), float(self.shape_q1.get())
+        except (tk.TclError, ValueError):
+            x0, x1, y0, y1 = 0.0, 12.0, 0.0, 12.0
+        cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        r = min(abs(x1 - x0), abs(y1 - y0)) / 2.0
+        self.shape_plan.set(rule.format(cx=f'{cx:g}', cy=f'{cy:g}', r=f'{r:g}',
+                                        rin=f'{r / 2.0:g}'))
+        self.shape_plan_note.config(text='')
 
     def _shape_entry(self, parent, label, var):
         row = tk.Frame(parent, bg=BG)
@@ -501,8 +537,8 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Label(pat_row, text='Chord pattern:', bg=BG, font=('Helvetica', 9)
                 ).pack(side='left')
         pat_box = ttk.Combobox(pat_row, textvariable=self.fg_pattern, state='readonly',
-                               width=26, values=[label for _key, label in GRID_PATTERNS])
-        pat_box.pack(side='left', padx=(4, 0))
+                               width=8, values=[label for _key, label in GRID_PATTERNS])
+        pat_box.pack(side='left', padx=(4, 0), fill='x', expand=True)
 
         self.bv_span = tk.DoubleVar(value=10.0)
         self.bv_rise = tk.DoubleVar(value=2.5)
@@ -697,9 +733,9 @@ class StereoPanelsMixin(_ToolbarModes):
         row = tk.Frame(parent, bg=BG)
         row.pack(fill='x', padx=6, pady=(0, 4))
         tk.Label(row, text='Chord pattern:', bg=BG, font=('Helvetica', 9)).pack(side='left')
-        box = ttk.Combobox(row, textvariable=var, state='readonly', width=26,
+        box = ttk.Combobox(row, textvariable=var, state='readonly', width=8,
                            values=[label for _key, label in GRID_PATTERNS])
-        box.pack(side='left', padx=(4, 0))
+        box.pack(side='left', padx=(4, 0), fill='x', expand=True)
 
     # ── Supports ─────────────────────────────────────────────────────────────
     def _build_supports_panel(self, parent):
@@ -714,9 +750,11 @@ class StereoPanelsMixin(_ToolbarModes):
         quick_box.pack(fill='x')
         quick_box.bind('<<ComboboxSelected>>', lambda e: self._apply_quick_support_preset())
 
-        adv = tk.LabelFrame(box, text='Per-node boundary condition -- any combination of '
-                                     'the six DOFs', bg=BG, font=('Helvetica', 8, 'bold'))
+        adv = tk.LabelFrame(box, text='Per node', bg=BG, font=('Helvetica', 8, 'bold'))
         adv.pack(fill='x', padx=6, pady=(0, 6))
+        tk.Label(adv, text='Any combination of the six DOFs.', bg=BG, fg='#666',
+                 font=('Helvetica', 8), wraplength=PANEL_W - 40, justify='left'
+                 ).pack(anchor='w', padx=4, pady=(2, 0))
 
         row = tk.Frame(adv, bg=BG)
         row.pack(fill='x', padx=4, pady=2)
@@ -758,11 +796,11 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Checkbutton(sandbox, text='Click a support to disable/enable it (no re-solve '
                                      'needed to try again)',
                        variable=self.support_sandbox, bg=BG, font=('Helvetica', 8),
-                       wraplength=PANEL_W - 30, justify='left', command=self._draw
+                       wraplength=PANEL_TEXT_W, justify='left', command=self._draw
                       ).pack(anchor='w', padx=4, pady=(4, 0))
         tk.Label(sandbox, text='Disabled supports are excluded from the next Analyze -- '
                               'build intuition for redundancy without editing the model.',
-                bg=BG, fg='#666', font=('Helvetica', 8), wraplength=PANEL_W - 30,
+                bg=BG, fg='#666', font=('Helvetica', 8), wraplength=PANEL_TEXT_W,
                 justify='left').pack(anchor='w', padx=4, pady=(2, 4))
         tk.Button(sandbox, text='Reset sandbox (re-enable all)',
                  command=self._reset_support_sandbox).pack(anchor='w', padx=4, pady=(0, 4))
@@ -795,8 +833,8 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Label(row, text='Varies:', bg=BG, width=9, anchor='w',
                 font=('Helvetica', 9)).pack(side='left')
         law_box = ttk.Combobox(row, textvariable=self.area_law, state='readonly',
-                               width=20, values=list(AREA_LAWS))
-        law_box.pack(side='left')
+                               width=8, values=list(AREA_LAWS))
+        law_box.pack(side='left', fill='x', expand=True)
         law_box.bind('<<ComboboxSelected>>', lambda e: self._on_area_law_change())
 
         # gradient: q runs from one end of the chosen axis to the other
@@ -849,7 +887,8 @@ class StereoPanelsMixin(_ToolbarModes):
                 font=('Helvetica', 9)).pack(side='left')
         self.area_scope = tk.StringVar(value=AREA_SCOPE_ALL)
         ttk.Combobox(row, textvariable=self.area_scope, state='readonly',
-                     width=20, values=list(AREA_SCOPES)).pack(side='left')
+                     width=8, values=list(AREA_SCOPES)).pack(side='left', fill='x',
+                                                             expand=True)
 
         row = tk.Frame(box, bg=BG)
         row.pack(fill='x', padx=6, pady=(0, 4))
@@ -875,7 +914,7 @@ class StereoPanelsMixin(_ToolbarModes):
                       ).pack(side='left')
         tk.Entry(row2, textvariable=self.unit_weight_var, width=7).pack(side='left', padx=4)
 
-        adv = tk.LabelFrame(box, text='Point loads (any node, any direction)', bg=BG,
+        adv = tk.LabelFrame(box, text='Point loads', bg=BG,
                             font=('Helvetica', 8, 'bold'))
         adv.pack(fill='x', padx=6, pady=(0, 6))
         row = tk.Frame(adv, bg=BG)
@@ -901,7 +940,7 @@ class StereoPanelsMixin(_ToolbarModes):
         # hand. It WRITES into Fx/Fy/Fz above rather than becoming a second
         # way to store a load, so the six boxes stay the single truth and
         # what it computed is visible and still editable afterwards.
-        mag = tk.LabelFrame(adv, text='Set Fx, Fy, Fz from a size and a direction',
+        mag = tk.LabelFrame(adv, text='From a size and a direction',
                             bg=BG, font=('Helvetica', 8, 'bold'))
         mag.pack(fill='x', padx=4, pady=(2, 2))
         row = tk.Frame(mag, bg=BG)
@@ -1008,10 +1047,11 @@ class StereoPanelsMixin(_ToolbarModes):
         self.col_style = tk.StringVar(value=sg.COLUMN_SHAFT)
         style_row = tk.Frame(col, bg=BG)
         style_row.pack(fill='x', padx=6, pady=(3, 0))
-        tk.Label(style_row, text='Type:', bg=BG, width=16, anchor='w',
+        tk.Label(style_row, text='Type:', bg=BG, width=12, anchor='w',
                 font=('Helvetica', 9)).pack(side='left')
         ttk.Combobox(style_row, textvariable=self.col_style, state='readonly',
-                     width=20, values=list(sg.COLUMN_STYLES)).pack(side='left')
+                     width=8, values=list(sg.COLUMN_STYLES)).pack(side='left', fill='x',
+                                                                  expand=True)
         self.col_height = tk.DoubleVar(value=3.0)
         self._labeled_entry(col, 'Shaft height (m):', self.col_height)
         # The capital's own depth, adjustable rather than derived: it is the
@@ -1032,14 +1072,18 @@ class StereoPanelsMixin(_ToolbarModes):
         self.col_tiers = tk.IntVar(value=1)
         tier_row = tk.Frame(col, bg=BG)
         tier_row.pack(fill='x', padx=6, pady=(2, 0))
-        tk.Label(tier_row, text='Capital:', bg=BG, width=16, anchor='w',
+        tk.Label(tier_row, text='Capital:', bg=BG, width=12, anchor='w',
                 font=('Helvetica', 9)).pack(side='left')
         tk.Radiobutton(tier_row, text='1 module', value=1, variable=self.col_tiers,
                       bg=BG, font=('Helvetica', 8)).pack(side='left')
-        tk.Radiobutton(tier_row, text='2 modules thick', value=2, variable=self.col_tiers,
+        tk.Radiobutton(tier_row, text='2 thick', value=2, variable=self.col_tiers,
                       bg=BG, font=('Helvetica', 8)).pack(side='left')
         tk.Button(col, text='Add column at selected nodes', command=self._add_column
-                 ).pack(padx=4, pady=(2, 4), anchor='w')
+                 ).pack(fill='x', padx=6, pady=(2, 4))
+        self.col_note = tk.Label(col, text='', bg=BG, fg='#2f6f4f',
+                                 font=('Helvetica', 8), justify='left',
+                                 wraplength=250, anchor='w')
+        self.col_note.pack(anchor='w', padx=6, pady=(0, 4))
 
         beam = tk.LabelFrame(box, text='Reinforcement beam', bg=BG,
                              font=('Helvetica', 8, 'bold'))
@@ -1051,20 +1095,22 @@ class StereoPanelsMixin(_ToolbarModes):
         self.beam_profile = tk.StringVar(value=sg.BEAM_TRIANGLE)
         prof_row = tk.Frame(beam, bg=BG)
         prof_row.pack(fill='x', padx=6, pady=(3, 0))
-        tk.Label(prof_row, text='Profile:', bg=BG, width=16, anchor='w',
+        tk.Label(prof_row, text='Profile:', bg=BG, width=12, anchor='w',
                 font=('Helvetica', 9)).pack(side='left')
         ttk.Combobox(prof_row, textvariable=self.beam_profile, state='readonly',
-                     width=22, values=list(sg.BEAM_PROFILES)).pack(side='left')
+                     width=8, values=list(sg.BEAM_PROFILES)).pack(side='left', fill='x',
+                                                                  expand=True)
         # The depth law is a separate question from the cross-section, and
         # combinable with any of them, so it gets its own control rather than
         # doubling the profile list.
         self.beam_depth_law = tk.StringVar(value=sg.BEAM_DEPTH_CONSTANT)
         law_row = tk.Frame(beam, bg=BG)
         law_row.pack(fill='x', padx=6, pady=(3, 0))
-        tk.Label(law_row, text='Depth along span:', bg=BG, width=16, anchor='w',
+        tk.Label(law_row, text='Depth law:', bg=BG, width=12, anchor='w',
                 font=('Helvetica', 9)).pack(side='left')
         ttk.Combobox(law_row, textvariable=self.beam_depth_law, state='readonly',
-                     width=22, values=list(sg.BEAM_DEPTH_LAWS)).pack(side='left')
+                     width=8, values=list(sg.BEAM_DEPTH_LAWS)).pack(side='left', fill='x',
+                                                                    expand=True)
         tk.Label(beam, text='Grid strip puts the offset chord under each '
                            'MODULE centre, so every bay is the same half-'
                            'octahedron the flat grid is built from. '
@@ -1084,8 +1130,8 @@ class StereoPanelsMixin(_ToolbarModes):
         ttk.Combobox(row, textvariable=self.beam_dir, state='readonly', width=14,
                     values=list(self.BEAM_DIRECTIONS)).pack(side='left')
         self._labeled_entry(beam, 'Layers (tiers):', self.beam_tiers)
-        tk.Button(beam, text='Add reinforcement beam over selected rows',
-                 command=self._add_reinforcement_beam).pack(padx=4, pady=(2, 4), anchor='w')
+        tk.Button(beam, text='Add beam over selected rows',
+                 command=self._add_reinforcement_beam).pack(fill='x', padx=6, pady=(2, 4))
 
     def _build_results_panel(self, parent):
         box = tk.LabelFrame(parent, text='Results', bg=BG, font=('Helvetica', 10, 'bold'))

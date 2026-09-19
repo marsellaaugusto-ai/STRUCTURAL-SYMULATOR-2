@@ -80,7 +80,9 @@ pin/rigid choice.
 # internal to the library: the tests build hand-made meshes with them, and
 # doing so through this facade is what keeps those tests independent of
 # which family module a helper happens to live in.
-from apps.stereo.stereo_geometry_core import ROUND, _NodeBank, _add_chords, _add_member
+from apps.stereo.stereo_geometry_core import (
+    ROUND, _NodeBank, _add_chords, _add_member, apply_domain_mask,
+)
 from apps.stereo.stereo_geometry_grids import (
     flat_grid, hypar_shell, hip_roof_grid, groin_vault,
 )
@@ -101,7 +103,7 @@ from apps.stereo.stereo_geometry_addons import (          # noqa: F401
     BEAM_DEPTH_CONSTANT, BEAM_DEPTH_PARABOLIC, BEAM_DEPTH_LAWS,
 )
 from apps.stereo.stereo_geometry_custom_surface import (
-    make_height_field_surface, make_parametric_surface,
+    make_height_field_surface, make_parametric_surface, make_domain_fn,
     custom_surface_grid, custom_surface_between, _domain_lattice,
     surface_summits, surfaces_cross,
     custom_surface_lattice, LATTICE_TYPES, LATTICE_SINGLE,
@@ -121,6 +123,7 @@ __all__ = [
     'circular_flat_grid', 'truss_bridge',
     'add_column', 'reinforcement_beam',
     'make_height_field_surface', 'make_parametric_surface',
+    'make_domain_fn', 'apply_domain_mask',
     'custom_surface_grid', 'custom_surface_between', 'surface_summits',
     'custom_surface_lattice', 'LATTICE_TYPES',
     'surfaces_cross',

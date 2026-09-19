@@ -47,7 +47,19 @@ _BIN_OPS = {
     ast.Mult: lambda a, b: a * b, ast.Div: lambda a, b: a / b,
     ast.Pow: lambda a, b: a ** b, ast.Mod: lambda a, b: a % b,
 }
-_UNARY_OPS = {ast.UAdd: lambda a: a, ast.USub: lambda a: -a}
+_UNARY_OPS = {ast.UAdd: lambda a: a, ast.USub: lambda a: -a,
+              ast.Not: lambda a: not a}
+
+# Comparisons and and/or/not, which turn this from a height-field compiler
+# into one that can also express a REGION: `x**2 + y**2 < 36` is a circular
+# plan, `not (x > 6 and y > 6)` is an L. A height field never needs them, so
+# they cost nothing where they are not used, and the same whitelist that
+# keeps `eval` out of the surface fields keeps it out of the plan rules.
+_COMPARE_OPS = {
+    ast.Lt: lambda a, b: a < b, ast.LtE: lambda a, b: a <= b,
+    ast.Gt: lambda a, b: a > b, ast.GtE: lambda a, b: a >= b,
+    ast.Eq: lambda a, b: a == b, ast.NotEq: lambda a, b: a != b,
+}
 
 
 def _validate(node, allowed_names, declared):
@@ -75,6 +87,18 @@ def _validate(node, allowed_names, declared):
         if type(node.op) not in _UNARY_OPS:
             raise ExpressionError(f'operator {type(node.op).__name__} is not allowed')
         _validate(node.operand, allowed_names, declared)
+    elif isinstance(node, ast.Compare):
+        for op in node.ops:
+            if type(op) not in _COMPARE_OPS:
+                raise ExpressionError(f'comparison {type(op).__name__} is not allowed')
+        _validate(node.left, allowed_names, declared)
+        for c in node.comparators:
+            _validate(c, allowed_names, declared)
+    elif isinstance(node, ast.BoolOp):
+        if not isinstance(node.op, (ast.And, ast.Or)):
+            raise ExpressionError(f'operator {type(node.op).__name__} is not allowed')
+        for v in node.values:
+            _validate(v, allowed_names, declared)
     elif isinstance(node, ast.Call):
         if not isinstance(node.func, ast.Name) or node.func.id not in _FUNCTIONS:
             raise ExpressionError('only a fixed set of math functions may be called')
@@ -107,6 +131,27 @@ def _evaluate(node, env):
             raise ExpressionError('division by zero')
     if isinstance(node, ast.UnaryOp):
         return _UNARY_OPS[type(node.op)](_evaluate(node.operand, env))
+    if isinstance(node, ast.Compare):
+        # Chained comparisons are one Compare node with several ops, and
+        # they short-circuit: `0 < x < 6` must not evaluate x twice with a
+        # different answer, and must stop at the first false link.
+        left = _evaluate(node.left, env)
+        for op, comparator in zip(node.ops, node.comparators):
+            right = _evaluate(comparator, env)
+            if not _COMPARE_OPS[type(op)](left, right):
+                return False
+            left = right
+        return True
+    if isinstance(node, ast.BoolOp):
+        if isinstance(node.op, ast.And):
+            for v in node.values:
+                if not _evaluate(v, env):
+                    return False
+            return True
+        for v in node.values:
+            if _evaluate(v, env):
+                return True
+        return False
     if isinstance(node, ast.Call):
         fn, _lo, _hi = _FUNCTIONS[node.func.id]
         args = [_evaluate(a, env) for a in node.args]

@@ -23,6 +23,37 @@ from apps.stereo import expr_math
 from apps.stereo.stereo_geometry_core import _NodeBank, _add_member
 
 
+def make_domain_fn(expr, ctx=None):
+    """Compile a "keep this part of the plan?" rule into f(x, y) -> bool.
+
+    The grid generators all lay out a RECTANGLE (or, in polar, an annular
+    sector), because that is what a pair of ranges describes. Real roofs
+    are not rectangles: they have a round plan, an L, a courtyard cut out
+    of the middle. The mask is how a rectangle becomes those, without
+    every generator having to learn about shapes:
+
+        x**2 + y**2 < 36              a circular plan of radius 6
+        not (x > 6 and y > 6)         an L, with one quadrant removed
+        hypot(x, y) > 3               a ring, open at the middle
+
+    `ctx` is an optional dict of extra named constants the rule may use
+    (e.g. {'Lx': 12.0}), so a rule can be written in terms of the domain
+    it will be applied to rather than in raw metres.
+
+    An empty expression means "keep everything" and returns None, which
+    `apply_domain_mask` passes straight through -- the no-mask case costs
+    nothing and needs no special-casing at the call site.
+    """
+    text = (expr or '').strip()
+    if not text:
+        return None
+    ctx = dict(ctx or {})
+    names = ('x', 'y') + tuple(ctx)
+    inner = expr_math.compile_expression(text, names)
+    extra = tuple(ctx[k] for k in ctx)
+    return lambda x, y: bool(inner(x, y, *extra))
+
+
 def make_height_field_surface(expr_z):
     """A height-field surface z = f(x, y) from a typed expression, wrapped
     to the shared surface(p, q) -> (x, y, z) shape used everywhere below

@@ -276,3 +276,10 @@ PANEL_EDGE_COLOR = '#37474f'
 DISC_FILL = '#ffd54f'
 DISC_EDGE = '#ef6c00'
 LINE_PICK_COLOR = '#1a6bbd'
+
+
+# A shaded panel whose biggest tension and biggest compression are equal has
+# no governing sign. Deliberately OFF the force ramp -- neither red nor blue
+# nor the ramp's near-zero white -- so it cannot be misread either as a
+# governing direction or as a panel carrying nothing.
+BALANCED_PANEL_COLOR = '#b39ddb'

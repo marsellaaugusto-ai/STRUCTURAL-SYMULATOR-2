@@ -32,7 +32,7 @@ from apps.stereo.stereo_app_constants import (
     NODE_COLOR, NODE_SEL_COLOR, ADD_ROD_PENDING_COLOR,
     SUPPORT_COLOR, SUPPORT_DISABLED_COLOR, SUPPORT_BOX_HALF_PX,
     PANEL_UNCHECKED_COLOR, PANEL_EDGE_COLOR,
-    DISC_FILL, DISC_EDGE, LINE_PICK_COLOR,
+    DISC_FILL, DISC_EDGE, LINE_PICK_COLOR, BALANCED_PANEL_COLOR,
     SUPPORT_BOX_FILL, NODE_RADIUS_PX, NODE_RADIUS_SEL_PX,
     MEMBER_PIN_COLOR, MEMBER_RIGID_COLOR, MEMBER_SEL_COLOR,
     TENSION_HIGH, COMPRESSION_HIGH, LOAD_COLOR, REACTION_COLOR, NEAR_ZERO_FRAC,
@@ -854,22 +854,78 @@ class StereoRenderMixin:
             member_res = self.results['member_res']
             forces = [member_res[mi]['N'] * frac for mi in cell['members']
                       if mi < len(member_res)]
-            return force_color(self._combine_signed(forces), max_abs_N) if forces else None
+            if not forces:
+                return None
+            value, balanced = self._combine_signed(forces)
+            return BALANCED_PANEL_COLOR if balanced else force_color(value, max_abs_N)
         if by_moment and moment_by_node:
             vals = [moment_by_node[n] for n in cell['nodes'] if n in moment_by_node]
-            return (moment_color(self._combine_signed(vals), max_abs_moment)
-                    if vals else None)
+            if not vals:
+                return None
+            value, balanced = self._combine_signed(vals)
+            return (BALANCED_PANEL_COLOR if balanced
+                    else moment_color(value, max_abs_moment))
         return None
 
-    @staticmethod
-    def _combine_signed(values):
-        """Mean magnitude, signed by the largest contributor -- see
-        _panel_color for why a plain signed mean is wrong here."""
+    def _balanced_panel_count(self, frac, by_util, by_force):
+        """How many panels carry equal and opposite force, for the legend.
+        A neutral panel with no explanation looks like a panel carrying
+        nothing, which is the opposite of what it means.
+
+        Force only: utilisation is unsigned so nothing can cancel, and the
+        moment spectrum colours panels from NODE values, which the legend
+        does not receive."""
+        if by_util or not by_force or self.results is None:
+            return 0
+        mr = self.results['member_res']
+        n = 0
+        for cell in self._get_shaded_cells():
+            vals = [mr[mi]['N'] * frac for mi in cell['members'] if mi < len(mr)]
+            if vals and self._combine_signed(vals)[1]:
+                n += 1
+        return n
+
+    # How close the biggest tension and the biggest compression on a panel
+    # have to be before the panel counts as BALANCED and has no governing
+    # sign at all. Relative, so it means the same on a 1 kN panel and a
+    # 1000 kN one.
+    PANEL_TIE_REL = 1e-6
+
+    @classmethod
+    def _combine_signed(cls, values):
+        """(mean magnitude signed by the largest contributor, balanced?).
+
+        See _panel_color for why a plain signed mean is wrong here. The
+        second return value is the part that took a user's bug report to
+        find.
+
+        A panel whose biggest tension and biggest compression are EQUAL has
+        no governing sign -- it is a chord pulling against a diagonal
+        pushing, and neither governs. `max(values, key=abs)` still answers,
+        because floating point always has a last bit: on a symmetric roof
+        two mirror-image corner panels came back with
+            +125.944229213916429  vs  -125.944229213916785   (compression wins)
+            +125.944229213916941  vs  -125.944229213916358   (tension wins)
+        and were painted deep blue and deep red respectively. A difference
+        of 3.6e-13 kN -- half a femtonewton, pure rounding noise from the
+        solve -- decided the colour of a whole panel, and did it differently
+        on the two sides of a perfectly symmetric structure.
+
+        So a tie is now DETECTED rather than broken. The caller paints those
+        panels a neutral colour and the legend counts them, which says
+        "equal and opposite" instead of picking one at random.
+        """
         if not values:
-            return 0.0
+            return 0.0, False
         mag = sum(abs(v) for v in values) / len(values)
+        hi_t = max(values)
+        hi_c = min(values)
+        if hi_t > 0 and hi_c < 0:
+            scale = max(abs(hi_t), abs(hi_c))
+            if abs(abs(hi_t) - abs(hi_c)) <= cls.PANEL_TIE_REL * scale:
+                return mag, True
         governing = max(values, key=abs)
-        return -mag if governing < 0 else mag
+        return (-mag if governing < 0 else mag), False
 
     def _reference_grey(self):
         """The reference (rest) structure's adjustable grey shade, used
@@ -1259,6 +1315,16 @@ class StereoRenderMixin:
                        f'max (capped at {STRESS_WIDTH_MAX:.0f}px)')
             if self.shaded_faces.get() and self.results is not None:
                 caption('Shaded faces: flat colour/panel (approx., not a shell FEA)')
+                # A neutral panel with nothing said about it reads as a panel
+                # carrying nothing, which is the opposite of what it means.
+                # The legend only receives by_force/by_util, so the moment
+                # case is derived from the colour mode the same way _draw
+                # derives it.
+                n_bal = self._balanced_panel_count(frac, by_util, by_force)
+                if n_bal:
+                    row(BALANCED_PANEL_COLOR,
+                        f'{n_bal} panel(s) carry EQUAL tension and compression '
+                        f'— no governing sign')
             if self.flag_slender.get() and self.member_checks is not None:
                 row(SLENDER_HALO_COLOR, f'halo = slender compression member '
                                        f'(KL/r > {SLENDERNESS_LIMIT:.0f})', dashed=True)

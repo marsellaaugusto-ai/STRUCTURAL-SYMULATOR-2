@@ -5827,3 +5827,93 @@ def test_a_top_layer_disc_over_a_bottom_node_correctly_finds_nothing(app):
     sx, sy = app._screen_positions()[far]
     hits, _c = app._disc_under_cursor(sx, sy)
     assert hits == []
+
+
+# ── a balanced panel has no governing sign ───────────────────────────────────
+
+def test_a_panel_with_equal_tension_and_compression_is_reported_balanced():
+    """Regression, from a real model and real numbers.
+
+    Two mirror-image corner panels of a perfectly symmetric roof came back
+    from the solver with these exact member forces. The largest tension and
+    the largest compression are equal to 13 significant figures, so neither
+    governs -- but max(key=abs) always answers, and it answered differently
+    on the two sides. One panel was painted deep blue, its mirror deep red,
+    on a difference of 3.6e-13 kN."""
+    from apps.stereo.stereo_app_render import StereoRenderMixin as R
+    left = [+125.944229213916429444, -125.944229213916784715, -48.4810230896637293085]
+    right = [+125.944229213916941035, -125.944229213916358390, -48.4810230896571354720]
+    v_left, bal_left = R._combine_signed(left)
+    v_right, bal_right = R._combine_signed(right)
+    assert bal_left and bal_right, 'the tie was broken instead of detected'
+    assert v_left == pytest.approx(v_right, rel=1e-9)
+
+
+def test_a_panel_with_a_real_governing_member_still_gets_its_sign():
+    """The tie detector must not swallow the ordinary case."""
+    from apps.stereo.stereo_app_render import StereoRenderMixin as R
+    v, bal = R._combine_signed([+200.0, -50.0, -10.0])
+    assert not bal and v > 0
+    v, bal = R._combine_signed([+50.0, -200.0, -10.0])
+    assert not bal and v < 0
+
+
+def test_an_all_tension_panel_is_never_called_balanced():
+    """Balanced means equal and OPPOSITE. A panel with no compression at all
+    cannot be balanced however close its members are to each other."""
+    from apps.stereo.stereo_app_render import StereoRenderMixin as R
+    _v, bal = R._combine_signed([100.0, 100.0, 100.0])
+    assert not bal
+
+
+def test_the_tie_tolerance_is_relative_not_absolute():
+    """1e-6 kN is a tie on a 1000 kN panel and a real difference on a
+    0.001 kN one."""
+    from apps.stereo.stereo_app_render import StereoRenderMixin as R
+    assert R._combine_signed([1000.0, -1000.0000001])[1] is True
+    assert R._combine_signed([0.001, -0.002])[1] is False
+
+
+def test_a_balanced_panel_is_painted_off_the_force_ramp(app):
+    """Neither red nor blue nor the ramp's near-zero white: it must not be
+    misread as a governing direction OR as a panel carrying nothing."""
+    from apps.stereo.stereo_app_constants import BALANCED_PANEL_COLOR
+    from apps.stereo.stereo_app_colors import force_color
+    assert BALANCED_PANEL_COLOR != force_color(0.0, 1.0)
+    assert BALANCED_PANEL_COLOR != force_color(1.0, 1.0)
+    assert BALANCED_PANEL_COLOR != force_color(-1.0, 1.0)
+
+
+def test_mirror_image_panels_get_the_same_colour(app):
+    """The property the whole fix exists for, checked end to end on a
+    symmetric model: no panel may disagree with its mirror twin."""
+    app._analyze()
+    frac = app._load_frac()
+    mr = app.results['member_res']
+    nodes = app.nodes
+    xs = [p[0] for p in nodes]
+    cx = (min(xs) + max(xs)) / 2.0
+    key = lambda p: (round(p[0], 6), round(p[1], 6), round(p[2], 6))
+    idx = {key(p): i for i, p in enumerate(nodes)}
+
+    def mir(i):
+        q = list(nodes[i]); q[0] = 2 * cx - q[0]
+        return idx.get(key(q))
+
+    cells = app._get_shaded_cells()
+    by_nodes = {tuple(sorted(c['nodes'])): c for c in cells}
+    checked = 0
+    for c in cells:
+        mn = tuple(sorted(x for x in (mir(n) for n in c['nodes']) if x is not None))
+        if len(mn) != len(c['nodes']):
+            continue
+        twin = by_nodes.get(mn)
+        if twin is None:
+            continue
+        checked += 1
+        a = app._combine_signed([mr[m]['N'] * frac for m in c['members']])
+        b = app._combine_signed([mr[m]['N'] * frac for m in twin['members']])
+        assert a[1] == b[1], 'one twin is balanced and the other is not'
+        if not a[1]:
+            assert (a[0] > 0) == (b[0] > 0), 'mirror panels painted opposite colours'
+    assert checked > 50, f'only {checked} mirror pairs checked'

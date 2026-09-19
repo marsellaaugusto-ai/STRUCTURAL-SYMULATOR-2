@@ -110,6 +110,7 @@ class StereoPanelsMixin(_ToolbarModes):
         self.show_loads = tk.BooleanVar(value=True)
         self.show_reactions = tk.BooleanVar(value=False)
         self.show_axes = tk.BooleanVar(value=True)
+        self.show_module_card = tk.BooleanVar(value=True)
         self.load_path_anim = tk.BooleanVar(value=False)
 
     def _fill_display_popover(self, body):
@@ -282,6 +283,7 @@ class StereoPanelsMixin(_ToolbarModes):
         self.canvas.bind('<Delete>', self._on_delete_nodes)
         self.canvas.bind('<BackSpace>', self._on_delete_nodes)
         self.canvas.focus_set()
+        self._build_module_card(self.canvas)
 
 
 
@@ -299,30 +301,153 @@ class StereoPanelsMixin(_ToolbarModes):
 
     # ── Geometry (per grid family) ───────────────────────────────────────────
     def _build_shape_panel(self, parent):
-        """Custom surfaces and their domain.
+        """Surfaces, domain and lattice, edited in place.
 
-        For now this is a door to the existing wizard dialog plus a readout
-        of what the current model was built from. Converting the wizard's
-        own controls into this panel -- so the surfaces are edited in place
-        rather than behind a modal -- is phase 3 work; putting the door here
-        already makes the mode meaningful and gives the recipe somewhere to
-        live.
+        These used to live behind a modal wizard, which meant you could not
+        see the model while changing the thing that makes it. Here they are
+        a mode like any other: change a number, press Build, watch it
+        change. The modal is still reachable from Generate for the keypad
+        and the two-surface recipes an example carries.
         """
-        box = tk.LabelFrame(parent, text='Surface', bg=BG, font=('Helvetica', 10, 'bold'))
-        box.pack(fill='x', padx=6, pady=(6, 4))
-        tk.Button(box, text='Open the Custom Surface Wizard…',
-                  command=self._open_custom_surface_wizard
-                 ).pack(fill='x', padx=6, pady=(6, 4))
-        tk.Label(box, text='Write a surface as z = f(x, y) or as a full x, y, z of (u, v), '
-                           'pick a Cartesian or polar domain, and choose one layer, an offset '
-                           'double layer, or two independent surfaces.',
-                 bg=BG, fg='#666', font=('Helvetica', 8), wraplength=PANEL_W - 40,
-                 justify='left').pack(anchor='w', padx=6, pady=(0, 6))
+        surf = tk.LabelFrame(parent, text='Surface', bg=BG, font=('Helvetica', 10, 'bold'))
+        surf.pack(fill='x', padx=6, pady=(6, 4))
 
-        self.shape_recipe_var = tk.StringVar(value='This model was not built from a surface.')
-        tk.Label(box, textvariable=self.shape_recipe_var, bg=BG, fg='#2f6f4f',
-                 font=('Helvetica', 8, 'italic'), wraplength=PANEL_W - 40,
-                 justify='left').pack(anchor='w', padx=6, pady=(0, 8))
+        self.shape_two = tk.BooleanVar(value=False)
+        tk.Radiobutton(surf, text='One surface', value=False, variable=self.shape_two,
+                       bg=BG, font=('Helvetica', 9), command=self._on_shape_mode_change
+                      ).pack(anchor='w', padx=6)
+        tk.Radiobutton(surf, text='Two surfaces (top + bottom)', value=True,
+                       variable=self.shape_two, bg=BG, font=('Helvetica', 9),
+                       command=self._on_shape_mode_change).pack(anchor='w', padx=6)
+
+        self.shape_z_top = tk.StringVar(value='0')
+        self.shape_z_bot = tk.StringVar(value='0')
+        self.shape_depth = tk.DoubleVar(value=1.5)
+        self._shape_entry(surf, 'z top (x, y) =', self.shape_z_top)
+        self.frame_shape_bot = tk.Frame(surf, bg=BG)
+        self._shape_entry(self.frame_shape_bot, 'z bottom =', self.shape_z_bot)
+        self.frame_shape_depth = tk.Frame(surf, bg=BG)
+        self._labeled_entry(self.frame_shape_depth, 'Depth (m):', self.shape_depth)
+        tk.Label(surf, text='x, y are metres in plan. Use the wizard under Generate for '
+                            'parametric surfaces and the maths keypad.',
+                 bg=BG, fg='#666', font=('Helvetica', 8), wraplength=PANEL_W - 44,
+                 justify='left').pack(anchor='w', padx=6, pady=(2, 6))
+
+        # ── lattice ──────────────────────────────────────────────────────
+        lat = tk.LabelFrame(parent, text='Lattice', bg=BG, font=('Helvetica', 10, 'bold'))
+        lat.pack(fill='x', padx=6, pady=(0, 4))
+        tk.Label(lat, text='How the two layers register against each other -- the question '
+                           'that actually names a space frame.',
+                 bg=BG, fg='#666', font=('Helvetica', 8), wraplength=PANEL_W - 44,
+                 justify='left').pack(anchor='w', padx=6, pady=(4, 2))
+        self.shape_lattice = tk.StringVar(value=sg.LATTICE_SOS_OFFSET)
+        for label in sg.LATTICE_TYPES:
+            tk.Radiobutton(lat, text=label, value=label, variable=self.shape_lattice,
+                           bg=BG, font=('Helvetica', 9), anchor='w',
+                           command=self._on_shape_mode_change
+                          ).pack(fill='x', padx=6)
+        self.shape_lattice_note = tk.Label(lat, text='', bg=BG, fg='#a3241a',
+                                           font=('Helvetica', 8),
+                                           wraplength=PANEL_W - 44, justify='left')
+        self.shape_lattice_note.pack(anchor='w', padx=6, pady=(2, 6))
+
+        # ── domain ───────────────────────────────────────────────────────
+        dom = tk.LabelFrame(parent, text='Domain', bg=BG, font=('Helvetica', 10, 'bold'))
+        dom.pack(fill='x', padx=6, pady=(0, 4))
+        self.shape_coord = tk.StringVar(value='cartesian')
+        row = tk.Frame(dom, bg=BG)
+        row.pack(fill='x', padx=6, pady=(4, 2))
+        for label, value in (('Cartesian', 'cartesian'), ('Polar', 'polar')):
+            tk.Radiobutton(row, text=label, value=value, variable=self.shape_coord,
+                           bg=BG, font=('Helvetica', 9),
+                           command=self._on_shape_mode_change).pack(side='left')
+        self.shape_p0 = tk.DoubleVar(value=0.0)
+        self.shape_p1 = tk.DoubleVar(value=12.0)
+        self.shape_q0 = tk.DoubleVar(value=0.0)
+        self.shape_q1 = tk.DoubleVar(value=12.0)
+        self.shape_n1 = tk.IntVar(value=6)
+        self.shape_n2 = tk.IntVar(value=6)
+        self.shape_p_label = tk.StringVar(value='x from / to:')
+        self.shape_q_label = tk.StringVar(value='y from / to:')
+        self._shape_range(dom, self.shape_p_label, self.shape_p0, self.shape_p1, self.shape_n1)
+        self._shape_range(dom, self.shape_q_label, self.shape_q0, self.shape_q1, self.shape_n2)
+        self.shape_module_note = tk.Label(dom, text='', bg=BG, fg='#2f6f4f',
+                                          font=('Helvetica', 8))
+        self.shape_module_note.pack(anchor='w', padx=6, pady=(0, 4))
+
+        self.shape_pole_x = tk.DoubleVar(value=0.0)
+        self.shape_pole_y = tk.DoubleVar(value=0.0)
+        self.frame_shape_pole = tk.Frame(dom, bg=BG)
+        prow = tk.Frame(self.frame_shape_pole, bg=BG)
+        prow.pack(fill='x', padx=6, pady=2)
+        tk.Label(prow, text='pole:', bg=BG, width=9, anchor='w',
+                 font=('Helvetica', 9)).pack(side='left')
+        tk.Entry(prow, textvariable=self.shape_pole_x, width=7).pack(side='left')
+        tk.Entry(prow, textvariable=self.shape_pole_y, width=7).pack(side='left', padx=(3, 0))
+        tk.Button(self.frame_shape_pole, text='Find the summit(s)',
+                  command=self._shape_find_summits).pack(anchor='w', padx=6, pady=(0, 2))
+        self.shape_summit_note = tk.Label(self.frame_shape_pole, text='', bg=BG, fg='#666',
+                                          font=('Helvetica', 8), wraplength=PANEL_W - 44,
+                                          justify='left')
+        self.shape_summit_note.pack(anchor='w', padx=6, pady=(0, 4))
+
+        tk.Button(parent, text='Build this surface', font=('Helvetica', 9, 'bold'),
+                  bg='#dff0d8', command=self._build_shape_mesh
+                 ).pack(fill='x', padx=6, pady=(2, 4))
+        self.shape_status = tk.Label(parent, text='', bg=BG, fg='#a3241a',
+                                     font=('Helvetica', 8), wraplength=PANEL_W - 30,
+                                     justify='left')
+        self.shape_status.pack(anchor='w', padx=6)
+
+        self.shape_recipe_var = tk.StringVar(value='')
+        tk.Label(parent, textvariable=self.shape_recipe_var, bg=BG, fg='#2f6f4f',
+                 font=('Helvetica', 8, 'italic'), wraplength=PANEL_W - 30,
+                 justify='left').pack(anchor='w', padx=6, pady=(4, 8))
+        self._on_shape_mode_change()
+
+    def _shape_entry(self, parent, label, var):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill='x', padx=6, pady=2)
+        tk.Label(row, text=label, bg=BG, width=12, anchor='w',
+                 font=('Helvetica', 9)).pack(side='left')
+        tk.Entry(row, textvariable=var, font=('Helvetica', 9)).pack(side='left',
+                                                                    fill='x', expand=True)
+        return row
+
+    def _shape_range(self, parent, label_var, v0, v1, n):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill='x', padx=6, pady=2)
+        tk.Label(row, textvariable=label_var, bg=BG, width=11, anchor='w',
+                 font=('Helvetica', 9)).pack(side='left')
+        tk.Entry(row, textvariable=v0, width=6).pack(side='left')
+        tk.Entry(row, textvariable=v1, width=6).pack(side='left', padx=(3, 6))
+        tk.Label(row, text='÷', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        tk.Entry(row, textvariable=n, width=4).pack(side='left', padx=(3, 0))
+
+    def _on_shape_mode_change(self):
+        """Show only the fields the chosen surface mode, lattice and domain
+        actually use, and say what the resulting module size will be."""
+        two = bool(self.shape_two.get())
+        single = self.shape_lattice.get() == sg.LATTICE_SINGLE
+        for frame in (self.frame_shape_bot, self.frame_shape_depth, self.frame_shape_pole):
+            frame.pack_forget()
+        if not single:
+            (self.frame_shape_bot if two else self.frame_shape_depth).pack(fill='x')
+        polar = self.shape_coord.get() == 'polar'
+        self.shape_p_label.set('r from / to:' if polar else 'x from / to:')
+        self.shape_q_label.set('θ from / to:' if polar else 'y from / to:')
+        if polar:
+            self.frame_shape_pole.pack(fill='x')
+        self.shape_lattice_note.config(
+            text=('A flat single layer of PINNED bars is a mechanism -- no out-of-plane '
+                  'stiffness at all. Give it curvature, or set Rigid under Section.')
+            if single else '')
+        try:
+            dp = (float(self.shape_p1.get()) - float(self.shape_p0.get())) / max(1, int(self.shape_n1.get()))
+            dq = (float(self.shape_q1.get()) - float(self.shape_q0.get())) / max(1, int(self.shape_n2.get()))
+            self.shape_module_note.config(text=f'module ≈ {abs(dp):.2f} × {abs(dq):.2f}')
+        except (tk.TclError, ValueError, ZeroDivisionError):
+            self.shape_module_note.config(text='')
 
     def _refresh_shape_note(self):
         """Keep the Shape mode honest about where the current model came
@@ -330,7 +455,7 @@ class StereoPanelsMixin(_ToolbarModes):
         reproduce, and saying otherwise would be worse than saying nothing."""
         recipe = getattr(self, '_wizard_recipe', None)
         if not recipe:
-            self.shape_recipe_var.set('This model was not built from a surface.')
+            self.shape_recipe_var.set('')
             return
         note = recipe.get('note', '')
         bits = []

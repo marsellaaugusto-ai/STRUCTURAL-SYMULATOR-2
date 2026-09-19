@@ -46,6 +46,20 @@ MODES = (
 )
 DEFAULT_MODE = 'build'
 
+# ── named views ─────────────────────────────────────────────────────────────
+# (azimuth, elevation) per preset, restored from the first version of this
+# tab -- it had them and the rebuild had lost them. A view cube is the one
+# piece of CAD furniture everybody already knows how to use, and typing two
+# angles is not a substitute for it.
+VIEW_PRESETS = (
+    ('Iso',    35.0,  22.0),
+    ('Top',     0.0,  89.9),
+    ('Front',  90.0,   0.0),
+    ('Right',   0.0,   0.0),
+    ('Back',  270.0,   0.0),
+    ('Left',  180.0,   0.0),
+)
+
 RAIL_W = 76
 PANEL_W = 300
 TOOLBAR_H = 46
@@ -92,6 +106,7 @@ class StereoShellMixin:
         self._build_mode_rail(main)
         self._build_context_panel(main)
         self._build_canvas(main)
+        self._build_view_cube()
 
         self._populate_modes()
         self._set_mode(DEFAULT_MODE)
@@ -322,6 +337,63 @@ class StereoShellMixin:
         rz = sum(r.get('Fz', 0.0) for r in self.results['reactions'].values())
         bits.append('ΣRz ' + self.fmt('force', rz * frac, digits=0))
         self._set_status('Analyzed · ' + '  ·  '.join(bits), 'ok')
+
+
+    # ── view cube ───────────────────────────────────────────────────────────
+    def _build_view_cube(self):
+        """Named views, parked over the canvas corner.
+
+        They were a row of toolbar buttons in the first version of this tab
+        and the rebuild dropped them. They belong on the canvas, not in the
+        chrome: they are about what you are looking at, and a card over the
+        model costs the model nothing.
+        """
+        self.view_cube = tk.Frame(self.canvas, bg='#fbfcfd',
+                                  highlightbackground=RULE, highlightthickness=1)
+        tk.Label(self.view_cube, text='VIEW', bg='#fbfcfd', fg=HINT_FG,
+                 font=('Helvetica', 7, 'bold')).grid(row=0, column=0, columnspan=2,
+                                                     sticky='w', padx=6, pady=(4, 2))
+        self._view_buttons = {}
+        for k, (name, az, el) in enumerate(VIEW_PRESETS):
+            b = tk.Button(self.view_cube, text=name, font=('Helvetica', 8),
+                          relief='raised', bd=1, width=5, padx=2, pady=1,
+                          command=lambda a=az, e=el, n=name: self._set_named_view(n, a, e))
+            b.grid(row=1 + k // 2, column=k % 2, padx=3, pady=2)
+            self._view_buttons[name] = b
+        self._view_window = None
+        self.current_view = tk.StringVar(value='')
+
+    def _place_view_cube(self):
+        """Keep the cube in its corner as the window resizes. Called from
+        _draw, like the other canvas cards."""
+        c = self.canvas
+        existing = c.find_withtag('view_cube')
+        x = c.winfo_width() - 16
+        if existing:
+            c.coords(existing[0], x, 16)
+        else:
+            c.create_window(x, 16, window=self.view_cube, anchor='ne', tags='view_cube')
+
+    def _set_named_view(self, name, az, el):
+        """Snap the camera to a preset and mark which one is showing."""
+        self.azimuth, self.elevation = az, el
+        self.current_view.set(name)
+        for other, b in self._view_buttons.items():
+            on = (other == name)
+            b.configure(relief='sunken' if on else 'raised',
+                        fg=RAIL_STRIPE if on else '#1d2328',
+                        font=('Helvetica', 8, 'bold') if on else ('Helvetica', 8))
+        self._mark_view_touched()
+        self._draw()
+
+    def _clear_named_view(self):
+        """Orbiting by hand leaves every preset unlit -- the camera is no
+        longer at any of them, and a button still pressed in would be a lie."""
+        if not self.current_view.get():
+            return
+        self.current_view.set('')
+        for b in self._view_buttons.values():
+            b.configure(relief='raised', fg='#1d2328', font=('Helvetica', 8))
 
     # ── display popover ─────────────────────────────────────────────────────
     def _toggle_display_popover(self):

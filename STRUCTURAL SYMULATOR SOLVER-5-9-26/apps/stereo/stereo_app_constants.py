@@ -39,7 +39,16 @@ COMPRESSION_HIGH = '#17458c'
 GAMMA = 0.6   # perceptual compression, same idiom as common.LoadScale's gamma
 UNDO_LIMIT = 60
 LOAD_COLOR = '#e07b1f'
-SUPPORT_BOX_HALF_PX = 7
+# The model reads better with SMALL node dots -- the rods are the structure
+# and a fat dot at every joint turns a 221-node grid into a field of blobs.
+# Two pixels is what the first version of this tab used and it was right.
+NODE_RADIUS_PX = 2
+NODE_RADIUS_SEL_PX = 4
+
+# A support is a filled white box around its node, not an outline: filled,
+# it reads as an object sitting at the joint even where rods cross behind it.
+SUPPORT_BOX_HALF_PX = 5
+SUPPORT_BOX_FILL = '#eef2f5'
 LASSO_DRAG_THRESHOLD_PX = 4
 DEFORM_LOW = '#eaf6ee'    # pale green -- legible, deliberately not pure white
 DEFORM_HIGH = '#0e7a3d'   # saturated green -- the largest displacement present

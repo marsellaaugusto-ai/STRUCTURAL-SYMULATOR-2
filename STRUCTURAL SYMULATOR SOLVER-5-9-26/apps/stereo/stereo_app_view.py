@@ -62,6 +62,7 @@ class StereoViewMixin:
         self._orbit_dragged = False
 
     def _on_orbit_motion(self, event):
+        self._clear_named_view()
         if self._orbit_start is None:
             return
         x0, y0, az0, el0 = self._orbit_start

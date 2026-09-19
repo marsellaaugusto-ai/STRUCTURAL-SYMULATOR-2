@@ -31,6 +31,7 @@ from apps.stereo.stereo_app_colors import (
 from apps.stereo.stereo_app_constants import (
     NODE_COLOR, NODE_SEL_COLOR, ADD_ROD_PENDING_COLOR,
     SUPPORT_COLOR, SUPPORT_DISABLED_COLOR, SUPPORT_BOX_HALF_PX,
+    SUPPORT_BOX_FILL, NODE_RADIUS_PX, NODE_RADIUS_SEL_PX,
     MEMBER_PIN_COLOR, MEMBER_RIGID_COLOR, MEMBER_SEL_COLOR,
     TENSION_HIGH, COMPRESSION_HIGH, LOAD_COLOR, REACTION_COLOR, NEAR_ZERO_FRAC,
     NEAR_ZERO_COLOR,
@@ -570,7 +571,7 @@ class StereoRenderMixin:
                 if by_moment and i in moment_by_node:
                     r = MOMENT_NODE_RADIUS_PX + 1 if sel else MOMENT_NODE_RADIUS_PX
                 else:
-                    r = 5 if sel else 4
+                    r = NODE_RADIUS_SEL_PX if sel else NODE_RADIUS_PX
                 if sel:
                     color = NODE_SEL_COLOR
                 elif i in self._disabled_supports and i in support_nodes:
@@ -615,8 +616,14 @@ class StereoRenderMixin:
                     else:
                         box_color = SUPPORT_COLOR
                     kw = {'dash': (3, 2)} if disabled else {}
-                    c.create_rectangle(sx - h, sy - h, sx + h, sy + h, outline=box_color,
-                                       width=2, tags=('node', f'node{i}'), **kw)
+                    # Filled, and drawn BEFORE the dot is raised back over it,
+                    # so the box reads as an object at the joint rather than
+                    # as a wire frame with the structure showing through.
+                    box = c.create_rectangle(sx - h, sy - h, sx + h, sy + h,
+                                             outline=box_color, fill=SUPPORT_BOX_FILL,
+                                             width=2,
+                                             tags=('node', 'support', f'node{i}'), **kw)
+                    c.tag_lower(box, f'node{i}')
 
             if self.add_rod_mode.get() and self._add_rod_first is not None \
                     and self._add_rod_first < len(proj):
@@ -632,6 +639,9 @@ class StereoRenderMixin:
             if self.shaded_faces.get():
                 self._draw_shaded_faces(c, proj, to_screen, frac, by_util, by_force,
                                         max_abs_N, by_moment, moment_by_node, max_abs_moment)
+
+            self._place_module_card()
+            self._place_view_cube()
 
             if self.show_node_labels.get():
                 labels = []

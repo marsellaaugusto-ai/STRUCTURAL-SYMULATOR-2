@@ -36,6 +36,7 @@ from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_app_constants as sc
 from apps.stereo import stereo_app_module_editor as me
+from apps.stereo import stereo_app_shell as sh
 
 
 @pytest.fixture(autouse=True)
@@ -4266,3 +4267,284 @@ def test_no_model_is_reported_as_no_model(app):
     app.nodes, app.members, app.results = [], [], None
     app._refresh_status()
     assert 'No model' in app.status_var.get()
+
+
+# ── Shape mode: the surface/lattice panel ────────────────────────────────────
+
+def _shape(app):
+    _mode(app, 'shape')
+    return app
+
+
+def test_the_shape_panel_builds_a_mesh_from_two_typed_surfaces(app):
+    """The whole point of Shape mode: type two expressions, pick how the
+    layers register against each other, press Build, and the model on the
+    canvas is that lattice -- no generator, no example."""
+    _shape(app)
+    app.shape_two.set(True)
+    app.shape_z_top.set('3.0 * (1 - (x/12)^2 - (y/12)^2) + 1.0')
+    app.shape_z_bot.set('0')
+    app.shape_p0.set(-6.0); app.shape_p1.set(6.0)
+    app.shape_q0.set(-6.0); app.shape_q1.set(6.0)
+    app.shape_n1.set(4); app.shape_n2.set(4)
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == ''
+    assert len(app.nodes) == 25 + 16          # 5x5 top + 4x4 bottom
+    assert len(app.members) > 0
+    assert max(z for _x, _y, z in app.nodes) > 1.0
+
+
+def test_each_lattice_type_gives_a_different_web(app):
+    """The four families differ ONLY in which chords are drawn -- same nodes,
+    same surfaces. If two of them came out with the same rod count the
+    choice would be decorative."""
+    _shape(app)
+    app.shape_two.set(False)
+    app.shape_z_top.set('0.4 * (x + y)')
+    app.shape_depth.set(1.0)
+    app.shape_p0.set(0.0); app.shape_p1.set(4.0)
+    app.shape_q0.set(0.0); app.shape_q1.set(4.0)
+    app.shape_n1.set(4); app.shape_n2.set(4)
+    counts = {}
+    for lattice in sg.LATTICE_TYPES:
+        app.shape_lattice.set(lattice)
+        app._build_shape_mesh()
+        assert app.shape_status.cget('text') == '', lattice
+        counts[lattice] = len(app.members)
+    assert len(set(counts.values())) == len(counts), counts
+    assert counts[sg.LATTICE_SINGLE] == min(counts.values())
+
+
+def test_the_panel_refuses_two_surfaces_that_cross_inside_the_domain(app):
+    """Crossed layers are not a lattice -- the webs turn inside out where the
+    surfaces swap. The panel has to say so instead of building nonsense."""
+    _shape(app)
+    app.shape_two.set(True)
+    app.shape_z_top.set('x')
+    app.shape_z_bot.set('-x')          # they meet along x = 0, inside the box
+    app.shape_p0.set(-4.0); app.shape_p1.set(4.0)
+    app.shape_q0.set(0.0); app.shape_q1.set(4.0)
+    app.shape_n1.set(4); app.shape_n2.set(4)
+    before = list(app.nodes)
+    app._build_shape_mesh()
+    assert 'cross' in app.shape_status.cget('text').lower()
+    assert app.nodes == before, 'a refused build must leave the model alone'
+
+
+def test_a_bad_expression_is_reported_and_not_raised(app):
+    _shape(app)
+    app.shape_z_top.set('3 * (')
+    before = list(app.nodes)
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') != ''
+    assert app.nodes == before
+
+
+def test_the_depth_field_and_the_bottom_field_swap_with_the_surface_mode(app):
+    """One surface needs a depth; two surfaces need the second expression.
+    Showing both at once would leave one of them silently ignored."""
+    _shape(app)
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app.shape_two.set(False)
+    app._on_shape_mode_change()
+    assert _shown(app.frame_shape_depth) and not _shown(app.frame_shape_bot)
+    app.shape_two.set(True)
+    app._on_shape_mode_change()
+    assert _shown(app.frame_shape_bot) and not _shown(app.frame_shape_depth)
+
+
+def test_a_single_layer_hides_both_depth_fields_and_warns(app):
+    """A single layer has no second surface to be at a depth from, and a FLAT
+    one is a mechanism -- the panel says that before you build it."""
+    _shape(app)
+    app.shape_lattice.set(sg.LATTICE_SINGLE)
+    app._on_shape_mode_change()
+    assert not _shown(app.frame_shape_depth) and not _shown(app.frame_shape_bot)
+    assert 'mechanism' in app.shape_lattice_note.cget('text').lower()
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app._on_shape_mode_change()
+    assert app.shape_lattice_note.cget('text') == ''
+
+
+def test_the_pole_fields_only_appear_for_a_polar_domain(app):
+    _shape(app)
+    app.shape_coord.set('cartesian')
+    app._on_shape_mode_change()
+    assert not _shown(app.frame_shape_pole)
+    assert app.shape_p_label.get().startswith('x')
+    app.shape_coord.set('polar')
+    app._on_shape_mode_change()
+    assert _shown(app.frame_shape_pole)
+    assert app.shape_p_label.get().startswith('r')
+
+
+def test_the_summit_finder_moves_the_pole_onto_the_summit(app):
+    """A polar grid centred off the summit wraps rings around nothing. The
+    finder searches WIDER than the current disk, because a summit on the rim
+    is exactly the case that says the pole is in the wrong place."""
+    _shape(app)
+    app.shape_coord.set('polar')
+    app.shape_z_top.set('5 - (x - 4)^2 - (y - 4)^2')
+    app.shape_p0.set(0.0); app.shape_p1.set(4.0)
+    app.shape_pole_x.set(0.0); app.shape_pole_y.set(0.0)
+    app._shape_find_summits()
+    assert abs(app.shape_pole_x.get() - 4.0) < 0.2
+    assert abs(app.shape_pole_y.get() - 4.0) < 0.2
+    assert 'One summit' in app.shape_summit_note.cget('text')
+
+
+def test_a_surface_with_no_summit_says_so_rather_than_parking_the_pole(app):
+    _shape(app)
+    app.shape_coord.set('polar')
+    app.shape_z_top.set('x + y')        # a plane: rises forever, no summit
+    app.shape_p0.set(0.0); app.shape_p1.set(4.0)
+    app._shape_find_summits()
+    assert 'No summit' in app.shape_summit_note.cget('text')
+
+
+def test_a_polar_domain_builds_a_round_plan(app):
+    _shape(app)
+    app.shape_coord.set('polar')
+    app.shape_two.set(False)
+    app.shape_z_top.set('4 - 0.05 * (x^2 + y^2)')
+    app.shape_p0.set(1.0); app.shape_p1.set(6.0)
+    app.shape_q0.set(0.0); app.shape_q1.set(360.0)
+    app.shape_n1.set(3); app.shape_n2.set(8)
+    app.shape_pole_x.set(0.0); app.shape_pole_y.set(0.0)
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == ''
+    radii = [math.hypot(x, y) for x, y, _z in app.nodes]
+    assert min(radii) > 0.5 and max(radii) < 6.5
+
+
+def test_the_module_note_tracks_the_domain_and_divisions(app):
+    _shape(app)
+    app.shape_p0.set(0.0); app.shape_p1.set(12.0); app.shape_n1.set(6)
+    app.shape_q0.set(0.0); app.shape_q1.set(6.0); app.shape_n2.set(3)
+    app._on_shape_mode_change()
+    assert '2.00' in app.shape_module_note.cget('text')
+
+
+# ── the view cube ────────────────────────────────────────────────────────────
+
+def test_the_view_cube_sits_in_the_canvas_corner(app):
+    app._draw()
+    app.root.update_idletasks()
+    items = app.canvas.find_withtag('view_cube')
+    assert len(items) == 1
+    x, y = app.canvas.coords(items[0])
+    assert y < 40 and x > app.canvas.winfo_width() - 200
+
+
+def test_every_preset_snaps_the_camera_and_lights_exactly_one_button(app):
+    for name, az, el in sh.VIEW_PRESETS:
+        app._set_named_view(name, az, el)
+        assert (app.azimuth, app.elevation) == (az, el)
+        assert app.current_view.get() == name
+        lit = [n for n, b in app._view_buttons.items()
+               if str(b.cget('relief')) == 'sunken']
+        assert lit == [name], lit
+
+
+def test_orbiting_by_hand_unlights_the_preset(app):
+    """A button still pressed in after the camera moved would be a lie about
+    where you are looking from."""
+    app._set_named_view('Top', 0.0, 89.9)
+    assert app.current_view.get() == 'Top'
+    app._clear_named_view()
+    assert app.current_view.get() == ''
+    assert not [b for b in app._view_buttons.values()
+                if str(b.cget('relief')) == 'sunken']
+
+
+def test_the_view_cube_keeps_its_corner_when_the_canvas_resizes(app):
+    app._draw()
+    app.canvas.configure(width=1200)
+    app.root.update_idletasks()
+    app._place_view_cube()
+    x, _y = app.canvas.coords(app.canvas.find_withtag('view_cube')[0])
+    assert abs(x - (app.canvas.winfo_width() - 16)) < 2
+    assert len(app.canvas.find_withtag('view_cube')) == 1, 'a second cube was created'
+
+
+# ── the pinned base-module card ──────────────────────────────────────────────
+
+def test_the_base_module_card_is_pinned_over_the_canvas(app):
+    app.show_module_card.set(True)
+    app._draw()
+    app.root.update_idletasks()
+    items = app.canvas.find_withtag('module_card')
+    assert len(items) == 1
+    x, y = app.canvas.coords(items[0])
+    assert x > app.canvas.winfo_width() - app.MODULE_CARD_SIZE - 40
+    assert y > app.canvas.winfo_height() - app.MODULE_CARD_SIZE - 40
+    assert app.module_card_canvas.find_all(), 'the card is empty'
+
+
+def test_turning_the_card_off_removes_it_from_the_canvas(app):
+    app.show_module_card.set(True)
+    app._draw()
+    assert app.canvas.find_withtag('module_card')
+    app.show_module_card.set(False)
+    app._draw()
+    assert not app.canvas.find_withtag('module_card')
+
+
+def test_redrawing_does_not_pile_up_module_cards(app):
+    """_draw clears the canvas wholesale, so a remembered window id goes
+    stale every frame -- the card has to be found by tag, not remembered."""
+    app.show_module_card.set(True)
+    for _ in range(4):
+        app._draw()
+    assert len(app.canvas.find_withtag('module_card')) == 1
+
+
+def test_the_card_always_shows_the_base_module_not_the_edited_one(app):
+    """The card is the grid's reference. Selecting another role in the editor
+    must not repaint it, or it stops being a reference."""
+    app.show_module_card.set(True)
+    _mode(app, 'module')
+    app._draw()
+    keep = app._me_role_id
+    app._draw_module_card()
+    assert app._me_role_id == keep, 'the card left the editor on another role'
+
+
+# ── nodes and supports, drawn the way the first version drew them ────────────
+
+def test_nodes_are_small_dots(app):
+    """Big discs hid the rods behind them. The original tab drew a 2 px dot
+    and that is what reads at grid density."""
+    assert sc.NODE_RADIUS_PX == 2
+    assert sc.NODE_RADIUS_SEL_PX > sc.NODE_RADIUS_PX
+    app.selected_nodes = set()
+    app._draw()
+    # 'node' also carries each support's box; the dot itself is the oval.
+    dots = [i for i in app.canvas.find_withtag('node')
+            if app.canvas.type(i) == 'oval']
+    assert dots
+    x0, y0, x1, y1 = app.canvas.coords(dots[0])
+    assert abs((x1 - x0) - 2 * sc.NODE_RADIUS_PX) < 1.5
+
+
+def test_a_support_is_a_filled_white_box_under_its_node(app):
+    """White box, not a coloured blob: the box says 'support', the dot inside
+    it still says 'node', and you can see both."""
+    app.results = None
+    app.supports = [{'node': 0, 'type': 'pin'}]
+    app._draw()
+    boxes = app.canvas.find_withtag('support')
+    assert len(boxes) == 1
+    box = boxes[0]
+    assert str(app.canvas.itemcget(box, 'fill')).lower() == sc.SUPPORT_BOX_FILL.lower()
+    x0, y0, x1, y1 = app.canvas.coords(box)
+    assert abs((x1 - x0) - 2 * sc.SUPPORT_BOX_HALF_PX) < 1.5
+    # find_all is STACKING order: the box has to be under its own dot, or it
+    # hides the joint it is marking.
+    order = list(app.canvas.find_all())
+    dot = [i for i in app.canvas.find_withtag('node0')
+           if app.canvas.type(i) == 'oval'][0]
+    assert order.index(box) < order.index(dot), \
+        'the box is covering the node it marks'

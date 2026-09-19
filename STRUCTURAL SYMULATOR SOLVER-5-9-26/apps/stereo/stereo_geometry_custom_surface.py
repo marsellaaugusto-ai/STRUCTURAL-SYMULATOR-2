@@ -595,3 +595,166 @@ def _domain_cell_areas(grid_pq, coord, imax, jmax, wrap_j, layer):
                 area *= p0 if p0 > 0 else 0.0
             load_nodes[layer[(i, j)]] = area
     return load_nodes
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Lattice types -- how the two layers relate to each other
+# ═══════════════════════════════════════════════════════════════════════════
+# This is a different question from SHAPE (which surface) and from PATTERN
+# (how one layer's own nodes connect). It asks how the top layer and the
+# bottom layer are registered against each other, and it is the question
+# that actually names a space frame in practice.
+#
+# The first version of this tab had exactly these four and called them its
+# grid families, which was right: on a two-surface grid they matter more
+# than the surfaces do. A square-on-square offset and a diagonal-on-diagonal
+# over the SAME pair of surfaces are different structures -- different rod
+# counts, different rod lengths, different load paths, different buildability.
+#
+#   SINGLE          one layer lying on the surface. A 2-way grillage.
+#                   Note that a FLAT one is a mechanism when pin-jointed --
+#                   a plane grid of pinned bars has no out-of-plane
+#                   stiffness at all -- so it wants either curvature (which
+#                   gives it shell action) or rigid joints. That is physics,
+#                   not a defect, and the app reports it rather than quietly
+#                   bracing it.
+#   SOS_OFFSET      top orthogonal; bottom orthogonal, offset half a module
+#                   in both directions so each bottom node sits under the
+#                   CENTRE of a top square and ties to its four corners.
+#                   The classic space frame, and the one most systems build.
+#   SQ_ON_DIAG      the same offset bottom layer, but its chords run
+#                   diagonally. Fewer, longer bottom chords; the top layer
+#                   stays square, which is what a deck or glazing wants.
+#   DIAG_ON_DIAG    both layers diagonal. The lightest of the three for a
+#                   given depth and the hardest to detail, because nothing
+#                   is orthogonal to anything.
+LATTICE_SINGLE = 'Single layer (2-way grillage)'
+LATTICE_SOS_OFFSET = 'Square on square, offset'
+LATTICE_SQ_ON_DIAG = 'Square on diagonal'
+LATTICE_DIAG_ON_DIAG = 'Diagonal on diagonal'
+LATTICE_TYPES = (LATTICE_SOS_OFFSET, LATTICE_SQ_ON_DIAG,
+                 LATTICE_DIAG_ON_DIAG, LATTICE_SINGLE)
+
+# (top layer diagonal?, bottom layer diagonal?) per type; SINGLE has no
+# bottom layer at all and is handled before this table is consulted.
+_LATTICE_DIAGONALS = {
+    LATTICE_SOS_OFFSET: (False, False),
+    LATTICE_SQ_ON_DIAG: (False, True),
+    LATTICE_DIAG_ON_DIAG: (True, True),
+}
+
+
+def _orthogonal_chords(members, seen, grid, imax, jmax, role):
+    for (i, j), n in grid.items():
+        for nb in ((i + 1, j), (i, j + 1)):
+            if nb in grid:
+                _add_member(members, seen, n, grid[nb], role=role)
+
+
+def _diagonal_chords(members, seen, grid, imax, jmax, role):
+    """Both diagonals of every cell, plus the perimeter closed orthogonally.
+
+    Without the perimeter the free edges are a mechanism: a corner node of a
+    purely diagonal lattice is held by one bar in one direction only.
+    """
+    for i in range(imax):
+        for j in range(jmax):
+            if all(k in grid for k in ((i, j), (i + 1, j), (i, j + 1), (i + 1, j + 1))):
+                _add_member(members, seen, grid[(i, j)], grid[(i + 1, j + 1)], role=role)
+                _add_member(members, seen, grid[(i + 1, j)], grid[(i, j + 1)], role=role)
+    for i in range(imax):
+        for j in (0, jmax):
+            if (i, j) in grid and (i + 1, j) in grid:
+                _add_member(members, seen, grid[(i, j)], grid[(i + 1, j)], role=role)
+    for j in range(jmax):
+        for i in (0, imax):
+            if (i, j) in grid and (i, j + 1) in grid:
+                _add_member(members, seen, grid[(i, j)], grid[(i, j + 1)], role=role)
+
+
+def custom_surface_lattice(surface_top, surface_bottom=None, coord='cartesian',
+                           lattice=LATTICE_SOS_OFFSET, p_range=(0.0, 1.0),
+                           q_range=(0.0, 1.0), n1=8, n2=8, depth=1.0,
+                           pole=(0.0, 0.0)):
+    """A double-layer grid whose bottom layer is OFFSET half a module.
+
+    custom_surface_grid and custom_surface_between both sample their two
+    layers at the same (i, j), so every web is a vertical post and the two
+    layers are the same lattice twice. That is one real space frame among
+    several, and not the common one: in the classic offset frame each bottom
+    node sits under the centre of a top square and ties to its four corners,
+    which is what turns two flat grids into something with depth-action.
+
+    `surface_bottom` may be another surface callable, or None to derive the
+    bottom layer by dropping `depth` along the top surface's own normal.
+
+    Returns the usual {'nodes', 'members', 'support_candidates',
+    'load_nodes'} dict.
+    """
+    if lattice not in LATTICE_TYPES:
+        raise ValueError(f'unknown lattice type {lattice!r}')
+    n1 = max(1, int(n1))
+    n2 = max(1, int(n2))
+    p0, p1 = p_range
+    q0, q1 = q_range
+    dp = (p1 - p0) / n1
+    dq = (q1 - q0) / n2
+
+    bank = _NodeBank()
+    members = []
+    seen = set()
+
+    def place_top(p, q):
+        x, y = _domain_to_xy(coord, p, q, pole)
+        return bank.add(*surface_top(x, y))
+
+    top = {}
+    for i in range(n1 + 1):
+        for j in range(n2 + 1):
+            top[(i, j)] = place_top(p0 + i * dp, q0 + j * dq)
+
+    if lattice == LATTICE_SINGLE:
+        _orthogonal_chords(members, seen, top, n1, n2, 'surface_chord')
+        support_candidates = _boundary_nodes(top, n1, n2, False)
+        grid_pq = {ij: (p0 + ij[0] * dp, q0 + ij[1] * dq) for ij in top}
+        load_nodes = _domain_cell_areas(grid_pq, coord, n1, n2, False, top)
+        return {'nodes': bank.nodes, 'members': members,
+                'support_candidates': support_candidates, 'load_nodes': load_nodes}
+
+    if surface_bottom is None:
+        def surface_bottom(x, y, d=depth):
+            sx, sy, sz = surface_top(x, y)
+            nx, ny, nz = _surface_normal(surface_top, x, y)
+            return (sx - nx * d, sy - ny * d, sz - nz * d)
+
+    where = surfaces_cross(surface_top, surface_bottom, coord=coord,
+                           p_range=p_range, q_range=q_range, n1=n1, n2=n2, pole=pole)
+    if where is not None:
+        raise ValueError(_crossing_message(where, coord))
+
+    # the offset layer: one node under the CENTRE of every top cell
+    bottom = {}
+    for i in range(n1):
+        for j in range(n2):
+            x, y = _domain_to_xy(coord, p0 + (i + 0.5) * dp, q0 + (j + 0.5) * dq, pole)
+            bottom[(i, j)] = bank.add(*surface_bottom(x, y))
+
+    top_diag, bot_diag = _LATTICE_DIAGONALS[lattice]
+    (_diagonal_chords if top_diag else _orthogonal_chords)(
+        members, seen, top, n1, n2, 'outer_rib')
+    (_diagonal_chords if bot_diag else _orthogonal_chords)(
+        members, seen, bottom, n1 - 1, n2 - 1, 'inner_rib')
+
+    # the webs: every bottom node to the four top corners of its own cell.
+    # This is what gives the frame its depth-action and what makes every
+    # node part of a closed 3D assembly rather than a flat grid with posts.
+    for (i, j), b in bottom.items():
+        for corner in ((i, j), (i + 1, j), (i, j + 1), (i + 1, j + 1)):
+            _add_member(members, seen, b, top[corner], role='web')
+
+    support_candidates = sorted(set(_boundary_nodes(top, n1, n2, False))
+                                | set(_boundary_nodes(bottom, n1 - 1, n2 - 1, False)))
+    grid_pq = {ij: (p0 + ij[0] * dp, q0 + ij[1] * dq) for ij in top}
+    load_nodes = _domain_cell_areas(grid_pq, coord, n1, n2, False, top)
+    return {'nodes': bank.nodes, 'members': members,
+            'support_candidates': support_candidates, 'load_nodes': load_nodes}

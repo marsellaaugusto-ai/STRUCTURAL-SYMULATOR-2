@@ -104,6 +104,8 @@ from apps.stereo.stereo_geometry_custom_surface import (
     make_height_field_surface, make_parametric_surface,
     custom_surface_grid, custom_surface_between, _domain_lattice,
     surface_summits, surfaces_cross,
+    custom_surface_lattice, LATTICE_TYPES, LATTICE_SINGLE,
+    LATTICE_SOS_OFFSET, LATTICE_SQ_ON_DIAG, LATTICE_DIAG_ON_DIAG,
 )
 from apps.stereo.stereo_geometry_cells import (
     find_cells, classify_cell_roles, cell_local_basis, cell_local_coords,
@@ -120,6 +122,7 @@ __all__ = [
     'add_column', 'reinforcement_beam',
     'make_height_field_surface', 'make_parametric_surface',
     'custom_surface_grid', 'custom_surface_between', 'surface_summits',
+    'custom_surface_lattice', 'LATTICE_TYPES',
     'surfaces_cross',
     'find_cells', 'classify_cell_roles', 'cell_local_basis',
     'cell_local_coords', 'project_onto_unlocked_directions', 'move_role_node',

@@ -1917,3 +1917,129 @@ def test_the_dish_example_clears_the_plane_at_its_own_corners():
     for x, y in ((-6.0, -6.0), (6.0, -6.0), (-6.0, 6.0), (6.0, 6.0)):
         assert top(x, y)[2] > 2.0, 'the dish dips towards the plane at a corner'
     assert top(0.0, 0.0)[2] == pytest.approx(4.0)
+
+
+# ── lattice types: how the two layers register against each other ───────────
+
+def _flat():
+    return sg.make_height_field_surface('0')
+
+
+@pytest.mark.parametrize('lattice', sg.LATTICE_TYPES)
+def test_every_lattice_type_builds(lattice):
+    mesh = sg.custom_surface_lattice(_flat(), coord='cartesian', lattice=lattice,
+                                     p_range=(0.0, 12.0), q_range=(0.0, 12.0),
+                                     n1=4, n2=4, depth=1.5)
+    assert mesh['nodes'] and mesh['members']
+    assert mesh['support_candidates']
+    assert all(0 <= m['a'] < len(mesh['nodes']) and 0 <= m['b'] < len(mesh['nodes'])
+               for m in mesh['members'])
+
+
+def test_the_offset_layer_sits_under_the_centre_of_a_top_cell():
+    """The whole point of an offset frame: a bottom node under the middle of
+    a top square, tying its four corners. Sample them at the same (i, j) and
+    every web is a vertical post and the two layers are one lattice twice."""
+    mesh = sg.custom_surface_lattice(_flat(), lattice=sg.LATTICE_SOS_OFFSET,
+                                     p_range=(0.0, 12.0), q_range=(0.0, 12.0),
+                                     n1=4, n2=4, depth=1.5)
+    tops = [n for n in mesh['nodes'] if n[2] == pytest.approx(0.0)]
+    bots = [n for n in mesh['nodes'] if n[2] == pytest.approx(-1.5)]
+    assert len(tops) == 25 and len(bots) == 16
+    # every bottom node lands on a half-module offset in BOTH directions
+    for x, y, _z in bots:
+        assert (x / 3.0 - 0.5) == pytest.approx(round(x / 3.0 - 0.5))
+        assert (y / 3.0 - 0.5) == pytest.approx(round(y / 3.0 - 0.5))
+
+
+def test_every_bottom_node_ties_to_four_top_corners():
+    mesh = sg.custom_surface_lattice(_flat(), lattice=sg.LATTICE_SOS_OFFSET,
+                                     p_range=(0.0, 9.0), q_range=(0.0, 9.0),
+                                     n1=3, n2=3, depth=1.5)
+    webs = [m for m in mesh['members'] if m.get('role') == 'web']
+    assert len(webs) == 9 * 4
+    from collections import Counter
+    per_bottom = Counter()
+    for m in webs:
+        lo = m['a'] if mesh['nodes'][m['a']][2] < mesh['nodes'][m['b']][2] else m['b']
+        per_bottom[lo] += 1
+    assert set(per_bottom.values()) == {4}
+
+
+def test_the_three_double_layer_lattices_differ_in_rod_count():
+    """They are genuinely different structures over the same surfaces --
+    different rod counts, lengths and load paths -- which is why the choice
+    belongs in the UI rather than being fixed."""
+    counts = {}
+    for lattice in (sg.LATTICE_SOS_OFFSET, sg.LATTICE_SQ_ON_DIAG, sg.LATTICE_DIAG_ON_DIAG):
+        mesh = sg.custom_surface_lattice(_flat(), lattice=lattice,
+                                         p_range=(0.0, 12.0), q_range=(0.0, 12.0),
+                                         n1=4, n2=4, depth=1.5)
+        counts[lattice] = len(mesh['members'])
+    assert len(set(counts.values())) == 3, counts
+    assert counts[sg.LATTICE_SOS_OFFSET] < counts[sg.LATTICE_DIAG_ON_DIAG]
+
+
+@pytest.mark.parametrize('lattice', [sg.LATTICE_SOS_OFFSET, sg.LATTICE_SQ_ON_DIAG,
+                                     sg.LATTICE_DIAG_ON_DIAG])
+def test_every_double_layer_lattice_solves_under_self_weight(lattice):
+    mesh = sg.custom_surface_lattice(_flat(), lattice=lattice,
+                                     p_range=(0.0, 12.0), q_range=(0.0, 12.0),
+                                     n1=4, n2=4, depth=1.5)
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    _res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+    assert err is None, f'{lattice}: {err}'
+
+
+def test_a_flat_single_layer_of_pinned_bars_is_honestly_a_mechanism():
+    """Physics, not a defect. A plane grid of pinned bars has no
+    out-of-plane stiffness; the app reports it rather than quietly bracing
+    something the user did not ask for."""
+    mesh = sg.custom_surface_lattice(_flat(), lattice=sg.LATTICE_SINGLE,
+                                     p_range=(0.0, 12.0), q_range=(0.0, 12.0), n1=4, n2=4)
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    _res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+    assert err is not None and 'mechanism' in err.lower()
+
+
+def test_a_curved_single_layer_stands_up_on_its_own():
+    """The same lattice on a curved surface has shell action and solves."""
+    dome = sg.make_height_field_surface('4 - 0.05*(x**2 + y**2)')
+    mesh = sg.custom_surface_lattice(dome, lattice=sg.LATTICE_SINGLE,
+                                     p_range=(-6.0, 6.0), q_range=(-6.0, 6.0), n1=5, n2=5)
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    _res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+    assert err is None, err
+
+
+def test_a_lattice_over_two_surfaces_keeps_the_crossing_check():
+    top = sg.make_height_field_surface('3.0*(1-(x/6)**2-(y/6)**2)+1.0')
+    with pytest.raises(ValueError) as exc:
+        sg.custom_surface_lattice(top, sg.make_height_field_surface('0'),
+                                  p_range=(-6.0, 6.0), q_range=(-6.0, 6.0), n1=4, n2=4)
+    assert 'cross' in str(exc.value)
+
+
+def test_an_unknown_lattice_is_refused():
+    with pytest.raises(ValueError):
+        sg.custom_surface_lattice(_flat(), lattice='herringbone')
+
+
+def test_a_polar_lattice_is_built_about_its_pole():
+    dome = sg.make_height_field_surface('3 - 0.1*((x-4)**2 + (y-4)**2)')
+    mesh = sg.custom_surface_lattice(dome, coord='polar', lattice=sg.LATTICE_SOS_OFFSET,
+                                     p_range=(0.01, 4.0), q_range=(0.0, 2.0 * math.pi),
+                                     n1=4, n2=12, depth=1.0, pole=(4.0, 4.0))
+    assert max(n[2] for n in mesh['nodes']) == pytest.approx(3.0, abs=1e-3)

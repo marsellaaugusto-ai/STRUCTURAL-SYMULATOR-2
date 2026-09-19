@@ -187,6 +187,71 @@ class StereoModelMixin:
         self._reset_view(redraw=False)
         self._refresh_all()
 
+    # ── Shape mode: build from the surfaces and lattice in the panel ───────
+    def _shape_surfaces(self):
+        """(top, bottom_or_None) compiled from the panel's own fields."""
+        top = sg.make_height_field_surface(self.shape_z_top.get())
+        if not self.shape_two.get():
+            return top, None
+        return top, sg.make_height_field_surface(self.shape_z_bot.get())
+
+    def _shape_find_summits(self):
+        """Put the polar pole on the surface's summit, and say how many it
+        found -- one means polar is the right chart, several means no single
+        pole can serve them."""
+        try:
+            top, _bottom = self._shape_surfaces()
+        except em.ExpressionError as exc:
+            self.shape_summit_note.config(text=str(exc))
+            return
+        try:
+            span = abs(float(self.shape_p1.get()) - float(self.shape_p0.get())) or 1.0
+            cx, cy = float(self.shape_pole_x.get()), float(self.shape_pole_y.get())
+        except (tk.TclError, ValueError):
+            self.shape_summit_note.config(text='Enter a numeric range and pole first.')
+            return
+        # Search WIDER than the current disk. A summit sitting just outside
+        # it, or exactly on its rim, is the interesting case -- it is why the
+        # pole is in the wrong place -- and a window that stops at the rim
+        # cannot see it, because an edge point is never a summit of the
+        # surface, only of the window.
+        reach = 2.0 * span
+        tops = sg.surface_summits(top, (cx - reach, cx + reach), (cy - reach, cy + reach),
+                                  samples=81)
+        if not tops:
+            self.shape_summit_note.config(
+                text='No summit in this window -- the surface only rises towards its own '
+                     'edge here, so a Cartesian domain suits it better.')
+            return
+        best = tops[0]
+        self.shape_pole_x.set(round(best['x'], 4))
+        self.shape_pole_y.set(round(best['y'], 4))
+        self.shape_summit_note.config(
+            text=(f"One summit, at ({best['x']:.2f}, {best['y']:.2f}). The pole is on it."
+                  if len(tops) == 1 else
+                  f"{len(tops)} summits. The pole is on the highest, but ONE polar grid "
+                  f"cannot be centred on {len(tops)} -- a Cartesian or isometric domain "
+                  f"has no pole to misplace."))
+
+    def _build_shape_mesh(self):
+        """Build the mesh from the Shape panel and load it."""
+        self.shape_status.config(text='')
+        try:
+            top, bottom = self._shape_surfaces()
+            p_range = (float(self.shape_p0.get()), float(self.shape_p1.get()))
+            q_range = (float(self.shape_q0.get()), float(self.shape_q1.get()))
+            pole = (float(self.shape_pole_x.get()), float(self.shape_pole_y.get()))
+            mesh = sg.custom_surface_lattice(
+                top, bottom, coord=self.shape_coord.get(),
+                lattice=self.shape_lattice.get(), p_range=p_range, q_range=q_range,
+                n1=int(self.shape_n1.get()), n2=int(self.shape_n2.get()),
+                depth=float(self.shape_depth.get()), pole=pole)
+        except (em.ExpressionError, ValueError, tk.TclError) as exc:
+            self.shape_status.config(text=str(exc))
+            return
+        self._load_mesh(mesh, push_undo=True, undo_label='build surface')
+        self._set_mode('shape')
+
     def _load_example(self, builder, label):
         """Build and load one of stereo_examples.EXAMPLES -- a ready-made
         scene demonstrating the add-on features (columns, reinforcement

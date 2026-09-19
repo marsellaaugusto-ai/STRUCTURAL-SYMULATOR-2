@@ -27,7 +27,7 @@ from apps.stereo.stereo_app import (
     SCALE_PEAK, SCALE_P95, FILL_DENSITY_STIPPLE,
     NEAR_ZERO_FRAC, STRESS_WIDTH_MIN, STRESS_WIDTH_MAX,
     COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT,
-    FILL_NONE, FILL_SHADED,
+    FILL_NONE, FILL_SHADED, FILL_MODES,
     GRADIENT_SEGMENTS, GRADIENT_SEGMENTS_DENSE, GRADIENT_DENSE_MEMBERS,
     MOMENT_BACKDROP_COLOR, MOMENT_NODE_RADIUS_PX,
     TENSION_HIGH, COMPRESSION_HIGH,
@@ -5581,3 +5581,43 @@ def test_a_new_model_starts_with_no_panels(app):
     assert app.panels
     app._generate()
     assert app.panels == []
+
+
+def test_the_cell_fill_is_reachable_from_the_analyse_panel(app):
+    """Regression: moving the display controls out of the popover and into
+    the rail dropped the FILL group on the way, which is the view that
+    shades each closed CELL of the mesh. It was still in the popover, so
+    nothing was broken -- it had simply become unfindable."""
+    _mode(app, 'analyse')
+    labels = []
+
+    def walk(w):
+        for c in w.winfo_children():
+            try:
+                t = c.cget('text')
+            except tk.TclError:
+                t = ''
+            if t:
+                labels.append(str(t))
+            walk(c)
+    walk(app._mode_frames['analyse'])
+    blob = ' | '.join(labels)
+    assert 'Fill the cells' in blob
+    for mode in FILL_MODES:
+        assert mode in blob, f'{mode!r} is not offered in the Analyse panel'
+
+
+def test_turning_the_cell_fill_on_from_the_analyse_panel_draws_cells(app):
+    # A cell is coloured by its governing member, so it needs a solve to
+    # have anything to say -- unanalysed, every panel correctly comes back
+    # with no colour rather than a made-up one.
+    app._analyze()
+    _mode(app, 'analyse')
+    app.faces_mode.set(FILL_SHADED)
+    app._on_faces_mode_change()
+    app._draw()
+    assert app.canvas.find_withtag('shaded_face'), 'no cell was shaded'
+    app.faces_mode.set(FILL_NONE)
+    app._on_faces_mode_change()
+    app._draw()
+    assert not app.canvas.find_withtag('shaded_face')

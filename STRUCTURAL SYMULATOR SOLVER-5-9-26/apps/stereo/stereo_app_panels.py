@@ -299,6 +299,27 @@ class StereoPanelsMixin(_ToolbarModes):
                            wraplength=PANEL_TEXT_W, command=self._draw
                            ).pack(fill='x', padx=6)
 
+        box = tk.LabelFrame(parent, text='Fill the cells', bg=BG,
+                            font=('Helvetica', 10, 'bold'))
+        box.pack(fill='x', padx=6, pady=4)
+        tk.Label(box, text='Shades each closed cell of the mesh by its own '
+                           'governing member, so the structure reads as a '
+                           'surface rather than as a cloud of rods.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(2, 2))
+        for label in FILL_MODES:
+            tk.Radiobutton(box, text=label, value=label, variable=self.faces_mode,
+                           bg=BG, font=('Helvetica', 9), anchor='w',
+                           command=self._on_faces_mode_change).pack(fill='x', padx=6)
+        drow = tk.Frame(box, bg=BG)
+        drow.pack(fill='x', padx=6, pady=(2, 6))
+        tk.Label(drow, text='shade:', bg=BG, font=('Helvetica', 8), fg=HINT_FG,
+                 width=7, anchor='w').pack(side='left')
+        dens = ttk.Combobox(drow, textvariable=self.fill_density, state='readonly',
+                            width=7, values=list(FILL_DENSITIES))
+        dens.pack(side='left', fill='x', expand=True)
+        dens.bind('<<ComboboxSelected>>', lambda _e: self._draw())
+
         box = tk.LabelFrame(parent, text='Deformed shape', bg=BG,
                             font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=4)

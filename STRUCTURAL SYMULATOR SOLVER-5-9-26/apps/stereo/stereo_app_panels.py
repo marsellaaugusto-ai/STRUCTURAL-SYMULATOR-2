@@ -1246,8 +1246,42 @@ class StereoPanelsMixin(_ToolbarModes):
                       bg=BG, font=('Helvetica', 8)).pack(side='left')
         tk.Radiobutton(tier_row, text='2 thick', value=2, variable=self.col_tiers,
                       bg=BG, font=('Helvetica', 8)).pack(side='left')
+        # Off by default, unlike the original, which had it on. Turning it
+        # on adds restraints, which changes the answer for every column
+        # model ever built in this version -- that is the user's call to
+        # make deliberately, not a default that quietly moves their numbers.
+        self.col_braced = tk.BooleanVar(value=False)
+        tk.Checkbutton(col, text='Laterally braced at the capital',
+                       variable=self.col_braced, bg=BG, font=('Helvetica', 9),
+                       anchor='w', justify='left', wraplength=PANEL_TEXT_W
+                       ).pack(fill='x', padx=6)
+        tk.Label(col, text='Holds the head against sway (ux, uy) but leaves uz '
+                           'free, so the column still shortens and still has to '
+                           'pass its buckling check.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(0, 2))
         tk.Button(col, text='Add column at selected nodes', command=self._add_column
-                 ).pack(fill='x', padx=6, pady=(2, 4))
+                 ).pack(fill='x', padx=6, pady=(2, 2))
+
+        self.col_array_x = tk.IntVar(value=2)
+        self.col_array_y = tk.IntVar(value=2)
+        arow = tk.Frame(col, bg=BG)
+        arow.pack(fill='x', padx=6, pady=(2, 0))
+        tk.Label(arow, text='Array:', bg=BG, width=7, anchor='w',
+                 font=('Helvetica', 9)).pack(side='left')
+        tk.Entry(arow, textvariable=self.col_array_x, width=4,
+                 font=('Helvetica', 9)).pack(side='left')
+        tk.Label(arow, text='\u00d7', bg=BG, font=('Helvetica', 9)).pack(side='left', padx=2)
+        tk.Entry(arow, textvariable=self.col_array_y, width=4,
+                 font=('Helvetica', 9)).pack(side='left')
+        tk.Button(col, text='Build the array',
+                  command=self._build_column_array
+                 ).pack(fill='x', padx=6, pady=(2, 2))
+        tk.Label(col, text='The array places its own columns -- no selection needed.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(0, 2))
+        tk.Button(col, text='Clear every column', fg='#a3241a',
+                  command=self._clear_columns).pack(fill='x', padx=6, pady=(0, 4))
         self.col_note = tk.Label(col, text='', bg=BG, fg='#2f6f4f',
                                  font=('Helvetica', 8), justify='left',
                                  wraplength=250, anchor='w')
@@ -1299,7 +1333,9 @@ class StereoPanelsMixin(_ToolbarModes):
                     values=list(self.BEAM_DIRECTIONS)).pack(side='left')
         self._labeled_entry(beam, 'Layers (tiers):', self.beam_tiers)
         tk.Button(beam, text='Add beam over selected rows',
-                 command=self._add_reinforcement_beam).pack(fill='x', padx=6, pady=(2, 4))
+                 command=self._add_reinforcement_beam).pack(fill='x', padx=6, pady=(2, 2))
+        tk.Button(beam, text='Clear every beam', fg='#a3241a',
+                  command=self._clear_beams).pack(fill='x', padx=6, pady=(0, 4))
 
     def _build_results_panel(self, parent):
         box = tk.LabelFrame(parent, text='Results', bg=BG, font=('Helvetica', 10, 'bold'))

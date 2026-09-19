@@ -179,6 +179,10 @@ class StereoModelMixin:
         self.supports = [{'node': i, 'type': 'pin'} for i in self._support_candidates]
         self.sup_quick_var.set(QUICK_SUPPORT_PIN)
         self._disabled_supports = set()
+        # A new mesh has no columns, so there is nothing for Clear columns
+        # to hand back. Carrying the old model's entries over would restore
+        # supports onto whatever node happens to hold those indices now.
+        self._column_freed = []
         self.loads = []
         self.results = None
         self.member_checks = None

@@ -180,6 +180,20 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self.supports = snap['supports']
         self.results = None
         self.member_checks = None
+        # The SELECTION is not part of the snapshot, and an undo can restore
+        # a smaller model than the one the selection was made in: add a
+        # column, whose last act is to select its new feet, then undo, and
+        # those indices point past the end of the node list. The very next
+        # selection sync then raises IndexError, which is a crash rather
+        # than a wrong answer. Drop whatever no longer exists.
+        n = len(self.nodes)
+        self.selected_nodes = {i for i in self.selected_nodes if i < n}
+        if self.selected_member is not None and \
+                self.selected_member >= len(self.members):
+            self.selected_member = None
+        self._disabled_supports = {i for i in self._disabled_supports if i < n}
+        self._add_rod_first = (self._add_rod_first
+                               if (self._add_rod_first or 0) < n else None)
 
     def _push_undo(self, label=''):
         self._undo_stack.append((label, self._model_snapshot()))

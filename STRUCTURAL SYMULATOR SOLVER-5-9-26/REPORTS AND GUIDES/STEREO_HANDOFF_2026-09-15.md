@@ -171,7 +171,16 @@ The following were all added or found during the 2026-09-19 UI rebuild:
 10. **A column must take over the supports at the joints it carries.** A pin
     left at the column head is a rigid path to ground in parallel with the
     column, and it wins: measured, 0.00 kN through the column with the pin,
-    23.17 kN without it.
+    23.17 kN without it. The entries it removed are kept in
+    `self._column_freed` so Clear columns can hand them back -- nothing in
+    the mesh afterwards remembers a pin was ever there, least of all what
+    kind it was. `_load_mesh` clears that list, or the next model would get
+    supports restored onto whatever node holds those indices now.
+10b. **A snapshot restore must clamp the selection.** `_restore_snapshot` can
+    bring back a SHORTER node list than the selection was made in: adding a
+    column ends by selecting its new feet, and undoing then left those
+    indices pointing past the end. The next selection sync raised
+    IndexError -- a crash, not a wrong answer.
 11. **`_draw` clears the canvas wholesale** (`c.delete('all')`), so a
     remembered canvas item id goes stale every frame. The four corner cards
     (legend, view cube, selection, base module) are all found by TAG each

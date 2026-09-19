@@ -27,6 +27,13 @@ class StereoAddonsMixin:
     # non-edge-parallel direction for callers who need it.
     BEAM_DIRECTIONS = {'Down (-Z)': (0.0, 0.0, -1.0), 'Up (+Z)': (0.0, 0.0, 1.0)}
 
+    # Which member roles belong to which add-on, so one removal routine can
+    # serve both Clear buttons. These are the roles stereo_geometry_addons
+    # tags its own members with and nothing else uses.
+    COLUMN_ROLES = frozenset({'column_shaft', 'column_tie', 'column_chord',
+                              'column_web', 'capital', 'capital_ring'})
+    BEAM_ROLES = frozenset({'reinf_chord', 'reinf_web'})
+
     def _add_column(self):
         targets = sorted(self.selected_nodes)
         # The plain strut has no capital to attach, so it needs no footprint
@@ -79,15 +86,192 @@ class StereoAddonsMixin:
         # that joint reaches the ground, so the old pin goes.
         freed = sorted({s['node'] for s in self.supports} & set(targets))
         if freed:
+            # Keep the entries themselves, not just the node numbers: Clear
+            # columns hands them back, and nothing in the mesh afterwards
+            # remembers that a pin was ever there -- least of all what KIND
+            # of pin it was.
+            self._column_freed = list(getattr(self, '_column_freed', [])) + [
+                dict(sp) for sp in self.supports if sp['node'] in set(freed)]
             self.supports = [s for s in self.supports if s['node'] not in set(freed)]
             self._support_candidates = [i for i in self._support_candidates
                                         if i not in set(freed)]
+        if self.col_braced.get():
+            # A pin-ended column gives the structure no sway restraint at
+            # all. "Braced" models the usual real detail -- the roof plane
+            # or a bracing bay holds the capital horizontally -- by
+            # restraining ux and uy at the head and LEAVING uz free, so the
+            # column's own axial shortening and its E3 buckling check still
+            # govern. Holding uz too would be a rigid prop, which is the
+            # very thing the column is there instead of.
+            heads = sorted(set(targets))
+            self.supports.extend({'node': h, 'dofs': {'ux': True, 'uy': True}}
+                                 for h in heads)
         self._set_column_note(freed, bases)
         self._apply_sections(members=self.members, redraw=False)
         self.selected_nodes = set(bases)
         self.results = None
         self.member_checks = None
         self._refresh_all()
+
+    # ── clearing add-ons, and building a column array ───────────────────────
+    def _strip_members(self, roles, label):
+        """Remove every member in `roles`, then every node they leave with
+        nothing attached, and renumber what is left.
+
+        Only ORPHANS go. A grid node a capital fanned to still carries its
+        own chords, so it stays exactly where it was -- deleting it would
+        tear a hole in the roof to remove the column under it.
+
+        Returns the number of members removed.
+        """
+        victims = [i for i, m in enumerate(self.members)
+                   if m.get('role') in roles]
+        if not victims:
+            return 0
+        self._push_undo(label)
+        drop = set(victims)
+        kept = [m for i, m in enumerate(self.members) if i not in drop]
+
+        used = set()
+        for m in kept:
+            used.add(m['a'])
+            used.add(m['b'])
+        order = sorted(used)
+        remap = {old: new for new, old in enumerate(order)}
+
+        self.nodes = [self.nodes[i] for i in order]
+        self.members = [dict(m, a=remap[m['a']], b=remap[m['b']]) for m in kept]
+        self.supports = [dict(sp, node=remap[sp['node']])
+                         for sp in self.supports if sp['node'] in remap]
+        self.loads = [dict(ld, node=remap[ld['node']])
+                      for ld in self.loads if ld['node'] in remap]
+        self._support_candidates = sorted(
+            {remap[i] for i in self._support_candidates if i in remap})
+        self._load_nodes = {remap[i]: a for i, a in (self._load_nodes or {}).items()
+                            if i in remap}
+        self._disabled_supports = {remap[i] for i in self._disabled_supports
+                                   if i in remap}
+        self.selected_nodes = {remap[i] for i in self.selected_nodes if i in remap}
+        self.selected_member = None
+        self.results = None
+        self.member_checks = None
+        return len(victims)
+
+    def _clear_columns(self):
+        """Remove every column and capital at once.
+
+        Undo already covers removing ONE, but a model with a dozen columns
+        needs a dozen undos to get back to the bare grid, and by then the
+        undo stack has eaten everything else you did in between.
+
+        Supports the columns took over are handed back: a joint whose pin
+        was removed because a column was carrying it would otherwise be
+        left hanging, and the next Analyze would report a mechanism for a
+        reason nothing on screen explains.
+        """
+        n = self._strip_members(self.COLUMN_ROLES, 'clear columns')
+        if not n:
+            self._set_addon_note('No columns to clear.')
+            return
+        restored = self._restore_freed_supports()
+        self._apply_sections(members=self.members, redraw=False)
+        self._me_maybe_refresh_topology()
+        self._set_addon_note(
+            f'{n} column member(s) removed.'
+            + (f' {restored} support(s) handed back.' if restored else ''))
+        self._refresh_all()
+
+    def _clear_beams(self):
+        n = self._strip_members(self.BEAM_ROLES, 'clear reinforcement beams')
+        if not n:
+            self._set_addon_note('No reinforcement beams to clear.')
+            return
+        self._apply_sections(members=self.members, redraw=False)
+        self._me_maybe_refresh_topology()
+        self._set_addon_note(f'{n} beam member(s) removed.')
+        self._refresh_all()
+
+    def _restore_freed_supports(self):
+        """Put back the supports the columns took over, for the nodes that
+        still exist. Recorded at the moment each column took them, because
+        nothing in the mesh afterwards remembers that a pin was ever
+        there."""
+        have = {sp['node'] for sp in self.supports}
+        back = 0
+        for entry in getattr(self, '_column_freed', []):
+            node = entry.get('node')
+            if node is not None and 0 <= node < len(self.nodes) and node not in have:
+                self.supports.append(dict(entry))
+                self._support_candidates = sorted(set(self._support_candidates) | {node})
+                have.add(node)
+                back += 1
+        self._column_freed = []
+        return back
+
+    def _build_column_array(self):
+        """Stand a regular n x m array of columns under the model.
+
+        The original placed them at plan coordinates, because its grid was
+        always a rectangle of known module size. This mesh may be a cut
+        plan, a dome or a vault, so the array is laid out over the model's
+        OWN plan extent and each station then snaps to real nodes -- an
+        (x, y) with no node under it is not somewhere a column can stand.
+        """
+        try:
+            ncx = max(1, int(self.col_array_x.get()))
+            ncy = max(1, int(self.col_array_y.get()))
+        except (tk.TclError, ValueError):
+            messagebox.showerror('Column array', 'Enter whole numbers for the array.')
+            return
+        if not self.nodes:
+            messagebox.showerror('Column array', 'Generate a model first.')
+            return
+        plain = self.col_style.get() == sg.COLUMN_PLAIN
+        per_station = 1 if plain else 4
+
+        # Columns stand under the LOWEST layer; picking from every node
+        # would let a station snap to the top chord and hang a column in
+        # mid-air below it.
+        zs = [p[2] for p in self.nodes]
+        floor = min(zs)
+        band = (max(zs) - floor) * 0.05
+        candidates = [i for i, p in enumerate(self.nodes) if p[2] <= floor + band]
+        if len(candidates) < per_station:
+            messagebox.showerror('Column array',
+                                 'Not enough nodes in the bottom layer to stand '
+                                 'a column on.')
+            return
+
+        xs = [self.nodes[i][0] for i in candidates]
+        ys = [self.nodes[i][1] for i in candidates]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        stations = [(x0 + (x1 - x0) * (a + 1) / (ncx + 1),
+                     y0 + (y1 - y0) * (b + 1) / (ncy + 1))
+                    for a in range(ncx) for b in range(ncy)]
+
+        added, taken = 0, set()
+        for sx, sy in stations:
+            pool = [i for i in candidates if i not in taken]
+            if len(pool) < per_station:
+                break
+            pool.sort(key=lambda i: (self.nodes[i][0] - sx) ** 2
+                                    + (self.nodes[i][1] - sy) ** 2)
+            pick = pool[:per_station]
+            taken.update(pick)
+            self.selected_nodes = set(pick)
+            before = len(self.members)
+            self._add_column()
+            if len(self.members) > before:
+                added += 1
+        self._set_addon_note(
+            f'{added} of {len(stations)} column(s) placed '
+            f'({ncx} \u00d7 {ncy} array).' if added else
+            'No column could be placed -- try fewer, or the plain strut.')
+
+    def _set_addon_note(self, text):
+        note = getattr(self, 'col_note', None)
+        if note is not None:
+            note.config(text=text)
 
     def _set_column_note(self, freed, bases):
         """Say what the column did to the boundary conditions.

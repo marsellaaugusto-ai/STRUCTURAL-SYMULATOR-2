@@ -243,6 +243,34 @@ compression goes through the same CIRSOC **Chapter E3** flexural-buckling check
 as every other member (`stereo_checks.check_member`). There is no separate
 "model the column as rigid" mode, and none is wanted.
 
+**Laterally braced at the capital** (off by default). A pin-ended column gives
+the structure no sway restraint at all. This models the usual real detail --
+the roof plane or a bracing bay holding the capital horizontally -- by
+restraining ux and uy at the head and leaving **uz free**, so the column still
+shortens and still has to pass its buckling check. Holding uz too would be a
+rigid prop, which is the very thing the column is there instead of. It is off
+by default (the original had it on) because switching it on adds restraints
+and moves the answer.
+
+**Build the array** places a regular n x m grid of columns in one action, with
+no selection needed. The original laid them out at plan coordinates because
+its grid was always a rectangle of known module size; this mesh may be a cut
+plan, a dome or a vault, so the array is spread over the model's own plan
+extent and each station then snaps to real nodes in the **lowest layer** -- an
+(x, y) with no node under it is not somewhere a column can stand, and picking
+from every node would hang a column in mid-air under the top chord. Each
+station takes its nodes out of the pool, so two columns never share a footing.
+
+**Clear every column** / **Clear every beam** remove all of one add-on at
+once. Undo covers removing one, but a model with a dozen columns needed a
+dozen undos to reach the bare grid, and by then the stack has eaten everything
+else you did in between. Only ORPHANED nodes go: a grid node a capital fanned
+to still carries its own chords, and deleting it would tear a hole in the roof
+to remove the column under it. Clearing the columns also **hands back the
+supports they took over**, or the joints they were carrying would be left
+hanging and the next Analyze would report a mechanism for a reason nothing on
+screen explains.
+
 **Five beam profiles**, attached to two parallel rows of existing nodes:
 
 | Profile | Cross-section |
@@ -362,7 +390,7 @@ kept a 400 px control column and a 300 px Module Editor open at all times,
 whether or not you were using either; the canvas got about 60% of the width.
 Now it gets about 79%.
 
-**The mode rail** (left, 76 px) holds eight modes. Only one mode's panel is on
+**The mode rail** (left, 76 px) holds nine modes. Only one mode's panel is on
 screen at a time — the rest are *forgotten* by the geometry manager rather
 than hidden, so nothing off-screen keeps claiming space. Each mode answers one
 question:
@@ -376,9 +404,10 @@ question:
 | 5 | **Section** | What it is made of: chord and web sections, material, pinned or rigid |
 | 6 | **Add-ons** | Columns and reinforcement beams |
 | 7 | **Module** | The repeating cell, and edits applied to every congruent copy |
-| 8 | **Results** | Reactions, member table, the click-to-inspect readout |
+| 8 | **Analyse** | How to draw it, and four charts of what the solve found |
+| 9 | **Results** | Reactions, member table, the click-to-inspect readout |
 
-**Alt+1 … Alt+8** jump straight to a mode, in that order; the rail hint names
+**Alt+1 … Alt+9** jump straight to a mode, in that order; the rail hint names
 the shortcut. Alt rather than a bare digit because most of the work here is
 typing numbers into fields — the shortcut fires from inside a focused entry
 without typing into it.
@@ -389,8 +418,7 @@ undo/redo, the Display popover, Export, and the Load % slider.
 **The status bar** (30 px) always reads node and rod counts, governing
 utilisation, peak deflection and ΣRz, in the active unit convention.
 
-**Four canvas cards**, one per corner, none of which costs the model any
-layout width:
+**Canvas cards**, none of which costs the model any layout width:
 - **top-left** — the colour legend and its ramp, over its own ground so the
   numbers stay legible against the structure behind them;
 - **top-right** — the **view cube**: Iso / Top / Front / Right / Back / Left.
@@ -400,9 +428,11 @@ layout width:
   whatever node or rod you last clicked. It is on the canvas rather than in a
   panel because it used to live in Results, which meant inspecting a rod while
   placing supports wrote the answer onto a panel that was not on screen;
-- **bottom-right** — the **base module card**, the grid's reference cell,
-  always showing the module as generated whatever the Module Editor is
-  currently displaying.
+- **under the view cube**, in the same right-hand column — the **base module
+  card**, the grid's reference cell, always showing the module as generated
+  whatever the Module Editor is currently displaying. **Drag it to turn the
+  module**: it shares the editor's camera, so the two views of that one solid
+  can never face different ways. The model's own camera stays separate.
 
 **Camera.** Left-drag lassoes, right-drag orbits, wheel zooms, middle-drag
 pans. Reset view re-frames the model and **fits the zoom to it**: PX_PER_M is
@@ -415,6 +445,31 @@ default focus highlight is the same colour as the background, which across
 eight panels of numeric fields meant there was no way to tell which one a
 keystroke was about to land in.
 
+### Analyse mode's charts
+
+`stereo_app_analysis.py`. The status bar gives the single governing
+utilisation and the member report gives every row; neither answers the
+question actually asked after a solve -- *is the structure working as a whole,
+or is one member carrying the day?* A governing 0.9 means something different
+when six members are near it than when one is and the rest sit at 0.05, and
+that shape is what a histogram shows and a table does not.
+
+- **Utilisation histogram**, banded, with over-capacity kept as its own bar
+  rather than folded into the top band.
+- **Tension / compression split** as one divided bar, because the useful
+  reading is the balance: a frame with almost everything in compression is
+  saying something about its supports.
+- **Support reactions**, tallest first, so an unevenly loaded support line is
+  visible rather than inferred from a column of numbers.
+- **Cell census** -- how many DISTINCT cell shapes the mesh is made of and how
+  dominant the repeating one is. This is the buildability reading: role 0 at
+  81% is one module plus edge pieces, role 0 at 30% is a dozen bespoke parts,
+  and nothing else in the tab mentions that.
+
+They read only what `analyze` already produced, redraw on entering the mode
+and after each solve, and scale with the Load % slider -- a chart one solve
+behind the model is worse than no chart, because it still looks authoritative.
+
 ### One screenshot per mode
 
 All eight, at 1700×960, of the same solved model — a square-on-diagonal
@@ -424,8 +479,10 @@ lattice on a paraboloid, cut to a round plan:
 |---|---|---|---|
 | ![Build](stereo_ui_modes/1_build.png) | ![Shape](stereo_ui_modes/2_shape.png) | ![Support](stereo_ui_modes/3_support.png) | ![Load](stereo_ui_modes/4_load.png) |
 | **1 Build** | **2 Shape** | **3 Support** | **4 Load** |
-| ![Section](stereo_ui_modes/5_section.png) | ![Add-ons](stereo_ui_modes/6_addons.png) | ![Module](stereo_ui_modes/7_module.png) | ![Results](stereo_ui_modes/8_results.png) |
-| **5 Section** | **6 Add-ons** | **7 Module** | **8 Results** |
+| ![Section](stereo_ui_modes/5_section.png) | ![Add-ons](stereo_ui_modes/6_addons.png) | ![Module](stereo_ui_modes/7_module.png) | ![Analyse](stereo_ui_modes/8_analyse.png) |
+| **5 Section** | **6 Add-ons** | **7 Module** | **8 Analyse** |
+| ![Results](stereo_ui_modes/9_results.png) | | | |
+| **9 Results** | | | |
 
 ---
 

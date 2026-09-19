@@ -5120,3 +5120,205 @@ def test_the_charts_follow_the_load_slider(app):
              for i in app.analysis_canvas.find_all()
              if app.analysis_canvas.type(i) == 'text']
     assert full != tenth, 'the charts ignored the Load % slider'
+
+
+# ── clearing add-ons, arrays, and the lateral brace ──────────────────────────
+
+def _two_bottom_rows(app):
+    """A selection the reinforcement beam will accept: two adjacent rows of
+    the lowest layer."""
+    zmin = min(p[2] for p in app.nodes)
+    bottom = [i for i, p in enumerate(app.nodes) if abs(p[2] - zmin) < 1e-6]
+    ys = sorted({round(app.nodes[i][1], 6) for i in bottom})
+    return {i for i in bottom if round(app.nodes[i][1], 6) in ys[:2]}
+
+
+def test_clearing_the_columns_puts_the_model_back_exactly(app):
+    """Undo covers removing one. A model with a dozen columns needed a dozen
+    undos to reach the bare grid, and by then the stack has eaten everything
+    else you did in between."""
+    _mode(app, 'addons')
+    n0, m0 = len(app.nodes), len(app.members)
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {app.supports[0]['node']}
+    app._add_column()
+    assert len(app.members) > m0
+    app._clear_columns()
+    assert (len(app.nodes), len(app.members)) == (n0, m0)
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_clearing_the_columns_hands_their_supports_back(app):
+    """A joint whose pin was removed because a column was carrying it would
+    otherwise be left hanging, and the next Analyze would report a mechanism
+    for a reason nothing on screen explains."""
+    _mode(app, 'addons')
+    target = app.supports[0]['node']
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {target}
+    app._add_column()
+    assert not any(s['node'] == target for s in app.supports)
+    app._clear_columns()
+    assert any(s['node'] == target for s in app.supports), \
+        'the joint the column was carrying is now supported by nothing'
+    assert target in app._support_candidates
+
+
+def test_clearing_columns_keeps_the_grid_nodes_the_capital_reached(app):
+    """Only ORPHANS go. A grid node a capital fanned to still carries its own
+    chords -- deleting it would tear a hole in the roof to remove the column
+    under it."""
+    _mode(app, 'addons')
+    before = list(app.nodes)
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {4, 5}
+    app._add_column()
+    app._clear_columns()
+    assert app.nodes == before
+
+
+def test_clearing_beams_puts_the_model_back_exactly(app):
+    _mode(app, 'addons')
+    n0, m0 = len(app.nodes), len(app.members)
+    app.selected_nodes = _two_bottom_rows(app)
+    app._add_reinforcement_beam()
+    assert len(app.members) > m0
+    app._clear_beams()
+    assert (len(app.nodes), len(app.members)) == (n0, m0)
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_clearing_beams_leaves_the_columns_alone(app):
+    """The two Clear buttons share one removal routine, which is exactly why
+    it has to be told which roles it owns."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {app.supports[0]['node']}
+    app._add_column()
+    shafts = sum(1 for m in app.members if m.get('role') == 'column_shaft')
+    app.selected_nodes = _two_bottom_rows(app)
+    app._add_reinforcement_beam()
+    app._clear_beams()
+    assert sum(1 for m in app.members if m.get('role') == 'column_shaft') == shafts
+    assert not [m for m in app.members if m.get('role') in ('reinf_chord', 'reinf_web')]
+
+
+def test_clearing_nothing_says_so_instead_of_pretending(app):
+    _mode(app, 'addons')
+    n0 = len(app.members)
+    app._clear_columns()
+    assert 'No columns' in app.col_note.cget('text')
+    assert len(app.members) == n0
+
+
+def test_a_column_array_needs_no_selection(app):
+    """The point of the array is placing many columns at once, which is the
+    one case where lassoing each footprint by hand is the slow way."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = set()
+    app.col_array_x.set(3)
+    app.col_array_y.set(2)
+    app._build_column_array()
+    assert sum(1 for m in app.members if m.get('role') == 'column_shaft') == 6
+    assert '3' in app.col_note.cget('text')
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_array_columns_stand_on_the_lowest_layer(app):
+    """Picking from every node would let a station snap to the top chord and
+    hang a column in mid-air below it."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.col_array_x.set(2)
+    app.col_array_y.set(2)
+    zmin_before = min(p[2] for p in app.nodes)
+    app._build_column_array()
+    heads = [app.members[i]['b'] for i, m in enumerate(app.members)
+             if m.get('role') == 'column_shaft']
+    for h in heads:
+        assert abs(app.nodes[h][2] - zmin_before) < 1e-6, \
+            'a column hangs from something above the bottom layer'
+
+
+def test_two_array_columns_never_share_a_footing(app):
+    """Each station takes its nodes out of the pool, or a dense array would
+    stack several columns under the same joint."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.col_array_x.set(4)
+    app.col_array_y.set(4)
+    app._build_column_array()
+    heads = [app.members[i]['b'] for i, m in enumerate(app.members)
+             if m.get('role') == 'column_shaft']
+    assert len(heads) == len(set(heads))
+
+
+def test_a_braced_capital_holds_sway_but_not_the_vertical(app):
+    """The point of bracing a column head is the roof plane holding it
+    against sway. Holding uz too would be a rigid prop, which is the very
+    thing the column is there instead of."""
+    _mode(app, 'addons')
+    target = app.supports[0]['node']
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.col_braced.set(True)
+    app.selected_nodes = {target}
+    app._add_column()
+    entry = next(s for s in app.supports if s['node'] == target)
+    r = sm.support_restraints(entry)
+    assert r['ux'] and r['uy']
+    assert not r['uz'], 'a braced head must still be free to settle'
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_bracing_is_off_unless_asked_for(app):
+    """It was on by default in the original. Turning it on adds restraints,
+    which moves the answer for every column model built in this version --
+    that is a deliberate choice to make, not a default that shifts numbers
+    quietly."""
+    assert app.col_braced.get() is False
+    _mode(app, 'addons')
+    target = app.supports[0]['node']
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {target}
+    app._add_column()
+    assert not any(s['node'] == target for s in app.supports)
+
+
+def test_bracing_a_column_stiffens_the_structure(app):
+    """If the toggle changed nothing measurable it would be decoration."""
+    _mode(app, 'addons')
+    target = app.supports[0]['node']
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {target}
+    app._add_column()
+    app._analyze()
+    free = max(abs(v) for r in app.results['node_res']
+               for v in (r['ux'], r['uy']))
+    app._undo()
+    app.col_braced.set(True)
+    app.selected_nodes = {target}
+    app._add_column()
+    app._analyze()
+    braced = max(abs(v) for r in app.results['node_res']
+                 for v in (r['ux'], r['uy']))
+    assert braced <= free + 1e-9, 'bracing made the structure sway MORE'
+
+
+def test_undo_drops_a_selection_the_restored_model_no_longer_has(app):
+    """Regression, a crash not a wrong answer: adding a column ends by
+    selecting its new feet, and undoing then restored a shorter node list
+    while those indices survived. The next selection sync raised
+    IndexError."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {app.supports[0]['node']}
+    app._add_column()
+    assert max(app.selected_nodes) >= len(app.nodes) - 1
+    app._undo()
+    assert all(i < len(app.nodes) for i in app.selected_nodes)
+    app._sync_selection_fields()      # this is what used to raise

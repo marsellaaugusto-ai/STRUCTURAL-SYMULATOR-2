@@ -17,8 +17,7 @@ thousands of lines and the name says what is inside:
 
   stereo_app_constants.py     shared colours, sizes and label tables
   stereo_app_colors.py        the four colour spectra, as pure functions
-  stereo_app_canvas_geom.py   screen-space geometry (hit test, clip,
-                              Voronoi)
+  stereo_app_canvas_geom.py   screen-space geometry (hit test, clipping)
   stereo_app_panels.py        toolbar, canvas and sidebar panel layout
   stereo_app_model.py         generate / support / load / analyze commands
   stereo_app_view.py          camera, projection, picking, rod tool
@@ -72,7 +71,7 @@ from apps.stereo.stereo_app_colors import (             # noqa: F401
     reaction_moment_signed,
 )
 from apps.stereo.stereo_app_canvas_geom import (        # noqa: F401
-    _point_segment_distance, _clip_polygon_to_bbox, _voronoi_cells_2d,
+    _point_segment_distance,
 )
 from apps.stereo.stereo_app_panels import StereoPanelsMixin
 from apps.stereo.stereo_app_model import StereoModelMixin
@@ -116,12 +115,9 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         self._load_path_after_id = None
         self._add_rod_first = None   # first-picked node while 'Add rod' mode is on
         self._shaded_cells = None    # lazy cache, see _get_shaded_cells
-        # The 3D Voronoi tessellation is expensive to build and independent
+        # (cache slot kept free for any future expensive overlay)
         # of the camera, so it is cached against everything it really depends
         # on (geometry, domain, view, slice) and reused while orbiting.
-        self._voronoi_cache = None
-        self._voronoi_note = ''
-        self._voronoi_cut_last = 1.0   # last section thickness that was a real length
         self._wizard_recipe = None     # the Custom Surface Wizard settings
                                         # behind the model now loaded, if any
 

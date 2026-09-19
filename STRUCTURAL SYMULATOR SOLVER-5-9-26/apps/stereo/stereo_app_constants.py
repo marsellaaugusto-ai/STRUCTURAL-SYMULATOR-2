@@ -83,8 +83,7 @@ COLOUR_MODES = (COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT)
 
 FILL_NONE = 'None'
 FILL_SHADED = 'Shaded cells'
-FILL_VORONOI = 'Voronoi'
-FILL_MODES = (FILL_NONE, FILL_SHADED, FILL_VORONOI)
+FILL_MODES = (FILL_NONE, FILL_SHADED)
 
 # How the force colourbar's ends are anchored.
 #
@@ -105,9 +104,6 @@ FORCE_SCALE_PERCENTILE = 95
 CLIP_MARK_COLOR = '#111111'   # the hairline that marks a rod above the anchor
 CLIP_MARK_DASH = (2, 3)
 
-# Cell outlines in the Voronoi "Cells" view -- drawn over the fill along the
-# rods where ownership changes, which is what makes the cells read as cells
-# rather than as a continuous colour field.
 # How opaque a fill is drawn. A Tk canvas polygon has no alpha channel, so
 # "see-through" is a stipple pattern: at gray25 a quarter of the pixels are
 # the fill and the rest is whatever is behind it. The trade runs both ways --
@@ -120,8 +116,6 @@ FILL_DENSITY_STIPPLE = {'Light': 'gray25', 'Medium': 'gray50',
 FILL_DENSITIES = tuple(FILL_DENSITY_STIPPLE)
 FILL_DENSITY_DEFAULT = 'Light'
 
-CELL_EDGE_COLOR = '#33414d'
-CELL_EDGE_WIDTH = 1
 
 GRADIENT_SEGMENTS = 8
 GRADIENT_SEGMENTS_DENSE = 4

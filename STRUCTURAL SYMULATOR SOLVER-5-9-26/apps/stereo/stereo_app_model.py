@@ -19,7 +19,6 @@ from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_checks as sc
 from apps.stereo import expr_math as em
-from apps.stereo import stereo_voronoi_surface as svs
 from apps.stereo.stereo_app_constants import (
     DOF_LABELS, FAMILY_KEY, PATTERN_KEY, CHORD_ROLES,
     QUICK_SUPPORT_CUSTOM, QUICK_SUPPORT_PIN, QUICK_SUPPORT_FIXED,
@@ -172,12 +171,6 @@ class StereoModelMixin:
         # pre-filled with. Cleared for a mesh that carries none, so the
         # wizard never shows the previous model's surfaces.
         self._wizard_recipe = mesh.get('wizard')
-        # The Voronoi band's radius is a length in MODEL units, so a default
-        # carried over from a 9 m grid would be meaningless on a 40 m bridge.
-        # Re-derived from the new mesh's own rod spacing instead.
-        self._voronoi_cut_last = svs.default_cut_thickness(
-            self.nodes, svs.panels_of(self.nodes, self.members)) or 1.0
-        self.voronoi_cut.set(self._voronoi_cut_last)
         self._apply_sections(members=self.members, redraw=False)
         # The reference module of the grid AS GENERATED -- before a node is
         # nudged, a column raised or a beam bolted on. Taken here and nowhere

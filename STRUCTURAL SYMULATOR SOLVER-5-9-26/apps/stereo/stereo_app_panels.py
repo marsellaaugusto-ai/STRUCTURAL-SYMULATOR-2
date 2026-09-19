@@ -18,7 +18,6 @@ from common import ZoomCanvas, FlowBar, ScrollPanel
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_examples as sx
-from apps.stereo import stereo_voronoi_surface as svs
 from apps.stereo.stereo_app_constants import (
     BG, CANVAS_BG, PANEL_W, MODULE_PANEL_W,
     DOF_LABELS, PRESET_NAMES, GRID_PATTERNS, PATTERN_LABEL, GRID_FAMILIES,
@@ -26,7 +25,7 @@ from apps.stereo.stereo_app_constants import (
     DEFORM_MODES, DEFORM_MODE_DISPLACEMENT,
     MOMENT_AXES, MOMENT_AXIS_RESULTANT,
     COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT, COLOUR_MODES,
-    FILL_NONE, FILL_SHADED, FILL_VORONOI, FILL_MODES,
+    FILL_NONE, FILL_SHADED, FILL_MODES,
     SCALE_P95, SCALE_MODES,
     FILL_DENSITIES, FILL_DENSITY_DEFAULT,
     AREA_UNIFORM, AREA_GRADIENT, AREA_FIELD, AREA_LAWS,
@@ -54,7 +53,6 @@ class _ToolbarModes:
     def _on_faces_mode_change(self):
         mode = self.faces_mode.get()
         self.shaded_faces.set(mode == FILL_SHADED)
-        self.voronoi_faces.set(mode == FILL_VORONOI)
         self._draw()
 
 
@@ -65,8 +63,7 @@ class StereoPanelsMixin(_ToolbarModes):
         """One captioned toolbar group.
 
         Every group says what it is FOR, because a row of bare checkboxes
-        cannot: the caption is what tells you that 'Skin' belongs to the
-        Voronoi fill and not to the rods, or that 'Only' means only the
+        cannot: the caption is what tells you that 'Only' means only the
         deformed shape. Two widget types, used consistently, carry the rest
         of the meaning -- a RADIO where exactly one choice applies, a
         CHECKBOX where something is independently on or off.
@@ -180,7 +177,6 @@ class StereoPanelsMixin(_ToolbarModes):
         self.toolbar_flow.separator()
         g = self._tb_group('FILL')
         self.shaded_faces = tk.BooleanVar(value=False)
-        self.voronoi_faces = tk.BooleanVar(value=False)
         self.faces_mode = tk.StringVar(value=FILL_NONE)
         for label in FILL_MODES:
             tk.Radiobutton(g, text=label, value=label, variable=self.faces_mode,
@@ -198,39 +194,6 @@ class StereoPanelsMixin(_ToolbarModes):
                             width=7, values=list(FILL_DENSITIES))
         dens.pack(side='left')
         dens.bind('<<ComboboxSelected>>', lambda e: self._draw())
-
-        # ── 6 · VORONOI ──────────────────────────────────────────────────────
-        # Its own group because these only mean anything once FILL is set to
-        # Voronoi. There is no DOMAIN control any more: the domain is the
-        # structure's own surface, which needs no choosing and no parameter
-        # (see stereo_voronoi_surface). Only Section is volumetric, so the
-        # cut controls belong to it alone.
-        self.toolbar_flow.separator()
-        g = self._tb_group('VORONOI')
-        tk.Label(g, text='view', bg=BG, font=('Helvetica', 8), fg='#556')\
-            .pack(side='left', padx=(0, 2))
-        self.voronoi_view = tk.StringVar(value=svs.VIEW_SURFACE)
-        for label in svs.VIEWS:
-            tk.Radiobutton(g, text=label, value=label, variable=self.voronoi_view,
-                           bg=BG, command=self._draw).pack(side='left', padx=(0, 3))
-        tk.Label(g, text='section at', bg=BG, font=('Helvetica', 8), fg='#556')\
-            .pack(side='left', padx=(8, 2))
-        self.voronoi_axis = tk.StringVar(value='Z')
-        axis_box = ttk.Combobox(g, textvariable=self.voronoi_axis, state='readonly',
-                                width=2, values=('X', 'Y', 'Z'))
-        axis_box.pack(side='left')
-        axis_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
-        self.voronoi_slice = tk.IntVar(value=50)
-        tk.Scale(g, from_=0, to=100, orient='horizontal', variable=self.voronoi_slice,
-                length=80, showvalue=False, command=lambda _v: self._draw()
-                ).pack(side='left')
-        tk.Label(g, text='cut(m)', bg=BG, font=('Helvetica', 8), fg='#556')\
-            .pack(side='left', padx=(4, 1))
-        self.voronoi_cut = tk.DoubleVar(value=1.0)
-        cut_entry = tk.Entry(g, textvariable=self.voronoi_cut, width=5)
-        cut_entry.pack(side='left')
-        cut_entry.bind('<Return>', lambda e: self._draw())
-        cut_entry.bind('<FocusOut>', lambda e: self._draw())
 
         # ── 7 · DEFORMED SHAPE ───────────────────────────────────────────────
         # Kept apart from COLOUR BY on purpose: this colours a DIFFERENT

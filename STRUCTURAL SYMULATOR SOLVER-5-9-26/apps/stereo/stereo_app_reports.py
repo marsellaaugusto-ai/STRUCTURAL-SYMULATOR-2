@@ -23,11 +23,6 @@ class StereoReportsMixin:
     def _refresh_all(self):
         self._load_glyphs = self._combined_loads_by_node()
         self._shaded_cells = None
-        self._voronoi_cache = None   # invalidate; recomputed lazily on next
-                                     # draw that actually needs it (see
-                                     # _get_shaded_cells) -- find_cells is
-                                     # O(members x degree^2) and this runs
-                                     # after every mesh edit, not every frame
         self._refresh_support_list()
         self._refresh_load_list()
         self._refresh_results_text()

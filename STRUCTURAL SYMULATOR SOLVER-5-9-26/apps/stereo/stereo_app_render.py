@@ -2,12 +2,12 @@
 the main canvas.
 
 _draw is the single entry point and runs the whole pass in painter order:
-optional shaded or Voronoi faces behind, then members, then nodes,
+optional shaded faces behind, then members, then nodes,
 supports, load and reaction arrows, the axis gizmo, the deformed overlay
 and finally the legend.
 
 Four colour spectra can drive it (axial force, utilisation, moment,
-deformation) and two fill modes can back it (shaded cell faces, Voronoi
+deformation) and an optional shaded-cell fill can back it
 tessellation); the colour ramps themselves are in stereo_app_colors.py, so
 the legend's numeric colourbar samples the exact same functions the
 wireframe uses instead of reimplementing them.
@@ -28,7 +28,6 @@ from apps.stereo.stereo_app_colors import (
     force_color, deform_color, util_color, moment_color,
     reaction_moment_signed,
 )
-from apps.stereo import stereo_voronoi_surface as svs
 from apps.stereo.stereo_app_constants import (
     NODE_COLOR, NODE_SEL_COLOR, ADD_ROD_PENDING_COLOR,
     SUPPORT_COLOR, SUPPORT_DISABLED_COLOR, SUPPORT_BOX_HALF_PX,
@@ -42,7 +41,6 @@ from apps.stereo.stereo_app_constants import (
     MOMENT_ZERO_COLOR, MOMENT_NODE_OUTLINE, MOMENT_BACKDROP_COLOR,
     MOMENT_NODE_RADIUS_PX,
     SCALE_P95, FORCE_SCALE_PERCENTILE, CLIP_MARK_COLOR, CLIP_MARK_DASH,
-    CELL_EDGE_COLOR, CELL_EDGE_WIDTH,
     FILL_DENSITY_STIPPLE, FILL_DENSITY_DEFAULT,
 )
 
@@ -634,10 +632,6 @@ class StereoRenderMixin:
                 self._draw_shaded_faces(c, proj, to_screen, frac, by_util, by_force,
                                         max_abs_N, by_moment, moment_by_node, max_abs_moment)
 
-            if self.voronoi_faces.get():
-                self._draw_voronoi_faces(c, proj, to_screen, frac, by_util, by_force,
-                                         max_abs_N, by_moment, moment_by_node, max_abs_moment)
-
             if self.show_node_labels.get():
                 labels = []
                 for i, (px, py, _) in enumerate(proj):
@@ -789,190 +783,6 @@ class StereoRenderMixin:
         mag = sum(abs(v) for v in values) / len(values)
         governing = max(values, key=abs)
         return -mag if governing < 0 else mag
-
-    def _draw_voronoi_faces(self, c, proj, to_screen, frac, by_util, by_force, max_abs_N,
-                            by_moment, moment_by_node, max_abs_moment):
-        """A Voronoi tessellation of the structure's own SURFACE, drawn
-        behind the wireframe.
-
-        The tessellation lives in MODEL space, not on the screen: the cells
-        are attached to the structure and hold still while the camera moves.
-        Its domain is the mesh's own panels, so it stops exactly where the
-        structure stops -- see stereo_voronoi_surface for why a convex hull
-        (which this replaced) invents a floor slab under every vault, and why
-        the distance has to be measured along the fabric rather than through
-        space. All four spectra can drive it: force, utilization, node moment
-        and deformation.
-
-        Cells carry one flat colour each -- a Tk canvas polygon cannot blend
-        across itself -- so the smooth gradient remains the way to read a
-        continuous field ALONG the rods.
-        """
-        self._voronoi_note = ''
-        spec = self._voronoi_site_values(frac, by_util, by_force, max_abs_N,
-                                        by_moment, moment_by_node, max_abs_moment)
-        if spec is None:
-            return
-        sites, colours, kind = spec
-        patches, edges = self._voronoi_patches(sites, kind)
-        self._voronoi_note = '' if patches else self._voronoi_empty_reason(sites)
-        if not patches:
-            return
-
-        # Painter's algorithm: the tessellation is solid geometry, so a patch
-        # behind another has to be drawn first. Depth comes from the same
-        # projection the wireframe uses, so the two always agree about what
-        # is in front.
-        drawn = []
-        for poly, owner in patches:
-            pts, depth = [], 0.0
-            for x, y, z in poly:
-                px, py, d = self._project(x, y, z)
-                sx, sy = to_screen(px, py)
-                pts += [sx, sy]
-                depth += d
-            drawn.append((depth / max(1, len(poly)), pts, owner))
-        drawn.sort(key=lambda t: -t[0])
-
-        # Surface and Cells are both drawn STIPPLED. They wrap the outside of
-        # the structure, so a solid fill lets the nearest patch hide every
-        # patch behind it and the shape loses all depth. The density is
-        # gray75 rather than a half-tone, chosen by comparing the four Tk
-        # patterns side by side: at gray50 a Voronoi cell at the dark end of
-        # the ramp came out the same pale wash as one in the middle, because
-        # every stippled pixel is half canvas-white. The wireframe's own
-        # legibility does not depend on this at all -- tag_lower puts the
-        # whole fill beneath every rod, node and glyph on the canvas.
-        # The Section plane stays solid: it is a cut FACE, and a cut you can
-        # see through no longer reads as one.
-        stipple = '' if self.voronoi_view.get() == svs.VIEW_SECTION \
-            else self._fill_stipple()
-        for _depth, pts, owner in drawn:
-            c.create_polygon(*pts, fill=colours[owner], outline='',
-                             stipple=stipple, tags='voronoi_face')
-        # The cell OUTLINES, drawn over the fill. Without them a tessellation
-        # whose neighbouring cells happen to carry similar values reads as one
-        # continuous wash, which is the Surface view, not this one.
-        for p0, p1 in edges:
-            x0, y0, _ = self._project(*p0)
-            x1, y1, _ = self._project(*p1)
-            s0, s1 = to_screen(x0, y0), to_screen(x1, y1)
-            c.create_line(s0[0], s0[1], s1[0], s1[1], fill=CELL_EDGE_COLOR,
-                          width=CELL_EDGE_WIDTH, tags='voronoi_face')
-        c.tag_lower('voronoi_face')
-
-    def _voronoi_site_values(self, frac, by_util, by_force, max_abs_N,
-                             by_moment, moment_by_node, max_abs_moment):
-        """(sites, colour-per-site, kind) for whichever spectrum is active.
-
-        `kind` is what lets the surface engine seed each panel from the sites
-        lying ON it: 'member' sites are the rods of a panel, 'node' sites its
-        corners. Moment and deformation are genuinely NODAL quantities, so
-        their sites are the nodes. Force and utilization belong to a rod,
-        which has no single point where its value uniquely lives, so the
-        rod's midpoint stands in -- a reasonable choice but a genuinely
-        debatable one, which is why the legend says which it used rather than
-        leaving it implied.
-        """
-        if by_util and self.member_checks is not None:
-            sites = [tuple((a + b) / 2.0 for a, b in
-                           zip(self.nodes[m['a']], self.nodes[m['b']]))
-                     for m in self.members]
-            cols = [util_color((self.member_checks[i]['util'] * frac)
-                               if i < len(self.member_checks)
-                               and self.member_checks[i].get('checked') else 0.0)
-                    for i in range(len(self.members))]
-            return sites, cols, 'member'
-        if by_force and self.results is not None:
-            sites = [tuple((a + b) / 2.0 for a, b in
-                           zip(self.nodes[m['a']], self.nodes[m['b']]))
-                     for m in self.members]
-            cols = [force_color(mr['N'] * frac, max_abs_N)
-                    for mr in self.results['member_res']]
-            return sites, cols, 'member'
-        if by_moment and moment_by_node:
-            cols = [moment_color(moment_by_node.get(i, 0.0), max_abs_moment)
-                    for i in range(len(self.nodes))]
-            return list(self.nodes), cols, 'node'
-        if self.show_deformed.get() and self.results is not None:
-            _deformed, disp_mm = self._deformed_nodes_and_disp()
-            top = max(disp_mm, default=0.0)
-            return list(self.nodes), [deform_color(d, top) for d in disp_mm], 'node'
-        return None
-
-    def _voronoi_cut_value(self):
-        """The section's cut thickness, read defensively.
-
-        It is bound to a typed Entry, so between two keystrokes its contents
-        can be empty, half a number, or 'abc' -- and a DoubleVar raises on
-        every one of those. A redraw runs on far more than the Return key
-        (orbit, a toggle, the load slider), so an unguarded read turned an
-        ordinary edit into a broken canvas. The last value that WAS a
-        positive length is kept and used until the field makes sense again.
-        """
-        try:
-            r = float(self.voronoi_cut.get())
-        except (tk.TclError, ValueError):
-            return self._voronoi_cut_last
-        if r > 0:
-            self._voronoi_cut_last = r
-        return self._voronoi_cut_last
-
-    def _voronoi_empty_reason(self, sites):
-        """Why the tessellation came back empty -- the legend says this, so it
-        has to name the actual cause rather than guess at the commonest one.
-        Blaming model size for a mesh with no closed panels would send you off
-        tuning a setting that was never the problem."""
-        if len(sites) < 1:
-            return 'there is nothing to tessellate yet'
-        if not self._get_shaded_cells():
-            return ('this mesh has no closed triangles or quads, so it has no '
-                    'surface to tessellate')
-        if self.voronoi_view.get() == svs.VIEW_SECTION:
-            return (f'the cut plane misses the structure at this position '
-                    f'(thickness {self._voronoi_cut_value():g} m)')
-        return 'nothing to tessellate here'
-
-    def _voronoi_patches(self, sites, kind):
-        """(patches, cell-outline edges), rebuilt only when something they
-        actually depend on has changed.
-
-        Being in model space, the tessellation does NOT depend on the camera
-        -- which is the whole point of moving it off the screen -- so orbiting
-        reuses this cache and only re-projects.
-        """
-        view = self.voronoi_view.get()
-        key = (len(self.nodes), len(self.members), len(sites), kind, view,
-               round(self._voronoi_cut_value(), 4),
-               self.voronoi_axis.get(), round(float(self.voronoi_slice.get()), 4))
-        if self._voronoi_cache is not None and self._voronoi_cache[0] == key:
-            return self._voronoi_cache[1]
-        panels = self._get_shaded_cells()
-        if view == svs.VIEW_SECTION:
-            out = (svs.build_section(self.nodes, panels, sites,
-                                     'XYZ'.index(self.voronoi_axis.get()),
-                                     float(self.voronoi_slice.get()) / 100.0,
-                                     self._voronoi_cut_value()), [])
-        else:
-            key_field = 'members' if kind == 'member' else 'nodes'
-            panel_sites = [list(p[key_field]) for p in panels]
-            # `members` is what lets the domain cover the rods no panel
-            # contains -- a column shaft closes no triangle or quad, so
-            # without this the fill stops at the underside of the grid and
-            # the columns hang below it as bare lines.
-            patches = svs.build_surface(self.nodes, panels, sites, panel_sites,
-                                        members=self.members,
-                                        per_node=(kind == 'node'))
-            edges = []
-            if view == svs.VIEW_CELLS and panels:
-                polys = svs.panel_polys(self.nodes, panels)
-                adj, _ = svs.panel_adjacency(panels)
-                owners = svs.assign_owners(svs.panel_centroids(polys), panel_sites,
-                                           sites, adj)
-                edges = svs.cell_boundary_edges(self.nodes, self.members, panels, owners)
-            out = (patches, edges)
-        self._voronoi_cache = (key, out)
-        return out
 
     def _reference_grey(self):
         """The reference (rest) structure's adjustable grey shade, used
@@ -1356,17 +1166,6 @@ class StereoRenderMixin:
                        f'max (capped at {STRESS_WIDTH_MAX:.0f}px)')
             if self.shaded_faces.get() and self.results is not None:
                 caption('Shaded faces: flat colour/panel (approx., not a shell FEA)')
-            if self.voronoi_faces.get() and self.results is not None and self._voronoi_note:
-                caption(f'Voronoi: {self._voronoi_note}')
-            if self.voronoi_faces.get() and self.results is not None:
-                nodal = self.colour_by_moment.get() or (
-                    self.show_deformed.get() and not self.colour_by_force.get()
-                    and not self.colour_by_util.get())
-                view = self.voronoi_view.get()
-                where = ("the structure's own surface" if view != svs.VIEW_SECTION
-                         else f'a {self._voronoi_cut_value():g} m cut through the fabric')
-                caption(f'Voronoi · {view} · {where}'
-                       + f", sites = {'nodes' if nodal else 'rod midpoints'}")
             if self.flag_slender.get() and self.member_checks is not None:
                 row(SLENDER_HALO_COLOR, f'halo = slender compression member '
                                        f'(KL/r > {SLENDERNESS_LIMIT:.0f})', dashed=True)

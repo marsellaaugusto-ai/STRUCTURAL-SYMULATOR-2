@@ -5486,3 +5486,98 @@ def test_the_vierendeel_panel_appears_only_for_its_own_family(app):
     app._on_generator_change()
     app.root.update_idletasks()
     assert not _shown(app.frame_vierendeel_grid)
+
+
+# ── welded shear panels, from the panel ──────────────────────────────────────
+
+def _top_quad(app):
+    zmax = max(p[2] for p in app.nodes)
+    tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - zmax) < 1e-9]
+    xs = sorted({round(app.nodes[i][0], 6) for i in tops})
+    ys = sorted({round(app.nodes[i][1], 6) for i in tops})
+    return {i for i in tops if round(app.nodes[i][0], 6) in xs[:2]
+            and round(app.nodes[i][1], 6) in ys[:2]}
+
+
+def test_a_welded_panel_goes_into_the_solve_and_gets_checked(app):
+    """Not decoration: its shear stiffness is in the matrix and its verdict
+    comes from the same CIRSOC checks the Truss tab uses."""
+    _mode(app, 'addons')
+    app.selected_nodes = _top_quad(app)
+    app.panel_t.set(8.0)
+    app._add_shear_panel()
+    assert len(app.panels) == 1
+    app._analyze()
+    assert app.err is None, app.err
+    pr = app.results['panel_res'][0]
+    assert pr['valid'] and pr['area_m2'] > 0 and abs(pr['q']) > 0
+    assert len(app.panel_checks) == 1
+    assert app.panel_checks[0]['valid']
+    assert 'buckling' in app.panel_checks[0]['governing'].lower()
+
+
+def test_a_welded_panel_stiffens_the_model(app):
+    _mode(app, 'addons')
+    app._analyze()
+    before = max(abs(r['uz']) for r in app.results['node_res'])
+    app.selected_nodes = _top_quad(app)
+    app.panel_t.set(20.0)
+    app._add_shear_panel()
+    app._analyze()
+    after = max(abs(r['uz']) for r in app.results['node_res'])
+    assert after <= before
+
+
+def test_a_welded_panel_is_drawn_whether_or_not_fill_is_on(app):
+    """A shaded face is a picture of a cell that exists anyway. A panel is a
+    real element carrying real load, and one you cannot see is one you can
+    forget you added."""
+    _mode(app, 'addons')
+    app.selected_nodes = _top_quad(app)
+    app._add_shear_panel()
+    app.shaded_faces.set(False)
+    app._draw()
+    assert len(app.canvas.find_withtag('shear_panel')) == 1
+
+
+def test_the_same_bay_cannot_be_panelled_twice(app):
+    _mode(app, 'addons')
+    app.selected_nodes = _top_quad(app)
+    app._add_shear_panel()
+    app._add_shear_panel()
+    assert len(app.panels) == 1
+    assert 'already a panel' in app.col_note.cget('text')
+
+
+def test_panels_survive_undo_and_redo(app):
+    _mode(app, 'addons')
+    app.selected_nodes = _top_quad(app)
+    app._add_shear_panel()
+    assert len(app.panels) == 1
+    app._undo()
+    assert len(app.panels) == 0
+    app._redo()
+    assert len(app.panels) == 1
+
+
+def test_clearing_the_panels_leaves_the_rods_alone(app):
+    _mode(app, 'addons')
+    n0 = len(app.members)
+    app.selected_nodes = _top_quad(app)
+    app._add_shear_panel()
+    app._clear_shear_panels()
+    assert app.panels == []
+    assert len(app.members) == n0
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_a_new_model_starts_with_no_panels(app):
+    """`panels` is model state, so a fresh mesh must not inherit the last
+    one's -- its node indices would point at whatever holds them now."""
+    _mode(app, 'addons')
+    app.selected_nodes = _top_quad(app)
+    app._add_shear_panel()
+    assert app.panels
+    app._generate()
+    assert app.panels == []

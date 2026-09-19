@@ -262,3 +262,10 @@ SHAPE_PLAN_PRESETS = (
 # chrome. Measured rather than guessed: the support sandbox's checkbutton
 # asked for 288 px inside a 300 px panel.
 PANEL_TEXT_W = 244
+
+
+# A welded shear panel that has not been checked yet has no verdict to
+# report, so it is drawn neutral rather than in a colour from the
+# utilisation ramp that would imply one.
+PANEL_UNCHECKED_COLOR = '#9aa7b1'
+PANEL_EDGE_COLOR = '#37474f'

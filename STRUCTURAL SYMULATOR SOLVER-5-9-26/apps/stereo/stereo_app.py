@@ -102,6 +102,8 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self.nodes = []
         self.members = []
         self.loads = []
+        self.panels = []
+        self.panel_checks = []
         self.supports = []
         self.results = None
         self.member_checks = None
@@ -171,15 +173,18 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
     # ── model snapshot / undo-redo (same shape as truss_app.py) ─────────────
     def _model_snapshot(self):
         return {'nodes': copy.deepcopy(self.nodes), 'members': copy.deepcopy(self.members),
-                'loads': copy.deepcopy(self.loads), 'supports': copy.deepcopy(self.supports)}
+                'loads': copy.deepcopy(self.loads), 'supports': copy.deepcopy(self.supports),
+                'panels': copy.deepcopy(self.panels)}
 
     def _restore_snapshot(self, snap):
         self.nodes = snap['nodes']
         self.members = snap['members']
         self.loads = snap['loads']
         self.supports = snap['supports']
+        self.panels = snap.get('panels', [])
         self.results = None
         self.member_checks = None
+        self.panel_checks = []
         # The SELECTION is not part of the snapshot, and an undo can restore
         # a smaller model than the one the selection was made in: add a
         # column, whose last act is to select its new feet, then undo, and

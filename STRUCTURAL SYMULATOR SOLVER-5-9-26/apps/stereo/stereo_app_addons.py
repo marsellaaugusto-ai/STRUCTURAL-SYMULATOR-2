@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from apps.stereo import stereo_geometry as sg
+from apps.stereo import stereo_plates as splates
 
 
 class StereoAddonsMixin:
@@ -111,6 +112,64 @@ class StereoAddonsMixin:
         self.selected_nodes = set(bases)
         self.results = None
         self.member_checks = None
+        self._refresh_all()
+
+    # ── welded shear panels ─────────────────────────────────────────────────
+    def _add_shear_panel(self):
+        """Weld a plate into the polygon the selected nodes close.
+
+        The plate is not decoration: its in-plane shear stiffness goes into
+        the solve, so adding one visibly stiffens the bay, and it is checked
+        for yield, weld and -- the one that governs a thin plate -- shear
+        buckling.
+        """
+        loop, why = splates.panel_loop_from_nodes(self.members, self.selected_nodes)
+        if loop is None:
+            messagebox.showerror('Shear panel', why)
+            return
+        try:
+            t_mm = float(self.panel_t.get())
+            Fy = float(self.panel_fy.get())
+            weld_lines = int(self.panel_weld_lines.get())
+        except (tk.TclError, ValueError):
+            messagebox.showerror('Shear panel', 'Enter a valid thickness and Fy.')
+            return
+        if t_mm <= 0:
+            messagebox.showerror('Shear panel', 'Thickness must be positive.')
+            return
+        panel = {'nodes': list(loop), 'thickness_mm': t_mm, 'Fy': Fy,
+                 'weld_lines': weld_lines, 'E_GPa': 200.0, 'nu': 0.3}
+        # Refuse it HERE, where the nodes are still selected and the message
+        # can name what is wrong, rather than letting the solver drop it
+        # silently and leave a panel in the list that never carries anything.
+        geom, bad = splates.panel_geometry(self.nodes, panel)
+        if geom is None:
+            messagebox.showerror('Shear panel', bad)
+            return
+        if any(sorted(p['nodes']) == sorted(loop) for p in self.panels):
+            self._set_addon_note('There is already a panel on those nodes.')
+            return
+        self._push_undo('add shear panel')
+        self.panels.append(panel)
+        self.results = None
+        self.member_checks = None
+        self.panel_checks = []
+        area = geom[2]
+        self._set_addon_note(f'Panel welded over {len(loop)} nodes, '
+                             f'{abs(area):.2f} m\u00b2. Analyze to solve it.')
+        self._refresh_all()
+
+    def _clear_shear_panels(self):
+        if not self.panels:
+            self._set_addon_note('No shear panels to clear.')
+            return
+        self._push_undo('clear shear panels')
+        n = len(self.panels)
+        self.panels = []
+        self.results = None
+        self.member_checks = None
+        self.panel_checks = []
+        self._set_addon_note(f'{n} shear panel(s) removed.')
         self._refresh_all()
 
     # ── clearing add-ons, and building a column array ───────────────────────

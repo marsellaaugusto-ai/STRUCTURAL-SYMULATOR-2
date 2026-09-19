@@ -18,6 +18,7 @@ from tkinter import messagebox
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_checks as sc
+from apps.truss import truss_plates as tp
 from apps.stereo import expr_math as em
 from apps.stereo.stereo_app_constants import (
     DOF_LABELS, FAMILY_KEY, PATTERN_KEY, CHORD_ROLES,
@@ -188,6 +189,11 @@ class StereoModelMixin:
         # to hand back. Carrying the old model's entries over would restore
         # supports onto whatever node happens to hold those indices now.
         self._column_freed = []
+        # Same reasoning, and the same trap: a panel is a list of node
+        # INDICES, so one kept across a regenerate would weld itself to
+        # whichever four nodes now hold those numbers.
+        self.panels = []
+        self.panel_checks = []
         self.loads = []
         self.results = None
         self.member_checks = None
@@ -325,6 +331,7 @@ class StereoModelMixin:
         if redraw:
             self.results = None
             self.member_checks = None
+            self.panel_checks = []
             self._refresh_all()
 
     # ── boundary conditions ──────────────────────────────────────────────────
@@ -557,13 +564,20 @@ class StereoModelMixin:
     # ── analysis ─────────────────────────────────────────────────────────────
     def _analyze(self):
         loads = self._all_loads()
-        res, err = sm.analyze(self.nodes, self.members, loads, self._active_supports())
+        res, err = sm.analyze(self.nodes, self.members, loads,
+                              self._active_supports(), panels=self.panels)
         self.err = err
         if err:
             self.results = None
             self.member_checks = None
+            self.panel_checks = []
             messagebox.showerror('Analysis', err)
         else:
             self.results = res
             self.member_checks = sc.check_all_members(self.nodes, self.members, res['member_res'])
+            # The Truss tab's own panel checks, reused rather than rewritten:
+            # yield, weld and -- the one that actually governs a thin plate --
+            # shear buckling. A tau on its own is not a verdict.
+            self.panel_checks = [tp.panel_checks(pl, pr) for pl, pr
+                                 in zip(self.panels, res.get('panel_res', []))]
         self._refresh_all()

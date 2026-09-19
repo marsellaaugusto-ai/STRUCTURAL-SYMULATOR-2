@@ -31,6 +31,7 @@ from apps.stereo.stereo_app_colors import (
 from apps.stereo.stereo_app_constants import (
     NODE_COLOR, NODE_SEL_COLOR, ADD_ROD_PENDING_COLOR,
     SUPPORT_COLOR, SUPPORT_DISABLED_COLOR, SUPPORT_BOX_HALF_PX,
+    PANEL_UNCHECKED_COLOR, PANEL_EDGE_COLOR,
     SUPPORT_BOX_FILL, NODE_RADIUS_PX, NODE_RADIUS_SEL_PX,
     MEMBER_PIN_COLOR, MEMBER_RIGID_COLOR, MEMBER_SEL_COLOR,
     TENSION_HIGH, COMPRESSION_HIGH, LOAD_COLOR, REACTION_COLOR, NEAR_ZERO_FRAC,
@@ -639,6 +640,7 @@ class StereoRenderMixin:
             if self.shaded_faces.get():
                 self._draw_shaded_faces(c, proj, to_screen, frac, by_util, by_force,
                                         max_abs_N, by_moment, moment_by_node, max_abs_moment)
+            self._draw_shear_panels(c, proj, to_screen, frac)
 
             self._place_module_card()
             self._place_view_cube()
@@ -695,6 +697,45 @@ class StereoRenderMixin:
         if self._shaded_cells is None:
             self._shaded_cells = sg.find_cells(self.nodes, self.members)
         return self._shaded_cells
+
+    def _draw_shear_panels(self, c, proj, to_screen, frac):
+        """Every welded panel, always -- not behind the Fill toggle.
+
+        A shaded face is a picture of a cell that exists anyway; a shear
+        panel is a REAL element carrying real load, and one you cannot see
+        is one you can forget you added. Drawn back to front for the same
+        reason the shaded faces are (Tk has no z-buffer), and hatched rather
+        than solid so the rods welded to it still read through.
+
+        Coloured by its utilisation once it has been checked, so an
+        overstressed plate is visible without opening a table -- and grey
+        before that, because a panel with no check behind it has no verdict
+        to report.
+        """
+        if not getattr(self, 'panels', None):
+            return
+        checks = getattr(self, 'panel_checks', None) or []
+        drawn = []
+        for pi, panel in enumerate(self.panels):
+            loop = panel.get('nodes') or []
+            if any(not (0 <= n < len(proj)) for n in loop) or len(loop) < 3:
+                continue
+            pts, depth = [], 0.0
+            for n in loop:
+                px, py, d = proj[n]
+                sx, sy = to_screen(px, py)
+                pts.extend((sx, sy))
+                depth += d
+            chk = checks[pi] if pi < len(checks) else None
+            if chk and chk.get('valid') and chk.get('util') is not None:
+                color = util_color(chk['util'] * frac)
+            else:
+                color = PANEL_UNCHECKED_COLOR
+            drawn.append((depth / len(loop), pts, color))
+        drawn.sort(key=lambda t: -t[0])
+        for _depth, pts, color in drawn:
+            c.create_polygon(*pts, fill=color, outline=PANEL_EDGE_COLOR,
+                             width=2, stipple='gray50', tags='shear_panel')
 
     def _draw_shaded_faces(self, c, proj, to_screen, frac, by_util, by_force, max_abs_N,
                            by_moment, moment_by_node, max_abs_moment):

@@ -72,6 +72,7 @@ truss.
 import math
 import numpy as np
 
+from apps.stereo import stereo_plates as splates
 from common import _beam_gauss_solve
 
 gauss_solve = _beam_gauss_solve
@@ -205,7 +206,7 @@ def _rotation_12(local_x, local_y, local_z):
     return T
 
 
-def analyze(nodes, members, loads, supports):
+def analyze(nodes, members, loads, supports, panels=None):
     """Solve the space structure. Returns (result, error). On failure,
     result is None and error is a human-readable string (mirroring every
     other solver in this app, e.g. truss_math.analyze).
@@ -216,7 +217,16 @@ def analyze(nodes, members, loads, supports):
                          'Vy','Vz' (kN), 'T','My_a','My_b','Mz_a','Mz_b'
                          (kN·m)}, ...],
         'reactions': {node_idx: {'Fx','Fy','Fz' (kN), 'Mx','My','Mz' (kN·m)}},
+        'panel_res': [{'valid', 'nodes', 'area_m2', 'gamma', 'q' (kN/m),
+                        'tau_MPa', 't_mm', 'corner_forces'}, ...] parallel to
+                       `panels`, or [] when there are none.
     }
+
+    `panels` is optional and defaults to None, so every existing caller is
+    unaffected. A welded shear panel adds only in-plane SHEAR stiffness over
+    its nodes' three translations -- a membrane has no rotational DOF -- so
+    the rotational DOFs are deliberately left out of its block rather than
+    given a token stiffness.
     """
     err = check_boundary_setup(nodes, members, supports)
     if err:
@@ -281,6 +291,32 @@ def analyze(nodes, members, loads, supports):
             for i in range(12):
                 for j in range(12):
                     K[idx[i], idx[j]] += kgl[i, j]
+
+    # ── welded shear panels ────────────────────────────────────────────────
+    # K = G*t*A * Bg^T Bg over the loop's 3n translations: one rank-1 block
+    # per panel. Rank-1 is not a defect -- the panel is only ever asked to
+    # carry shear, and the bay's remaining stiffness comes from the rods
+    # around it.
+    panels = panels or []
+    panel_dofs = {}
+    for pi, panel in enumerate(panels):
+        geom, _why = splates.panel_geometry(nodes, panel)
+        if geom is None:
+            continue          # invalid panel: reported by the UI, not solved
+        loop, _pts, area, Bg = geom
+        G_Pa, t_m = splates.panel_material(panel)
+        if G_Pa <= 0.0 or t_m <= 0.0:
+            continue
+        gdof, brow = [], []
+        for k, ni in enumerate(loop):
+            idx = dof_of[ni]
+            gdof += [idx[0], idx[1], idx[2]]
+            brow += list(Bg[k])
+        scale = G_Pa * t_m * abs(area)
+        for i in range(len(gdof)):
+            for j in range(len(gdof)):
+                K[gdof[i], gdof[j]] += scale * brow[i] * brow[j]
+        panel_dofs[pi] = (loop, _pts, area, brow, G_Pa, t_m, gdof)
 
     F = np.zeros(ndof)
     for ld in loads:
@@ -381,7 +417,41 @@ def analyze(nodes, members, loads, supports):
                 resid = Ku[idx[k]] - F[idx[k]]
                 rxn[labels[k]] += resid / 1e3   # N -> kN, N*m -> kN*m
 
-    return {'node_res': node_res, 'member_res': member_res, 'reactions': reactions}, None
+    panel_res = []
+    for pi, panel in enumerate(panels):
+        entry = panel_dofs.get(pi)
+        if entry is None:
+            _geom, why = splates.panel_geometry(nodes, panel)
+            panel_res.append({'valid': False, 'nodes': list(panel.get('nodes', [])),
+                              'reason': why or 'panel not solved'})
+            continue
+        loop, pts, area, brow, G_Pa, t_m, gdof = entry
+        d = [U[g] for g in gdof]
+        gamma = sum(brow[i] * d[i] for i in range(len(brow)))
+        q_N_per_m = G_Pa * t_m * gamma
+        tau_Pa = G_Pa * gamma
+        # What the panel applies TO its nodes is the negative of its own
+        # action vector K*d, the same convention the member path uses.
+        # Getting this backwards leaves the panel self-equilibrating -- its
+        # corner forces still sum to zero, so an element-level check passes
+        # happily -- while every joint it touches is out of balance by twice
+        # the corner force.
+        cscale = -G_Pa * t_m * abs(area) * gamma
+        corner = [{'node': ni,
+                   'Fx': cscale * brow[3 * k] / 1e3,
+                   'Fy': cscale * brow[3 * k + 1] / 1e3,
+                   'Fz': cscale * brow[3 * k + 2] / 1e3}
+                  for k, ni in enumerate(loop)]
+        panel_res.append({
+            'valid': True, 'nodes': list(loop), 'pts_m': pts,
+            'area_m2': abs(area), 'gamma': gamma,
+            'q': q_N_per_m / 1e3, 'tau_MPa': tau_Pa / 1e6,
+            't_mm': t_m * 1000.0, 'G_GPa': G_Pa / 1e9,
+            'corner_forces': corner,
+        })
+
+    return {'node_res': node_res, 'member_res': member_res,
+            'reactions': reactions, 'panel_res': panel_res}, None
 
 
 def node_moment_vectors(nodes, members, member_res):

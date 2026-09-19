@@ -1370,6 +1370,27 @@ class StereoPanelsMixin(_ToolbarModes):
                                  wraplength=250, anchor='w')
         self.col_note.pack(anchor='w', padx=6, pady=(0, 4))
 
+        pan = tk.LabelFrame(box, text='Welded shear panel', bg=BG,
+                            font=('Helvetica', 8, 'bold'))
+        pan.pack(fill='x', padx=6, pady=(0, 4))
+        tk.Label(pan, text='Lasso 3 or 4 nodes that a closed ring of rods '
+                           'already joins, then weld a plate into it. Its '
+                           'in-plane shear stiffness goes into the solve, so '
+                           'the bay really does get stiffer, and it is checked '
+                           'for yield, weld and shear buckling.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', padx=4, pady=(2, 0))
+        self.panel_t = tk.DoubleVar(value=6.0)
+        self.panel_fy = tk.DoubleVar(value=235.0)
+        self.panel_weld_lines = tk.IntVar(value=2)
+        self._labeled_entry(pan, 'Thickness (mm):', self.panel_t)
+        self._labeled_entry(pan, 'Fy (MPa):', self.panel_fy)
+        self._labeled_entry(pan, 'Weld lines:', self.panel_weld_lines)
+        tk.Button(pan, text='Weld a panel here',
+                  command=self._add_shear_panel).pack(fill='x', padx=6, pady=(2, 2))
+        tk.Button(pan, text='Clear every panel', fg='#a3241a',
+                  command=self._clear_shear_panels).pack(fill='x', padx=6, pady=(0, 4))
+
         beam = tk.LabelFrame(box, text='Reinforcement beam', bg=BG,
                              font=('Helvetica', 8, 'bold'))
         beam.pack(fill='x', padx=6, pady=(0, 6))

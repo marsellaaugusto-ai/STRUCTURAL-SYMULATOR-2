@@ -84,7 +84,7 @@ from apps.stereo.stereo_geometry_core import (
     ROUND, _NodeBank, _add_chords, _add_member, apply_domain_mask,
 )
 from apps.stereo.stereo_geometry_grids import (
-    flat_grid, hypar_shell, hip_roof_grid, groin_vault,
+    flat_grid, hypar_shell, hip_roof_grid, groin_vault, vierendeel_grid,
 )
 from apps.stereo.stereo_geometry_vaults import (
     barrel_vault, parabolic_vault, elliptic_vault,
@@ -123,7 +123,7 @@ __all__ = [
     'circular_flat_grid', 'truss_bridge',
     'add_column', 'reinforcement_beam',
     'make_height_field_surface', 'make_parametric_surface',
-    'make_domain_fn', 'apply_domain_mask',
+    'make_domain_fn', 'apply_domain_mask', 'vierendeel_grid',
     'custom_surface_grid', 'custom_surface_between', 'surface_summits',
     'custom_surface_lattice', 'LATTICE_TYPES',
     'surfaces_cross',

@@ -927,7 +927,29 @@ class StereoPanelsMixin(_ToolbarModes):
         self._labeled_entry(self.frame_truss_bridge, 'Deck width (m):', self.tb_width)
         self._labeled_entry(self.frame_truss_bridge, 'Panels:', self.tb_n_panels)
 
+        self.vd_nx = tk.IntVar(value=6)
+        self.vd_ny = tk.IntVar(value=6)
+        self.vd_module = tk.DoubleVar(value=3.0)
+        self.vd_depth = tk.DoubleVar(value=2.0)
+        self.frame_vierendeel_grid = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_vierendeel_grid, 'Modules X (nx):', self.vd_nx)
+        self._labeled_entry(self.frame_vierendeel_grid, 'Modules Y (ny):', self.vd_ny)
+        self._labeled_entry(self.frame_vierendeel_grid, 'Module size (m):', self.vd_module)
+        self._labeled_entry(self.frame_vierendeel_grid, 'Depth (m):', self.vd_depth)
+        tk.Label(self.frame_vierendeel_grid,
+                 text='Two aligned layers joined by vertical posts, and no '
+                      'diagonals anywhere -- rectangular openings you can run '
+                      'a duct or a walkway through. It carries load by BENDING '
+                      'its members, so its joints are forced rigid (pinned, a '
+                      'rectangle of four bars lozenges) and its members need I '
+                      'and J, not just E and A. Expect it to deflect several '
+                      'times more than a triangulated grid of the same depth: '
+                      'that is the price of the openings, not a fault.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(2, 4))
+
         self._param_frames = {'flat_grid': self.frame_flat_grid,
+                              'vierendeel_grid': self.frame_vierendeel_grid,
                               'hypar_shell': self.frame_hypar_shell,
                               'hip_roof_grid': self.frame_hip_roof_grid,
                               'groin_vault': self.frame_groin_vault,

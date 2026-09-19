@@ -157,6 +157,7 @@ PATTERN_KEY = {label: key for key, label in GRID_PATTERNS}
 PATTERN_LABEL = {key: label for key, label in GRID_PATTERNS}
 
 GRID_FAMILIES = (('flat_grid', 'Flat double-layer grid'),
+                 ('vierendeel_grid', 'Vierendeel grid (no diagonals)'),
                  ('hypar_shell', 'Hyperbolic paraboloid (hypar) shell'),
                  ('hip_roof_grid', 'Hip (pyramidal) roof grid'),
                  ('groin_vault', 'Groin (cross) vault'),

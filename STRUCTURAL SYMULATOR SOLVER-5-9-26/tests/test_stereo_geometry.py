@@ -2350,3 +2350,99 @@ def test_a_square_and_a_diamond_footprint_are_both_accepted():
         _n, _m, bases, _h = sg.add_column(nodes, mesh['members'], footprint,
                                           height=4.0, style=sg.COLUMN_LATTICE)
         assert len(bases) == 4
+
+
+# ── the Vierendeel grid family ───────────────────────────────────────────────
+
+def _vierendeel(**kw):
+    kw.setdefault('span_x', 12.0)
+    kw.setdefault('span_y', 12.0)
+    kw.setdefault('depth', 1.5)
+    kw.setdefault('module', 3.0)
+    return sg.vierendeel_grid(**kw)
+
+
+def test_a_vierendeel_grid_has_no_diagonal_anywhere():
+    """That is the entire point of it: rectangular openings you can run a
+    duct, a walkway or a person through."""
+    mesh = _vierendeel()
+    for m in mesh['members']:
+        a, b = mesh['nodes'][m['a']], mesh['nodes'][m['b']]
+        moves = sum(1 for k in range(3) if abs(a[k] - b[k]) > 1e-9)
+        assert moves == 1, f'member {m} runs diagonally'
+
+
+def test_its_two_layers_are_aligned_and_joined_by_vertical_posts():
+    mesh = _vierendeel(depth=2.0)
+    posts = [m for m in mesh['members'] if m.get('role') == 'web']
+    assert posts
+    for m in posts:
+        a, b = mesh['nodes'][m['a']], mesh['nodes'][m['b']]
+        assert abs(a[0] - b[0]) < 1e-9 and abs(a[1] - b[1]) < 1e-9
+        assert abs(abs(a[2] - b[2]) - 2.0) < 1e-9
+
+
+def test_every_vierendeel_member_demands_rigid_joints():
+    """Not a preference. Pinned, a rectangle of four bars lozenges, so the
+    tag is the difference between a frame and a pile of loose bars."""
+    mesh = _vierendeel()
+    assert mesh['members']
+    for m in mesh['members']:
+        assert m.get('conn') == 'rigid'
+        assert m.get('rigid_required') is True
+
+
+def test_a_vierendeel_grid_solves_rigid_and_is_a_mechanism_pinned():
+    """The claim in the docstring, measured rather than asserted."""
+    mesh = _vierendeel()
+    sup = [{'node': i, 'type': 'fixed'} for i in mesh['support_candidates']]
+    loads = [{'node': n, 'fz': -2.0 * a} for n, a in mesh['load_nodes'].items()]
+
+    rigid = [dict(m, E=200.0, A=20.0, I=1000.0, J=500.0) for m in mesh['members']]
+    _res, err = sm.analyze(mesh['nodes'], rigid, loads, sup)
+    assert err is None, err
+
+    pinned = [dict(m, conn='pin', E=200.0, A=20.0) for m in mesh['members']]
+    _res, err = sm.analyze(mesh['nodes'], pinned, loads, sup)
+    assert err is not None, 'a pinned Vierendeel should be a mechanism'
+
+
+def test_a_vierendeel_grid_is_far_more_flexible_than_a_triangulated_one():
+    """The price of the openings, and the number a designer has to weigh.
+    Measured at the same span, depth, module and section."""
+    common = dict(span_x=12.0, span_y=12.0, depth=1.5, module=3.0)
+    vd = sg.vierendeel_grid(**common)
+    tri = sg.flat_grid(**common)
+
+    def peak(mesh, conn):
+        mem = [dict(m, E=200.0, A=20.0, I=1000.0, J=500.0) for m in mesh['members']]
+        sup = [{'node': i, 'type': 'fixed' if conn == 'rigid' else 'pin'}
+               for i in mesh['support_candidates']]
+        loads = [{'node': n, 'fz': -2.0 * a} for n, a in mesh['load_nodes'].items()]
+        res, err = sm.analyze(mesh['nodes'], mem, loads, sup)
+        assert err is None, err
+        return max(abs(r['uz']) for r in res['node_res'])
+
+    assert peak(vd, 'rigid') > 3.0 * peak(tri, 'pin')
+
+
+def test_the_vierendeel_perimeter_is_offered_as_the_support_line():
+    mesh = _vierendeel()
+    assert mesh['support_candidates']
+    zmin = min(p[2] for p in mesh['nodes'])
+    for i in mesh['support_candidates']:
+        assert abs(mesh['nodes'][i][2] - zmin) < 1e-9, 'a support candidate is not on the bottom layer'
+
+
+def test_vierendeel_load_areas_cover_the_whole_plan():
+    """Half a cell along an edge, a quarter at a corner -- the areas have to
+    add up to the plan or the roof is loaded by the wrong total."""
+    mesh = _vierendeel(span_x=12.0, span_y=9.0)
+    assert abs(sum(mesh['load_nodes'].values()) - 12.0 * 9.0) < 1e-6
+
+
+@pytest.mark.parametrize('bad', [{'span_x': 0.0}, {'module': 0.0}, {'depth': 0.0},
+                                 {'depth': -1.0}])
+def test_a_vierendeel_grid_refuses_a_degenerate_size(bad):
+    with pytest.raises(ValueError):
+        _vierendeel(**bad)

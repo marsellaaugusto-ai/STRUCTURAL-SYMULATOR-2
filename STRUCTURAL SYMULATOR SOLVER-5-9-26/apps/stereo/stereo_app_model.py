@@ -87,6 +87,11 @@ class StereoModelMixin:
                 pattern = PATTERN_KEY[self.fg_pattern.get()]
                 mesh = sg.flat_grid(nx * module, ny * module, self.fg_depth.get(),
                                     module, offset=self.fg_offset.get(), pattern=pattern)
+            elif key == 'vierendeel_grid':
+                module = self.vd_module.get()
+                mesh = sg.vierendeel_grid(int(self.vd_nx.get()) * module,
+                                          int(self.vd_ny.get()) * module,
+                                          self.vd_depth.get(), module)
             elif key == 'hypar_shell':
                 nx, ny = int(self.hp_nx.get()), int(self.hp_ny.get())
                 module = self.hp_module.get()

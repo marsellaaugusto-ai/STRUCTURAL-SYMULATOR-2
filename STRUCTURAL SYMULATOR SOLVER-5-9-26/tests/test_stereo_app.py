@@ -5441,3 +5441,48 @@ def test_the_cell_census_works_with_no_solve_at_all(app):
                      if app.analysis_canvas.type(i) == 'text')
     assert 'distinct shapes' in texts
     assert 'role 0' in texts
+
+
+def test_the_vierendeel_family_builds_and_solves_from_the_panel(app):
+    from apps.stereo.stereo_app_constants import FAMILY_LABEL
+    _mode(app, 'build')
+    app.grid_family.set(FAMILY_LABEL['vierendeel_grid'])
+    app._on_generator_change()
+    app.vd_nx.set(4)
+    app.vd_ny.set(4)
+    app.vd_module.set(3.0)
+    app.vd_depth.set(2.0)
+    app._generate()
+    assert len(app.nodes) == 2 * 25
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_the_section_panel_cannot_pin_a_vierendeel_grid(app):
+    """rigid_required is not a preference: pinned, every one of its bays
+    lozenges and the solve goes singular. _apply_sections has to leave it
+    alone even when the panel says pin."""
+    from apps.stereo.stereo_app_constants import FAMILY_LABEL
+    _mode(app, 'build')
+    app.grid_family.set(FAMILY_LABEL['vierendeel_grid'])
+    app._on_generator_change()
+    app._generate()
+    app.sec_conn.set('pin')
+    app._apply_sections()
+    assert all(m.get('conn') == 'rigid' for m in app.members)
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_the_vierendeel_panel_appears_only_for_its_own_family(app):
+    from apps.stereo.stereo_app_constants import FAMILY_LABEL
+    _mode(app, 'build')
+    app.grid_family.set(FAMILY_LABEL['vierendeel_grid'])
+    app._on_generator_change()
+    app.root.update_idletasks()
+    assert _shown(app.frame_vierendeel_grid)
+    assert not _shown(app.frame_flat_grid)
+    app.grid_family.set(FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.root.update_idletasks()
+    assert not _shown(app.frame_vierendeel_grid)

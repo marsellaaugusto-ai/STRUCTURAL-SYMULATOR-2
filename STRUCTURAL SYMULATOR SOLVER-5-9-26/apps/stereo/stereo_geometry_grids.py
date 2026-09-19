@@ -286,3 +286,84 @@ def groin_vault(span, rise, module, depth, offset=True, pattern='square'):
 
     return flat_grid(span, span, depth, module, offset=offset, pattern=pattern,
                      height_fn=height_fn)
+
+
+def vierendeel_grid(span_x, span_y, depth, module, height_fn=None):
+    """A double-layer VIERENDEEL space grid: two aligned chord layers joined
+    by vertical posts, and no web diagonals anywhere.
+
+    Every other family in this module triangulates: the webs make each
+    module a tetrahedron or a half-octahedron, and the structure carries
+    load by pure axial force in pin-jointed bars. This one deliberately does
+    not. Its modules are rectangular boxes you can walk a duct, a walkway or
+    a person through, which is the entire reason it exists and the reason it
+    is worth the price.
+
+    The price is real and is not optional. With pinned joints a rectangle of
+    four bars is a mechanism -- it lozenges -- so this grid carries load by
+    BENDING its members, and every member is tagged `conn='rigid'` and
+    `rigid_required=True`. `rigid_required` is what stops the Section panel
+    switching it back to pinned: the tag is not a preference, it is the
+    difference between a frame and a pile of loose bars, and the solver
+    reports the pinned version as a singular matrix rather than as a soft
+    answer.
+
+    Because it bends rather than stretching, a Vierendeel grid is
+    substantially more flexible than a triangulated one of the same depth
+    and section, and its members need I and J, not just E and A. Both facts
+    are the designer's to weigh against the clear openings.
+
+    Geometry: bottom nodes on the module grid at z=0 (or on `height_fn`), top
+    nodes DIRECTLY above them at +depth, orthogonal chords in both layers,
+    and one vertical post per node pair.
+    """
+    if span_x <= 0 or span_y <= 0:
+        raise ValueError('span_x and span_y must both be positive.')
+    if module <= 0:
+        raise ValueError('module must be positive.')
+    if depth <= 0:
+        raise ValueError('depth must be positive.')
+
+    nx = max(1, int(round(span_x / module)))
+    ny = max(1, int(round(span_y / module)))
+    dx, dy = span_x / nx, span_y / ny
+
+    bank = _NodeBank()
+    bottom, top = {}, {}
+    for i in range(nx + 1):
+        for j in range(ny + 1):
+            x, y = i * dx, j * dy
+            z0 = height_fn(x, y) if height_fn else 0.0
+            bottom[(i, j)] = bank.add(x, y, z0)
+            top[(i, j)] = bank.add(x, y, z0 + depth)
+
+    members, seen = [], set()
+    rigid = {'conn': 'rigid', 'rigid_required': True}
+    for grid, role in ((bottom, 'bottom_chord'), (top, 'top_chord')):
+        for i in range(nx + 1):
+            for j in range(ny + 1):
+                if i < nx:
+                    _add_member(members, seen, grid[(i, j)], grid[(i + 1, j)],
+                                role=role, **rigid)
+                if j < ny:
+                    _add_member(members, seen, grid[(i, j)], grid[(i, j + 1)],
+                                role=role, **rigid)
+    for ij in bottom:
+        # The post is the ONLY thing between the two layers. In a
+        # triangulated grid a purely vertical member would be useless -- no
+        # horizontal stiffness at all -- which is exactly why the other
+        # families never draw one. Here it is the web, and it works only
+        # because its ends transfer moment.
+        _add_member(members, seen, bottom[ij], top[ij], role='web', **rigid)
+
+    support_candidates = sorted({bottom[(i, j)]
+                                 for i in range(nx + 1) for j in range(ny + 1)
+                                 if i in (0, nx) or j in (0, ny)})
+    cell = dx * dy
+    load_nodes = {}
+    for (i, j), n in top.items():
+        fx = 0.5 if i in (0, nx) else 1.0
+        fy = 0.5 if j in (0, ny) else 1.0
+        load_nodes[n] = cell * fx * fy
+    return {'nodes': bank.nodes, 'members': members,
+            'support_candidates': support_candidates, 'load_nodes': load_nodes}

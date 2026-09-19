@@ -33,6 +33,7 @@ from apps.stereo.stereo_app_constants import (
     AREA_UNIFORM, AREA_GRADIENT, AREA_FIELD, AREA_LAWS,
     LOAD_DIRECTION_NAMES, AREA_SCOPE_ALL, AREA_SCOPES,
     SHAPE_PLAN_PRESETS, PANEL_TEXT_W,
+    HYPERBOLOID_BRACES, BRACE_LABEL,
 )
 
 
@@ -988,6 +989,274 @@ class StereoPanelsMixin(_ToolbarModes):
                  bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
                  wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(2, 4))
 
+        # ── the ten geometrically-controlled families ───────────────────
+        # Five of them are height fields over the same rectangular plan
+        # flat_grid already brackets, so they reuse its whole bracing
+        # scheme and differ only in z; the vault is one more arch profile
+        # on the extruded-arch engine; the last four need their own
+        # revolved/swept lattices (see stereo_geometry_surfaces).
+        self.ep_nx = tk.IntVar(value=6)
+        self.ep_ny = tk.IntVar(value=6)
+        self.ep_module = tk.DoubleVar(value=3.0)
+        self.ep_depth = tk.DoubleVar(value=1.2)
+        self.ep_rise = tk.DoubleVar(value=4.0)
+        self.ep_offset = tk.BooleanVar(value=True)
+        self.ep_pattern = tk.StringVar(value=PATTERN_LABEL['square'])
+        self.frame_elliptic_paraboloid_shell = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_elliptic_paraboloid_shell, 'Modules X (nx):', self.ep_nx)
+        self._labeled_entry(self.frame_elliptic_paraboloid_shell, 'Modules Y (ny):', self.ep_ny)
+        self._labeled_entry(self.frame_elliptic_paraboloid_shell, 'Module size (m):', self.ep_module)
+        self._labeled_entry(self.frame_elliptic_paraboloid_shell, 'Depth (m):', self.ep_depth)
+        self._labeled_entry(self.frame_elliptic_paraboloid_shell, 'Crown rise (m):', self.ep_rise)
+        tk.Checkbutton(self.frame_elliptic_paraboloid_shell, text='Offset top layer',
+                       variable=self.ep_offset, bg=BG, font=('Helvetica', 8)
+                      ).pack(anchor='w', padx=6, pady=(2, 4))
+        self._pattern_row(self.frame_elliptic_paraboloid_shell, self.ep_pattern)
+        self._family_hint(self.frame_elliptic_paraboloid_shell,
+                          'A dish, not a saddle: both curvatures bend the same '
+                          'way, so a downward load goes into compression along '
+                          'BOTH spans. Zero at the four plan corners and rise/2 '
+                          'halfway along each edge -- a quadratic cannot be level '
+                          'all the way round, which is why a real one takes an '
+                          'edge beam or bears on the corners alone.')
+
+        self.eh_nx = tk.IntVar(value=6)
+        self.eh_ny = tk.IntVar(value=6)
+        self.eh_module = tk.DoubleVar(value=3.0)
+        self.eh_depth = tk.DoubleVar(value=1.2)
+        self.eh_rise_x = tk.DoubleVar(value=3.0)
+        self.eh_rise_y = tk.DoubleVar(value=2.0)
+        self.eh_offset = tk.BooleanVar(value=True)
+        self.eh_pattern = tk.StringVar(value=PATTERN_LABEL['square'])
+        self.frame_elliptic_hypar_shell = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_elliptic_hypar_shell, 'Modules X (nx):', self.eh_nx)
+        self._labeled_entry(self.frame_elliptic_hypar_shell, 'Modules Y (ny):', self.eh_ny)
+        self._labeled_entry(self.frame_elliptic_hypar_shell, 'Module size (m):', self.eh_module)
+        self._labeled_entry(self.frame_elliptic_hypar_shell, 'Depth (m):', self.eh_depth)
+        self._labeled_entry(self.frame_elliptic_hypar_shell, 'Rise along X (m):', self.eh_rise_x)
+        self._labeled_entry(self.frame_elliptic_hypar_shell, 'Fall along Y (m):', self.eh_rise_y)
+        tk.Checkbutton(self.frame_elliptic_hypar_shell, text='Offset top layer',
+                       variable=self.eh_offset, bg=BG, font=('Helvetica', 8)
+                      ).pack(anchor='w', padx=6, pady=(2, 4))
+        self._pattern_row(self.frame_elliptic_hypar_shell, self.eh_pattern)
+        self._family_hint(self.frame_elliptic_hypar_shell,
+                          'The general saddle: it ARCHES along one span and HANGS '
+                          'along the other, with the two curvatures set '
+                          'independently instead of the plain hypar\'s equal and '
+                          'opposite pair. Set the two equal for a rotated plain '
+                          'hypar; set them far apart for a deep arch across a '
+                          'short span with a shallow suspension along a long one.')
+
+        self.co_nx = tk.IntVar(value=6)
+        self.co_ny = tk.IntVar(value=4)
+        self.co_module = tk.DoubleVar(value=3.0)
+        self.co_depth = tk.DoubleVar(value=1.2)
+        self.co_rise = tk.DoubleVar(value=4.0)
+        self.co_offset = tk.BooleanVar(value=True)
+        self.co_pattern = tk.StringVar(value=PATTERN_LABEL['square'])
+        self.frame_conoid_shell = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_conoid_shell, 'Modules X (nx):', self.co_nx)
+        self._labeled_entry(self.frame_conoid_shell, 'Modules Y (ny):', self.co_ny)
+        self._labeled_entry(self.frame_conoid_shell, 'Module size (m):', self.co_module)
+        self._labeled_entry(self.frame_conoid_shell, 'Depth (m):', self.co_depth)
+        self._labeled_entry(self.frame_conoid_shell, 'Arch rise (m):', self.co_rise)
+        tk.Checkbutton(self.frame_conoid_shell, text='Offset top layer',
+                       variable=self.co_offset, bg=BG, font=('Helvetica', 8)
+                      ).pack(anchor='w', padx=6, pady=(2, 4))
+        self._pattern_row(self.frame_conoid_shell, self.co_pattern)
+        self._family_hint(self.frame_conoid_shell,
+                          'Straight and level along the y=0 edge, a full sine arch '
+                          'at the far one, and every line between them dead '
+                          'straight -- a ruled surface, so the formwork and every '
+                          'y-direction chord is a straight member. The classic '
+                          'north-light saw-tooth bay: stiff at the tall edge, flat '
+                          'at the low one, meant to be repeated.')
+
+        self.ms_nx = tk.IntVar(value=6)
+        self.ms_ny = tk.IntVar(value=6)
+        self.ms_module = tk.DoubleVar(value=3.0)
+        self.ms_depth = tk.DoubleVar(value=1.2)
+        self.ms_rise = tk.DoubleVar(value=1.5)
+        self.ms_offset = tk.BooleanVar(value=True)
+        self.ms_pattern = tk.StringVar(value=PATTERN_LABEL['square'])
+        self.frame_monkey_saddle_shell = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_monkey_saddle_shell, 'Modules X (nx):', self.ms_nx)
+        self._labeled_entry(self.frame_monkey_saddle_shell, 'Modules Y (ny):', self.ms_ny)
+        self._labeled_entry(self.frame_monkey_saddle_shell, 'Module size (m):', self.ms_module)
+        self._labeled_entry(self.frame_monkey_saddle_shell, 'Depth (m):', self.ms_depth)
+        self._labeled_entry(self.frame_monkey_saddle_shell, 'Amplitude (m):', self.ms_rise)
+        tk.Checkbutton(self.frame_monkey_saddle_shell, text='Offset top layer',
+                       variable=self.ms_offset, bg=BG, font=('Helvetica', 8)
+                      ).pack(anchor='w', padx=6, pady=(2, 4))
+        self._pattern_row(self.frame_monkey_saddle_shell, self.ms_pattern)
+        self._family_hint(self.frame_monkey_saddle_shell,
+                          'Three rises and three falls around the centre instead '
+                          'of a saddle\'s two of each. Worth generating for the '
+                          'warning as much as the sculpture: the centre is a '
+                          'monkey point, where BOTH curvatures vanish, so there is '
+                          'no shell action there at all and the middle leans on the '
+                          'grid depth alone. Run Analyze and look at it.')
+
+        self.wv_nx = tk.IntVar(value=12)
+        self.wv_ny = tk.IntVar(value=6)
+        self.wv_module = tk.DoubleVar(value=2.0)
+        self.wv_depth = tk.DoubleVar(value=1.0)
+        self.wv_rise = tk.DoubleVar(value=3.0)
+        self.wv_waves = tk.DoubleVar(value=2.0)
+        self.wv_offset = tk.BooleanVar(value=True)
+        self.wv_pattern = tk.StringVar(value=PATTERN_LABEL['square'])
+        self.frame_wave_shell = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_wave_shell, 'Modules X (nx):', self.wv_nx)
+        self._labeled_entry(self.frame_wave_shell, 'Modules Y (ny):', self.wv_ny)
+        self._labeled_entry(self.frame_wave_shell, 'Module size (m):', self.wv_module)
+        self._labeled_entry(self.frame_wave_shell, 'Depth (m):', self.wv_depth)
+        self._labeled_entry(self.frame_wave_shell, 'Crest height (m):', self.wv_rise)
+        self._labeled_entry(self.frame_wave_shell, 'Waves across X:', self.wv_waves)
+        tk.Checkbutton(self.frame_wave_shell, text='Offset top layer',
+                       variable=self.wv_offset, bg=BG, font=('Helvetica', 8)
+                      ).pack(anchor='w', padx=6, pady=(2, 4))
+        self._pattern_row(self.frame_wave_shell, self.wv_pattern)
+        self._family_hint(self.frame_wave_shell,
+                          'The undulating white shell roof -- Bosjes Chapel and its '
+                          'kind. Each trough-to-trough wave is an arch, and the '
+                          'crest-to-trough corrugation gives the roof far more '
+                          'effective depth than the grid itself has, which is why '
+                          'such a roof can be thin and still span. Support it at '
+                          'the TROUGHS and let the crests fly. A whole number of '
+                          'waves starts and ends in a trough; a half gives crests '
+                          'at both ends. It is straight along y, so give the ends '
+                          'a diaphragm or an edge arch.')
+
+        self.cv_span = tk.DoubleVar(value=12.0)
+        self.cv_rise = tk.DoubleVar(value=5.0)
+        self.cv_length = tk.DoubleVar(value=18.0)
+        self.cv_depth = tk.DoubleVar(value=0.6)
+        self.cv_shape = tk.DoubleVar(value=2.0)
+        self.cv_n_arch = tk.IntVar(value=8)
+        self.cv_n_bays = tk.IntVar(value=8)
+        self.cv_double = tk.BooleanVar(value=True)
+        self.frame_catenary_vault = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_catenary_vault, 'Span (m):', self.cv_span)
+        self._labeled_entry(self.frame_catenary_vault, 'Rise (m):', self.cv_rise)
+        self._labeled_entry(self.frame_catenary_vault, 'Length (m):', self.cv_length)
+        self._labeled_entry(self.frame_catenary_vault, 'Catenary shape:', self.cv_shape)
+        self._labeled_entry(self.frame_catenary_vault, 'Arch segments:', self.cv_n_arch)
+        self._labeled_entry(self.frame_catenary_vault, 'Bays:', self.cv_n_bays)
+        tk.Checkbutton(self.frame_catenary_vault, text='Double layer', variable=self.cv_double,
+                       bg=BG, font=('Helvetica', 8)).pack(anchor='w', padx=6, pady=(2, 0))
+        self._labeled_entry(self.frame_catenary_vault, 'Layer depth (m):', self.cv_depth)
+        self._family_hint(self.frame_catenary_vault,
+                          'A hanging chain takes a catenary under its own weight, '
+                          'so an arch of that curve inverted carries its own weight '
+                          'in PURE COMPRESSION, thrust line exactly on the axis. '
+                          'That is the masonry and concrete vault form, and it is '
+                          'not the parabola (which suits a load uniform per '
+                          'horizontal metre -- a suspension deck). Shape sets how '
+                          'pointed it is: small approaches a parabola, large gives '
+                          'the steep Gaudi arch. The pure-compression property is '
+                          'for SELF-WEIGHT ONLY; wind or drift puts bending back.')
+
+        self.ts_major = tk.DoubleVar(value=14.0)
+        self.ts_tube = tk.DoubleVar(value=5.0)
+        self.ts_sweep = tk.DoubleVar(value=180.0)
+        self.ts_arc = tk.DoubleVar(value=180.0)
+        self.ts_n_sweep = tk.IntVar(value=16)
+        self.ts_n_arc = tk.IntVar(value=6)
+        self.ts_depth = tk.DoubleVar(value=0.6)
+        self.ts_pattern = tk.StringVar(value=PATTERN_LABEL['square'])
+        self.frame_torus_segment = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_torus_segment, 'Plan radius (m):', self.ts_major)
+        self._labeled_entry(self.frame_torus_segment, 'Tube radius (m):', self.ts_tube)
+        self._labeled_entry(self.frame_torus_segment, 'Plan sweep (deg):', self.ts_sweep)
+        self._labeled_entry(self.frame_torus_segment, 'Section arc (deg):', self.ts_arc)
+        self._labeled_entry(self.frame_torus_segment, 'Bays round sweep:', self.ts_n_sweep)
+        self._labeled_entry(self.frame_torus_segment, 'Segments across:', self.ts_n_arc)
+        self._labeled_entry(self.frame_torus_segment, 'Layer depth (m):', self.ts_depth)
+        self._pattern_row(self.frame_torus_segment, self.ts_pattern)
+        self._family_hint(self.frame_torus_segment,
+                          'A vault section swept round a circular plan: the curved '
+                          'arcade, the annular concourse. Doubly curved where it '
+                          'counts -- the section arches across and the plan arches '
+                          'along -- so unlike a straight barrel vault, which is '
+                          'developable and wants an end diaphragm, a full 360 sweep '
+                          'braces itself: the hoops cannot lengthen without the '
+                          'whole ring growing. Set the sweep to exactly 360 to '
+                          'close the seam. Layer depth 0 gives a single layer.')
+
+        self.hb_radius = tk.DoubleVar(value=5.0)
+        self.hb_height = tk.DoubleVar(value=24.0)
+        self.hb_n_rings = tk.IntVar(value=6)
+        self.hb_n_sectors = tk.IntVar(value=16)
+        self.hb_twist = tk.IntVar(value=1)
+        self.hb_brace = tk.StringVar(value=BRACE_LABEL['counter'])
+        self.frame_hyperboloid_tower = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_hyperboloid_tower, 'Waist radius (m):', self.hb_radius)
+        self._labeled_entry(self.frame_hyperboloid_tower, 'Height (m):', self.hb_height)
+        self._labeled_entry(self.frame_hyperboloid_tower, 'Ring courses:', self.hb_n_rings)
+        self._labeled_entry(self.frame_hyperboloid_tower, 'Sectors:', self.hb_n_sectors)
+        self._labeled_entry(self.frame_hyperboloid_tower, 'Twist (sectors):', self.hb_twist)
+        self._brace_row(self.frame_hyperboloid_tower, self.hb_brace)
+        self._family_hint(self.frame_hyperboloid_tower,
+                          'Shukhov\'s tower: a doubly curved shell made ENTIRELY of '
+                          'straight bars, because a hyperboloid of one sheet is '
+                          'doubly ruled -- two straight lines of the surface run '
+                          'through every point of it. Every diagonal here lies on '
+                          'the surface exactly, not as a chord approximating a '
+                          'curve. Twist sets the flare: half-angle = rings x twist '
+                          'x 90 / sectors degrees, and the end rings are 1/cos of '
+                          'that times the waist.')
+
+        self.eb_radius_x = tk.DoubleVar(value=6.0)
+        self.eb_radius_y = tk.DoubleVar(value=3.5)
+        self.eb_height = tk.DoubleVar(value=20.0)
+        self.eb_n_rings = tk.IntVar(value=6)
+        self.eb_n_sectors = tk.IntVar(value=16)
+        self.eb_twist = tk.IntVar(value=1)
+        self.eb_brace = tk.StringVar(value=BRACE_LABEL['counter'])
+        self.frame_elliptic_hyperboloid = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_elliptic_hyperboloid, 'Waist radius X (m):', self.eb_radius_x)
+        self._labeled_entry(self.frame_elliptic_hyperboloid, 'Waist radius Y (m):', self.eb_radius_y)
+        self._labeled_entry(self.frame_elliptic_hyperboloid, 'Height (m):', self.eb_height)
+        self._labeled_entry(self.frame_elliptic_hyperboloid, 'Ring courses:', self.eb_n_rings)
+        self._labeled_entry(self.frame_elliptic_hyperboloid, 'Sectors:', self.eb_n_sectors)
+        self._labeled_entry(self.frame_elliptic_hyperboloid, 'Twist (sectors):', self.eb_twist)
+        self._brace_row(self.frame_elliptic_hyperboloid, self.eb_brace)
+        self._family_hint(self.frame_elliptic_hyperboloid,
+                          'The same ruled surface squashed to an elliptical plan. '
+                          'An ellipse is a circle under an affine map and an affine '
+                          'map takes straight lines to straight lines, so every '
+                          'diagonal is STILL an exact generator. What changes is '
+                          'that the nodes stop being equivalent: member lengths vary '
+                          'round each ring, and the flatter sides of the plan are '
+                          'the softer ones against a horizontal load.')
+
+        self.hl_inner = tk.DoubleVar(value=4.0)
+        self.hl_outer = tk.DoubleVar(value=9.0)
+        self.hl_turns = tk.DoubleVar(value=1.0)
+        self.hl_rise = tk.DoubleVar(value=3.2)
+        self.hl_n_radial = tk.IntVar(value=4)
+        self.hl_n_along = tk.IntVar(value=24)
+        self.hl_depth = tk.DoubleVar(value=0.8)
+        self.hl_pattern = tk.StringVar(value=PATTERN_LABEL['square'])
+        self.frame_helicoid_ramp = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_helicoid_ramp, 'Inner radius (m):', self.hl_inner)
+        self._labeled_entry(self.frame_helicoid_ramp, 'Outer radius (m):', self.hl_outer)
+        self._labeled_entry(self.frame_helicoid_ramp, 'Turns:', self.hl_turns)
+        self._labeled_entry(self.frame_helicoid_ramp, 'Rise per turn (m):', self.hl_rise)
+        self._labeled_entry(self.frame_helicoid_ramp, 'Bays across:', self.hl_n_radial)
+        self._labeled_entry(self.frame_helicoid_ramp, 'Bays along run:', self.hl_n_along)
+        self._labeled_entry(self.frame_helicoid_ramp, 'Deck depth (m):', self.hl_depth)
+        self._pattern_row(self.frame_helicoid_ramp, self.hl_pattern)
+        self._family_hint(self.frame_helicoid_ramp,
+                          'A car-park ramp, a spiral stair: a minimal surface whose '
+                          'every radial line is straight and level. That is also '
+                          'the problem -- it has NO arch action in either '
+                          'direction, so it spans by bending and torsion, and a '
+                          'load on the outer edge twists the deck. Give it real '
+                          'depth and watch the outer edge. Deck depth 0 gives a '
+                          'single layer, which is forced to RIGID joints: a pinned '
+                          'one is not a structure.')
+
         self._param_frames = {'flat_grid': self.frame_flat_grid,
                               'vierendeel_grid': self.frame_vierendeel_grid,
                               'hypar_shell': self.frame_hypar_shell,
@@ -1002,7 +1271,35 @@ class StereoPanelsMixin(_ToolbarModes):
                               'paraboloid_dish': self.frame_paraboloid_dish,
                               'elliptic_dome': self.frame_elliptic_dome,
                               'sphere_shell': self.frame_sphere_shell,
-                              'truss_bridge': self.frame_truss_bridge}
+                              'truss_bridge': self.frame_truss_bridge,
+                              'elliptic_paraboloid_shell': self.frame_elliptic_paraboloid_shell,
+                              'elliptic_hypar_shell': self.frame_elliptic_hypar_shell,
+                              'conoid_shell': self.frame_conoid_shell,
+                              'monkey_saddle_shell': self.frame_monkey_saddle_shell,
+                              'wave_shell': self.frame_wave_shell,
+                              'catenary_vault': self.frame_catenary_vault,
+                              'torus_segment': self.frame_torus_segment,
+                              'hyperboloid_tower': self.frame_hyperboloid_tower,
+                              'elliptic_hyperboloid': self.frame_elliptic_hyperboloid,
+                              'helicoid_ramp': self.frame_helicoid_ramp}
+
+    def _family_hint(self, parent, text):
+        """The one-paragraph "what is this shape FOR, and what does it cost
+        you" note under a family's own parameters. Every one of these says
+        something the parameter names cannot: which way the surface carries
+        load, where it is soft, and what a real one needs that the generator
+        does not draw."""
+        tk.Label(parent, text=text, bg=BG, fg=HINT_FG, font=('Helvetica', 8),
+                 justify='left', wraplength=PANEL_TEXT_W
+                ).pack(anchor='w', padx=6, pady=(2, 4))
+
+    def _brace_row(self, parent, var):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill='x', padx=6, pady=(0, 4))
+        tk.Label(row, text='Bracing:', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        ttk.Combobox(row, textvariable=var, state='readonly', width=8,
+                     values=[label for _key, label in HYPERBOLOID_BRACES]
+                    ).pack(side='left', padx=(4, 0), fill='x', expand=True)
 
     def _pattern_row(self, parent, var):
         row = tk.Frame(parent, bg=BG)

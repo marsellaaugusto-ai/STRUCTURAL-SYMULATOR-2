@@ -18,6 +18,10 @@ a few hundred lines and the name tells you where a shape lives:
   stereo_geometry_domes.py           round-plan shells and radial grid
                                      (dome, cone, dish, ellipsoid,
                                      sphere, circular flat grid)
+  stereo_geometry_surfaces.py        revolved and swept shells
+                                     (ruled hyperboloid, elliptic
+                                     hyperboloid, torus segment,
+                                     helicoid ramp)
   stereo_geometry_bridges.py         truss bridge
   stereo_geometry_addons.py          column and reinforcement beam
                                      (augment an existing mesh)
@@ -85,9 +89,14 @@ from apps.stereo.stereo_geometry_core import (
 )
 from apps.stereo.stereo_geometry_grids import (
     flat_grid, hypar_shell, hip_roof_grid, groin_vault, vierendeel_grid,
+    elliptic_paraboloid_shell, elliptic_hypar_shell, conoid_shell,
+    monkey_saddle_shell, wave_shell,
 )
 from apps.stereo.stereo_geometry_vaults import (
-    barrel_vault, parabolic_vault, elliptic_vault,
+    barrel_vault, parabolic_vault, elliptic_vault, catenary_vault,
+)
+from apps.stereo.stereo_geometry_surfaces import (
+    hyperboloid_tower, elliptic_hyperboloid, torus_segment, helicoid_ramp,
 )
 from apps.stereo.stereo_geometry_domes import (
     dome, cone_roof, paraboloid_dish, elliptic_dome, sphere_shell,
@@ -118,7 +127,11 @@ from apps.stereo.stereo_geometry_cells import (
 __all__ = [
     'ROUND', 'GENERATORS',
     'flat_grid', 'hypar_shell', 'hip_roof_grid', 'groin_vault',
-    'barrel_vault', 'parabolic_vault', 'elliptic_vault',
+    'elliptic_paraboloid_shell', 'elliptic_hypar_shell', 'conoid_shell',
+    'monkey_saddle_shell', 'wave_shell',
+    'barrel_vault', 'parabolic_vault', 'elliptic_vault', 'catenary_vault',
+    'hyperboloid_tower', 'elliptic_hyperboloid', 'torus_segment',
+    'helicoid_ramp',
     'dome', 'cone_roof', 'paraboloid_dish', 'elliptic_dome', 'sphere_shell',
     'circular_flat_grid', 'truss_bridge',
     'add_column', 'reinforcement_beam',
@@ -138,6 +151,16 @@ GENERATORS = {
     'hypar_shell': hypar_shell,
     'hip_roof_grid': hip_roof_grid,
     'groin_vault': groin_vault,
+    'elliptic_paraboloid_shell': elliptic_paraboloid_shell,
+    'elliptic_hypar_shell': elliptic_hypar_shell,
+    'conoid_shell': conoid_shell,
+    'monkey_saddle_shell': monkey_saddle_shell,
+    'wave_shell': wave_shell,
+    'catenary_vault': catenary_vault,
+    'hyperboloid_tower': hyperboloid_tower,
+    'elliptic_hyperboloid': elliptic_hyperboloid,
+    'torus_segment': torus_segment,
+    'helicoid_ramp': helicoid_ramp,
     'circular_flat_grid': circular_flat_grid,
     'barrel_vault': barrel_vault,
     'parabolic_vault': parabolic_vault,

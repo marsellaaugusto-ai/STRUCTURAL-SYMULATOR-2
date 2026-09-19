@@ -2446,3 +2446,358 @@ def test_vierendeel_load_areas_cover_the_whole_plan():
 def test_a_vierendeel_grid_refuses_a_degenerate_size(bad):
     with pytest.raises(ValueError):
         _vierendeel(**bad)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  The ten geometrically-controlled families
+# ═══════════════════════════════════════════════════════════════════════════
+
+# key -> a set of arguments that is representative rather than minimal: the
+# same values the app's own parameter panel opens with, so a test failure
+# here is a failure the user would actually have hit.
+NEW_FAMILY_CASES = {
+    'elliptic_paraboloid_shell': dict(span_x=18, span_y=18, depth=1.2, module=3, rise=4),
+    'elliptic_hypar_shell': dict(span_x=18, span_y=18, depth=1.2, module=3,
+                                 rise_x=3, rise_y=2),
+    'conoid_shell': dict(span_x=18, span_y=12, depth=1.2, module=3, rise=4),
+    'monkey_saddle_shell': dict(span_x=18, span_y=18, depth=1.2, module=3, rise=1.5),
+    'wave_shell': dict(span_x=24, span_y=12, depth=1.0, module=2, rise=3, waves=2.0),
+    'catenary_vault': dict(span=12, rise=5, length=18, n_arch=8, n_bays=8,
+                           double_layer=True, depth=0.6),
+    'torus_segment': dict(major_radius=14, tube_radius=5, sweep_deg=180, arc_deg=180,
+                          n_sweep=16, n_arc=6, depth=0.6),
+    'hyperboloid_tower': dict(radius=5, height=24, n_rings=6, n_sectors=16, twist=1),
+    'elliptic_hyperboloid': dict(radius_x=6, radius_y=3.5, height=20, n_rings=6,
+                                 n_sectors=16, twist=1),
+    'helicoid_ramp': dict(inner_radius=4, outer_radius=9, turns=1.0, rise_per_turn=3.2,
+                          n_radial=4, n_along=24, depth=0.8),
+}
+
+
+@pytest.mark.parametrize('key', sorted(NEW_FAMILY_CASES))
+def test_every_new_family_builds_a_sane_mesh(key):
+    _assert_mesh_is_sane(sg.GENERATORS[key](**NEW_FAMILY_CASES[key]))
+
+
+@pytest.mark.parametrize('key', sorted(NEW_FAMILY_CASES))
+def test_every_new_family_actually_analyzes(key):
+    """The library's standing rule: a mesh can look structurally sane -- no
+    zero-length members, no duplicates, every index in range -- and still be
+    a mechanism. Every new family is run through the real solver under its
+    own self-weight before it is allowed in the dropdown."""
+    mesh = sg.GENERATORS[key](**NEW_FAMILY_CASES[key])
+    rigid = any(m.get('conn') == 'rigid' for m in mesh['members'])
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+        m.setdefault('I', 500.0)
+        m.setdefault('J', 1000.0)
+    supports = [{'node': i, 'type': 'fixed' if rigid else 'pin'}
+                for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+    assert err is None, f'{key}: {err}'
+    worst = max(abs(c) for nr in res['node_res']
+                for c in (nr['ux'], nr['uy'], nr['uz']))
+    # Not a serviceability check -- a sanity one. A metre of deflection
+    # under self weight alone means the mesh is riding a mechanism the
+    # solver did not happen to catch, which is exactly how the pinned
+    # single-layer helicoid was found.
+    assert worst < 200.0, f'{key}: {worst:.0f} mm under self weight alone'
+
+
+# ── the five height-field shells: the surface each one claims to be ────────
+
+def _z_at(mesh, x, y, tol=1e-6):
+    """The lowest-layer z of the node at plan (x, y) -- the height field's
+    own value there, since flat_grid places the bottom layer ON it."""
+    hits = [n[2] for n in mesh['nodes']
+            if abs(n[0] - x) < tol and abs(n[1] - y) < tol]
+    assert hits, f'no node at plan ({x}, {y})'
+    return min(hits)
+
+
+def test_the_elliptic_paraboloid_is_zero_at_the_corners_and_rise_at_the_crown():
+    mesh = sg.elliptic_paraboloid_shell(span_x=12, span_y=12, depth=1.0, module=3, rise=4)
+    for corner in ((0, 0), (12, 0), (0, 12), (12, 12)):
+        assert _z_at(mesh, *corner) == pytest.approx(0.0, abs=1e-9)
+    assert _z_at(mesh, 6, 6) == pytest.approx(4.0, abs=1e-9)
+    # halfway along an edge it stands at rise/2, which is the documented
+    # consequence of a quadratic that is zero at all four corners
+    assert _z_at(mesh, 6, 0) == pytest.approx(2.0, abs=1e-9)
+
+
+def test_the_elliptic_hypar_arches_one_way_and_hangs_the_other():
+    mesh = sg.elliptic_hypar_shell(span_x=12, span_y=12, depth=1.0, module=3,
+                                   rise_x=3, rise_y=2)
+    assert _z_at(mesh, 6, 6) == pytest.approx(0.0, abs=1e-9)
+    assert _z_at(mesh, 0, 6) == pytest.approx(+3.0, abs=1e-9)   # up along x
+    assert _z_at(mesh, 12, 6) == pytest.approx(+3.0, abs=1e-9)
+    assert _z_at(mesh, 6, 0) == pytest.approx(-2.0, abs=1e-9)   # down along y
+    assert _z_at(mesh, 6, 12) == pytest.approx(-2.0, abs=1e-9)
+
+
+def test_the_conoid_is_ruled_every_line_of_constant_x_is_straight():
+    """The property the shape exists for: z is LINEAR in y, so each
+    y-direction line is a straight generator."""
+    mesh = sg.conoid_shell(span_x=12, span_y=12, depth=1.0, module=3, rise=4)
+    for x in (3, 6, 9):
+        zs = [_z_at(mesh, x, y) for y in (0, 3, 6, 9, 12)]
+        step = zs[1] - zs[0]
+        for a, b in zip(zs, zs[1:]):
+            assert b - a == pytest.approx(step, abs=1e-9)
+    assert _z_at(mesh, 6, 0) == pytest.approx(0.0, abs=1e-9)    # straight edge
+    assert _z_at(mesh, 6, 12) == pytest.approx(4.0, abs=1e-9)   # arch crown
+
+
+def test_the_monkey_saddle_has_three_rises_and_three_falls():
+    """Its defining feature, and the reason it is a cautionary shape: six
+    alternating sectors round a centre where BOTH curvatures vanish."""
+    mesh = sg.monkey_saddle_shell(span_x=12, span_y=12, depth=1.0, module=1, rise=1.0)
+    assert _z_at(mesh, 6, 6) == pytest.approx(0.0, abs=1e-9)
+    signs = []
+    for k in range(12):
+        ang = 2.0 * math.pi * k / 12 + math.pi / 12.0
+        u, v = 0.8 * math.cos(ang), 0.8 * math.sin(ang)
+        signs.append(1 if (u ** 3 - 3.0 * u * v * v) > 0 else -1)
+    # six sign changes round a full turn == three rises and three falls
+    changes = sum(1 for a, b in zip(signs, signs[1:] + signs[:1]) if a != b)
+    assert changes == 6
+
+
+def test_the_wave_shell_touches_zero_at_every_trough_and_rise_at_every_crest():
+    mesh = sg.wave_shell(span_x=24, span_y=6, depth=1.0, module=1.5, rise=3, waves=2.0)
+    for trough_x in (0, 12, 24):
+        assert _z_at(mesh, trough_x, 0) == pytest.approx(0.0, abs=1e-9)
+    for crest_x in (6, 18):
+        assert _z_at(mesh, crest_x, 0) == pytest.approx(3.0, abs=1e-9)
+    # dead straight along y -- a developable surface, as documented
+    for y in (0, 1.5, 3.0, 4.5, 6.0):
+        assert _z_at(mesh, 6, y) == pytest.approx(3.0, abs=1e-9)
+
+
+# ── the catenary vault ─────────────────────────────────────────────────────
+
+def test_the_catenary_vault_is_a_catenary_not_a_parabola():
+    """Both curves are zero at the springings and `rise` at the crown, so the
+    end points prove nothing. What separates them is everywhere else: at the
+    quarter point a catenary of shape 2 sits measurably higher than the
+    parabola of the same span and rise."""
+    span, rise, shape = 12.0, 5.0, 2.0
+    mesh = sg.catenary_vault(span, rise, 6, n_arch=8, n_bays=2,
+                             double_layer=False, depth=0.0, shape=shape)
+    zs = {round(n[1], 6): n[2] for n in mesh['nodes'] if abs(n[0]) < 1e-9}
+    assert zs[-6.0] == pytest.approx(0.0, abs=1e-9)
+    assert zs[6.0] == pytest.approx(0.0, abs=1e-9)
+    assert zs[0.0] == pytest.approx(rise, abs=1e-9)
+    t = 0.5
+    expected = rise * (math.cosh(shape) - math.cosh(shape * t)) / (math.cosh(shape) - 1.0)
+    assert zs[3.0] == pytest.approx(expected, abs=1e-9)
+    parabola = rise * (1.0 - t * t)
+    assert zs[3.0] > parabola
+
+
+def test_the_catenary_shape_parameter_must_be_positive():
+    with pytest.raises(ValueError):
+        sg.catenary_vault(12, 5, 6, shape=0.0)
+
+
+# ── the ruled hyperboloid: the straightness claim, measured ────────────────
+
+def _generator_deviation(mesh, n_rings, n_sectors, step):
+    """The largest distance any intermediate node of a would-be generator
+    line sits off the straight line joining that line's two end nodes.
+    Nodes are banked ring by ring, sector by sector, so node (i, j) is
+    index i * n_sectors + j."""
+    nodes = mesh['nodes']
+    worst = 0.0
+    for j in range(n_sectors):
+        pts = [nodes[i * n_sectors + (j + step * i) % n_sectors]
+               for i in range(n_rings + 1)]
+        a, b = pts[0], pts[-1]
+        d = [b[k] - a[k] for k in range(3)]
+        L = math.dist(a, b)
+        for p in pts[1:-1]:
+            v = [p[k] - a[k] for k in range(3)]
+            cross = (v[1] * d[2] - v[2] * d[1],
+                     v[2] * d[0] - v[0] * d[2],
+                     v[0] * d[1] - v[1] * d[0])
+            worst = max(worst, math.hypot(*cross) / L)
+    return worst
+
+
+@pytest.mark.parametrize('n_rings,n_sectors,twist', [(6, 16, 1), (4, 24, 3), (8, 20, 2)])
+def test_both_hyperboloid_generator_families_are_exactly_straight(n_rings, n_sectors, twist):
+    """The whole point of the shape, and the one claim in the library that
+    is EXACT rather than a secant approximation: through every node run two
+    straight lines lying entirely in the surface, and the lattice's
+    diagonals ARE those lines. Measured, not assumed -- and it only holds
+    because the rings step by equal amounts of the Gudermannian angle and
+    the twist is a whole number of sectors."""
+    mesh = sg.hyperboloid_tower(5, 20, n_rings, n_sectors, twist, brace='none')
+    assert _generator_deviation(mesh, n_rings, n_sectors, 0) < 1e-9
+    assert _generator_deviation(mesh, n_rings, n_sectors, -twist) < 1e-9
+
+
+def test_the_elliptic_hyperboloid_is_still_doubly_ruled():
+    """An ellipse is a circle under an affine map, and an affine map takes
+    straight lines to straight lines -- so the squash costs nothing."""
+    mesh = sg.elliptic_hyperboloid(6, 3.5, 20, 6, 16, 1, brace='none')
+    assert _generator_deviation(mesh, 6, 16, 0) < 1e-9
+    assert _generator_deviation(mesh, 6, 16, -1) < 1e-9
+
+
+def _mechanism_count(mesh):
+    """Mechanisms of a PINNED bar assembly: free translational DOF minus the
+    rank of its compatibility matrix. The honest test for a structure that
+    is exactly on the Maxwell count, where counting bars tells you nothing."""
+    import numpy as np
+    nodes = mesh['nodes']
+    n = len(nodes)
+    held = set(mesh['support_candidates'])
+    rows = []
+    for m in mesh['members']:
+        a, b = m['a'], m['b']
+        v = np.array(nodes[b]) - np.array(nodes[a])
+        e = v / np.linalg.norm(v)
+        r = np.zeros(3 * n)
+        r[3 * a:3 * a + 3] = -e
+        r[3 * b:3 * b + 3] = e
+        rows.append(r)
+    free = [d for i in range(n) if i not in held for d in (3 * i, 3 * i + 1, 3 * i + 2)]
+    B = np.array(rows)[:, free]
+    sv = np.linalg.svd(B, compute_uv=False)
+    return B.shape[1] - int((sv > sv[0] * 1e-9).sum())
+
+
+@pytest.mark.parametrize('n_rings,n_sectors', [(6, 16), (8, 24), (5, 12)])
+def test_the_bare_shukhov_lattice_is_maxwell_critical(n_rings, n_sectors):
+    """Hoops plus two generator families put this lattice EXACTLY on the
+    Maxwell count, which is the one case where the count proves nothing.
+    Measured on the compatibility matrix, the bare lattice has precisely one
+    inextensional mechanism per ring course -- the reason `brace` exists and
+    defaults to adding members."""
+    mesh = sg.hyperboloid_tower(5, 20, n_rings, n_sectors, 1, brace='none')
+    assert _mechanism_count(mesh) == n_rings
+
+
+@pytest.mark.parametrize('brace', ['counter', 'ring'])
+def test_either_bracing_removes_every_hyperboloid_mechanism(brace):
+    mesh = sg.hyperboloid_tower(5, 20, 6, 16, 1, brace=brace)
+    assert _mechanism_count(mesh) == 0
+
+
+def test_the_unbraced_hyperboloid_is_far_softer_than_the_braced_one():
+    """Why 'none' is not a safe default even though the solver accepts it: a
+    symmetric self-weight load happens to be orthogonal to the inextensional
+    modes, so a bare lattice returns a perfectly plausible answer that is
+    an order of magnitude too flexible."""
+    def worst(brace):
+        mesh = sg.hyperboloid_tower(5, 24, 6, 16, 1, brace=brace)
+        for m in mesh['members']:
+            m.setdefault('E', 200.0)
+            m.setdefault('A', 20.0)
+        supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+        loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+        res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+        assert err is None
+        return max(abs(c) for nr in res['node_res'] for c in (nr['ux'], nr['uy'], nr['uz']))
+    assert worst('none') > 10.0 * worst('counter')
+
+
+def test_a_hyperboloid_that_would_flare_past_ninety_degrees_is_refused():
+    with pytest.raises(ValueError) as exc:
+        sg.hyperboloid_tower(5, 20, n_rings=10, n_sectors=16, twist=2)
+    assert 'flare' in str(exc.value).lower()
+
+
+def test_the_hyperboloid_waist_and_ends_land_where_the_flare_says():
+    n_rings, n_sectors, twist, radius, height = 6, 16, 1, 5.0, 24.0
+    mesh = sg.hyperboloid_tower(radius, height, n_rings, n_sectors, twist)
+    psi_max = n_rings * twist * math.pi / n_sectors / 2.0
+    plan = [(math.hypot(x, y), z) for x, y, z in mesh['nodes']]
+    assert min(r for r, _z in plan) == pytest.approx(radius, abs=1e-9)
+    assert max(r for r, _z in plan) == pytest.approx(radius / math.cos(psi_max), abs=1e-9)
+    assert min(z for _r, z in plan) == pytest.approx(0.0, abs=1e-9)
+    assert max(z for _r, z in plan) == pytest.approx(height, abs=1e-9)
+
+
+def test_a_bad_hyperboloid_brace_name_is_refused():
+    with pytest.raises(ValueError):
+        sg.hyperboloid_tower(5, 20, 6, 16, 1, brace='diagonal')
+
+
+# ── the torus segment ──────────────────────────────────────────────────────
+
+def test_a_full_torus_sweep_closes_its_seam_instead_of_duplicating_it():
+    """Exactly 360 degrees must join back to the start, not lay a second ring
+    of nodes on top of the first -- the same closed-seam convention dome()
+    and circular_flat_grid() use for a full turn."""
+    half = sg.torus_segment(14, 5, sweep_deg=180, arc_deg=180, n_sweep=12, n_arc=4, depth=0.5)
+    full = sg.torus_segment(14, 5, sweep_deg=360, arc_deg=180, n_sweep=24, n_arc=4, depth=0.5)
+    # 24 sweep stations wrapped == 24 columns, vs 12 bays == 13 columns
+    assert len(full['nodes']) == len(half['nodes']) // 13 * 24
+    _assert_mesh_is_sane(full)
+
+
+def test_the_torus_springings_sit_on_the_base_plane():
+    mesh = sg.torus_segment(14, 5, sweep_deg=180, arc_deg=180, n_sweep=8, n_arc=4, depth=0.0)
+    for i in mesh['support_candidates']:
+        assert mesh['nodes'][i][2] == pytest.approx(0.0, abs=1e-9)
+    assert max(n[2] for n in mesh['nodes']) == pytest.approx(5.0, abs=1e-9)
+
+
+def test_the_torus_tributary_areas_sum_to_the_true_swept_area():
+    """A torus's own area element is (R + r*sin(u)) dtau * r du, and the
+    lumped node areas must add back up to its integral -- an exact check,
+    not an approximation, because the surface is a genuine surface of
+    revolution in both directions."""
+    R, r = 14.0, 5.0
+    mesh = sg.torus_segment(R, r, sweep_deg=180, arc_deg=180, n_sweep=20, n_arc=8, depth=0.0)
+    exact = math.pi * r * (math.pi * R)   # integral over tau in [0,pi], u in [-pi/2,pi/2]
+    assert sum(mesh['load_nodes'].values()) == pytest.approx(exact, rel=1e-9)
+
+
+def test_a_torus_layer_depth_must_stay_inside_its_own_tube():
+    with pytest.raises(ValueError):
+        sg.torus_segment(14, 5, depth=5.0)
+
+
+# ── the helicoid ramp ──────────────────────────────────────────────────────
+
+def test_the_helicoid_climbs_exactly_one_rise_per_turn():
+    mesh = sg.helicoid_ramp(4, 9, turns=2.0, rise_per_turn=3.2, n_radial=3,
+                            n_along=24, depth=0.0)
+    zs = [n[2] for n in mesh['nodes']]
+    assert min(zs) == pytest.approx(0.0, abs=1e-9)
+    assert max(zs) == pytest.approx(6.4, abs=1e-9)
+
+
+def test_the_helicoid_tributary_areas_sum_to_the_swept_annulus():
+    mesh = sg.helicoid_ramp(4, 9, turns=1.0, rise_per_turn=3.2, n_radial=5,
+                            n_along=24, depth=0.0)
+    exact = math.pi * (9.0 ** 2 - 4.0 ** 2)
+    assert sum(mesh['load_nodes'].values()) == pytest.approx(exact, rel=1e-9)
+
+
+def test_a_single_layer_helicoid_is_forced_rigid_and_says_so():
+    """A pinned single-layer helicoid has no stiffness worth the name -- its
+    radial lines are straight and level -- and modelling it as a truss gives
+    a metre of fictitious deflection rather than an answer. Every member is
+    tagged rigid_required, exactly as vierendeel_grid's are, so the Section
+    panel cannot quietly pin it back."""
+    mesh = sg.helicoid_ramp(4, 9, turns=1.0, rise_per_turn=3.2, n_radial=4,
+                            n_along=24, depth=0.0)
+    assert all(m['conn'] == 'rigid' for m in mesh['members'])
+    assert all(m['rigid_required'] for m in mesh['members'])
+    # the DOUBLE layer is a truss and must stay one
+    both = sg.helicoid_ramp(4, 9, turns=1.0, rise_per_turn=3.2, n_radial=4,
+                            n_along=24, depth=0.8)
+    assert all(m.get('conn', 'pin') == 'pin' for m in both['members'])
+
+
+def test_a_helicoid_on_the_axis_itself_is_refused():
+    with pytest.raises(ValueError):
+        sg.helicoid_ramp(0.0, 9, turns=1.0)
+    with pytest.raises(ValueError):
+        sg.helicoid_ramp(9.0, 4.0, turns=1.0)

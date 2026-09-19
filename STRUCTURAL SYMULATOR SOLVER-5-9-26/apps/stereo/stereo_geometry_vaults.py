@@ -412,3 +412,63 @@ def elliptic_vault(span, rise, length, n_arch=8, n_bays=8, double_layer=True, de
 
     return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
             'load_nodes': load_nodes}
+
+
+def catenary_vault(span, rise, length, n_arch=8, n_bays=8, double_layer=True,
+                   depth=0.0, shape=2.0):
+    """A CATENARY-arch barrel vault: the same station/rib/purlin/bracing
+    scheme as barrel_vault(), on an INVERTED-CATENARY arch profile --
+
+        y = (span/2) * t,
+        z = rise * (cosh(shape) - cosh(shape*t)) / (cosh(shape) - 1)
+
+    for t in [-1, 1], which is `rise` at the crown and zero at both
+    springings for any `shape`.
+
+    The catenary is the arch form that matters most in practice and the
+    reason this family is worth having next to the parabolic one it
+    resembles: a chain hanging under its OWN WEIGHT takes a catenary, so
+    an arch of the same curve inverted carries its own weight in PURE
+    COMPRESSION, with the thrust line lying exactly on the arch axis and
+    no bending anywhere along it. (A parabola is the form for a load
+    uniform per unit HORIZONTAL length -- a suspension bridge deck --
+    which is a different load and a different curve.) For a masonry or
+    concrete vault, where self-weight dominates and the material cannot
+    take tension, that distinction is the whole design.
+
+    The pure-compression property holds for self-weight ALONE. Any
+    unsymmetric load -- wind, drifted snow, a point load -- moves the
+    thrust line off the axis and reintroduces bending, exactly as it does
+    for every other arch; the catenary is optimal for one load case, not
+    immune to the others.
+
+    shape : the dimensionless catenary parameter (span / 2c). Small values
+            approach a parabola; larger ones give the steep, pointed,
+            Gaudi-like arch of a heavy self-weight-dominated vault.
+            Must be positive.
+    span, rise, length, n_arch, n_bays, double_layer, depth : as in
+            barrel_vault().
+
+    Returns the shared {'nodes','members','support_candidates'} dict, with
+    every node on the two springing lines (the vault's base) offered as
+    support candidates.
+    """
+    span = float(span); rise = float(rise); shape = float(shape)
+    if span <= 0 or rise <= 0:
+        raise ValueError('span and rise must both be positive')
+    if shape <= 0:
+        raise ValueError('shape must be positive')
+    denom = math.cosh(shape) - 1.0
+    if denom <= 0:
+        raise ValueError('shape is too small to define a catenary')
+
+    def arch_point(t):
+        return (span / 2.0) * t, rise * (math.cosh(shape) - math.cosh(shape * t)) / denom
+
+    bank, members, outer, _inner, support_candidates, bay_dx = _extruded_arch_grid(
+        arch_point, length, n_arch, n_bays, double_layer, depth)
+    n_arch = max(2, int(n_arch)); n_bays = max(1, int(n_bays))
+    load_nodes = _secant_arc_load_nodes(arch_point, n_arch, n_bays, bay_dx, outer)
+
+    return {'nodes': bank.nodes, 'members': members, 'support_candidates': support_candidates,
+            'load_nodes': load_nodes}

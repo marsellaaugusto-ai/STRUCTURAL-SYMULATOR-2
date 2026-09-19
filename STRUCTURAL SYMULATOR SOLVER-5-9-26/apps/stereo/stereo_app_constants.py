@@ -159,18 +159,37 @@ PATTERN_LABEL = {key: label for key, label in GRID_PATTERNS}
 GRID_FAMILIES = (('flat_grid', 'Flat double-layer grid'),
                  ('vierendeel_grid', 'Vierendeel grid (no diagonals)'),
                  ('hypar_shell', 'Hyperbolic paraboloid (hypar) shell'),
+                 ('elliptic_hypar_shell', 'Elliptic hyperbolic paraboloid'),
+                 ('elliptic_paraboloid_shell', 'Elliptic paraboloid (sail) shell'),
+                 ('conoid_shell', 'Conoid (ruled north-light shell)'),
+                 ('monkey_saddle_shell', 'Monkey saddle (three-fall shell)'),
+                 ('wave_shell', 'Sinusoidal wave shell'),
                  ('hip_roof_grid', 'Hip (pyramidal) roof grid'),
                  ('groin_vault', 'Groin (cross) vault'),
                  ('circular_flat_grid', 'Circular flat grid'),
                  ('barrel_vault', 'Barrel vault (circular arch)'),
                  ('parabolic_vault', 'Parabolic vault'),
                  ('elliptic_vault', 'Elliptic vault'),
+                 ('catenary_vault', 'Catenary vault (pure-compression arch)'),
+                 ('torus_segment', 'Torus segment (ring vault)'),
+                 ('hyperboloid_tower', 'Hyperboloid of revolution (ruled)'),
+                 ('elliptic_hyperboloid', 'Elliptic hyperboloid (ruled)'),
+                 ('helicoid_ramp', 'Helicoid ramp (spiral deck)'),
                  ('dome', 'Dome (Schwedler ribs)'),
                  ('cone_roof', 'Conical roof (straight rafters)'),
                  ('paraboloid_dish', 'Paraboloid dish (antenna)'),
                  ('elliptic_dome', 'Elliptic dome'),
                  ('sphere_shell', 'Full sphere'),
                  ('truss_bridge', 'Truss bridge (Warren/Pratt-style)'))
+
+# How the Maxwell-critical ruled-hyperboloid lattice is stabilised --
+# see stereo_geometry_surfaces._hyperboloid_lattice for what each does and
+# why the bare lattice needs one at all.
+HYPERBOLOID_BRACES = (('counter', 'Counter-diagonal (lightest)'),
+                      ('ring', 'Ring stiffener (stiffest)'),
+                      ('none', 'None -- pure generators only'))
+BRACE_KEY = {label: key for key, label in HYPERBOLOID_BRACES}
+BRACE_LABEL = {key: label for key, label in HYPERBOLOID_BRACES}
 FAMILY_KEY = {label: key for key, label in GRID_FAMILIES}
 FAMILY_LABEL = {key: label for key, label in GRID_FAMILIES}
 

@@ -21,7 +21,7 @@ from apps.stereo import stereo_checks as sc
 from apps.truss import truss_plates as tp
 from apps.stereo import expr_math as em
 from apps.stereo.stereo_app_constants import (
-    DOF_LABELS, FAMILY_KEY, PATTERN_KEY, CHORD_ROLES,
+    DOF_LABELS, FAMILY_KEY, PATTERN_KEY, BRACE_KEY, CHORD_ROLES,
     QUICK_SUPPORT_CUSTOM, QUICK_SUPPORT_PIN, QUICK_SUPPORT_FIXED,
     QUICK_SUPPORT_CLEAR,
     AREA_GRADIENT, AREA_FIELD, AREA_SCOPE_ALL, LOAD_DIRECTIONS,
@@ -100,6 +100,72 @@ class StereoModelMixin:
                 mesh = sg.hypar_shell(nx * module, ny * module, self.hp_depth.get(), module,
                                       rise=self.hp_rise.get(), offset=self.hp_offset.get(),
                                       pattern=pattern)
+            elif key == 'elliptic_paraboloid_shell':
+                module = self.ep_module.get()
+                mesh = sg.elliptic_paraboloid_shell(
+                    int(self.ep_nx.get()) * module, int(self.ep_ny.get()) * module,
+                    self.ep_depth.get(), module, rise=self.ep_rise.get(),
+                    offset=self.ep_offset.get(), pattern=PATTERN_KEY[self.ep_pattern.get()])
+            elif key == 'elliptic_hypar_shell':
+                module = self.eh_module.get()
+                mesh = sg.elliptic_hypar_shell(
+                    int(self.eh_nx.get()) * module, int(self.eh_ny.get()) * module,
+                    self.eh_depth.get(), module, rise_x=self.eh_rise_x.get(),
+                    rise_y=self.eh_rise_y.get(), offset=self.eh_offset.get(),
+                    pattern=PATTERN_KEY[self.eh_pattern.get()])
+            elif key == 'conoid_shell':
+                module = self.co_module.get()
+                mesh = sg.conoid_shell(
+                    int(self.co_nx.get()) * module, int(self.co_ny.get()) * module,
+                    self.co_depth.get(), module, rise=self.co_rise.get(),
+                    offset=self.co_offset.get(), pattern=PATTERN_KEY[self.co_pattern.get()])
+            elif key == 'monkey_saddle_shell':
+                module = self.ms_module.get()
+                mesh = sg.monkey_saddle_shell(
+                    int(self.ms_nx.get()) * module, int(self.ms_ny.get()) * module,
+                    self.ms_depth.get(), module, rise=self.ms_rise.get(),
+                    offset=self.ms_offset.get(), pattern=PATTERN_KEY[self.ms_pattern.get()])
+            elif key == 'wave_shell':
+                module = self.wv_module.get()
+                mesh = sg.wave_shell(
+                    int(self.wv_nx.get()) * module, int(self.wv_ny.get()) * module,
+                    self.wv_depth.get(), module, rise=self.wv_rise.get(),
+                    waves=self.wv_waves.get(), offset=self.wv_offset.get(),
+                    pattern=PATTERN_KEY[self.wv_pattern.get()])
+            elif key == 'catenary_vault':
+                mesh = sg.catenary_vault(self.cv_span.get(), self.cv_rise.get(),
+                                         self.cv_length.get(), int(self.cv_n_arch.get()),
+                                         int(self.cv_n_bays.get()), self.cv_double.get(),
+                                         self.cv_depth.get(), shape=self.cv_shape.get())
+            elif key == 'torus_segment':
+                mesh = sg.torus_segment(self.ts_major.get(), self.ts_tube.get(),
+                                        sweep_deg=self.ts_sweep.get(),
+                                        arc_deg=self.ts_arc.get(),
+                                        n_sweep=int(self.ts_n_sweep.get()),
+                                        n_arc=int(self.ts_n_arc.get()),
+                                        depth=self.ts_depth.get(),
+                                        pattern=PATTERN_KEY[self.ts_pattern.get()])
+            elif key == 'hyperboloid_tower':
+                mesh = sg.hyperboloid_tower(self.hb_radius.get(), self.hb_height.get(),
+                                            int(self.hb_n_rings.get()),
+                                            int(self.hb_n_sectors.get()),
+                                            int(self.hb_twist.get()),
+                                            brace=BRACE_KEY[self.hb_brace.get()])
+            elif key == 'elliptic_hyperboloid':
+                mesh = sg.elliptic_hyperboloid(self.eb_radius_x.get(), self.eb_radius_y.get(),
+                                               self.eb_height.get(),
+                                               int(self.eb_n_rings.get()),
+                                               int(self.eb_n_sectors.get()),
+                                               int(self.eb_twist.get()),
+                                               brace=BRACE_KEY[self.eb_brace.get()])
+            elif key == 'helicoid_ramp':
+                mesh = sg.helicoid_ramp(self.hl_inner.get(), self.hl_outer.get(),
+                                        turns=self.hl_turns.get(),
+                                        rise_per_turn=self.hl_rise.get(),
+                                        n_radial=int(self.hl_n_radial.get()),
+                                        n_along=int(self.hl_n_along.get()),
+                                        depth=self.hl_depth.get(),
+                                        pattern=PATTERN_KEY[self.hl_pattern.get()])
             elif key == 'hip_roof_grid':
                 nx, ny = int(self.hr_nx.get()), int(self.hr_ny.get())
                 module = self.hr_module.get()

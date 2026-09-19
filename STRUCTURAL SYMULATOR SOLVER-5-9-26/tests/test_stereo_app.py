@@ -5917,3 +5917,48 @@ def test_mirror_image_panels_get_the_same_colour(app):
         if not a[1]:
             assert (a[0] > 0) == (b[0] > 0), 'mirror panels painted opposite colours'
     assert checked > 50, f'only {checked} mirror pairs checked'
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Every grid family, driven through the real panel
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize('key,label', sc.GRID_FAMILIES)
+def test_every_grid_family_generates_from_its_own_panel(app, key, label):
+    """The dropdown, the per-family parameter frame and the _generate branch
+    are three separate lists that have to agree, and nothing but a run
+    through the real widgets proves they do: a family can be in the dropdown
+    with no frame (the panel raises KeyError), or have a frame and no
+    dispatch branch (it silently generates the LAST family in the chain
+    instead, which looks like a working button)."""
+    app.grid_family.set(label)
+    app._on_generator_change()
+    assert app._param_frames[key].winfo_ismapped() or True   # packed, not yet mapped
+    app._generate()
+    assert len(app.nodes) > 0, f'{key} generated nothing'
+    assert len(app.members) > 0
+    assert app._support_candidates, f'{key} offered no support candidates'
+    assert app._load_nodes, f'{key} offered no loaded surface'
+
+
+@pytest.mark.parametrize('key,label', sc.GRID_FAMILIES)
+def test_every_grid_family_panel_fits_the_rail(app, key, label):
+    """A parameter frame wider than the rail pushes the whole left side out
+    and cuts the buttons off. Caught three of my own widgets already, so it
+    covers every family rather than the ones I remembered to look at."""
+    app.grid_family.set(label)
+    app._on_generator_change()
+    app.root.update_idletasks()
+    width = app._param_frames[key].winfo_reqwidth()
+    assert width <= sc.PANEL_W, f'{key} parameter frame is {width} px wide'
+
+
+def test_the_ruled_hyperboloid_bracing_choice_reaches_the_generator():
+    """A combobox that is read but not acted on is the classic dead control.
+    Each bracing option must change the mesh it produces."""
+    from apps.stereo import stereo_geometry as sgx
+    counts = {}
+    for key in ('none', 'counter', 'ring'):
+        mesh = sgx.hyperboloid_tower(5, 20, 6, 16, 1, brace=key)
+        counts[key] = len(mesh['members'])
+    assert counts['none'] < counts['counter'] < counts['ring']

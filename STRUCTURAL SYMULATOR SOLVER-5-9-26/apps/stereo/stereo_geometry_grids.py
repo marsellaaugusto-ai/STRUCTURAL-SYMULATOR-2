@@ -367,3 +367,205 @@ def vierendeel_grid(span_x, span_y, depth, module, height_fn=None):
         load_nodes[n] = cell * fx * fy
     return {'nodes': bank.nodes, 'members': members,
             'support_candidates': support_candidates, 'load_nodes': load_nodes}
+
+
+def elliptic_paraboloid_shell(span_x, span_y, depth, module, rise,
+                              offset=True, pattern='square'):
+    """An ELLIPTIC-paraboloid ("elpar") double-layer shell -- the synclastic
+    sibling of hypar_shell: a true quadratic dish
+
+        z = rise * (1 - (u**2 + v**2) / 2),   u = 2(x-cx)/span_x in [-1, 1]
+                                              v = 2(y-cy)/span_y in [-1, 1]
+
+    which is `rise` at the plan centre and exactly ZERO at all four plan
+    CORNERS -- the classic four-corner-supported sail roof. The two
+    principal curvatures have the SAME sign everywhere (unlike a hypar's
+    opposite pair), so the surface is a dome over a rectangle rather than
+    a saddle, and it carries a uniform downward load largely in membrane
+    COMPRESSION along both spans instead of splitting it into an arch and
+    a cable direction.
+
+    Note the corners, not the edges, are the level line: an elliptic
+    paraboloid over a rectangle cannot have all four edges straight and
+    level (a quadratic that is zero along a whole edge is zero along the
+    parallel edge too). Halfway along each edge the surface stands
+    rise/2 above the corners, which is the shape's own edge arch -- the
+    reason a real elpar roof is edged with a stiffening beam or bears on
+    four corner points only.
+
+    rise : crown height (m) above the four corners.
+
+    Returns the shared {'nodes','members','support_candidates'} dict.
+    """
+    rise = float(rise)
+    cx, cy = float(span_x) / 2.0, float(span_y) / 2.0
+    ax = cx if cx > 0 else 1.0
+    ay = cy if cy > 0 else 1.0
+
+    def height_fn(x, y):
+        u = (x - cx) / ax
+        v = (y - cy) / ay
+        return rise * (1.0 - (u * u + v * v) / 2.0)
+
+    return flat_grid(span_x, span_y, depth, module, offset=offset, pattern=pattern,
+                     height_fn=height_fn)
+
+
+def elliptic_hypar_shell(span_x, span_y, depth, module, rise_x, rise_y,
+                         offset=True, pattern='square'):
+    """An ELLIPTIC hyperbolic-paraboloid shell: the general saddle
+
+        z = rise_x * u**2 - rise_y * v**2
+
+    with INDEPENDENT principal curvatures along the two spans, where
+    hypar_shell's own z = rise * u * v is the special (equal-and-opposite,
+    45-degrees-rotated) case. This is the form an architect reaches for
+    when the arch direction and the cable direction of a saddle roof are
+    not meant to be equally curved -- a deep arch across a short span with
+    a shallow suspension along a long one, say.
+
+    Each u = const line is a downward parabola and each v = const line an
+    upward one, so the surface arches along y and hangs along x: a uniform
+    downward load goes into COMPRESSION along the arching direction and
+    TENSION along the hanging one, which is the whole structural argument
+    for a saddle and the reason it needs no bending stiffness to be stiff.
+
+    Unlike hypar_shell this form is NOT ruled unless rise_x == rise_y, so
+    its grid lines are genuine curves; the mesh chords are their secants,
+    the same discretisation every other curved family here uses.
+
+    rise_x : half-height (m) the surface climbs along x at the plan edge.
+    rise_y : half-depth (m) it falls along y at the plan edge.
+
+    Returns the shared {'nodes','members','support_candidates'} dict.
+    """
+    rise_x = float(rise_x); rise_y = float(rise_y)
+    cx, cy = float(span_x) / 2.0, float(span_y) / 2.0
+    ax = cx if cx > 0 else 1.0
+    ay = cy if cy > 0 else 1.0
+
+    def height_fn(x, y):
+        u = (x - cx) / ax
+        v = (y - cy) / ay
+        return rise_x * u * u - rise_y * v * v
+
+    return flat_grid(span_x, span_y, depth, module, offset=offset, pattern=pattern,
+                     height_fn=height_fn)
+
+
+def conoid_shell(span_x, span_y, depth, module, rise, offset=True, pattern='square'):
+    """A CONOID shell -- the ruled surface swept by a straight line that
+    slides along a straight directrix at y=0 while its other end rides an
+    arch at y=span_y, staying parallel to a fixed plane throughout:
+
+        z = rise * sin(pi * x / span_x) * (y / span_y)
+
+    At y=0 the surface is a straight, level edge; at y=span_y it is a full
+    sine arch of height `rise`. Every line of constant x is STRAIGHT (z is
+    linear in y), which is what makes it a ruled surface and why Candela,
+    Gaudi and the whole mid-century shell-concrete tradition used conoids
+    so heavily: the formwork, and here every y-direction chord, is a
+    straight member.
+
+    Structurally it is the single-curvature-to-double-curvature transition
+    in one roof: stiff and arch-like at the tall edge, flat and
+    bending-dependent at the straight one, which is why a conoid is
+    normally used in repeated bays with the straight edges meeting -- a
+    north-light saw-tooth roof being the textbook case.
+
+    rise : height (m) of the arch at the y = span_y edge.
+
+    Returns the shared {'nodes','members','support_candidates'} dict.
+    """
+    rise = float(rise)
+    sx = float(span_x) if span_x > 0 else 1.0
+    sy = float(span_y) if span_y > 0 else 1.0
+
+    def height_fn(x, y):
+        return rise * math.sin(math.pi * x / sx) * (y / sy)
+
+    return flat_grid(span_x, span_y, depth, module, offset=offset, pattern=pattern,
+                     height_fn=height_fn)
+
+
+def monkey_saddle_shell(span_x, span_y, depth, module, rise,
+                        offset=True, pattern='square'):
+    """A MONKEY SADDLE shell: the cubic surface
+
+        z = rise * (u**3 - 3 * u * v**2)
+
+    -- a saddle with THREE falls and three rises around its centre rather
+    than an ordinary saddle's two of each (the name is the old joke that
+    it has a place for the tail as well as the two legs). It is the real
+    part of the complex cube, so its level set through the centre is three
+    straight lines at 60 degrees, and it is the simplest surface whose
+    centre is a MONKEY POINT: both principal curvatures vanish there at
+    once, so the middle of the roof is locally FLAT to second order.
+
+    That flat point is the structural story and the reason this belongs in
+    the list as a cautionary shape as much as a sculptural one: a doubly
+    curved shell is stiff because its curvature turns membrane force into
+    vertical support, and at a monkey point there is no curvature to do
+    it. Expect the centre to be much the softest part of the roof and to
+    depend on the grid's own depth rather than on shell action -- run
+    Analyze and look at the centre deflection before committing to one.
+
+    rise : amplitude (m); the surface reaches +/- 2*rise at the plan
+           corners, where u**3 - 3*u*v**2 is +/-2.
+
+    Returns the shared {'nodes','members','support_candidates'} dict.
+    """
+    rise = float(rise)
+    cx, cy = float(span_x) / 2.0, float(span_y) / 2.0
+    ax = cx if cx > 0 else 1.0
+    ay = cy if cy > 0 else 1.0
+
+    def height_fn(x, y):
+        u = (x - cx) / ax
+        v = (y - cy) / ay
+        return rise * (u ** 3 - 3.0 * u * v * v)
+
+    return flat_grid(span_x, span_y, depth, module, offset=offset, pattern=pattern,
+                     height_fn=height_fn)
+
+
+def wave_shell(span_x, span_y, depth, module, rise, waves=2.0,
+               offset=True, pattern='square'):
+    """A SINUSOIDAL WAVE shell -- a corrugated roof whose section across x
+    is a cosine and which is straight along y:
+
+        z = rise * (1 - cos(2*pi * waves * x / span_x)) / 2
+
+    so the roof touches z=0 at every trough and reaches `rise` at every
+    crest, with `waves` full waves across the span. Set waves=1.5 or 2.5
+    for a roof that starts and ends on a crest, or an integer for one that
+    starts and ends in a trough (where the supports naturally go).
+
+    This is the shape of the modern folded/undulating shell roof -- the
+    Bosjes Chapel's white shell being the best-known recent one -- and it
+    is a genuinely efficient one: each trough-to-trough arch spans in x by
+    ARCH ACTION, and the alternation of crests and troughs gives the whole
+    roof a corrugation depth far larger than the grid's own, which is why
+    such a roof can be very thin and still span a long way. Supporting it
+    only at the troughs, as the built examples do, is the point: each wave
+    is then a free-standing arch and the crests fly.
+
+    Being a single-curvature (developable) surface, it has no stiffness at
+    all ACROSS the waves beyond what the grid's depth provides -- the y
+    direction is dead straight. A real one gets an edge arch or a diaphragm
+    at each end for exactly that reason.
+
+    rise  : crest height (m) above the troughs.
+    waves : number of full cosine waves across span_x (may be fractional).
+
+    Returns the shared {'nodes','members','support_candidates'} dict.
+    """
+    rise = float(rise)
+    waves = float(waves)
+    sx = float(span_x) if span_x > 0 else 1.0
+
+    def height_fn(x, y):
+        return rise * (1.0 - math.cos(2.0 * math.pi * waves * x / sx)) / 2.0
+
+    return flat_grid(span_x, span_y, depth, module, offset=offset, pattern=pattern,
+                     height_fn=height_fn)

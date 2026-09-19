@@ -269,3 +269,10 @@ PANEL_TEXT_W = 244
 # utilisation ramp that would imply one.
 PANEL_UNCHECKED_COLOR = '#9aa7b1'
 PANEL_EDGE_COLOR = '#37474f'
+
+
+# The footprint disc that follows the cursor when a column footprint is
+# being picked, and the ring on the first node of a line pick.
+DISC_FILL = '#ffd54f'
+DISC_EDGE = '#ef6c00'
+LINE_PICK_COLOR = '#1a6bbd'

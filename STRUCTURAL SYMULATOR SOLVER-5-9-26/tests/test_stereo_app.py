@@ -5621,3 +5621,209 @@ def test_turning_the_cell_fill_on_from_the_analyse_panel_draws_cells(app):
     app._on_faces_mode_change()
     app._draw()
     assert not app.canvas.find_withtag('shaded_face')
+
+
+# ── picking tools: line select and the footprint disc ────────────────────────
+
+def _top_row(app):
+    zmax = max(p[2] for p in app.nodes)
+    tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - zmax) < 1e-9]
+    ys = sorted({round(app.nodes[i][1], 6) for i in tops})
+    row = [i for i in tops if abs(app.nodes[i][1] - ys[2]) < 1e-9]
+    row.sort(key=lambda i: app.nodes[i][0])
+    return row
+
+
+def test_the_screen_to_world_inverse_lands_back_on_the_node_it_started_from(app):
+    """Both picking tools rest on this: the disc's centre is the cursor
+    unprojected onto a layer's plane. If the inverse were even slightly
+    wrong the disc would cover joints it did not appear to."""
+    for i in (0, 25, len(app.nodes) // 2):
+        sx, sy = app._screen_positions()[i]
+        got = app._unproject_to_plane(sx, sy, app.nodes[i][2])
+        assert got is not None
+        assert got[0] == pytest.approx(app.nodes[i][0], abs=1e-6)
+        assert got[1] == pytest.approx(app.nodes[i][1], abs=1e-6)
+
+
+def test_looking_along_the_horizon_refuses_to_guess_a_position(app):
+    """A horizontal plane seen edge-on projects to a LINE: one screen point
+    is every point on a ray, and nothing should invent one."""
+    app.elevation = 0.0
+    assert app._unproject_to_plane(100.0, 100.0, 0.0) is None
+
+
+def test_a_line_from_node_to_node_selects_the_whole_row(app):
+    """Two clicks instead of ten."""
+    _mode(app, 'build')
+    app.line_pick_mode.set(True)
+    app._on_pick_mode_toggle('line')
+    row = _top_row(app)
+    assert len(row) > 4
+    sp = app._screen_positions()
+    app._handle_line_pick_click(*sp[row[0]])
+    assert app._line_pick_first == row[0]
+    assert 'far end' in app.pick_note.cget('text')
+    app._handle_line_pick_click(*sp[row[-1]])
+    assert set(app.selected_nodes) == set(row)
+    assert app._line_pick_first is None, 'the tool should be ready for a new line'
+
+
+def test_a_line_measures_in_the_model_not_on_the_screen(app):
+    """A line drawn across a tilted view passes near nodes on other layers
+    that merely LOOK close. Measuring in world coordinates selects the row
+    you meant rather than everything behind it."""
+    row = _top_row(app)
+    zmax = max(p[2] for p in app.nodes)
+    found = app._nodes_near_segment(row[0], row[-1],
+                                    0.35 * app._typical_spacing())
+    assert set(found) == set(row)
+    assert all(abs(app.nodes[i][2] - zmax) < 1e-9 for i in found), \
+        'the line picked up nodes from another layer'
+
+
+def test_clicking_empty_space_does_not_start_a_line(app):
+    _mode(app, 'build')
+    app.line_pick_mode.set(True)
+    app._on_pick_mode_toggle('line')
+    app._handle_line_pick_click(3, 3)
+    assert app._line_pick_first is None
+    assert 'ON a node' in app.pick_note.cget('text')
+
+
+def test_the_disc_covers_four_joints_at_a_bay_centre(app):
+    """Which is the whole point: a column footprint in one gesture."""
+    _mode(app, 'addons')
+    app.disc_pick_mode.set(True)
+    app._on_pick_mode_toggle('disc')
+    app.disc_layer.set('top')
+    app.disc_radius.set(0.8)
+    app.disc_limit.set(4)
+    zmax = max(p[2] for p in app.nodes)
+    tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - zmax) < 1e-9]
+    xs = sorted({round(app.nodes[i][0], 6) for i in tops})
+    ys = sorted({round(app.nodes[i][1], 6) for i in tops})
+    cx, cy = (xs[4] + xs[5]) / 2, (ys[4] + ys[5]) / 2
+    hits = app._nodes_in_disc(cx, cy, 0.8 * app._typical_spacing(tops), tops, limit=4)
+    assert len(hits) == 4
+    assert all(abs(app.nodes[i][2] - zmax) < 1e-9 for i in hits)
+
+
+def test_the_disc_never_takes_more_than_its_cap(app):
+    """A latticed column takes 3 or 4 chords and no more, so the tool that
+    picks its footprint must not hand it eight."""
+    _mode(app, 'addons')
+    zmax = max(p[2] for p in app.nodes)
+    tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - zmax) < 1e-9]
+    cx = sum(app.nodes[i][0] for i in tops) / len(tops)
+    cy = sum(app.nodes[i][1] for i in tops) / len(tops)
+    huge = 10.0 * app._typical_spacing(tops)
+    for cap in (3, 4):
+        hits = app._nodes_in_disc(cx, cy, huge, tops, limit=cap)
+        assert len(hits) == cap
+
+
+def test_the_disc_only_ever_picks_from_the_chosen_layer(app):
+    _mode(app, 'addons')
+    zmin = min(p[2] for p in app.nodes)
+    bottom = app._layer_nodes('bottom')
+    assert bottom
+    cx = sum(app.nodes[i][0] for i in bottom) / len(bottom)
+    cy = sum(app.nodes[i][1] for i in bottom) / len(bottom)
+    hits = app._nodes_in_disc(cx, cy, 5.0 * app._typical_spacing(bottom),
+                              bottom, limit=4)
+    assert hits
+    assert all(abs(app.nodes[i][2] - zmin) < 1e-6 for i in hits)
+
+
+def test_the_disc_is_drawn_on_the_roof_not_stuck_to_the_screen(app):
+    """Projected through the same camera as the model, so it stays the same
+    size in METRES as you orbit. A screen circle would stop covering the
+    joints it appeared to cover."""
+    _mode(app, 'addons')
+    app.disc_pick_mode.set(True)
+    app._on_pick_mode_toggle('disc')
+    app.disc_layer.set('top')
+    sx, sy = app._screen_positions()[app._layer_nodes('top')[0]]
+    hits, centre = app._disc_under_cursor(sx, sy)
+    app._disc_hits, app._disc_centre = hits, centre
+    app._draw()
+    items = app.canvas.find_withtag('pick_disc')
+    assert items, 'the disc was not drawn'
+    poly = [i for i in items if app.canvas.type(i) == 'polygon']
+    assert poly, 'the disc should be a projected polygon, not an oval'
+
+
+def test_clicking_commits_exactly_what_the_disc_was_highlighting(app):
+    """The highlight the user has been watching IS the selection, so the two
+    can never disagree."""
+    _mode(app, 'addons')
+    app.disc_pick_mode.set(True)
+    app._on_pick_mode_toggle('disc')
+    app.disc_layer.set('top')
+    # Hover over a node of the CHOSEN layer: over a bottom node the top-layer
+    # disc correctly finds nothing, which is a different test.
+    sx, sy = app._screen_positions()[app._layer_nodes('top')[0]]
+    app._disc_hits, app._disc_centre = app._disc_under_cursor(sx, sy)
+    want = list(app._disc_hits)
+    assert want
+    app._on_canvas_release(FakeEvent(sx, sy))
+    assert set(app.selected_nodes) == set(want)
+
+
+def test_only_one_picking_tool_can_be_armed(app):
+    """Three modal click tools sharing one canvas is how a click stops
+    meaning what the panel says it means."""
+    _mode(app, 'build')
+    app.add_rod_mode.set(True)
+    app._on_pick_mode_toggle('rod')
+    app.line_pick_mode.set(True)
+    app._on_pick_mode_toggle('line')
+    assert app.add_rod_mode.get() is False
+    app.disc_pick_mode.set(True)
+    app._on_pick_mode_toggle('disc')
+    assert app.line_pick_mode.get() is False
+    assert app.add_rod_mode.get() is False
+
+
+def test_switching_tools_forgets_a_half_drawn_line(app):
+    """A click made minutes later, with nothing on screen to explain it,
+    would otherwise finish a selection nobody asked for."""
+    _mode(app, 'build')
+    app.line_pick_mode.set(True)
+    app._on_pick_mode_toggle('line')
+    sp = app._screen_positions()
+    app._handle_line_pick_click(*sp[_top_row(app)[0]])
+    assert app._line_pick_first is not None
+    app.disc_pick_mode.set(True)
+    app._on_pick_mode_toggle('disc')
+    assert app._line_pick_first is None
+
+
+def test_the_hover_costs_nothing_when_no_tool_is_armed(app):
+    """Bound to plain <Motion>, so it fires on every mouse move over the
+    canvas. It has to return before doing any projection work."""
+    app.disc_pick_mode.set(False)
+    app._disc_hits, app._disc_centre = [], None
+    app._on_canvas_hover(FakeEvent(200, 200))
+    assert app._disc_hits == [] and app._disc_centre is None
+
+
+def test_a_top_layer_disc_over_a_bottom_node_correctly_finds_nothing(app):
+    """The layer choice is a filter, not a hint: hovering the top-layer disc
+    over a bottom joint must select nothing rather than reaching down."""
+    _mode(app, 'addons')
+    app.disc_pick_mode.set(True)
+    app._on_pick_mode_toggle('disc')
+    app.disc_layer.set('top')
+    app.disc_radius.set(0.4)
+    bottom = app._layer_nodes('bottom')
+    zmin = min(app.nodes[i][2] for i in bottom)
+    tops = app._layer_nodes('top')
+    # a bottom node that has no top node directly above it
+    far = max(bottom, key=lambda i: min((app.nodes[i][0] - app.nodes[j][0]) ** 2
+                                        + (app.nodes[i][1] - app.nodes[j][1]) ** 2
+                                        for j in tops))
+    sx, sy = app._screen_positions()[far]
+    hits, _c = app._disc_under_cursor(sx, sy)
+    assert hits == []

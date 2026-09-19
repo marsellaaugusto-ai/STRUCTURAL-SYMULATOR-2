@@ -104,6 +104,9 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self.loads = []
         self.panels = []
         self.panel_checks = []
+        self._line_pick_first = None
+        self._disc_hits = []
+        self._disc_centre = None
         self.supports = []
         self.results = None
         self.member_checks = None

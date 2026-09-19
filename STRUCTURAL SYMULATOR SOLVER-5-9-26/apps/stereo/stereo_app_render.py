@@ -32,6 +32,7 @@ from apps.stereo.stereo_app_constants import (
     NODE_COLOR, NODE_SEL_COLOR, ADD_ROD_PENDING_COLOR,
     SUPPORT_COLOR, SUPPORT_DISABLED_COLOR, SUPPORT_BOX_HALF_PX,
     PANEL_UNCHECKED_COLOR, PANEL_EDGE_COLOR,
+    DISC_FILL, DISC_EDGE, LINE_PICK_COLOR,
     SUPPORT_BOX_FILL, NODE_RADIUS_PX, NODE_RADIUS_SEL_PX,
     MEMBER_PIN_COLOR, MEMBER_RIGID_COLOR, MEMBER_SEL_COLOR,
     TENSION_HIGH, COMPRESSION_HIGH, LOAD_COLOR, REACTION_COLOR, NEAR_ZERO_FRAC,
@@ -641,6 +642,7 @@ class StereoRenderMixin:
                 self._draw_shaded_faces(c, proj, to_screen, frac, by_util, by_force,
                                         max_abs_N, by_moment, moment_by_node, max_abs_moment)
             self._draw_shear_panels(c, proj, to_screen, frac)
+            self._draw_pick_overlay(c, proj, to_screen)
 
             self._place_module_card()
             self._place_view_cube()
@@ -697,6 +699,38 @@ class StereoRenderMixin:
         if self._shaded_cells is None:
             self._shaded_cells = sg.find_cells(self.nodes, self.members)
         return self._shaded_cells
+
+    DISC_STEPS = 48
+
+    def _draw_pick_overlay(self, c, proj, to_screen):
+        """The footprint disc, and the pending end of a line pick.
+
+        The disc is drawn as a real circle lying IN the layer's plane --
+        projected through the same camera as everything else -- so it reads
+        as a shadow cast on the roof rather than as a ring stuck to the
+        glass. A screen-space circle would keep its size as the model was
+        orbited and stop covering the joints it appeared to cover.
+        """
+        if self._disc_centre is not None and self.disc_pick_mode.get():
+            cx, cy, z, radius = self._disc_centre
+            pts = []
+            for k in range(self.DISC_STEPS):
+                a = 2.0 * math.pi * k / self.DISC_STEPS
+                px, py, _d = self._project(cx + radius * math.cos(a),
+                                           cy + radius * math.sin(a), z)
+                pts.extend(to_screen(px, py))
+            c.create_polygon(*pts, fill=DISC_FILL, outline=DISC_EDGE,
+                             width=2, stipple='gray25', tags='pick_disc')
+        for i in (self._disc_hits or []):
+            if i < len(proj):
+                sx, sy = to_screen(proj[i][0], proj[i][1])
+                c.create_oval(sx - 6, sy - 6, sx + 6, sy + 6, outline=DISC_EDGE,
+                              width=2, tags='pick_disc')
+        first = getattr(self, '_line_pick_first', None)
+        if first is not None and first < len(proj) and self.line_pick_mode.get():
+            sx, sy = to_screen(proj[first][0], proj[first][1])
+            c.create_oval(sx - 7, sy - 7, sx + 7, sy + 7, outline=LINE_PICK_COLOR,
+                          width=2, dash=(3, 2), tags='pick_line')
 
     def _draw_shear_panels(self, c, proj, to_screen, frac):
         """Every welded panel, always -- not behind the Fill toggle.

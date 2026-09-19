@@ -462,6 +462,7 @@ class StereoPanelsMixin(_ToolbarModes):
         # already wired by ZoomCanvas itself -- chained (add='+') rather
         # than replaced, purely to flag that the user has now taken control
         # of the view.
+        self.canvas.bind('<Motion>', self._on_canvas_hover)
         self.canvas.bind('<ButtonPress-1>', self._on_canvas_press)
         self.canvas.bind('<B1-Motion>', self._on_canvas_motion)
         self.canvas.bind('<ButtonRelease-1>', self._on_canvas_release)
@@ -744,7 +745,25 @@ class StereoPanelsMixin(_ToolbarModes):
         # it lives with the mesh rather than behind the Display button.
         tools = tk.Frame(parent, bg=BG)
         tools.pack(fill='x', padx=6, pady=(6, 0))
+        self.line_pick_mode = tk.BooleanVar(value=False)
+        self.disc_pick_mode = tk.BooleanVar(value=False)
+        self.disc_layer = tk.StringVar(value='top')
+        self.disc_radius = tk.DoubleVar(value=0.8)
+        self.disc_limit = tk.IntVar(value=4)
         self.add_rod_mode = tk.BooleanVar(value=False)
+        tk.Checkbutton(tools, text='Line select (click two nodes)',
+                       variable=self.line_pick_mode, bg=BG, font=('Helvetica', 9),
+                       anchor='w',
+                       command=lambda: self._on_pick_mode_toggle('line')).pack(anchor='w')
+        tk.Label(tools, text='Selects every node the straight run between them '
+                             'passes through -- a support line or a bracing row '
+                             'in two clicks.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', padx=(18, 0))
+        self.pick_note = tk.Label(tools, text='', bg=BG, fg='#2f6f4f',
+                                  font=('Helvetica', 8), justify='left',
+                                  wraplength=PANEL_TEXT_W, anchor='w')
+        self.pick_note.pack(anchor='w', padx=(18, 0))
         tk.Checkbutton(tools, text='Add rod (click two nodes)', variable=self.add_rod_mode,
                        bg=BG, font=('Helvetica', 9),
                        command=self._on_add_rod_mode_toggle).pack(anchor='w')
@@ -1360,8 +1379,32 @@ class StereoPanelsMixin(_ToolbarModes):
                            'pass its buckling check.',
                  bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
                  wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(0, 2))
+        tk.Checkbutton(col, text='Pick a footprint with the disc',
+                       variable=self.disc_pick_mode, bg=BG, font=('Helvetica', 9),
+                       anchor='w',
+                       command=lambda: self._on_pick_mode_toggle('disc')
+                      ).pack(fill='x', padx=6, pady=(2, 0))
+        tk.Label(col, text='A disc follows the cursor on the chosen layer and '
+                           'lights the joints under it. Click to take them.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6)
+        drow = tk.Frame(col, bg=BG)
+        drow.pack(fill='x', padx=6, pady=(1, 0))
+        tk.Label(drow, text='on:', bg=BG, width=4, anchor='w',
+                 font=('Helvetica', 8)).pack(side='left')
+        for label, val in (('top', 'top'), ('bottom', 'bottom')):
+            tk.Radiobutton(drow, text=label, value=val, variable=self.disc_layer,
+                           bg=BG, font=('Helvetica', 8),
+                           command=self._draw).pack(side='left')
+        tk.Label(drow, text='r\u00d7', bg=BG, font=('Helvetica', 8)
+                ).pack(side='left', padx=(5, 1))
+        tk.Entry(drow, textvariable=self.disc_radius, width=4,
+                 font=('Helvetica', 8)).pack(side='left')
+        tk.Label(drow, text='\u2264', bg=BG, font=('Helvetica', 8)).pack(side='left', padx=(4, 1))
+        tk.Entry(drow, textvariable=self.disc_limit, width=3,
+                 font=('Helvetica', 8)).pack(side='left')
         tk.Button(col, text='Add column at selected nodes', command=self._add_column
-                 ).pack(fill='x', padx=6, pady=(2, 2))
+                 ).pack(fill='x', padx=6, pady=(3, 2))
 
         self.col_array_x = tk.IntVar(value=2)
         self.col_array_y = tk.IntVar(value=2)

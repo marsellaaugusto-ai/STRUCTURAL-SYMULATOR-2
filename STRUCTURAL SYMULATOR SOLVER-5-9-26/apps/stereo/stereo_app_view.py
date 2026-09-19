@@ -12,6 +12,7 @@ Three responsibilities, all sharing the same projection:
 Drawing itself lives in stereo_app_render.py; this module never paints,
 it only decides where things are and what the user just clicked.
 """
+import tkinter as tk
 import math
 
 from apps.stereo import stereo_math as sm
@@ -146,6 +147,26 @@ class StereoViewMixin:
     def _on_canvas_release(self, event):
         self.canvas.focus_set()   # so a following Delete/Backspace reaches us
         additive = bool(event.state & 0x0001)   # Shift held: add to selection
+        if self.disc_pick_mode.get():
+            # Commit whatever the hover disc is currently covering. The
+            # highlight the user has been watching IS the selection, so
+            # there is nothing to re-compute here and no way for the two to
+            # disagree.
+            if self._disc_hits:
+                self.selected_nodes = set(self._disc_hits)
+                self.selected_member = None
+                self._sync_selection_fields()
+            self._lasso_press = None
+            self._lasso_dragging = False
+            self._lasso_cur = None
+            self._draw()
+            return
+        if self.line_pick_mode.get():
+            self._handle_line_pick_click(event.x, event.y)
+            self._lasso_press = None
+            self._lasso_dragging = False
+            self._lasso_cur = None
+            return
         if self.add_rod_mode.get():
             # A plain click-to-pick tool, deliberately bypassing the lasso/
             # select machinery below entirely (including the support-
@@ -169,6 +190,114 @@ class StereoViewMixin:
         self._lasso_press = None
         self._lasso_dragging = False
         self._lasso_cur = None
+        self._draw()
+
+    # ── line pick: every node a straight run passes through ─────────────────
+    LINE_PICK_TOL_FRAC = 0.35     # of the model's own module size
+
+    def _handle_line_pick_click(self, ex, ey):
+        """Two clicks, both on nodes: the first sets the start, the second
+        selects every node the straight run between them passes through.
+
+        Deliberately node-to-node rather than freehand. A support line, a
+        row of purlins or a bracing run is defined by the joints at its
+        ends; asking for a hand-drawn stroke would make an exact selection
+        depend on how steady the mouse was.
+        """
+        hit = self._nearest_node_to(ex, ey)
+        if hit is None:
+            self._set_pick_note('Click ON a node to start the line.')
+            self._draw()
+            return
+        if self._line_pick_first is None:
+            self._line_pick_first = hit
+            self._set_pick_note(f'Line from node {hit} -- now click the far end.')
+            self._draw()
+            return
+        if hit == self._line_pick_first:
+            self._set_pick_note('Pick a different node for the far end.')
+            self._draw()
+            return
+        tol = self.LINE_PICK_TOL_FRAC * self._typical_spacing()
+        found = self._nodes_near_segment(self._line_pick_first, hit, tol)
+        self.selected_nodes = set(found)
+        self.selected_member = None
+        self._line_pick_first = None
+        self._sync_selection_fields()
+        self._set_pick_note(f'{len(found)} nodes on that line.')
+        self._draw()
+
+    def _nearest_node_to(self, ex, ey, max_px=14):
+        best, bestd = None, None
+        for i, (sx, sy) in enumerate(self._screen_positions()):
+            d = (sx - ex) ** 2 + (sy - ey) ** 2
+            if bestd is None or d < bestd:
+                best, bestd = i, d
+        if best is None or bestd > max_px * max_px:
+            return None
+        return best
+
+    # ── disc pick: a footprint drawn under the cursor ───────────────────────
+    def _on_canvas_hover(self, event):
+        """Follow the cursor with the footprint disc while it is armed.
+
+        Bound to plain <Motion>, so it costs nothing when the tool is off --
+        the first line returns before any projection work is done.
+        """
+        if not self.disc_pick_mode.get():
+            return
+        hits, centre = self._disc_under_cursor(event.x, event.y)
+        if hits == self._disc_hits and centre == self._disc_centre:
+            return                      # nothing moved: do not redraw
+        self._disc_hits, self._disc_centre = hits, centre
+        self._draw()
+
+    def _disc_under_cursor(self, ex, ey):
+        """(nodes covered, (cx, cy, z) of the disc) for the cursor position.
+
+        The disc lies ON the chosen layer, not on the screen: its centre is
+        the cursor unprojected onto that layer's own plane, so it stays the
+        same size in METRES as the model is orbited and zoomed, and it
+        covers the joints it looks like it covers.
+        """
+        layer = self._layer_nodes(self.disc_layer.get())
+        if not layer:
+            return [], None
+        z = (max if self.disc_layer.get() == 'top' else min)(
+            self.nodes[i][2] for i in layer)
+        world = self._unproject_to_plane(ex, ey, z)
+        if world is None:
+            return [], None
+        cx, cy = world
+        try:
+            factor = float(self.disc_radius.get())
+        except (tk.TclError, ValueError):
+            factor = 0.8
+        radius = max(1e-6, factor) * self._typical_spacing(layer)
+        try:
+            cap = max(1, int(self.disc_limit.get()))
+        except (tk.TclError, ValueError):
+            cap = 4
+        return self._nodes_in_disc(cx, cy, radius, layer, limit=cap), (cx, cy, z, radius)
+
+    def _set_pick_note(self, text):
+        note = getattr(self, 'pick_note', None)
+        if note is not None:
+            note.config(text=text)
+
+    def _on_pick_mode_toggle(self, which):
+        """Only one picking tool at a time, and a half-finished line never
+        survives its tool being switched off -- a click made minutes later,
+        with nothing on screen to explain it, would otherwise complete a
+        selection nobody asked for."""
+        if which != 'line':
+            self.line_pick_mode.set(False)
+        if which != 'disc':
+            self.disc_pick_mode.set(False)
+        if which != 'rod':
+            self.add_rod_mode.set(False)
+        self._line_pick_first = None
+        self._disc_hits, self._disc_centre = [], None
         self._draw()
 
     def _project(self, x, y, z):
@@ -238,6 +367,124 @@ class StereoViewMixin:
             wy = (py - cy) * self.PX_PER_M
             out.append(self.zc.w2s(wx, wy))
         return out
+
+    def _unproject_to_plane(self, sx, sy, z):
+        """The world (x, y) that screen point (sx, sy) lands on, on the
+        horizontal plane at height `z`.
+
+        _project is a rotation by azimuth, then a tilt by elevation, then an
+        orthographic drop -- all invertible when the target plane is not
+        edge-on. Screen y carries -(yr*sin(el) + z*cos(el)), so once z is
+        fixed, yr follows, and undoing the azimuth gives (x, y).
+
+        Returns None when sin(elevation) is ~0, which is the honest answer:
+        looking along the horizon, a horizontal plane projects to a LINE and
+        one screen point is every point on a ray. Nothing should guess a
+        position there.
+        """
+        el = math.radians(self.elevation)
+        if abs(math.sin(el)) < 1e-6:
+            return None
+        proj = [self._project(x, y, zz) for x, y, zz in self.nodes]
+        if not proj:
+            return None
+        xs = [p[0] for p in proj]
+        ys = [p[1] for p in proj]
+        cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+        wx, wy = self.zc.s2w(sx, sy)
+        px = wx / self.PX_PER_M + cx
+        py = wy / self.PX_PER_M + cy
+        xr = px
+        yr = (-py - z * math.cos(el)) / math.sin(el)
+        az = math.radians(self.azimuth)
+        x = xr * math.cos(az) + yr * math.sin(az)
+        y = -xr * math.sin(az) + yr * math.cos(az)
+        return x, y
+
+    def _layer_nodes(self, which):
+        """Node indices on the top or bottom chord layer.
+
+        "Layer" is by ELEVATION, with a tolerance of a twentieth of the
+        model's own height: a curved roof's top layer is not one flat z, and
+        an exact comparison would find only the handful of nodes at the
+        extreme.
+        """
+        if not self.nodes:
+            return []
+        zs = [p[2] for p in self.nodes]
+        lo, hi = min(zs), max(zs)
+        tol = max(1e-6, (hi - lo) * 0.05)
+        if which == 'top':
+            return [i for i, p in enumerate(self.nodes) if p[2] >= hi - tol]
+        return [i for i, p in enumerate(self.nodes) if p[2] <= lo + tol]
+
+    def _typical_spacing(self, among=None):
+        """The median distance from a node to its nearest neighbour -- the
+        model's own module size, whatever family built it. Every radius and
+        tolerance in the picking tools is a multiple of this, so one setting
+        behaves the same on a 1 m module and a 5 m one."""
+        ids = list(among if among is not None else range(len(self.nodes)))
+        if len(ids) < 2:
+            return 1.0
+        gaps = []
+        for i in ids[:400]:
+            xi, yi, zi = self.nodes[i]
+            best = None
+            for j in ids:
+                if j == i:
+                    continue
+                xj, yj, zj = self.nodes[j]
+                d = (xj - xi) ** 2 + (yj - yi) ** 2 + (zj - zi) ** 2
+                if best is None or d < best:
+                    best = d
+            if best:
+                gaps.append(math.sqrt(best))
+        gaps.sort()
+        return gaps[len(gaps) // 2] if gaps else 1.0
+
+    def _nodes_near_segment(self, a, b, tol):
+        """Every node within `tol` of the straight segment from node `a` to
+        node `b`, in WORLD space.
+
+        World space, not screen space, on purpose: a line drawn across a
+        perspective-less but tilted view passes near nodes on other layers
+        that merely look close. Measuring in the model's own coordinates
+        selects the row you meant rather than everything behind it.
+        """
+        if not (0 <= a < len(self.nodes) and 0 <= b < len(self.nodes)):
+            return []
+        ax, ay, az_ = self.nodes[a]
+        bx, by, bz = self.nodes[b]
+        dx, dy, dz = bx - ax, by - ay, bz - az_
+        L2 = dx * dx + dy * dy + dz * dz
+        if L2 < 1e-12:
+            return [a]
+        out = []
+        for i, (x, y, z) in enumerate(self.nodes):
+            t = ((x - ax) * dx + (y - ay) * dy + (z - az_) * dz) / L2
+            t = max(0.0, min(1.0, t))
+            px, py, pz = ax + dx * t, ay + dy * t, az_ + dz * t
+            if (x - px) ** 2 + (y - py) ** 2 + (z - pz) ** 2 <= tol * tol:
+                out.append(i)
+        return out
+
+    def _nodes_in_disc(self, cx, cy, radius, layer_ids, limit=4):
+        """The nodes of `layer_ids` whose PLAN position falls inside a disc,
+        nearest first, capped at `limit`.
+
+        Plan distance, not 3D: the disc is a footprint drawn on the ground
+        under the roof, so a node's height must not decide whether it is
+        inside it. The cap is what makes this a column-footprint tool --
+        a latticed column takes 3 or 4 chords and no more.
+        """
+        hits = []
+        for i in layer_ids:
+            x, y, _z = self.nodes[i]
+            d2 = (x - cx) ** 2 + (y - cy) ** 2
+            if d2 <= radius * radius:
+                hits.append((d2, i))
+        hits.sort()
+        return [i for _d, i in hits[:max(1, int(limit))]]
 
     def _nodes_in_screen_box(self, sx0, sy0, sx1, sy1):
         xlo, xhi = sorted((sx0, sx1))

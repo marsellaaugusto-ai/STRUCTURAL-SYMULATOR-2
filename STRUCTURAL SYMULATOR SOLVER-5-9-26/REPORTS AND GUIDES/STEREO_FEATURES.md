@@ -1,8 +1,9 @@
 # Stereo tab — complete feature list
 
 The space-truss (3D space-frame) calculator. Everything below is in the app
-today and covered by tests. Branch `claude/stereo-structure-calculator-lqgosu`,
-2110 tests passing.
+today and covered by tests. Branch `claude/stereo-ui-rebuild`, 2150+ tests
+passing. Last UI rebuild 2026-09-19; see §8 for the window, and
+`stereo_ui_modes/` for a screenshot of each of the eight modes.
 
 Names in `code font` are the identifiers in the source, so anything here can be
 found by grepping.
@@ -104,7 +105,65 @@ Build a truss on a surface you write yourself.
 
 **Expressions** are compiled by `expr_math.py`, an AST whitelist — no `eval`.
 Available: `+ - * / ^`, `sqrt abs exp log log10 log2 sin cos tan asin acos atan
-sinh cosh tanh floor ceil min max hypot atan2 pow`, and `pi`, `e`.
+sinh cosh tanh floor ceil min max hypot atan2 pow`, and `pi`, `e`. Also
+comparisons and `and` / `or` / `not`, which is what makes a plan-shape *region*
+expressible (§3b); chained comparisons (`0 < x < 6`) read the way they are
+written, and the boolean operators short-circuit, so a rule can guard its own
+domain (`x > 0 and sqrt(x) > 1`).
+
+---
+
+## 3b. Shape mode — surfaces, lattice, plan
+
+The same engine as the wizard, edited in place in a mode instead of a modal
+dialog. `_build_shape_panel`, `_build_shape_mesh`, `custom_surface_lattice`.
+
+**Four lattice families**, which is the question that actually *names* a space
+frame: not the shape of the surface, nor the pattern drawn on it, but how the
+two layers register against each other.
+
+| Lattice | What it is |
+|---------|------------|
+| Square on square, offset | Bottom layer at the cell centres; webs to the four corners above |
+| Square on diagonal | As above plus diagonal chords in the bottom layer |
+| Diagonal on diagonal | Diagonal chords in both layers |
+| Single layer (2-way grillage) | One layer only — and **flat, with pinned joints, it is a mechanism**, which the panel says before you build it |
+
+**Two guards before anything is built.**
+- *Crossing.* Two surfaces that meet or cross anywhere inside the domain are
+  refused: where they meet the web has zero length, and past it the truss is
+  inside out. The test is local and coordinate-free — sample the separation
+  vector and look for neighbouring samples pointing opposite ways.
+- *The corner trap.* The domain is a rectangle and most interesting surfaces
+  are radial, so **the corners reach 41% further from the centre than the edge
+  midpoints do**. A dish sized to clear its bottom layer at the edge midpoints
+  can still be 2 m inside out at all four corners. This shipped in a worked
+  example once; the crossing check is what catches it now.
+
+**Polar domains** get a pole, and a **summit finder** that searches twice the
+current radius — a summit sitting on the rim is exactly the case that says the
+pole is misplaced, and a window stopping at the rim cannot see it, because an
+edge point is never a summit of the surface, only of the window. More than one
+summit means no single pole can serve them, and it says so.
+
+**Plan shape.** Two ranges can only describe a rectangle. A rule over the plan
+cuts that rectangle into a real plan — `x^2 + y^2 < 36`, `not (x > 6 and y >
+6)`, `hypot(x, y) > 3` — with presets written against the domain currently in
+the panel rather than in raw metres. `apply_domain_mask`:
+
+- a node survives if its own position passes the rule, **or** if a web ties it
+  to one that does. In a double-layer lattice the bottom nodes sit at the cell
+  centres, so this is "judge the module at its centre, then keep the corners it
+  needs". The cut is therefore **module-granular**: it overshoots the line by
+  at most one module, and that overshoot is the framing around the opening;
+- a member survives only if both its ends do, so the chords bounding the hole
+  are kept and the edge is framed rather than ragged;
+- a node left with nothing attached is dropped, not left floating;
+- **supports are re-derived**, not remapped: a cut makes a new free edge, and
+  its nodes are exactly the survivors that lost a neighbour to the cut;
+- tributary areas are remapped but deliberately **not** recomputed, so a node
+  on the cut edge keeps the area it had when it was interior. That
+  over-estimates its load, which is the safe direction to be wrong in.
 
 **Maths keypad** modelled on GeoGebra's, in three tabs (`123`, `f(x)`,
 `f(x,y)`). Keys *show* real notation — √, π, x², |x|, ×, ÷, sin⁻¹, log₁₀, ⌊x⌋ —
@@ -171,6 +230,19 @@ cluster is 2 DOF short of rigid — found by eigenanalysis).
 Every foot returned is pinned automatically, because a latticed or splay-footed
 column is rigid as a body and one pin leaves three rotations free.
 
+**A column also takes over the supports at the joints it carries**, and says
+so in the panel. This is not a nicety: a pin left at the column head is a rigid
+path to ground sitting in parallel with the column, and it wins every time.
+Measured on a flat grid — a plain post under a pinned corner carried exactly
+**0.00 kN** with the old pin still in place, and **23.17 kN** once it was gone.
+The column was in the picture, in the member list and in the E3 check, and
+carrying nothing.
+
+Columns are ordinary bars, so their axial flexibility is in the solve and their
+compression goes through the same CIRSOC **Chapter E3** flexural-buckling check
+as every other member (`stereo_checks.check_member`). There is no separate
+"model the column as rigid" mode, and none is wanted.
+
 **Five beam profiles**, attached to two parallel rows of existing nodes:
 
 | Profile | Cross-section |
@@ -212,16 +284,12 @@ colour), or Mx / My / Mz individually.
 **Force scale** — peak, or a 95th-percentile anchor with a hairline clip mark
 on every rod past the end of the ramp, and a legend row counting them.
 
-**Two fill modes over the wireframe.**
-- **Shaded cells** — the mesh's own closed panels, depth-sorted (Tk has no
-  z-buffer), coloured by the panel's governing member.
-- **Voronoi** — a *surface* (restricted) Voronoi tessellation
-  (`stereo_voronoi_surface.py`). The domain is the fabric itself, not a hull;
-  the metric is geodesic along it. Three views: **Surface**, **Cells** (with
-  boundary outlines where ownership changes), and **Section** (a band cut
-  through the fabric on a chosen axis at a chosen position and thickness).
-  Sites can be rod midpoints or nodes. Lone struts (column shafts, which belong
-  to no closed panel) get crossed ribbons so they do not vanish edge-on.
+**Fill over the wireframe.** **Shaded cells** — the mesh's own closed panels,
+depth-sorted (Tk has no z-buffer), coloured by the panel's governing member.
+
+> A surface-Voronoi fill also existed, and was **deleted** in the 2026-09-19
+> UI rebuild along with its 286 tests. It is not coming back; do not restore
+> it from an older zip expecting the rest of the tab to still fit around it.
 
 **Fill density** — Light / Medium / Heavy / Solid (stipple patterns; Tk has no
 alpha channel).
@@ -244,8 +312,12 @@ through the load without re-solving.
 
 ## 6. Module Editor
 
-A second panel, right of the canvas (`stereo_app_module_editor.py`,
-`stereo_geometry_cells.py`).
+**Mode 7** (`stereo_app_module_editor.py`, `stereo_geometry_cells.py`). It was
+a 300 px column open whether or not anyone was editing a module; as a mode it
+is off screen while you place supports, so the module also appears as a small
+**card pinned to the canvas's bottom-right corner**, always showing the base
+module as generated whatever the editor itself is currently displaying. The
+card is a reference, not a second editor.
 
 - **Cell detection** — finds the mesh's closed triangles and quads.
 - **Role classification** — groups congruent cells by signature; role 0 is the
@@ -283,11 +355,77 @@ A second panel, right of the canvas (`stereo_app_module_editor.py`,
 
 ---
 
-## 8. Camera and canvas
+## 8. The window: eight modes, one canvas
 
-Left-drag lassoes, right-drag orbits, wheel zooms, middle-drag pans. Azimuth
-and elevation are explicit; Reset view reframes the model. The Module Editor's
-3D view has a completely separate camera, so orbiting one never moves the other.
+Rebuilt 2026-09-19. The old layout spent 196 px on five rows of toolbar and
+kept a 400 px control column and a 300 px Module Editor open at all times,
+whether or not you were using either; the canvas got about 60% of the width.
+Now it gets about 79%.
+
+**The mode rail** (left, 76 px) holds eight modes. Only one mode's panel is on
+screen at a time — the rest are *forgotten* by the geometry manager rather
+than hidden, so nothing off-screen keeps claiming space. Each mode answers one
+question:
+
+| # | Mode | The question it answers |
+|---|------|--------------------------|
+| 1 | **Build** | Which of the 14 parametric families, at what dimensions — or which worked example |
+| 2 | **Shape** | What surfaces, what lattice, over what domain and plan shape |
+| 3 | **Support** | Where the structure stands, and on what boundary conditions |
+| 4 | **Load** | What it carries: area load, self-weight, point loads and moments |
+| 5 | **Section** | What it is made of: chord and web sections, material, pinned or rigid |
+| 6 | **Add-ons** | Columns and reinforcement beams |
+| 7 | **Module** | The repeating cell, and edits applied to every congruent copy |
+| 8 | **Results** | Reactions, member table, the click-to-inspect readout |
+
+**Alt+1 … Alt+8** jump straight to a mode, in that order; the rail hint names
+the shortcut. Alt rather than a bare digit because most of the work here is
+typing numbers into fields — the shortcut fires from inside a focused entry
+without typing into it.
+
+**The toolbar** (46 px) keeps only what is not a mode: Generate, ▶ Analyze,
+undo/redo, the Display popover, Export, and the Load % slider.
+
+**The status bar** (30 px) always reads node and rod counts, governing
+utilisation, peak deflection and ΣRz, in the active unit convention.
+
+**Four canvas cards**, one per corner, none of which costs the model any
+layout width:
+- **top-left** — the colour legend and its ramp, over its own ground so the
+  numbers stay legible against the structure behind them;
+- **top-right** — the **view cube**: Iso / Top / Front / Right / Back / Left.
+  Orbiting by hand unlights the preset, because a button still pressed in
+  after the camera moved would be a lie about where you are looking from;
+- **bottom-left** — the **selection card**, the click-to-inspect readout for
+  whatever node or rod you last clicked. It is on the canvas rather than in a
+  panel because it used to live in Results, which meant inspecting a rod while
+  placing supports wrote the answer onto a panel that was not on screen;
+- **bottom-right** — the **base module card**, the grid's reference cell,
+  always showing the module as generated whatever the Module Editor is
+  currently displaying.
+
+**Camera.** Left-drag lassoes, right-drag orbits, wheel zooms, middle-drag
+pans. Reset view re-frames the model and **fits the zoom to it**: PX_PER_M is
+a fixed 20 px/m, so without a fit the size a model appeared at was decided
+purely by how many metres across it happened to be. The Module Editor's 3D
+view has a completely separate camera, so orbiting one never moves the other.
+
+**Focus.** Every entry in every panel carries a visible focus ring. Tk's
+default focus highlight is the same colour as the background, which across
+eight panels of numeric fields meant there was no way to tell which one a
+keystroke was about to land in.
+
+### One screenshot per mode
+
+All eight, at 1700×960, of the same solved model — a square-on-diagonal
+lattice on a paraboloid, cut to a round plan:
+
+| | | | |
+|---|---|---|---|
+| ![Build](stereo_ui_modes/1_build.png) | ![Shape](stereo_ui_modes/2_shape.png) | ![Support](stereo_ui_modes/3_support.png) | ![Load](stereo_ui_modes/4_load.png) |
+| **1 Build** | **2 Shape** | **3 Support** | **4 Load** |
+| ![Section](stereo_ui_modes/5_section.png) | ![Add-ons](stereo_ui_modes/6_addons.png) | ![Module](stereo_ui_modes/7_module.png) | ![Results](stereo_ui_modes/8_results.png) |
+| **5 Section** | **6 Add-ons** | **7 Module** | **8 Results** |
 
 ---
 

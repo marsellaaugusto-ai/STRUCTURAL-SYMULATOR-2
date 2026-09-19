@@ -642,6 +642,7 @@ class StereoRenderMixin:
 
             self._place_module_card()
             self._place_view_cube()
+            self._place_selection_card()
 
             if self.show_node_labels.get():
                 labels = []

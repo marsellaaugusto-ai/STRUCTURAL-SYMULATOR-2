@@ -1124,7 +1124,7 @@ def test_clicking_a_rod_shows_its_force_and_utilization(app):
     app._select_node_at(mx, my)
     assert app.selected_member == 0
     assert app.selected_nodes == set()
-    text = app.sel_label.cget('text')
+    text = app.sel_var.get()
     assert 'Member 0' in text
     assert 'N =' in text
     assert 'utilization' in text
@@ -1228,7 +1228,7 @@ def test_member_info_before_analysis_says_so(app):
     app.selected_member = 0
     app.selected_nodes = set()
     app._sync_selection_fields()
-    assert 'Run' in app.sel_label.cget('text')
+    assert 'Run' in app.sel_var.get()
 
 
 def test_load_fraction_scales_deformation_and_force_linearly(app):
@@ -4866,3 +4866,113 @@ def test_the_rail_hint_advertises_the_shortcut(app):
     app._rail_buttons['support'][0].event_generate('<Enter>', when='now')
     app.root.update()
     assert 'Alt+3' in app.hint_var.get()
+
+
+# ── the selection card ───────────────────────────────────────────────────────
+
+def test_clicking_a_rod_reports_it_in_every_mode_not_just_results(app):
+    """Regression: the click-to-inspect readout lived in the Results panel,
+    so inspecting a rod while placing supports wrote the answer onto a
+    panel that was not on screen -- while the canvas legend was inviting
+    you to click a rod to inspect it."""
+    app._analyze()
+    _mode(app, 'support')
+    app.selected_nodes = set()
+    app.selected_member = 3
+    app._show_member_info(3)
+    app._draw()
+    assert 'Member 3' in app.sel_var.get()
+    assert app.canvas.find_withtag('selection_card'), \
+        'the readout is invisible outside Results'
+
+
+def test_the_selection_card_stays_out_of_the_way_when_nothing_is_selected(app):
+    """Empty, it would permanently repeat the legend's own invitation to
+    click something, over the model."""
+    app.selected_nodes = set()
+    app.selected_member = None
+    app._draw()
+    assert not app.canvas.find_withtag('selection_card')
+
+
+def test_the_selection_card_sits_in_the_bottom_left_corner(app):
+    """The other three corners are taken: legend top-left, view cube
+    top-right, base module bottom-right."""
+    app.selected_nodes = {3}
+    app._draw()
+    app.root.update_idletasks()
+    items = app.canvas.find_withtag('selection_card')
+    assert len(items) == 1
+    x, y = app.canvas.coords(items[0])
+    assert x < 40
+    assert y > app.canvas.winfo_height() / 2
+
+
+def test_redrawing_does_not_pile_up_selection_cards(app):
+    app.selected_nodes = {3}
+    for _ in range(4):
+        app._draw()
+    assert len(app.canvas.find_withtag('selection_card')) == 1
+
+
+def test_the_panel_and_the_card_cannot_disagree_about_the_selection(app):
+    """One StringVar drives both, which is the point -- two readouts of the
+    same thing that can drift apart are worse than one."""
+    _mode(app, 'results')
+    app.selected_nodes = {7}
+    app._sync_selection_fields()
+    app.root.update_idletasks()
+    assert 'Node 7' in app.sel_var.get()
+    # Both readouts are driven by that ONE variable, which is the property
+    # that makes them unable to drift apart. A label bound to a textvariable
+    # reports its -text as empty, so the binding is what there is to check.
+    var = str(app.sel_var)
+    assert str(app.sel_label.cget('textvariable')) == var
+    bound = [w for w in app.selection_card.winfo_children()
+             if str(w.cget('textvariable')) == var]
+    assert len(bound) == 1, [str(w.cget('textvariable'))
+                             for w in app.selection_card.winfo_children()]
+
+
+# ── focus states ─────────────────────────────────────────────────────────────
+
+def _plain_entries(widget, out=None):
+    """tk.Entry only. ttk.Entry SUBCLASSES it but is themed and has no
+    highlight options, so isinstance alone reaches the entry inside every
+    readonly combobox."""
+    out = [] if out is None else out
+    for child in widget.winfo_children():
+        if type(child) is tk.Entry:
+            out.append(child)
+        _plain_entries(child, out)
+    return out
+
+
+def test_every_panel_entry_shows_where_the_keystrokes_will_land(app):
+    """Tk's default focus highlight is the same colour as the background,
+    which is to say none. Across eight panels of numeric fields there was
+    no way to tell which one had focus."""
+    from apps.stereo.stereo_app_shell import RAIL_STRIPE
+    seen = 0
+    for mode in app._mode_frames:
+        for entry in _plain_entries(app._mode_frames[mode]):
+            seen += 1
+            assert int(entry.cget('highlightthickness')) >= 1
+            assert str(entry.cget('highlightcolor')) == RAIL_STRIPE
+    assert seen > 20, f'only {seen} entries found -- the walk missed the panels'
+
+
+def test_the_focus_ring_walk_does_not_touch_themed_widgets(app):
+    """A ttk.Entry has no highlightthickness at all; configuring one raises
+    TclError, which would have taken the whole tab down at build time."""
+    from tkinter import ttk
+    app._apply_focus_ring(app.panel_host)     # must not raise
+    combos = []
+
+    def walk(w):
+        for c in w.winfo_children():
+            if isinstance(c, ttk.Combobox):
+                combos.append(c)
+            walk(c)
+    walk(app.panel_host)
+    assert combos, 'no comboboxes found -- this test would prove nothing'

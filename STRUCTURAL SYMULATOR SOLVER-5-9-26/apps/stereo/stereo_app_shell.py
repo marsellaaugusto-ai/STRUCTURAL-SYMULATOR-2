@@ -28,7 +28,7 @@ because that is where you look when you are reading colour off the model.
 import tkinter as tk
 from tkinter import ttk
 
-from apps.stereo.stereo_app_constants import BG
+from apps.stereo.stereo_app_constants import BG, LEGEND_CARD_BG, LEGEND_CARD_EDGE
 
 # ── the rail ────────────────────────────────────────────────────────────────
 # (key, glyph, label, tooltip). The glyphs are plain Unicode, not an icon
@@ -107,8 +107,10 @@ class StereoShellMixin:
         self._build_context_panel(main)
         self._build_canvas(main)
         self._build_view_cube()
+        self._build_selection_card()
 
         self._populate_modes()
+        self._apply_focus_ring(self.panel_host)
         self._set_mode(DEFAULT_MODE)
         self._on_generator_change()
         self._refresh_status()
@@ -250,6 +252,25 @@ class StereoShellMixin:
         self._set_mode(key)
         return 'break'
 
+    def _apply_focus_ring(self, widget):
+        """Give every entry in the panels a visible focus ring.
+
+        Tk's default is a focus highlight the same colour as the
+        background, which is to say none: with eight panels of numeric
+        fields there was no way to tell which one a keystroke was about to
+        land in. Applied by walking the built panels once rather than at
+        each of the seventeen Entry call sites, so a field added later gets
+        it without anyone having to remember.
+        """
+        for child in widget.winfo_children():
+            # ttk.Entry SUBCLASSES tk.Entry but is themed and has no
+            # highlight options at all, so isinstance alone would reach the
+            # entry inside every readonly combobox and raise.
+            if isinstance(child, tk.Entry) and not isinstance(child, ttk.Entry):
+                child.configure(highlightthickness=1, highlightbackground=BG,
+                                highlightcolor=RAIL_STRIPE)
+            self._apply_focus_ring(child)
+
     def _set_mode(self, key):
         """Show one mode's panel and mark its rail item. Every other panel is
         forgotten rather than hidden, so nothing off-screen keeps claiming
@@ -388,6 +409,48 @@ class StereoShellMixin:
             self._view_buttons[name] = b
         self._view_window = None
         self.current_view = tk.StringVar(value='')
+
+    # ── selection card ──────────────────────────────────────────────────────
+    SELECTION_CARD_W = 268
+
+    def _build_selection_card(self):
+        """The click-to-inspect readout, on the canvas rather than in a panel.
+
+        It lived in the Results panel, which meant that clicking a rod while
+        placing supports wrote the answer onto a panel that was not on
+        screen -- and the canvas legend was meanwhile inviting you to click
+        a rod to inspect it. A readout about the thing under the cursor
+        belongs next to the cursor, in every mode.
+        """
+        self.selection_card = tk.Frame(self.canvas, bg=LEGEND_CARD_BG,
+                                       highlightbackground=LEGEND_CARD_EDGE,
+                                       highlightthickness=1)
+        tk.Label(self.selection_card, text='SELECTION', bg=LEGEND_CARD_BG, fg=HINT_FG,
+                 font=('Helvetica', 7, 'bold')).pack(anchor='w', padx=8, pady=(4, 0))
+        tk.Label(self.selection_card, textvariable=self.sel_var, bg=LEGEND_CARD_BG,
+                 fg='#1d2328', font=('Helvetica', 8), justify='left',
+                 wraplength=self.SELECTION_CARD_W - 20
+                 ).pack(anchor='w', padx=8, pady=(0, 6))
+
+    def _place_selection_card(self):
+        """Bottom-left of the canvas, and only while something is selected.
+
+        Empty, it would just repeat the legend's own invitation to click
+        something, permanently, over the model.
+        """
+        c = self.canvas
+        want = (bool(self.show_selection_card.get())
+                and (self.selected_nodes or self.selected_member is not None))
+        if not want:
+            c.delete('selection_card')
+            return
+        y = c.winfo_height() - self.selection_card.winfo_reqheight() - 16
+        existing = c.find_withtag('selection_card')
+        if existing:
+            c.coords(existing[0], 16, y)
+        else:
+            c.create_window(16, y, window=self.selection_card, anchor='nw',
+                            tags='selection_card')
 
     def _place_view_cube(self):
         """Keep the cube in its corner as the window resizes. Called from

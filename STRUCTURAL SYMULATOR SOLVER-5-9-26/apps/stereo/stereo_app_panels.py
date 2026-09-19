@@ -87,6 +87,12 @@ class StereoPanelsMixin(_ToolbarModes):
         before anyone opens Display, and closing the popover must not
         throw a setting away.
         """
+        # What the click-to-inspect readout currently says. It drives BOTH
+        # the Results panel's label and the canvas card, so the two cannot
+        # disagree about what is selected.
+        self.sel_var = tk.StringVar(
+            value='(click, or drag a box, to select node(s))')
+        self.show_selection_card = tk.BooleanVar(value=True)
         self.colour_by_force = tk.BooleanVar(value=True)
         self.colour_by_util = tk.BooleanVar(value=False)
         self.colour_by_moment = tk.BooleanVar(value=False)
@@ -1026,7 +1032,7 @@ class StereoPanelsMixin(_ToolbarModes):
     def _build_selection_panel(self, parent):
         box = tk.LabelFrame(parent, text='Selected node', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=4)
-        self.sel_label = tk.Label(box, text='(click, or drag a box, to select node(s))',
+        self.sel_label = tk.Label(box, textvariable=self.sel_var,
                                   bg=BG, fg='#666', font=('Helvetica', 9),
                                   wraplength=PANEL_W - 24, justify='left')
         self.sel_label.pack(anchor='w', padx=6, pady=4)

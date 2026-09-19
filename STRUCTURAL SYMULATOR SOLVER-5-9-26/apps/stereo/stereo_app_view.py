@@ -257,15 +257,15 @@ class StereoViewMixin:
             if self.selected_member is not None:
                 self._show_member_info(self.selected_member)
             elif len(self.selected_nodes) > 1:
-                self.sel_label.config(text=f'{len(self.selected_nodes)} nodes selected.')
+                self.sel_var.set(f'{len(self.selected_nodes)} nodes selected.')
             else:
-                self.sel_label.config(
-                    text='(click, or drag a box, to select node(s); click a rod to inspect it)')
+                self.sel_var.set(
+                    '(click, or drag a box, to select node(s); click a rod to inspect it)')
             return
         self.sup_node_var.set(best)
         self.ld_node_var.set(best)
         x, y, z = self.nodes[best]
-        self.sel_label.config(text=f'Node {best}: ({x:.3f}, {y:.3f}, {z:.3f}) m')
+        self.sel_var.set(f'Node {best}: ({x:.3f}, {y:.3f}, {z:.3f}) m')
         existing = next((s for s in self.supports if s['node'] == best), None)
         if existing is not None:
             r = sm.support_restraints(existing)
@@ -300,7 +300,7 @@ class StereoViewMixin:
                     lines.append(chk['note'])
         else:
             lines.append('Run ▶ Analyze for force/utilization.')
-        self.sel_label.config(text='\n'.join(lines))
+        self.sel_var.set('\n'.join(lines))
 
     def _on_add_rod_mode_toggle(self):
         # Any pending first-picked node from a previous session with the

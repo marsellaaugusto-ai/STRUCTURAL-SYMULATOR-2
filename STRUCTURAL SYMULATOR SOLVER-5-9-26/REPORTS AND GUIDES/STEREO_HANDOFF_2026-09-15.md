@@ -3,10 +3,16 @@
 Written for whoever (or whatever) picks this up next. It assumes no memory of
 the sessions that built it. Everything here is checkable against the code.
 
-- Branch: `claude/stereo-structure-calculator-lqgosu`
-- Head at time of writing: `9103b72`
-- Tests: **2110 passing**, 0 skipped. UI exercise: 0 problems.
+- Branch: `claude/stereo-ui-rebuild`
+- Tests: **2150+ passing**, 0 skipped.
 - Repo root inside the zip: `STRUCTURAL SYMULATOR SOLVER-5-9-26/`
+
+> **Updated 2026-09-19 for the UI rebuild.** The window was rebuilt around
+> eight modes and the Voronoi feature was deleted. Section 1b below is the
+> new layout; `STEREO_FEATURES.md` §8 describes the window itself, with a
+> screenshot of every mode in `stereo_ui_modes/`. Anything in this document
+> that talks about a toolbar row or a permanently-open Module Editor column
+> describes the *old* tab and has been corrected where it appears.
 
 ---
 
@@ -22,7 +28,7 @@ Tk needs a display, so every test and screenshot runs under Xvfb:
 
 ```bash
 cd "STRUCTURAL SYMULATOR SOLVER-5-9-26"
-xvfb-run -a /usr/bin/python3.12 -m pytest tests/ -q          # ~4.5 min, 2110 tests
+xvfb-run -a /usr/bin/python3.12 -m pytest tests/ -q          # ~5 min, 2150+ tests
 xvfb-run -a /usr/bin/python3.12 main.py                      # the app itself
 ```
 
@@ -58,7 +64,6 @@ The Stereo tab is a space-truss (3D pin/rigid frame) calculator. It lives in
 | `stereo_geometry_custom_surface.py` | The Custom Surface Wizard's engine: typed expressions → surface callables → mesh. **Read this one first if you touch surfaces.** |
 | `stereo_geometry_addons.py` | Columns (6 styles) and reinforcement beams (5 profiles × 2 depth laws) |
 | `stereo_geometry_cells.py` | Module Editor maths: `find_cells`, `classify_cell_roles`, local frames, role-wide edits, `base_module` |
-| `stereo_voronoi_surface.py` | Surface (restricted) Voronoi tessellation for the filled views |
 | `stereo_checks.py` | CIRSOC member checks (utilisation, slenderness) |
 | `stereo_reports.py` | Excel export/import |
 | `expr_math.py` | AST-whitelist expression compiler. Nothing else may `eval`. |
@@ -79,14 +84,49 @@ StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
 | `stereo_app_panels.py` | Builds every left-hand control panel. If a widget exists, it was made here. |
 | `stereo_app_model.py` | Commands that change the model: generate, load example, supports, loads, `_all_loads`, `_apply_sections` |
 | `stereo_app_view.py` | Camera, selection, lasso, click-to-inspect, `_load_frac` |
-| `stereo_app_render.py` | All canvas drawing: wireframe, fills, Voronoi, legend, axes, overlays |
+| `stereo_app_render.py` | All canvas drawing: wireframe, fills, legend, axes, overlays, the canvas cards |
 | `stereo_app_colors.py` | The four colour spectra as **pure functions**. The legend samples the same functions the drawing calls. |
 | `stereo_app_constants.py` | Every tunable constant and enum |
-| `stereo_app_module_editor.py` | The Module Editor panel |
+| `stereo_app_module_editor.py` | The Module Editor mode, and the base-module card pinned to the canvas |
 | `stereo_app_wizard.py` + `_keypad.py` | The Custom Surface Wizard dialog |
 | `stereo_app_addons.py` | Column / beam panel commands |
 | `stereo_app_reports.py` | Member report window, Excel buttons |
 | `stereo_examples.py` | 11 ready-made scenes, each carrying its own wizard recipe |
+
+---
+
+## 1b. The window (rebuilt 2026-09-19)
+
+`stereo_app_shell.py` owns the chrome and is the file to read first for
+anything about layout: `MODES`, `VIEW_PRESETS`, `RAIL_W`, `PANEL_W`,
+`TOOLBAR_H`, `STATUS_H`.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ toolbar 46 px: Generate  ▶Analyze  ↶↷  Display▾ Export▾  Load%│
+├──────┬────────────┬──────────────────────────────────────────┤
+│ rail │  context   │  canvas  (~79% of the width)             │
+│ 76px │  panel     │   ┌legend┐                    ┌VIEW┐     │
+│      │  300 px    │                                          │
+│ 8    │  ONE mode  │        the model                         │
+│ modes│  at a time │                                          │
+│      │            │   ┌SELECTION┐          ┌BASE MODULE┐     │
+├──────┴────────────┴──────────────────────────────────────────┤
+│ status 30 px: nodes · rods · utilisation · deflection · ΣRz   │
+└──────────────────────────────────────────────────────────────┘
+```
+
+`_build_ui` order matters: `_init_display_vars()` → `_build_toolbar()` →
+`_build_status_bar()` (packed before the body so it keeps its 30 px) → `main`
+→ rail → context panel → canvas → view cube → selection card →
+`_populate_modes()` → `_apply_focus_ring()` → `_set_mode(DEFAULT_MODE)`.
+
+Display state lives in `_init_display_vars()`, created eagerly, because the
+Display popover is built on demand and destroyed on close — its widgets cannot
+own state `_draw` reads on the first frame.
+
+The eight modes are Build / Shape / Support / Load / Section / Add-ons /
+Module / Results, reachable with **Alt+1 … Alt+8**.
 
 ---
 
@@ -121,7 +161,40 @@ real bug.
 8. **Tk canvas has no z-buffer and no alpha.** Depth-sort filled polygons
    yourself; "opacity" is a stipple pattern (`gray25`/`gray50`/`gray75`/`''`).
 9. **`expr_math` is the only expression evaluator.** It is an AST whitelist.
-   Do not reach for `eval`.
+   Do not reach for `eval`. It now also has comparisons and `and`/`or`/`not`,
+   because a plan-shape rule is a region, not a height. Adding an operator
+   means adding it to BOTH `_validate` and `_evaluate` — the whitelist is what
+   keeps `eval` out of a field anyone can type into.
+
+The following were all added or found during the 2026-09-19 UI rebuild:
+
+10. **A column must take over the supports at the joints it carries.** A pin
+    left at the column head is a rigid path to ground in parallel with the
+    column, and it wins: measured, 0.00 kN through the column with the pin,
+    23.17 kN without it.
+11. **`_draw` clears the canvas wholesale** (`c.delete('all')`), so a
+    remembered canvas item id goes stale every frame. The four corner cards
+    (legend, view cube, selection, base module) are all found by TAG each
+    frame. Storing the window id and reusing it silently does nothing.
+12. **The centring pan is `w / (2 * zoom)`, not `w / 2`.** `ZoomCanvas.w2s`
+    multiplies by zoom AFTER adding the pan. The two agree only at zoom 1,
+    which is why the zoom-to-fit had to compute the pan after the fit.
+13. **`tag_raise(item, card)` in a loop reverses the order**, because each
+    call re-inserts directly above the card. To put a card under a group of
+    items, use one `tag_lower(card, first_item)`.
+14. **`find_all()` returns STACKING order; item ids are CREATION order.** A
+    test that compares ids is not testing what is drawn over what.
+15. **`ttk.Entry` subclasses `tk.Entry`** but is themed and has no
+    `highlightthickness` at all. Any `isinstance(w, tk.Entry)` walk reaches
+    the entry inside every readonly combobox and raises `TclError`.
+16. **A `LabelFrame` is at least as wide as its own caption**, whatever its
+    children need. A caption that is a whole sentence sets the panel's floor
+    and silently clips everything else. Captions are headings; the sentence
+    goes inside, where it can wrap.
+17. **Inactive mode panels are genuinely not mapped.** The rail packs one
+    mode's frame and `pack_forget`s the rest, so `winfo_ismapped` is telling
+    the truth — a test asking whether a box is showing has to say which mode
+    it is in first (`_mode(app, key)`).
 
 ---
 
@@ -148,17 +221,22 @@ nodal moment) as pure functions in `stereo_app_colors.py`; smooth per-rod
 gradients; thickness by stress; slenderness halos; load-path animation coloured
 by axial force; support sandbox; full-line axes.
 
-**Surface Voronoi** (`stereo_voronoi_surface.py`). This replaced a convex-hull
-approach that drew patches out in the void a vault arched over. The domain is
-the mesh's own panels; the metric is geodesic along the fabric (a panel's
-candidate sites are the ones lying *on* it, so nearest-of-those *is* the
-geodesic answer — O(panels), no graph search). Lone struts (column shafts,
-which belong to no closed panel) get crossed ribbons so they do not vanish
-edge-on.
+**Surface Voronoi** — *deleted 2026-09-19*, with its module, its 286 tests and
+its view radios, at the user's instruction ("forget about the voronoi feature,
+it was a waste of time"). Nothing else depended on it. Do not restore it from
+an older zip: the tab has been rebuilt around it not existing.
 
 **Module Editor.** Detects the repeating cell, groups congruent cells into
 roles, propagates an edit to every cell of a role. `base_module` derives the
-grid's theoretical module and the app freezes it at generation.
+grid's theoretical module and the app freezes it at generation. Since the
+rebuild it is mode 7, plus a small always-visible card in the canvas corner
+showing the base module.
+
+**Shape mode + lattices + plan mask** (2026-09-19). Four lattice families
+(`custom_surface_lattice`), a crossing guard, a summit finder, and
+`apply_domain_mask` for cutting a rectangle into a real plan. See
+`STEREO_FEATURES.md` §3b — the design decisions there are load-bearing and are
+not repeated here.
 
 **Loads.** Point loads on any number of selected nodes, with a magnitude +
 direction helper that resolves *into* the Fx/Fy/Fz boxes rather than becoming a
@@ -299,10 +377,17 @@ Keep them; they are why the suite is trustworthy.
   added to the `3d` offset path, found to be a no-op there, and taken back out
   with a comment saying so.
 - Verify UI changes with an Xvfb screenshot, not by reasoning about the code.
-- `scratchpad/ui_full.py` drives every family × colour mode × fill × Voronoi
-  view × toggle. Run it before shipping; it should report
-  `0 problem(s); 1 dialog(s) raised` (the one dialog is the correct
-  "Run ▶ Analyze first").
+- `scratchpad/ui_full.py` drives every family × colour mode × fill × toggle.
+  Run it before shipping; it should report `0 problem(s); 1 dialog(s) raised`
+  (the one dialog is the correct "Run ▶ Analyze first").
+- **Probe, do not infer.** The two worst findings of the rebuild were both
+  things the code looked right about: the column that carried 0.00 kN, and the
+  panel fields that were clipped by exactly the chrome nobody had measured.
+  Both were found by running the thing and reading a number, and both are now
+  tests. When a test fails, first ask whether the ASSERTION is wrong rather
+  than the code — three failures in the rebuild were tests asserting an
+  implementation constant (`pan_x == w/2`) while their own docstrings claimed
+  to check the behaviour.
 
 ---
 
@@ -317,3 +402,28 @@ Unanswered at handoff. Ask before building 5.1 or 5.2.
 3. Is a draggable pole worth the UI work, or are two numbers and a snap button
    enough?
 4. Should the curvature census live outside the wizard, and in which panel?
+
+**Answered 2026-09-19, so do not re-ask:**
+
+- *Keep the Voronoi fill?* No. Deleted, with its tests. Not coming back.
+- *Keep the load-path arrows?* **Yes** — explicitly. They live in the Display
+  popover, 81 tests cover them, and they are not a candidate for removal.
+- *Rebuild from scratch or keep the engine?* Keep the engine, rebuild the UI
+  in Tkinter. That is what `claude/stereo-ui-rebuild` is.
+
+### Still open after the rebuild
+
+- **Is eight modes the right number?** The rail currently splits the work into
+  Build / Shape / Support / Load / Section / Add-ons / Module / Results. Build
+  and Shape are both "make a mesh" and could merge; Section is three fields and
+  could fold into Add-ons. Nobody has used it enough in anger to say.
+- **The 300 px context panel.** Everything now fits it (there is a test), but
+  fitting is not the same as comfortable — several rows are tight. Widening to
+  ~340 px would cost the canvas about 3% and is a one-constant change
+  (`PANEL_W`), but every panel would want re-checking against the fit test.
+- **Two-surface support default.** A two-surface build pins the perimeter of
+  BOTH layers, which is the convention every generator in this app uses and is
+  why a fresh model often reads a governing utilisation around 0.02. Supporting
+  only the bottom layer's perimeter would be more realistic. It is a one-line
+  change in each generator and a large change in every example's numbers, so it
+  wants a deliberate decision, not a drive-by.

@@ -19,6 +19,7 @@ from apps.stereo.stereo_app_shell import HINT_FG
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_examples as sx
+from apps.stereo import stereo_app_analysis as sa
 from apps.stereo.stereo_app_constants import (
     BG, CANVAS_BG, PANEL_W, MODULE_PANEL_W,
     DOF_LABELS, PRESET_NAMES, GRID_PATTERNS, PATTERN_LABEL, GRID_FAMILIES,
@@ -245,6 +246,167 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Frame(body, bg='#ccd4db', height=1).pack(fill='x', pady=(10, 0))
         tk.Label(body, text='Esc or Display again to close', bg=BG, fg='#78848e',
                  font=('Helvetica', 8, 'italic')).pack(anchor='w', padx=10, pady=(4, 8))
+
+    # ── Analyse mode: how to draw it, and what the solve found ──────────────
+    ANALYSIS_CHART_H = 460
+
+    def _build_analysis_panel(self, parent):
+        """The display controls, and charts of what the solve found.
+
+        These controls existed, but only inside the Display popover -- one
+        button away, and therefore, for anyone who had not found that button,
+        not there at all. A popover is the right home for something you
+        already know exists; it is the wrong home for the whole visual
+        vocabulary of the tab. They live here now, in the rail like every
+        other group of controls, and the popover keeps working for reaching
+        them without leaving the mode you are in. Both bind the SAME Tk
+        variables, so the two can never disagree.
+        """
+        box = tk.LabelFrame(parent, text='Colour the rods by', bg=BG,
+                            font=('Helvetica', 10, 'bold'))
+        box.pack(fill='x', padx=6, pady=4)
+        for label in COLOUR_MODES:
+            tk.Radiobutton(box, text=label, value=label, variable=self.colour_mode,
+                           bg=BG, font=('Helvetica', 9), anchor='w',
+                           command=self._on_colour_mode_change
+                           ).pack(fill='x', padx=6)
+        srow = tk.Frame(box, bg=BG)
+        srow.pack(fill='x', padx=6, pady=(4, 0))
+        tk.Label(srow, text='scale:', bg=BG, font=('Helvetica', 8), fg=HINT_FG,
+                 width=6, anchor='w').pack(side='left')
+        for label in SCALE_MODES:
+            tk.Radiobutton(srow, text=label, value=label, variable=self.force_scale,
+                           bg=BG, font=('Helvetica', 8),
+                           command=self._draw).pack(side='left')
+        mrow = tk.Frame(box, bg=BG)
+        mrow.pack(fill='x', padx=6, pady=(2, 6))
+        tk.Label(mrow, text='moment:', bg=BG, font=('Helvetica', 8), fg=HINT_FG,
+                 width=8, anchor='w').pack(side='left')
+        axis_box = ttk.Combobox(mrow, textvariable=self.moment_axis, state='readonly',
+                                width=8, values=MOMENT_AXES)
+        axis_box.pack(side='left', fill='x', expand=True)
+        axis_box.bind('<<ComboboxSelected>>', lambda _e: self._draw())
+
+        box = tk.LabelFrame(parent, text='Draw the rods as', bg=BG,
+                            font=('Helvetica', 10, 'bold'))
+        box.pack(fill='x', padx=6, pady=4)
+        for text, var in (('Smooth gradient along each rod', self.smooth_gradient),
+                          ('Thickness = stress', self.thickness_by_stress),
+                          ('Hide ~0-force rods', self.hide_zero_force),
+                          ('Flag slender compression members', self.flag_slender)):
+            tk.Checkbutton(box, text=text, variable=var, bg=BG,
+                           font=('Helvetica', 9), anchor='w', justify='left',
+                           wraplength=PANEL_TEXT_W, command=self._draw
+                           ).pack(fill='x', padx=6)
+
+        box = tk.LabelFrame(parent, text='Deformed shape', bg=BG,
+                            font=('Helvetica', 10, 'bold'))
+        box.pack(fill='x', padx=6, pady=4)
+        tk.Checkbutton(box, text='Show the deflected model', variable=self.show_deformed,
+                       bg=BG, font=('Helvetica', 9), anchor='w',
+                       command=self._draw).pack(fill='x', padx=6)
+        tk.Checkbutton(box, text='Only the deflected model', variable=self.deformed_only,
+                       bg=BG, font=('Helvetica', 9), anchor='w',
+                       command=self._draw).pack(fill='x', padx=6)
+        drow = tk.Frame(box, bg=BG)
+        drow.pack(fill='x', padx=6, pady=(2, 0))
+        tk.Label(drow, text='scale ×', bg=BG, font=('Helvetica', 8),
+                 fg=HINT_FG).pack(side='left')
+        tk.Scale(drow, from_=1, to=500, orient='horizontal',
+                 variable=self.deform_scale, bg=BG, font=('Helvetica', 7),
+                 length=170, showvalue=True, command=lambda _v: self._draw()
+                 ).pack(side='left', fill='x', expand=True)
+        crow = tk.Frame(box, bg=BG)
+        crow.pack(fill='x', padx=6, pady=(2, 6))
+        tk.Label(crow, text='colour:', bg=BG, font=('Helvetica', 8),
+                 fg=HINT_FG, width=7, anchor='w').pack(side='left')
+        dbox = ttk.Combobox(crow, textvariable=self.deform_color_mode, state='readonly',
+                            width=8, values=list(DEFORM_MODES))
+        dbox.pack(side='left', fill='x', expand=True)
+        dbox.bind('<<ComboboxSelected>>', lambda _e: self._draw())
+
+        box = tk.LabelFrame(parent, text='Show', bg=BG,
+                            font=('Helvetica', 10, 'bold'))
+        box.pack(fill='x', padx=6, pady=4)
+        grid = tk.Frame(box, bg=BG)
+        grid.pack(fill='x', padx=6, pady=(0, 6))
+        toggles = (('Rods', self.show_members), ('Nodes', self.show_nodes),
+                   ('Rod #', self.show_member_labels),
+                   ('Node #', self.show_node_labels),
+                   ('Loads', self.show_loads), ('Reactions', self.show_reactions),
+                   ('Axes + ground', self.show_axes),
+                   ('Load-path arrows', self.load_path_anim))
+        for k, (text, var) in enumerate(toggles):
+            cmd = (self._on_load_path_anim_toggle
+                   if var is self.load_path_anim else self._draw)
+            tk.Checkbutton(grid, text=text, variable=var, bg=BG,
+                           font=('Helvetica', 8), anchor='w', command=cmd
+                           ).grid(row=k // 2, column=k % 2, sticky='w')
+        tk.Checkbutton(box, text='Base module card', variable=self.show_module_card,
+                       bg=BG, font=('Helvetica', 8), anchor='w',
+                       command=self._draw).pack(fill='x', padx=6, pady=(0, 4))
+
+        box = tk.LabelFrame(parent, text='What the solve found', bg=BG,
+                            font=('Helvetica', 10, 'bold'))
+        box.pack(fill='both', expand=True, padx=6, pady=4)
+        self.analysis_canvas = tk.Canvas(box, width=PANEL_W - 30,
+                                         height=self.ANALYSIS_CHART_H,
+                                         bg=BG, highlightthickness=0)
+        self.analysis_canvas.pack(fill='both', expand=True, padx=4, pady=4)
+
+    def _refresh_analysis_charts(self):
+        """Redraw every chart from the CURRENT results.
+
+        Called on entering the mode and after each solve, never on a timer:
+        a chart that is one solve behind the model is worse than no chart,
+        because it looks authoritative.
+        """
+        c = getattr(self, 'analysis_canvas', None)
+        if c is None:
+            return
+        c.delete('all')
+        width = max(160, c.winfo_width() or (PANEL_W - 30))
+        frac = self._load_frac()
+        res = self.results or {}
+        y = 0
+        for draw in (
+            lambda: sa.utilisation_histogram(c, width, self.member_checks, frac),
+            lambda: sa.force_split(c, width, res.get('member_res'), frac),
+            lambda: sa.support_reactions(c, width, res.get('reactions'),
+                                         self.u('force'), frac),
+            lambda: self._draw_cell_census(c, width),
+        ):
+            y += self._chart_at(c, y, draw)
+        # Grow the canvas to whatever the charts needed. A fixed height cut
+        # the reactions chart off on any model with more than a few supports,
+        # and the panel scrolls anyway.
+        c.configure(height=max(80, int(y)), scrollregion=(0, 0, width, max(y, 1)))
+        self.panel_outer.fit_to_content()
+
+    def _chart_at(self, c, y, draw):
+        """Draw one chart, then slide everything it just created down to y.
+
+        The chart functions all draw from the top of the canvas because that
+        keeps them independent of each other and testable on their own; the
+        stacking is this caller's job.
+        """
+        before = set(c.find_all())
+        height = draw()
+        for item in c.find_all():
+            if item not in before:
+                c.move(item, 0, y)
+        return height
+
+    def _draw_cell_census(self, c, width):
+        """The buildability reading: how many DIFFERENT cells this mesh is
+        made of. Uses the Module Editor's own classification so the two can
+        never report different role counts for the same mesh."""
+        try:
+            cells = sg.find_cells(self.nodes, self.members)
+            roles = sg.classify_cell_roles(self.nodes, cells)['roles']
+        except (ValueError, KeyError, IndexError):
+            cells, roles = [], {}
+        return sa.cell_census(c, width, roles, cells)
 
     def _build_canvas(self, parent):
 

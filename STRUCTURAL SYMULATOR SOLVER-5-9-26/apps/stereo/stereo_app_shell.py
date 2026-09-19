@@ -42,6 +42,7 @@ MODES = (
     ('section', '▤', 'Section', 'what it is made of'),
     ('addons',  '⊥', 'Add-ons', 'columns and reinforcement beams'),
     ('module',  '◫', 'Module',  'the repeating cell'),
+    ('analyse', '◑', 'Analyse', 'how to draw it, and what the solve found'),
     ('results', 'Σ', 'Results', 'what came out'),
 )
 DEFAULT_MODE = 'build'
@@ -294,6 +295,10 @@ class StereoShellMixin:
                 frame.pack_forget()
         label = next(m[2] for m in MODES if m[0] == key)
         self.mode_title.set(label.upper())
+        if key == 'analyse':
+            # The charts are pictures of the last solve, which may have
+            # happened while another mode was showing.
+            self._refresh_analysis_charts()
         self.panel_outer.fit_to_content()
 
     # ── context panel ───────────────────────────────────────────────────────
@@ -331,6 +336,7 @@ class StereoShellMixin:
                                   'Web section (diagonals)')
         self._build_addons_panel(self._mode_frames['addons'])
         self._build_module_editor_panel(self._mode_frames['module'])
+        self._build_analysis_panel(self._mode_frames['analyse'])
         self._build_selection_panel(self._mode_frames['results'])
         self._build_results_panel(self._mode_frames['results'])
         self._on_connectivity_change()   # hide I/J unless Rigid is selected

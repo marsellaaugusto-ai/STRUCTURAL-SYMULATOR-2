@@ -4520,8 +4520,14 @@ def test_the_base_module_card_is_pinned_over_the_canvas(app):
     items = app.canvas.find_withtag('module_card')
     assert len(items) == 1
     x, y = app.canvas.coords(items[0])
+    # Top right, directly under the view cube: both cards answer "how am I
+    # looking at this", so they share the right-hand column.
+    cube = app.canvas.coords(app.canvas.find_withtag('view_cube')[0])
     assert x > app.canvas.winfo_width() - app.MODULE_CARD_SIZE - 40
-    assert y > app.canvas.winfo_height() - app.MODULE_CARD_SIZE - 40
+    assert y > cube[1] + app.view_cube.winfo_reqheight() - 1, 'it overlaps the cube'
+    assert y < app.canvas.winfo_height() / 2, 'it is not in the top half'
+    assert abs((x + app.MODULE_CARD_SIZE) - cube[0]) < 3, \
+        'the two cards do not line up on the right'
     assert app.module_card_canvas.find_all(), 'the card is empty'
 
 
@@ -4784,7 +4790,8 @@ def _too_wide(widget, room):
 
 
 @pytest.mark.parametrize('mode', ['build', 'shape', 'support', 'load',
-                                  'section', 'addons', 'module', 'results'])
+                                  'section', 'addons', 'module', 'analyse',
+                                  'results'])
 def test_no_panel_asks_for_more_width_than_the_panel_has(app, mode):
     """Every field has to fit the context panel. A combobox that asks for a
     fixed character width next to a fixed-width label overflowed it, and the
@@ -4976,3 +4983,140 @@ def test_the_focus_ring_walk_does_not_touch_themed_widgets(app):
             walk(c)
     walk(app.panel_host)
     assert combos, 'no comboboxes found -- this test would prove nothing'
+
+
+# ── the base module card turns ───────────────────────────────────────────────
+
+def test_dragging_the_base_module_card_turns_the_module(app):
+    """It is a 3D solid in a window, so it should behave like one. Before
+    this it was a fixed picture you could not look behind."""
+    app.show_module_card.set(True)
+    app._draw()
+    before = (app.me3d_azimuth, app.me3d_elevation)
+    c = app.module_card_canvas
+    c.event_generate('<ButtonPress-1>', x=40, y=40, when='now')
+    c.event_generate('<B1-Motion>', x=100, y=70, when='now')
+    c.event_generate('<ButtonRelease-1>', x=100, y=70, when='now')
+    app.root.update()
+    assert (app.me3d_azimuth, app.me3d_elevation) != before
+
+
+def test_turning_the_card_does_not_move_the_main_camera(app):
+    """Two cameras, deliberately: the module and the model are different
+    things to be looking at."""
+    app.show_module_card.set(True)
+    app._draw()
+    before = (app.azimuth, app.elevation)
+    c = app.module_card_canvas
+    c.event_generate('<ButtonPress-1>', x=30, y=30, when='now')
+    c.event_generate('<B1-Motion>', x=120, y=90, when='now')
+    c.event_generate('<ButtonRelease-1>', x=120, y=90, when='now')
+    app.root.update()
+    assert (app.azimuth, app.elevation) == before
+
+
+def test_the_card_and_the_editor_share_one_module_camera(app):
+    """Two views of one solid. Separate cameras would mean the card quietly
+    disagreeing with the editor about which way the module faces."""
+    _mode(app, 'module')
+    app.show_module_card.set(True)
+    app._draw()
+    app.me3d_azimuth, app.me3d_elevation = 12.0, 7.0
+    app._me_render_3d_everywhere()
+    assert app.me3d_canvas.find_all()
+    assert app.module_card_canvas.find_all()
+
+
+# ── Analyse mode ─────────────────────────────────────────────────────────────
+
+def test_the_display_controls_are_reachable_without_hunting_for_a_button(app):
+    """The whole visual vocabulary of the tab used to be behind the Display
+    popover -- one button away, and so, for anyone who had not found that
+    button, not there at all."""
+    _mode(app, 'analyse')
+    frame = app._mode_frames['analyse']
+    labels = []
+
+    def walk(w):
+        for c in w.winfo_children():
+            try:
+                t = c.cget('text')
+            except tk.TclError:
+                t = ''
+            if t:
+                labels.append(str(t))
+            walk(c)
+    walk(frame)
+    blob = ' | '.join(labels)
+    for wanted in ('Utilization', 'Axial force', 'Node moment', 'Smooth gradient',
+                   'Thickness = stress', 'Load-path arrows', 'Reactions'):
+        assert wanted in blob, f'{wanted!r} is not in the Analyse panel'
+
+
+def test_the_analyse_panel_and_the_popover_cannot_disagree(app):
+    """Both bind the SAME Tk variables. Two independent copies of the same
+    switch is how a UI starts lying about its own state."""
+    _mode(app, 'analyse')
+    app.smooth_gradient.set(True)
+    app._toggle_display_popover()
+    app.root.update_idletasks()
+    assert app.smooth_gradient.get() is True
+    app._toggle_display_popover()
+
+
+def test_the_charts_say_what_they_need_before_a_solve(app):
+    """An empty plot box is indistinguishable from a broken one."""
+    app.results = None
+    app.member_checks = None
+    _mode(app, 'analyse')
+    app._refresh_analysis_charts()
+    texts = [app.analysis_canvas.itemcget(i, 'text')
+             for i in app.analysis_canvas.find_all()
+             if app.analysis_canvas.type(i) == 'text']
+    assert any('Analyze' in t for t in texts), texts
+
+
+def test_every_chart_draws_something_after_a_solve(app):
+    app._analyze()
+    _mode(app, 'analyse')
+    app._refresh_analysis_charts()
+    texts = ' | '.join(app.analysis_canvas.itemcget(i, 'text')
+                       for i in app.analysis_canvas.find_all()
+                       if app.analysis_canvas.type(i) == 'text')
+    assert 'Utilisation of' in texts
+    assert 'Axial force in' in texts
+    assert 'supports carry' in texts
+    assert 'distinct shapes' in texts
+
+
+def test_the_charts_stack_instead_of_drawing_on_top_of_each_other(app):
+    """Each chart function draws from y=0 so it can be tested alone; the
+    stacking is the panel's job, and getting it wrong piles every plot into
+    the same 70 px."""
+    app._analyze()
+    _mode(app, 'analyse')
+    app._refresh_analysis_charts()
+    c = app.analysis_canvas
+    boxes = [c.coords(i) for i in c.find_all() if c.type(i) == 'rectangle']
+    tops = sorted({round(b[1]) for b in boxes if b[3] - b[1] > 30})
+    assert len(tops) >= 4, f'only {len(tops)} distinct plot boxes: {tops}'
+    assert max(tops) > 150, 'the charts are all at the same height'
+
+
+def test_the_charts_follow_the_load_slider(app):
+    """The model is linear, so every utilisation scales with the slider. A
+    histogram that ignored it would describe a load case nobody is looking
+    at."""
+    app._analyze()
+    _mode(app, 'analyse')
+    app.load_fraction.set(100)
+    app._refresh_analysis_charts()
+    full = [app.analysis_canvas.itemcget(i, 'text')
+            for i in app.analysis_canvas.find_all()
+            if app.analysis_canvas.type(i) == 'text']
+    app.load_fraction.set(10)
+    app._refresh_analysis_charts()
+    tenth = [app.analysis_canvas.itemcget(i, 'text')
+             for i in app.analysis_canvas.find_all()
+             if app.analysis_canvas.type(i) == 'text']
+    assert full != tenth, 'the charts ignored the Load % slider'

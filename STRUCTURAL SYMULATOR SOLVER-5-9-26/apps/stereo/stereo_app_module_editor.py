@@ -362,7 +362,13 @@ class StereoModuleEditorMixin:
         size = self.MODULE_CARD_SIZE
         self.module_card_canvas = tk.Canvas(parent_canvas, width=size, height=size,
                                             bg='#fbfcfd', highlightthickness=1,
-                                            highlightbackground='#ccd4db')
+                                            highlightbackground='#ccd4db',
+                                            cursor='fleur')
+        # Drag it to turn the module. Same handlers as the editor panel, so
+        # there is one module camera and no way for the two to disagree.
+        self.module_card_canvas.bind('<ButtonPress-1>', self._me3d_orbit_press)
+        self.module_card_canvas.bind('<B1-Motion>', self._me3d_orbit_motion)
+        self.module_card_canvas.bind('<ButtonRelease-1>', self._me3d_orbit_release)
         self._module_card_window = None
 
     def _place_module_card(self):
@@ -378,7 +384,11 @@ class StereoModuleEditorMixin:
             return
         size = self.MODULE_CARD_SIZE
         x = canvas.winfo_width() - size - 16
-        y = canvas.winfo_height() - size - 16
+        # Directly under the view cube, in the same right-hand column: both
+        # are "how am I looking at this", and stacking them keeps that one
+        # question in one place instead of at opposite corners.
+        cube_h = self.view_cube.winfo_reqheight() if getattr(self, 'view_cube', None) else 0
+        y = 16 + cube_h + 10
         # _draw clears the canvas wholesale, which destroys the window item
         # along with everything else, so a remembered id goes stale every
         # frame. Ask the canvas what is actually on it instead.
@@ -499,7 +509,23 @@ class StereoModuleEditorMixin:
             return
         self.me3d_azimuth = (az0 + dx * self.ME3D_DEG_PER_PX) % 360.0
         self.me3d_elevation = max(-89.0, min(89.0, el0 - dy * self.ME3D_DEG_PER_PX))
-        self._me_render_3d()
+        self._me_render_3d_everywhere()
+
+    def _me_render_3d_everywhere(self):
+        """Redraw the module in BOTH places it is shown.
+
+        The editor panel and the pinned card are two views of one solid, so
+        they share one camera (still entirely separate from the main canvas's
+        -- orbiting the model never moves the module, and vice versa).
+        Sharing means dragging either one turns the other, which is what you
+        want from two windows onto the same object; keeping two cameras would
+        mean the card silently disagreeing with the editor about which way
+        the module faces.
+        """
+        if getattr(self, 'me3d_canvas', None) is not None:
+            self._me_render_3d()
+        if self.canvas.find_withtag('module_card'):
+            self._draw_module_card()
 
     def _me3d_orbit_release(self, event):
         self._me3d_orbit_start = None

@@ -31,6 +31,10 @@ class StereoReportsMixin:
         self._me_maybe_refresh_topology()
         self._refresh_status()
         self._refresh_shape_note()
+        # Only when that mode is showing: rebuilding four charts on every
+        # model change costs a cell-detection pass, and nobody is looking.
+        if self.active_mode.get() == 'analyse':
+            self._refresh_analysis_charts()
         self._draw()
 
     def _combined_loads_by_node(self):

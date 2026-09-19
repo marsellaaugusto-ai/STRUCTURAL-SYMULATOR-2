@@ -37,6 +37,7 @@ from apps.stereo.stereo_app_constants import (
     DEFORM_MODE_FORCE, SLENDER_HALO_COLOR, SLENDERNESS_LIMIT,
     LOAD_PATH_NEAR_ZERO_FRAC, LOAD_PATH_ARROW_HALF_PX,
     LOAD_PATH_ANIM_TICKS, STRESS_WIDTH_MIN, STRESS_WIDTH_MAX,
+    LEGEND_CARD_BG, LEGEND_CARD_EDGE,
     GRADIENT_SEGMENTS, GRADIENT_SEGMENTS_DENSE, GRADIENT_DENSE_MEMBERS,
     MOMENT_ZERO_COLOR, MOMENT_NODE_OUTLINE, MOMENT_BACKDROP_COLOR,
     MOMENT_NODE_RADIUS_PX,
@@ -1050,9 +1051,15 @@ class StereoRenderMixin:
 
     def _draw_legend(self, c, by_force, show_def=False, deformed_only=False, by_util=False,
                      max_abs_N=0.0, max_abs_moment=0.0, frac=1.0, clipped=()):
-        x0, y0 = 10, 10
+        # The legend stays in the corner of the display, which is where you
+        # look when you are reading colour off the model -- but as a CARD
+        # rather than loose text. A card has its own ground, so the ramp and
+        # its numbers read against that instead of against whatever part of
+        # the structure happens to lie behind them.
+        x0, y0 = 20, 20
         y = y0
         BAR_W, BAR_H = 130, 10
+        before = set(c.find_all())
 
         def row(color, text, dashed=False, outline=None):
             nonlocal y
@@ -1227,3 +1234,23 @@ class StereoRenderMixin:
                      text='left-drag: lasso select (+Shift: add)  ·  right-drag: orbit\n'
                           'wheel: zoom  ·  middle-drag: pan  ·  □ box = support\n'
                           'click a rod to inspect its force/utilization')
+
+        # Size the card to whatever actually ended up on it, then drop it
+        # behind those items. Measured from the canvas rather than tracked
+        # per row, because which rows appear depends on the colour mode,
+        # the toggles and whether an analysis has run.
+        mine = [i for i in c.find_all() if i not in before]
+        boxes = [c.bbox(i) for i in mine if c.bbox(i)]
+        if boxes:
+            bx0 = min(b[0] for b in boxes) - 12
+            by0 = min(b[1] for b in boxes) - 10
+            bx1 = max(b[2] for b in boxes) + 12
+            by1 = max(b[3] for b in boxes) + 10
+            card = c.create_rectangle(bx0, by0, bx1, by1, fill=LEGEND_CARD_BG,
+                                      outline=LEGEND_CARD_EDGE, width=1,
+                                      tags="legend_card")
+            # Lower the card just under the FIRST legend item, in one call.
+            # Raising each item above the card instead re-inserts every one
+            # directly above it, which walks the stack backwards and leaves
+            # the colour ramp drawn in reverse.
+            c.tag_lower(card, mine[0])

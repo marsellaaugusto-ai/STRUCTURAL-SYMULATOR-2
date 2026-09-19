@@ -59,72 +59,72 @@ class _ToolbarModes:
 class StereoPanelsMixin(_ToolbarModes):
     """Builds the toolbar, the 3D canvas and every sidebar panel."""
 
-    def _tb_group(self, caption):
-        """One captioned toolbar group.
+    def _pop_group(self, parent, caption):
+        """One captioned row inside the Display popover.
 
-        Every group says what it is FOR, because a row of bare checkboxes
-        cannot: the caption is what tells you that 'Only' means only the
-        deformed shape. Two widget types, used consistently, carry the rest
-        of the meaning -- a RADIO where exactly one choice applies, a
-        CHECKBOX where something is independently on or off.
+        The caption is what tells you a row is FOR something -- a bare strip
+        of checkboxes cannot say that 'Only' means only the deformed shape.
+        Same two widget types throughout: a RADIO where exactly one choice
+        applies, a CHECKBOX where something is independently on or off.
         """
-        g = self.toolbar_flow.group()
-        tk.Label(g, text=caption, bg=BG, font=('Helvetica', 7, 'bold'),
-                 fg='#7a869a').pack(side='left', padx=(4, 5))
-        return g
+        wrap = tk.Frame(parent, bg=BG)
+        wrap.pack(fill='x', padx=10, pady=(8, 0))
+        tk.Label(wrap, text=caption, bg=BG, font=('Helvetica', 7, 'bold'),
+                 fg='#7a869a', anchor='w').pack(fill='x')
+        row = tk.Frame(wrap, bg=BG)
+        row.pack(fill='x')
+        return row
 
-    def _build_ui(self):
-        tb = tk.Frame(self.root, bg=BG)
-        tb.pack(side='top', fill='x')
-        self.toolbar_flow = FlowBar(tb)
+    def _init_display_vars(self):
+        """Every display-state variable, created before anything draws.
 
-        # ── 1 · BUILD ────────────────────────────────────────────────────────
-        g = self._tb_group('BUILD')
-        tk.Label(g, text='Grid family:', bg=BG).pack(side='left', padx=(0, 2))
-        fam_box = ttk.Combobox(g, textvariable=self.grid_family, state='readonly', width=34,
-                               values=[label for _key, label in GRID_FAMILIES])
-        fam_box.pack(side='left')
-        fam_box.bind('<<ComboboxSelected>>', lambda e: self._on_generator_change())
-        tk.Button(g, text='Generate', font=('Helvetica', 9, 'bold'),
-                  command=self._generate).pack(side='left', padx=4)
-        tk.Button(g, text='Custom Surface Wizard…', command=self._open_custom_surface_wizard
-                 ).pack(side='left', padx=(2, 4))
-        examples_btn = tk.Menubutton(g, text='Load Example ▾', relief='raised',
-                                     font=('Helvetica', 9))
-        examples_menu = tk.Menu(examples_btn, tearoff=False)
-        for label, builder in sx.EXAMPLES:
-            examples_menu.add_command(label=label,
-                                      command=lambda b=builder, lbl=label: self._load_example(b, lbl))
-        examples_btn['menu'] = examples_menu
-        examples_btn.pack(side='left', padx=(2, 4))
-        tk.Button(g, text='Undo', command=self._undo).pack(side='left', padx=(6, 1))
-        tk.Button(g, text='Redo', command=self._redo).pack(side='left', padx=1)
-        self.add_rod_mode = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Add rod (click 2 nodes)', variable=self.add_rod_mode,
-                       bg=BG, command=self._on_add_rod_mode_toggle).pack(side='left', padx=(6, 0))
+        These used to be created while building the toolbar, which was
+        fine when the toolbar was always there. The popover is built on
+        demand and destroyed on close, so its widgets cannot own the
+        state: _draw reads show_deformed on the very first frame, long
+        before anyone opens Display, and closing the popover must not
+        throw a setting away.
+        """
+        self.colour_by_force = tk.BooleanVar(value=True)
+        self.colour_by_util = tk.BooleanVar(value=False)
+        self.colour_by_moment = tk.BooleanVar(value=False)
+        self.colour_mode = tk.StringVar(value=COLOUR_FORCE)
+        self.force_scale = tk.StringVar(value=SCALE_P95)
+        self.moment_axis = tk.StringVar(value=MOMENT_AXIS_RESULTANT)
+        self.smooth_gradient = tk.BooleanVar(value=False)
+        self.thickness_by_stress = tk.BooleanVar(value=False)
+        self.hide_zero_force = tk.BooleanVar(value=False)
+        self.flag_slender = tk.BooleanVar(value=False)
+        self.shaded_faces = tk.BooleanVar(value=False)
+        self.faces_mode = tk.StringVar(value=FILL_NONE)
+        self.fill_density = tk.StringVar(value=FILL_DENSITY_DEFAULT)
+        self.show_deformed = tk.BooleanVar(value=False)
+        self.deform_scale = tk.IntVar(value=50)
+        self.deformed_only = tk.BooleanVar(value=False)
+        self.deform_color_mode = tk.StringVar(value=DEFORM_MODE_DISPLACEMENT)
+        self.reference_shade = tk.IntVar(value=78)
+        self.show_members = tk.BooleanVar(value=True)
+        self.show_nodes = tk.BooleanVar(value=True)
+        self.show_node_labels = tk.BooleanVar(value=True)
+        self.show_member_labels = tk.BooleanVar(value=False)
+        self.show_loads = tk.BooleanVar(value=True)
+        self.show_reactions = tk.BooleanVar(value=False)
+        self.show_axes = tk.BooleanVar(value=True)
+        self.load_path_anim = tk.BooleanVar(value=False)
 
-        # ── 2 · SOLVE ────────────────────────────────────────────────────────
-        self.toolbar_flow.separator()
-        g = self._tb_group('SOLVE')
-        tk.Button(g, text='▶ Analyze', font=('Helvetica', 9, 'bold'), bg='#dff0d8',
-                  command=self._analyze).pack(side='left', padx=2)
-        tk.Label(g, text='Load %:', bg=BG, font=('Helvetica', 9)).pack(side='left', padx=(8, 2))
-        self.load_fraction = tk.IntVar(value=100)
-        tk.Scale(g, from_=0, to=100, orient='horizontal', variable=self.load_fraction,
-                length=100, showvalue=True, command=lambda _v: self._draw()
-                ).pack(side='left')
+    def _fill_display_popover(self, body):
+        """Everything that is display STATE rather than a verb.
 
+        These were four permanent toolbar rows. Nothing here changes the
+        model, so none of it earns space that the model itself could use --
+        it is one button away instead.
+        """
         # ── 3 · COLOUR BY ────────────────────────────────────────────────────
         # One quantity at a time, so this is a radio. It replaces three
         # independent checkboxes whose mutual exclusivity was real but
         # invisible -- utilization silently won over force, which won over
         # moment, and nothing on screen said so.
-        self.toolbar_flow.separator()
-        g = self._tb_group('COLOUR BY')
-        self.colour_by_force = tk.BooleanVar(value=True)
-        self.colour_by_util = tk.BooleanVar(value=False)
-        self.colour_by_moment = tk.BooleanVar(value=False)
-        self.colour_mode = tk.StringVar(value=COLOUR_FORCE)
+        g = self._pop_group(body, 'COLOUR BY')
         for label in COLOUR_MODES:
             tk.Radiobutton(g, text=label, value=label, variable=self.colour_mode,
                            bg=BG, command=self._on_colour_mode_change
@@ -136,29 +136,22 @@ class StereoPanelsMixin(_ToolbarModes):
         # above it marked rather than silently flattened against the end.
         tk.Label(g, text='scale', bg=BG, font=('Helvetica', 8), fg='#556')\
             .pack(side='left', padx=(8, 2))
-        self.force_scale = tk.StringVar(value=SCALE_P95)
         for label in SCALE_MODES:
             tk.Radiobutton(g, text=label, value=label, variable=self.force_scale,
                            bg=BG, command=self._draw).pack(side='left', padx=(0, 3))
-        self.moment_axis = tk.StringVar(value=MOMENT_AXIS_RESULTANT)
         moment_axis_box = ttk.Combobox(g, textvariable=self.moment_axis, state='readonly',
                                        width=15, values=MOMENT_AXES)
         moment_axis_box.pack(side='left', padx=(2, 0))
         moment_axis_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
 
         # ── 4 · DRAW RODS AS ─────────────────────────────────────────────────
-        self.toolbar_flow.separator()
-        g = self._tb_group('DRAW RODS AS')
-        self.smooth_gradient = tk.BooleanVar(value=False)
+        g = self._pop_group(body, 'DRAW RODS AS')
         tk.Checkbutton(g, text='Smooth gradient', variable=self.smooth_gradient,
                        bg=BG, command=self._draw).pack(side='left')
-        self.thickness_by_stress = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Thickness = stress', variable=self.thickness_by_stress,
                        bg=BG, command=self._draw).pack(side='left', padx=(6, 0))
-        self.hide_zero_force = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Hide ~0-force rods', variable=self.hide_zero_force, bg=BG,
                        command=self._draw).pack(side='left', padx=(6, 0))
-        self.flag_slender = tk.BooleanVar(value=False)
         # Short on purpose: the KL/r threshold itself is shown in the legend
         # once this is on (see _draw_legend), not repeated in the checkbox
         # text -- a long label here pushed this toolbar group's requested
@@ -174,10 +167,7 @@ class StereoPanelsMixin(_ToolbarModes):
         # One fill at a time, so again a radio. Whichever is chosen takes its
         # colours from the COLOUR BY group above -- the fill decides the
         # SHAPE being coloured, never the quantity.
-        self.toolbar_flow.separator()
-        g = self._tb_group('FILL')
-        self.shaded_faces = tk.BooleanVar(value=False)
-        self.faces_mode = tk.StringVar(value=FILL_NONE)
+        g = self._pop_group(body, 'FILL')
         for label in FILL_MODES:
             tk.Radiobutton(g, text=label, value=label, variable=self.faces_mode,
                            bg=BG, command=self._on_faces_mode_change
@@ -189,7 +179,6 @@ class StereoPanelsMixin(_ToolbarModes):
         # sits between them.
         tk.Label(g, text='shade', bg=BG, font=('Helvetica', 8), fg='#556')\
             .pack(side='left', padx=(8, 2))
-        self.fill_density = tk.StringVar(value=FILL_DENSITY_DEFAULT)
         dens = ttk.Combobox(g, textvariable=self.fill_density, state='readonly',
                             width=7, values=list(FILL_DENSITIES))
         dens.pack(side='left')
@@ -200,29 +189,23 @@ class StereoPanelsMixin(_ToolbarModes):
         # object -- the displaced copy drawn over the structure -- so it
         # carries its own quantity choice rather than competing for the one
         # above.
-        self.toolbar_flow.separator()
-        g = self._tb_group('DEFORMED SHAPE')
-        self.show_deformed = tk.BooleanVar(value=False)
+        g = self._pop_group(body, 'DEFORMED SHAPE')
         tk.Checkbutton(g, text='Show', variable=self.show_deformed, bg=BG,
                        command=self._draw).pack(side='left')
         tk.Label(g, text='×', bg=BG, font=('Helvetica', 9)).pack(side='left', padx=(4, 0))
-        self.deform_scale = tk.IntVar(value=50)
         tk.Scale(g, from_=1, to=500, orient='horizontal', variable=self.deform_scale,
                 length=80, showvalue=True, command=lambda _v: self._draw()
                 ).pack(side='left')
-        self.deformed_only = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Only', variable=self.deformed_only, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
         tk.Label(g, text='colour', bg=BG, font=('Helvetica', 8), fg='#556'
                 ).pack(side='left', padx=(6, 2))
-        self.deform_color_mode = tk.StringVar(value=DEFORM_MODE_DISPLACEMENT)
         deform_mode_box = ttk.Combobox(g, textvariable=self.deform_color_mode, state='readonly',
                                        width=14, values=DEFORM_MODES)
         deform_mode_box.pack(side='left')
         deform_mode_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
         tk.Label(g, text='ref. shade', bg=BG, font=('Helvetica', 8), fg='#556'
                 ).pack(side='left', padx=(6, 2))
-        self.reference_shade = tk.IntVar(value=78)
         tk.Scale(g, from_=0, to=100, orient='horizontal', variable=self.reference_shade,
                 length=70, showvalue=False, command=lambda _v: self._draw()
                 ).pack(side='left')
@@ -231,68 +214,32 @@ class StereoPanelsMixin(_ToolbarModes):
         # Independent annotations drawn over whatever the groups above
         # produced -- every one of these is on or off by itself, which is why
         # they are all checkboxes and all live together.
-        self.toolbar_flow.separator()
-        g = self._tb_group('SHOW')
-        self.show_members = tk.BooleanVar(value=True)
+        g = self._pop_group(body, 'SHOW')
         tk.Checkbutton(g, text='Rods', variable=self.show_members, bg=BG,
                        command=self._draw).pack(side='left')
-        self.show_nodes = tk.BooleanVar(value=True)
         tk.Checkbutton(g, text='Nodes', variable=self.show_nodes, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
-        self.show_node_labels = tk.BooleanVar(value=True)
         tk.Checkbutton(g, text='Node #', variable=self.show_node_labels, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
-        self.show_member_labels = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Rod #', variable=self.show_member_labels, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
-        self.show_loads = tk.BooleanVar(value=True)
         tk.Checkbutton(g, text='Loads', variable=self.show_loads, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
-        self.show_reactions = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Reactions', variable=self.show_reactions, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
-        self.show_axes = tk.BooleanVar(value=True)
         tk.Checkbutton(g, text='Axes + ground', variable=self.show_axes, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
-        self.load_path_anim = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Load-path arrows', variable=self.load_path_anim, bg=BG,
                       command=self._on_load_path_anim_toggle).pack(side='left', padx=(4, 0))
 
-        # ── 9 · OUTPUT ───────────────────────────────────────────────────────
-        self.toolbar_flow.separator()
-        g = self._tb_group('OUTPUT')
-        tk.Button(g, text='Reset view', command=self._reset_view).pack(side='left', padx=2)
-        tk.Button(g, text='Member Report', command=self._show_member_report
-                 ).pack(side='left', padx=2)
-        tk.Button(g, text='Export Excel…', command=self._export_excel).pack(side='left', padx=2)
-        tk.Button(g, text='Import Excel…', command=self._import_excel).pack(side='left', padx=2)
 
-        self.toolbar_flow.start()
+        tk.Frame(body, bg='#ccd4db', height=1).pack(fill='x', pady=(10, 0))
+        tk.Label(body, text='Esc or Display again to close', bg=BG, fg='#78848e',
+                 font=('Helvetica', 8, 'italic')).pack(anchor='w', padx=10, pady=(4, 8))
 
-        main = tk.Frame(self.root, bg=BG)
-        main.pack(fill='both', expand=True, padx=6, pady=(6, 0))
+    def _build_canvas(self, parent):
 
-        # Panel FIRST, expanding canvas SECOND: packing the canvas (or
-        # anything expand=True) before a fixed-width sidebar starves the
-        # sidebar of space as the window narrows -- the exact bug the rest
-        # of this app's tabs standardized ScrollPanel to avoid (see its
-        # docstring in common.py). It also scrolls both axes, so a row
-        # wider than the panel (the deform-scale slider, a two-button row)
-        # stays reachable instead of clipped.
-        self.panel_outer = ScrollPanel(main, width=PANEL_W, bg=BG, bd=1, relief='solid')
-        self.panel_outer.pack(side='left', fill='y', padx=(0, 6))
-
-        # The Module Editor panel is ALSO packed before the expanding
-        # canvas, same reasoning as the left sidebar above (see
-        # ScrollPanel's own docstring): pack(side='right') alone is not
-        # enough -- pack allocates space in PACKING ORDER regardless of
-        # side, so packing it AFTER an expand=True canvas would find
-        # nothing left to claim.
-        self.module_panel_outer = ScrollPanel(main, width=MODULE_PANEL_W, bg=BG, bd=1,
-                                              relief='solid')
-        self.module_panel_outer.pack(side='right', fill='y', padx=(6, 0))
-
-        canvas_frame = tk.Frame(main, bg=BG)
+        canvas_frame = tk.Frame(parent, bg=BG)
         canvas_frame.pack(side='left', fill='both', expand=True)
         self.zc = ZoomCanvas(canvas_frame, bg=CANVAS_BG, bd=1, relief='solid')
         self.zc.pack(fill='both', expand=True)
@@ -336,13 +283,7 @@ class StereoPanelsMixin(_ToolbarModes):
         self.canvas.bind('<BackSpace>', self._on_delete_nodes)
         self.canvas.focus_set()
 
-        self._build_panel(self.panel_outer.interior)
-        self.panel_outer.fit_to_content()
 
-        self._build_module_editor_panel(self.module_panel_outer.interior)
-        self.module_panel_outer.fit_to_content()
-
-        self._on_generator_change()
 
     def _labeled_entry(self, parent, label, var, width=10):
         row = tk.Frame(parent, bg=BG)
@@ -356,20 +297,63 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Label(box, text=text, bg=BG, font=('Helvetica', 10, 'bold')
                 ).pack(anchor='w', padx=6, pady=(6, 2))
 
-    def _build_panel(self, parent):
-        self._build_geometry_panel(parent)
-        self._build_supports_panel(parent)
-        self._build_loads_panel(parent)
-        self._build_connectivity_panel(parent)
-        self._build_section_panel(parent, 'chord', 'Chord section (top/bottom)')
-        self._build_section_panel(parent, 'web', 'Web section (diagonals)')
-        self._build_selection_panel(parent)
-        self._build_addons_panel(parent)
-        self._build_results_panel(parent)
-        self._on_connectivity_change()   # hide I/J unless Rigid is selected
-
     # ── Geometry (per grid family) ───────────────────────────────────────────
+    def _build_shape_panel(self, parent):
+        """Custom surfaces and their domain.
+
+        For now this is a door to the existing wizard dialog plus a readout
+        of what the current model was built from. Converting the wizard's
+        own controls into this panel -- so the surfaces are edited in place
+        rather than behind a modal -- is phase 3 work; putting the door here
+        already makes the mode meaningful and gives the recipe somewhere to
+        live.
+        """
+        box = tk.LabelFrame(parent, text='Surface', bg=BG, font=('Helvetica', 10, 'bold'))
+        box.pack(fill='x', padx=6, pady=(6, 4))
+        tk.Button(box, text='Open the Custom Surface Wizard…',
+                  command=self._open_custom_surface_wizard
+                 ).pack(fill='x', padx=6, pady=(6, 4))
+        tk.Label(box, text='Write a surface as z = f(x, y) or as a full x, y, z of (u, v), '
+                           'pick a Cartesian or polar domain, and choose one layer, an offset '
+                           'double layer, or two independent surfaces.',
+                 bg=BG, fg='#666', font=('Helvetica', 8), wraplength=PANEL_W - 40,
+                 justify='left').pack(anchor='w', padx=6, pady=(0, 6))
+
+        self.shape_recipe_var = tk.StringVar(value='This model was not built from a surface.')
+        tk.Label(box, textvariable=self.shape_recipe_var, bg=BG, fg='#2f6f4f',
+                 font=('Helvetica', 8, 'italic'), wraplength=PANEL_W - 40,
+                 justify='left').pack(anchor='w', padx=6, pady=(0, 8))
+
+    def _refresh_shape_note(self):
+        """Keep the Shape mode honest about where the current model came
+        from -- several models are generator output that no expression would
+        reproduce, and saying otherwise would be worse than saying nothing."""
+        recipe = getattr(self, '_wizard_recipe', None)
+        if not recipe:
+            self.shape_recipe_var.set('This model was not built from a surface.')
+            return
+        note = recipe.get('note', '')
+        bits = []
+        if recipe.get('mode') == 'between':
+            bits.append('two surfaces')
+        elif recipe.get('mode'):
+            bits.append('one surface')
+        if recipe.get('coord'):
+            bits.append(f"{recipe['coord']} domain")
+        if recipe.get('pattern'):
+            bits.append(f"{recipe['pattern']} pattern")
+        self.shape_recipe_var.set((' · '.join(bits) + '\n' + note) if bits else note)
+
     def _build_geometry_panel(self, parent):
+        # Add-rod is a canvas TOOL, not display state: it edits the mesh, so
+        # it lives with the mesh rather than behind the Display button.
+        tools = tk.Frame(parent, bg=BG)
+        tools.pack(fill='x', padx=6, pady=(6, 0))
+        self.add_rod_mode = tk.BooleanVar(value=False)
+        tk.Checkbutton(tools, text='Add rod (click two nodes)', variable=self.add_rod_mode,
+                       bg=BG, font=('Helvetica', 9),
+                       command=self._on_add_rod_mode_toggle).pack(anchor='w')
+
         box = tk.LabelFrame(parent, text='Geometry', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=(6, 4))
 

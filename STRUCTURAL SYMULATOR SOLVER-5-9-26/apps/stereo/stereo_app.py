@@ -73,6 +73,7 @@ from apps.stereo.stereo_app_colors import (             # noqa: F401
 from apps.stereo.stereo_app_canvas_geom import (        # noqa: F401
     _point_segment_distance,
 )
+from apps.stereo.stereo_app_shell import StereoShellMixin
 from apps.stereo.stereo_app_panels import StereoPanelsMixin
 from apps.stereo.stereo_app_model import StereoModelMixin
 from apps.stereo.stereo_app_view import StereoViewMixin
@@ -83,7 +84,7 @@ from apps.stereo.stereo_app_addons import StereoAddonsMixin
 from apps.stereo.stereo_app_reports import StereoReportsMixin
 
 
-class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
+class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
                 StereoRenderMixin, StereoModuleEditorMixin,
                 StereoWizardMixin, StereoAddonsMixin, StereoReportsMixin,
                 UnitsMixin):

@@ -29,6 +29,8 @@ class StereoReportsMixin:
         self._refresh_indeterminacy_label()
         self._sync_selection_fields()
         self._me_maybe_refresh_topology()
+        self._refresh_status()
+        self._refresh_shape_note()
         self._draw()
 
     def _combined_loads_by_node(self):

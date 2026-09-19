@@ -556,6 +556,7 @@ def test_chord_and_web_properties_apply_to_the_right_members(app):
 
 
 def test_connectivity_toggle_shows_and_hides_the_IJ_fields(app):
+    _mode(app, 'section')
     app.sec_conn.set('pin')
     app._on_connectivity_change()
     app.root.update_idletasks()
@@ -2390,10 +2391,23 @@ def test_wizard_generated_mesh_is_undoable(app):
 
 # ── Module Editor ────────────────────────────────────────────────────────────
 
+def _mode(app, key):
+    """Activate a mode before asserting its widgets are mapped.
+
+    The rail packs exactly one mode's panel and forgets the rest, so a
+    widget in an inactive mode is genuinely not mapped -- winfo_ismapped is
+    telling the truth. Tests that ask whether a box is showing have to say
+    which mode they are in first, the same way a user would.
+    """
+    app._set_mode(key)
+    app.root.update_idletasks()
+
+
 def _edit_mode(app, role_id=0):
     """Leave the frozen base module and select a MEASURED one, which is what
     the edit actions act on. The panel opens on the base by design -- it is
     the grid's reference -- so every editing test has to step off it first."""
+    _mode(app, 'module')
     app._me_role_id = role_id
     app._me_selection = None
     app._me_render()
@@ -2523,6 +2537,7 @@ def test_the_panel_says_the_base_module_is_a_reference(app):
 
 
 def test_module_editor_3d_panel_is_separate_and_above_the_flattened_view(app):
+    _mode(app, 'module')
     # a distinct widget, not an overlay drawn onto me_canvas
     assert app.me3d_canvas is not app.me_canvas
     assert app.me3d_zc.winfo_y() < app.me_canvas.winfo_y()
@@ -2618,6 +2633,7 @@ def test_module_editor_3d_panel_orbits_independently_of_the_main_canvas(app):
 
 
 def test_module_editor_3d_panel_zooms_via_the_mouse_wheel(app):
+    _mode(app, 'module')
     zoom0 = app.me3d_zc.zoom
 
     class FakeWheelEvent:
@@ -2723,6 +2739,7 @@ def test_module_3d_panel_shows_height_and_angle_when_an_apex_exists(app):
 
 
 def test_module_editor_clicking_a_node_selects_it_and_shows_the_node_box(app):
+    _mode(app, 'module')
     items = app.me_canvas.find_withtag('node')
     x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
     app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
@@ -2732,6 +2749,7 @@ def test_module_editor_clicking_a_node_selects_it_and_shows_the_node_box(app):
 
 
 def test_module_editor_clicking_a_rod_selects_it_and_shows_the_edge_box(app):
+    _mode(app, 'module')
     items = app.me_canvas.find_withtag('edge')
     x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
     app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
@@ -2791,6 +2809,7 @@ def test_module_editor_lock_prevents_setting_the_length(app, dialogs):
 
 
 def test_module_editor_toggle_adds_and_removes_a_diagonal(app):
+    _mode(app, 'module')
     quad_role = next((r for r in sorted(app._me_roles)
                       if len(app._me_cells[app._me_roles[r][0]]['nodes']) == 4), None)
     assert quad_role is not None
@@ -3180,11 +3199,12 @@ def test_moment_mode_backdrop_is_a_no_op_before_analysis(app):
 
 def _colorbar_rects(app):
     """Canvas rectangle items belonging to a colorbar -- excludes the
-    support-box rectangles (tagged 'node') and the lasso rectangle (tagged
-    'lasso'), neither of which is part of any colorbar."""
+    support-box rectangles (tagged 'node'), the lasso rectangle (tagged
+    'lasso') and the legend's own card (tagged 'legend_card'), none of which
+    is part of any colorbar."""
     return [i for i in app.canvas.find_withtag('all')
             if app.canvas.type(i) == 'rectangle'
-            and not ({'node', 'lasso'} & set(app.canvas.gettags(i)))]
+            and not ({'node', 'lasso', 'legend_card'} & set(app.canvas.gettags(i)))]
 
 
 def test_force_colorbar_is_a_continuous_gradient_not_flat_swatches(app):
@@ -4125,3 +4145,124 @@ def test_thickness_by_stress_legend_caption_appears_only_when_active(app):
     assert any('thickness' in t.lower() and 'stress' in t.lower() for t in texts)
 
 
+
+
+# ── the shell: mode rail, one context panel, status bar ─────────────────────
+
+def test_the_window_opens_on_the_build_mode(app):
+    from apps.stereo import stereo_app_shell as shell
+    assert app.active_mode.get() == shell.DEFAULT_MODE == 'build'
+    assert app.mode_title.get() == 'BUILD'
+
+
+def test_exactly_one_mode_panel_is_mapped_at_a_time(app):
+    """The point of the rail. Eight panels exist; seven are forgotten, so
+    none of them is claiming width the canvas could be using."""
+    from apps.stereo import stereo_app_shell as shell
+    for key, _glyph, _label, _tip in shell.MODES:
+        app._set_mode(key)
+        app.root.update_idletasks()
+        packed = [k for k, f in app._mode_frames.items() if f.winfo_manager() != '']
+        assert packed == [key], f'{key}: {packed}'
+
+
+def test_every_mode_has_a_rail_item_and_a_panel(app):
+    from apps.stereo import stereo_app_shell as shell
+    for key, _glyph, _label, _tip in shell.MODES:
+        assert key in app._rail_buttons, key
+        assert key in app._mode_frames, key
+
+
+def test_clicking_a_rail_item_switches_mode(app):
+    item, _stripe, _body, _icon, _name = app._rail_buttons['load']
+    item.event_generate('<Button-1>')
+    app.root.update_idletasks()
+    assert app.active_mode.get() == 'load'
+    assert app.mode_title.get() == 'LOAD'
+
+
+def test_an_unknown_mode_is_ignored_rather_than_blanking_the_panel(app):
+    app._set_mode('support')
+    app._set_mode('not-a-mode')
+    assert app.active_mode.get() == 'support'
+
+
+def test_the_status_bar_reports_the_analysis(app):
+    """The single most useful line the older version of this tab had, and
+    the one the rebuilt one had lost."""
+    app._analyze()
+    text = app.status_var.get()
+    assert text.startswith('Analyzed')
+    assert 'utilisation' in text
+    assert 'ΣRz' in text
+    assert app.status_kind.get() == 'ok'
+
+
+def test_the_status_bar_says_when_nothing_has_been_analyzed(app):
+    app.results = None
+    app.member_checks = None
+    app._refresh_status()
+    assert 'not analyzed' in app.status_var.get()
+    assert app.status_kind.get() != 'ok'
+
+
+def test_the_status_bar_follows_the_load_slider(app):
+    """Everything else in the tab scales with Load %; the status line has to
+    scale with it too or it contradicts the drawing beside it."""
+    app._analyze()
+    full = app.status_var.get()
+    app.load_fraction.set(50)
+    app._refresh_status()
+    assert app.status_var.get() != full
+
+
+def test_display_state_survives_closing_the_popover(app):
+    """The popover is built on demand and destroyed on close, so its widgets
+    cannot own the state -- _draw reads show_deformed on the very first
+    frame, long before anyone opens Display."""
+    assert hasattr(app, 'show_deformed')
+    app._toggle_display_popover()
+    app.root.update_idletasks()
+    app.show_deformed.set(True)
+    app._toggle_display_popover()
+    app.root.update_idletasks()
+    assert app.show_deformed.get() is True
+    assert getattr(app, '_display_pop', None) is None
+
+
+def test_the_display_popover_opens_and_closes_on_the_same_button(app):
+    app._toggle_display_popover()
+    assert app._display_pop is not None and app._display_pop.winfo_exists()
+    app._toggle_display_popover()
+    assert app._display_pop is None
+
+
+def test_the_legend_sits_on_its_own_card_in_the_corner(app):
+    """Kept in the corner of the display, where you look when reading colour
+    off the model -- but on a ground of its own, so the ramp and its numbers
+    are legible over whatever part of the structure lies behind them."""
+    app._analyze()
+    app.colour_by_force.set(True)
+    app._draw()
+    cards = app.canvas.find_withtag('legend_card')
+    assert len(cards) == 1
+    x0, y0, x1, y1 = app.canvas.coords(cards[0])
+    assert x0 < 60 and y0 < 60, 'the card left its corner'
+    assert x1 > x0 and y1 > y0
+
+
+def test_the_legend_card_sits_under_its_own_text(app):
+    app._analyze()
+    app._draw()
+    card = app.canvas.find_withtag('legend_card')[0]
+    # find_all returns STACKING order, bottom first -- item ids are creation
+    # order and say nothing about who is drawn over whom.
+    order = list(app.canvas.find_all())
+    assert order.index(card) < len(order) - 1, \
+        'the card is on top of the legend it is meant to back'
+
+
+def test_no_model_is_reported_as_no_model(app):
+    app.nodes, app.members, app.results = [], [], None
+    app._refresh_status()
+    assert 'No model' in app.status_var.get()

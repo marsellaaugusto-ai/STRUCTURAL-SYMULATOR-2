@@ -221,3 +221,10 @@ LOAD_DIRECTION_NAMES = tuple(LOAD_DIRECTIONS)
 AREA_SCOPE_ALL = 'Whole roof/shell surface'
 AREA_SCOPE_SELECTED = 'Selected nodes only'
 AREA_SCOPES = (AREA_SCOPE_ALL, AREA_SCOPE_SELECTED)
+
+
+# The legend sits in the corner of the canvas -- where you look when reading
+# colour off the model -- on its own ground, so the ramp and its numbers are
+# legible over whatever part of the structure lies behind them.
+LEGEND_CARD_BG = '#fbfcfd'
+LEGEND_CARD_EDGE = '#ccd4db'

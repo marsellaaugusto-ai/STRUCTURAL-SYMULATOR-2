@@ -37,22 +37,66 @@ class StereoViewMixin:
         else:
             self._draw()
 
+    VIEW_FIT_MARGIN = 0.82
+
+    def _fit_zoom(self, w, h):
+        """The zoom that makes the current model fill most of the canvas.
+
+        PX_PER_M is a fixed 20 px/m, so the size a model appears at is
+        decided entirely by how many metres across it is: a 6 m module
+        filled the canvas and a 40 m dome ran off it, and a freshly built
+        12 m surface landed as a small clump in the middle of a lot of
+        empty white. Fit the zoom to the model's own projected extent
+        instead, so "reset view" means "show me the model" at any scale.
+
+        Returns None when there is nothing to fit (no model, or a canvas
+        that has not been laid out yet), and the caller keeps zoom = 1.
+        """
+        if not self.nodes or w <= 1 or h <= 1:
+            return None
+        proj = [self._project(x, y, z) for x, y, z in self.nodes]
+        xs = [p[0] for p in proj]
+        ys = [p[1] for p in proj]
+        span_x = (max(xs) - min(xs)) * self.PX_PER_M
+        span_y = (max(ys) - min(ys)) * self.PX_PER_M
+        # A single node, or a model seen exactly edge-on, has no extent in
+        # one direction; that direction simply does not constrain the fit.
+        fits = []
+        if span_x > 1.0:
+            fits.append(w * self.VIEW_FIT_MARGIN / span_x)
+        if span_y > 1.0:
+            fits.append(h * self.VIEW_FIT_MARGIN / span_y)
+        if not fits:
+            return None
+        return max(self.zc.MIN_ZOOM, min(self.zc.MAX_ZOOM, min(fits)))
+
     def _reset_view(self, redraw=True):
-        """Reset camera angle, zoom and pan -- and, critically, CENTER the
-        model in the canvas. ZoomCanvas.reset_view() alone sets pan to
-        (0, 0), which maps the model's own centroid (already subtracted
-        out in _draw's `to_screen`) to screen pixel (0, 0) -- the canvas's
-        top-left CORNER, not its center. Left uncorrected, most of a
-        freshly generated mesh renders half off-screen above and to the
-        left of the visible area, which would make mouse orbiting feel
-        broken (nothing to see) even though the camera math is fine."""
+        """Reset the camera angle, then fit the zoom to the model and CENTER
+        it in the canvas.
+
+        ZoomCanvas.reset_view() alone sets pan to (0, 0), which maps the
+        model's own centroid (already subtracted out in _draw's
+        `to_screen`) to screen pixel (0, 0) -- the canvas's top-left
+        CORNER, not its center. Left uncorrected, most of a freshly
+        generated mesh renders half off-screen above and to the left of
+        the visible area, which would make mouse orbiting feel broken
+        (nothing to see) even though the camera math is fine.
+
+        The centring pan is NOT half the canvas: w2s multiplies by zoom
+        AFTER adding the pan, so the pan that lands the centroid in the
+        middle is w / (2 * zoom). Those agree only at zoom = 1, which is
+        why this has to be computed after the fit, not before it.
+        """
         self.azimuth = 35.0
         self.elevation = 22.0
         self.zc.reset_view()
         w = self.canvas.winfo_width()
         h = self.canvas.winfo_height()
-        self.zc.pan_x = (w if w > 1 else 400) / 2.0
-        self.zc.pan_y = (h if h > 1 else 400) / 2.0
+        w = w if w > 1 else 400
+        h = h if h > 1 else 400
+        self.zc.zoom = self._fit_zoom(w, h) or 1.0
+        self.zc.pan_x = w / (2.0 * self.zc.zoom)
+        self.zc.pan_y = h / (2.0 * self.zc.zoom)
         self._view_touched = False
         if redraw:
             self._draw()

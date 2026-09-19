@@ -638,9 +638,13 @@ def test_reset_view_recenters_and_restores_the_default_angle(app):
 
     app._reset_view()
     assert app.azimuth == 35.0 and app.elevation == 22.0
+    # The centroid lands in the middle of the canvas. Asserting pan_x == w/2
+    # instead would be asserting the arithmetic of one particular zoom: w2s
+    # multiplies by zoom AFTER adding the pan, so the centring pan is
+    # w / (2 * zoom) and the two agree only at zoom = 1.
     w, h = app.canvas.winfo_width(), app.canvas.winfo_height()
-    assert app.zc.pan_x == pytest.approx(w / 2.0)
-    assert app.zc.pan_y == pytest.approx(h / 2.0)
+    sx, sy = app.zc.w2s(0.0, 0.0)
+    assert (sx, sy) == pytest.approx((w / 2.0, h / 2.0), abs=1.0)
 
 
 # ── multi-select applying to supports/loads in one shot ─────────────────────
@@ -669,12 +673,50 @@ def test_the_model_is_centered_in_the_canvas_after_generate(app):
     """Regression: pan used to stay at ZoomCanvas's own default (0, 0),
     which maps the model's centroid to the canvas's top-left CORNER
     instead of its center -- most of a freshly generated mesh rendered
-    half off-screen. This checks the actual screen position of the
-    model's own centroid node bounding box middle, not just that some pan
-    value changed."""
+    half off-screen. This checks the actual screen position the model's
+    own centroid is drawn at, not just that some pan value changed."""
     w, h = app.canvas.winfo_width(), app.canvas.winfo_height()
-    assert app.zc.pan_x == pytest.approx(w / 2.0, abs=1.0)
-    assert app.zc.pan_y == pytest.approx(h / 2.0, abs=1.0)
+    sx, sy = app.zc.w2s(0.0, 0.0)
+    assert (sx, sy) == pytest.approx((w / 2.0, h / 2.0), abs=1.0)
+
+
+def test_a_generated_mesh_is_zoomed_to_fill_the_canvas(app):
+    """PX_PER_M is a fixed 20 px/m, so without a fit the size a model
+    appears at is decided by how many metres across it happens to be: a
+    small module filled the view and a wide dome landed as a clump in the
+    middle of a lot of white. Reset view has to mean "show me the model"."""
+    w, h = app.canvas.winfo_width(), app.canvas.winfo_height()
+    proj = [app._project(x, y, z) for x, y, z in app.nodes]
+    xs = [p[0] for p in proj]; ys = [p[1] for p in proj]
+    span_x = (max(xs) - min(xs)) * app.PX_PER_M * app.zc.zoom
+    span_y = (max(ys) - min(ys)) * app.PX_PER_M * app.zc.zoom
+    assert span_x <= w and span_y <= h, 'the model runs off the canvas'
+    assert max(span_x / w, span_y / h) > 0.5, 'the model is a clump in the middle'
+
+
+def test_a_model_four_times_bigger_is_still_fitted(app):
+    """The fit is what makes the two look the same size on screen; a fixed
+    zoom would show one of them at a quarter of the other."""
+    small = app._fit_zoom(1000, 800)
+    app.nodes = [(4.0 * x, 4.0 * y, 4.0 * z) for x, y, z in app.nodes]
+    big = app._fit_zoom(1000, 800)
+    assert big == pytest.approx(small / 4.0, rel=0.02)
+
+
+def test_a_model_too_big_to_fit_stops_at_the_canvas_zoom_floor(app):
+    """ZoomCanvas will not go below MIN_ZOOM -- it is a shared widget limit,
+    not this tab's to lift -- so a structure wider than the floor can show
+    is drawn AT the floor rather than at some illegal zoom the wheel could
+    never return to."""
+    app.nodes = [(500.0 * x, 500.0 * y, 500.0 * z) for x, y, z in app.nodes]
+    assert app._fit_zoom(1000, 800) == app.zc.MIN_ZOOM
+
+
+def test_an_empty_model_has_nothing_to_fit_and_says_so(app):
+    app.nodes = []
+    assert app._fit_zoom(1000, 800) is None
+    app._reset_view()
+    assert app.zc.zoom == 1.0
 
 
 # ── flat_grid chord pattern selector ─────────────────────────────────────────

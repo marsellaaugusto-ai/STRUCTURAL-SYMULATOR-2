@@ -569,3 +569,73 @@ def wave_shell(span_x, span_y, depth, module, rise, waves=2.0,
 
     return flat_grid(span_x, span_y, depth, module, offset=offset, pattern=pattern,
                      height_fn=height_fn)
+
+
+def billow_shell(span_x, span_y, depth, module, rise, waves_x=2.0, waves_y=2.0,
+                 offset=True, pattern='square'):
+    """A BILLOWING (two-way wave) shell -- the cloth-pinned-at-its-low-points
+    roof, of which the Bosjes Chapel is the best-known built example:
+
+        z = rise * cos(pi * waves_x * (x-cx)/span_x)
+                 * cos(pi * waves_y * (y-cy)/span_y)
+
+    It is the doubly curved sibling of wave_shell, and the difference is the
+    whole point of having both. wave_shell corrugates in ONE direction and
+    is dead straight along the other -- a developable surface, stiff across
+    the waves and relying on the grid's own depth along them. This one waves
+    in BOTH, so every point of it has curvature in two directions at once
+    and the roof carries load by genuine shell action everywhere rather than
+    as a row of parallel arches.
+
+    `waves_x` and `waves_y` count HALF waves across each span, and the count
+    is what picks the roof out of the family:
+
+      1, 1  a single bubble, zero all the way round the plan edge -- a
+            square sail or a lifted canopy.
+      2, 2  the chapel configuration: the surface touches z = 0 along the
+            lines a quarter and three quarters across each span, dips to
+            -rise at the MIDDLE OF EACH EDGE, and rises to +rise at all four
+            CORNERS and again at the centre. Those four edge-midpoint lows
+            are where such a roof comes to the ground, and supporting it
+            there and nowhere else is what makes the corners fly.
+      3, 2  and so on: an egg-crate of alternating hills and hollows, the
+            long-span industrial version of the same surface.
+
+    A fractional count is allowed and is how a roof is made to start and
+    stop mid-wave -- waves_x=1.5 gives a high edge at one end and a low one
+    at the other.
+
+    Structurally the alternating hills and hollows are the reason this shape
+    is worth building: each hollow is an arch spanning between its two
+    neighbouring highs in BOTH directions, so the effective structural depth
+    is the full crest-to-trough amplitude rather than the depth of the grid,
+    and the surface has no straight line in it anywhere to unroll along.
+    The price is that the membrane forces change sign between hill and
+    hollow, so the reversal lines -- where z crosses zero -- are where the
+    chords swap from tension to compression and are worth looking at in the
+    Analyse colours before sizing anything.
+
+    rise    : the crest height (m) above the mean plane; the hollows go the
+              same distance below it, so the full amplitude is 2 * rise.
+    waves_x,
+    waves_y : half waves across each span (may be fractional).
+
+    Returns the shared {'nodes','members','support_candidates'} dict. Note
+    that `support_candidates` is flat_grid's own plan perimeter, which for
+    the 2, 2 case includes BOTH the four edge-midpoint lows the roof really
+    stands on AND the corners it is meant to cantilever out to -- supporting
+    the whole perimeter turns the corners from flying to held, which is a
+    different building. Use the Support panel to keep the lows.
+    """
+    rise = float(rise)
+    waves_x = float(waves_x); waves_y = float(waves_y)
+    sx = float(span_x) if span_x > 0 else 1.0
+    sy = float(span_y) if span_y > 0 else 1.0
+    cx, cy = sx / 2.0, sy / 2.0
+
+    def height_fn(x, y):
+        return (rise * math.cos(math.pi * waves_x * (x - cx) / sx)
+                     * math.cos(math.pi * waves_y * (y - cy) / sy))
+
+    return flat_grid(span_x, span_y, depth, module, offset=offset, pattern=pattern,
+                     height_fn=height_fn)

@@ -2462,6 +2462,8 @@ NEW_FAMILY_CASES = {
     'conoid_shell': dict(span_x=18, span_y=12, depth=1.2, module=3, rise=4),
     'monkey_saddle_shell': dict(span_x=18, span_y=18, depth=1.2, module=3, rise=1.5),
     'wave_shell': dict(span_x=24, span_y=12, depth=1.0, module=2, rise=3, waves=2.0),
+    'billow_shell': dict(span_x=24, span_y=24, depth=1.2, module=2, rise=4,
+                         waves_x=2.0, waves_y=2.0),
     'catenary_vault': dict(span=12, rise=5, length=18, n_arch=8, n_bays=8,
                            double_layer=True, depth=0.6),
     'torus_segment': dict(major_radius=14, tube_radius=5, sweep_deg=180, arc_deg=180,
@@ -2801,3 +2803,74 @@ def test_a_helicoid_on_the_axis_itself_is_refused():
         sg.helicoid_ramp(0.0, 9, turns=1.0)
     with pytest.raises(ValueError):
         sg.helicoid_ramp(9.0, 4.0, turns=1.0)
+
+
+def test_the_billow_shell_dips_at_the_edge_midpoints_and_flies_at_the_corners():
+    """The 2-by-2 case, which is the configuration the built examples use:
+    the roof comes to the ground at the MIDDLE OF EACH EDGE and soars at
+    all four corners and at the centre. Getting the half-wave count's phase
+    wrong swaps those two, which is a different building entirely."""
+    span, rise = 24.0, 4.0
+    mesh = sg.billow_shell(span, span, depth=1.0, module=2, rise=rise,
+                           waves_x=2.0, waves_y=2.0)
+    for corner in ((0, 0), (span, 0), (0, span), (span, span)):
+        assert _z_at(mesh, *corner) == pytest.approx(+rise, abs=1e-9)
+    for edge_mid in ((span / 2, 0), (0, span / 2), (span, span / 2), (span / 2, span)):
+        assert _z_at(mesh, *edge_mid) == pytest.approx(-rise, abs=1e-9)
+    assert _z_at(mesh, span / 2, span / 2) == pytest.approx(+rise, abs=1e-9)
+    # the sign-reversal lines, a quarter and three quarters across each span
+    assert _z_at(mesh, span / 4, span / 4) == pytest.approx(0.0, abs=1e-9)
+    assert _z_at(mesh, 3 * span / 4, span / 4) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_one_by_one_billow_is_a_single_bubble_zero_all_round_its_edge():
+    span, rise = 12.0, 3.0
+    mesh = sg.billow_shell(span, span, depth=1.0, module=1.5, rise=rise,
+                           waves_x=1.0, waves_y=1.0)
+    assert _z_at(mesh, span / 2, span / 2) == pytest.approx(+rise, abs=1e-9)
+    for edge in ((0, 3.0), (span, 6.0), (4.5, 0), (7.5, span)):
+        assert _z_at(mesh, *edge) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_the_billow_waves_in_both_directions_where_the_one_way_wave_does_not():
+    """The whole reason both exist. wave_shell is dead straight along y -- a
+    developable surface -- and the billow is not, which is what gives it
+    curvature everywhere instead of a row of parallel arches."""
+    # One x station, every node on it. The offset top layer sits at
+    # half-module x positions, so a bottom-layer x like 6.0 holds only
+    # bottom-layer nodes -- which is the point: if the surface is straight
+    # along y, every one of them is at the SAME height.
+    flat = sg.wave_shell(24, 24, depth=1.0, module=2, rise=4, waves=2.0)
+    along_y = {round(n[2], 9) for n in flat['nodes'] if abs(n[0] - 6.0) < 1e-9}
+    assert len(along_y) == 1, 'the one-way wave must be dead straight along y'
+
+    # Probed at x = 0, an ANTINODE of the x factor. At x = 6 the 2-half-wave
+    # x factor is exactly zero, so z is zero for every y there and the
+    # station says nothing about whether the surface waves along y -- a
+    # degenerate probe that passes for a flat roof too.
+    billow = sg.billow_shell(24, 24, depth=1.0, module=2, rise=4,
+                             waves_x=2.0, waves_y=2.0)
+    heights = {round(n[2], 6) for n in billow['nodes'] if abs(n[0]) < 1e-9}
+    assert len(heights) > 4, 'the billow must vary along y as well as along x'
+
+
+def test_the_billow_shell_stands_on_its_four_edge_midpoint_lows_alone():
+    """Supporting it there and nowhere else is what makes the corners fly,
+    and it has to actually solve that way -- four pinned points is twelve
+    restraints, and whether the rest of the roof hangs together off them is
+    a question about the mesh, not about the count."""
+    span, rise = 24.0, 4.0
+    mesh = sg.billow_shell(span, span, depth=1.2, module=2, rise=rise,
+                           waves_x=2.0, waves_y=2.0)
+    lows = [i for i, (x, y, z) in enumerate(mesh['nodes'])
+            if z < -rise * 0.9 and i in mesh['support_candidates']]
+    assert len(lows) == 4, f'expected four edge-midpoint lows, found {len(lows)}'
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    res, err = sm.analyze(mesh['nodes'], mesh['members'], loads,
+                          [{'node': i, 'type': 'pin'} for i in lows])
+    assert err is None, err
+    worst = max(abs(c) for nr in res['node_res'] for c in (nr['ux'], nr['uy'], nr['uz']))
+    assert worst < 200.0, f'{worst:.0f} mm under self weight alone'

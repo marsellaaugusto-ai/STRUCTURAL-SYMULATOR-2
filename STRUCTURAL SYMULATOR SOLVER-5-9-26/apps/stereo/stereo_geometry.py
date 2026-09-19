@@ -90,7 +90,7 @@ from apps.stereo.stereo_geometry_core import (
 from apps.stereo.stereo_geometry_grids import (
     flat_grid, hypar_shell, hip_roof_grid, groin_vault, vierendeel_grid,
     elliptic_paraboloid_shell, elliptic_hypar_shell, conoid_shell,
-    monkey_saddle_shell, wave_shell,
+    monkey_saddle_shell, wave_shell, billow_shell,
 )
 from apps.stereo.stereo_geometry_vaults import (
     barrel_vault, parabolic_vault, elliptic_vault, catenary_vault,
@@ -128,7 +128,7 @@ __all__ = [
     'ROUND', 'GENERATORS',
     'flat_grid', 'hypar_shell', 'hip_roof_grid', 'groin_vault',
     'elliptic_paraboloid_shell', 'elliptic_hypar_shell', 'conoid_shell',
-    'monkey_saddle_shell', 'wave_shell',
+    'monkey_saddle_shell', 'wave_shell', 'billow_shell',
     'barrel_vault', 'parabolic_vault', 'elliptic_vault', 'catenary_vault',
     'hyperboloid_tower', 'elliptic_hyperboloid', 'torus_segment',
     'helicoid_ramp',
@@ -156,6 +156,7 @@ GENERATORS = {
     'conoid_shell': conoid_shell,
     'monkey_saddle_shell': monkey_saddle_shell,
     'wave_shell': wave_shell,
+    'billow_shell': billow_shell,
     'catenary_vault': catenary_vault,
     'hyperboloid_tower': hyperboloid_tower,
     'elliptic_hyperboloid': elliptic_hyperboloid,

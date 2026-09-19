@@ -134,6 +134,14 @@ class StereoModelMixin:
                     self.wv_depth.get(), module, rise=self.wv_rise.get(),
                     waves=self.wv_waves.get(), offset=self.wv_offset.get(),
                     pattern=PATTERN_KEY[self.wv_pattern.get()])
+            elif key == 'billow_shell':
+                module = self.bw_module.get()
+                mesh = sg.billow_shell(
+                    int(self.bw_nx.get()) * module, int(self.bw_ny.get()) * module,
+                    self.bw_depth.get(), module, rise=self.bw_rise.get(),
+                    waves_x=self.bw_waves_x.get(), waves_y=self.bw_waves_y.get(),
+                    offset=self.bw_offset.get(),
+                    pattern=PATTERN_KEY[self.bw_pattern.get()])
             elif key == 'catenary_vault':
                 mesh = sg.catenary_vault(self.cv_span.get(), self.cv_rise.get(),
                                          self.cv_length.get(), int(self.cv_n_arch.get()),

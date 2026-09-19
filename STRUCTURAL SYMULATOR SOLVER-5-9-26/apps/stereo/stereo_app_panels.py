@@ -1134,6 +1134,41 @@ class StereoPanelsMixin(_ToolbarModes):
                           'at both ends. It is straight along y, so give the ends '
                           'a diaphragm or an edge arch.')
 
+        self.bw_nx = tk.IntVar(value=12)
+        self.bw_ny = tk.IntVar(value=12)
+        self.bw_module = tk.DoubleVar(value=2.0)
+        self.bw_depth = tk.DoubleVar(value=1.2)
+        self.bw_rise = tk.DoubleVar(value=4.0)
+        self.bw_waves_x = tk.DoubleVar(value=2.0)
+        self.bw_waves_y = tk.DoubleVar(value=2.0)
+        self.bw_offset = tk.BooleanVar(value=True)
+        self.bw_pattern = tk.StringVar(value=PATTERN_LABEL['square'])
+        self.frame_billow_shell = tk.Frame(box, bg=BG)
+        self._labeled_entry(self.frame_billow_shell, 'Modules X (nx):', self.bw_nx)
+        self._labeled_entry(self.frame_billow_shell, 'Modules Y (ny):', self.bw_ny)
+        self._labeled_entry(self.frame_billow_shell, 'Module size (m):', self.bw_module)
+        self._labeled_entry(self.frame_billow_shell, 'Depth (m):', self.bw_depth)
+        self._labeled_entry(self.frame_billow_shell, 'Crest height (m):', self.bw_rise)
+        self._labeled_entry(self.frame_billow_shell, 'Half waves X:', self.bw_waves_x)
+        self._labeled_entry(self.frame_billow_shell, 'Half waves Y:', self.bw_waves_y)
+        tk.Checkbutton(self.frame_billow_shell, text='Offset top layer',
+                       variable=self.bw_offset, bg=BG, font=('Helvetica', 8)
+                      ).pack(anchor='w', padx=6, pady=(2, 4))
+        self._pattern_row(self.frame_billow_shell, self.bw_pattern)
+        self._family_hint(self.frame_billow_shell,
+                          'The cloth pinned at its low points -- Bosjes Chapel '
+                          'and its kind. It waves in BOTH directions, so unlike '
+                          'the one-way wave it has curvature everywhere and '
+                          'carries load by shell action rather than as a row of '
+                          'parallel arches. At 2 and 2 the surface dips to '
+                          '-crest at the MIDDLE OF EACH EDGE and rises to +crest '
+                          'at all four CORNERS and at the centre: support it at '
+                          'those four edge lows ONLY and the corners fly. 1 and '
+                          '1 gives a single bubble, zero all round the edge. The '
+                          'zero lines a quarter and three quarters across each '
+                          'span are where the chords swap tension for '
+                          'compression -- look at them in Analyse before sizing.')
+
         self.cv_span = tk.DoubleVar(value=12.0)
         self.cv_rise = tk.DoubleVar(value=5.0)
         self.cv_length = tk.DoubleVar(value=18.0)
@@ -1284,6 +1319,7 @@ class StereoPanelsMixin(_ToolbarModes):
                               'conoid_shell': self.frame_conoid_shell,
                               'monkey_saddle_shell': self.frame_monkey_saddle_shell,
                               'wave_shell': self.frame_wave_shell,
+                              'billow_shell': self.frame_billow_shell,
                               'catenary_vault': self.frame_catenary_vault,
                               'torus_segment': self.frame_torus_segment,
                               'hyperboloid_tower': self.frame_hyperboloid_tower,

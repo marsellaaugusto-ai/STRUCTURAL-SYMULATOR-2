@@ -20,6 +20,7 @@ from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_examples as sx
 from apps.stereo import stereo_app_analysis as sa
+from apps.stereo import stereo_member_loads as mld
 from apps.stereo.stereo_app_constants import (
     BG, CANVAS_BG, PANEL_W, MODULE_PANEL_W,
     DOF_LABELS, PRESET_NAMES, GRID_PATTERNS, PATTERN_LABEL, GRID_FAMILIES,
@@ -27,11 +28,13 @@ from apps.stereo.stereo_app_constants import (
     DEFORM_MODES, DEFORM_MODE_DISPLACEMENT,
     MOMENT_AXES, MOMENT_AXIS_RESULTANT,
     COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT, COLOUR_MODES,
+    COLOUR_ROD_MOMENT, COLOUR_ROD_SHEAR,
     FILL_NONE, FILL_SHADED, FILL_MODES,
     SCALE_P95, SCALE_MODES,
     FILL_DENSITIES, FILL_DENSITY_DEFAULT,
     AREA_UNIFORM, AREA_GRADIENT, AREA_FIELD, AREA_LAWS,
     LOAD_DIRECTION_NAMES, AREA_SCOPE_ALL, AREA_SCOPES,
+    ROD_SCOPES, ROD_SCOPE_TOP,
     SHAPE_PLAN_PRESETS, PANEL_TEXT_W,
     HYPERBOLOID_BRACES, BRACE_LABEL,
 )
@@ -52,6 +55,8 @@ class _ToolbarModes:
         self.colour_by_force.set(mode == COLOUR_FORCE)
         self.colour_by_util.set(mode == COLOUR_UTIL)
         self.colour_by_moment.set(mode == COLOUR_MOMENT)
+        self.colour_by_rod_moment.set(mode == COLOUR_ROD_MOMENT)
+        self.colour_by_rod_shear.set(mode == COLOUR_ROD_SHEAR)
         self._draw()
 
     def _on_faces_mode_change(self):
@@ -98,6 +103,8 @@ class StereoPanelsMixin(_ToolbarModes):
         self.colour_by_force = tk.BooleanVar(value=True)
         self.colour_by_util = tk.BooleanVar(value=False)
         self.colour_by_moment = tk.BooleanVar(value=False)
+        self.colour_by_rod_moment = tk.BooleanVar(value=False)
+        self.colour_by_rod_shear = tk.BooleanVar(value=False)
         self.colour_mode = tk.StringVar(value=COLOUR_FORCE)
         self.force_scale = tk.StringVar(value=SCALE_P95)
         self.moment_axis = tk.StringVar(value=MOMENT_AXIS_RESULTANT)
@@ -1485,6 +1492,82 @@ class StereoPanelsMixin(_ToolbarModes):
                        variable=self.self_weight_on, bg=BG, font=('Helvetica', 8)
                       ).pack(side='left')
         tk.Entry(row2, textvariable=self.unit_weight_var, width=7).pack(side='left', padx=4)
+
+        # ── distributed load ALONG the rods ─────────────────────────────
+        # The area load above lands on NODES by tributary area, which is
+        # the right idealisation for a space truss and has one consequence
+        # worth stating: nothing then acts on a member between its ends, so
+        # its shear is CONSTANT along it and there is no such thing as a
+        # shear gradient to draw. This group is what puts a load ON the rod
+        # itself -- cladding on a purlin, a service run hung off a chord --
+        # and it is what makes the shear fall and the moment bow along the
+        # member the way any loaded beam's does.
+        rods = tk.LabelFrame(box, text='Distributed load on rods',
+                             bg=BG, font=('Helvetica', 8, 'bold'))
+        rods.pack(fill='x', padx=6, pady=(0, 6))
+        row = tk.Frame(rods, bg=BG)
+        row.pack(fill='x', padx=4, pady=(2, 0))
+        tk.Label(row, text='w (kN/m):', bg=BG, width=9, anchor='w',
+                 font=('Helvetica', 9)).pack(side='left')
+        self.rod_w = tk.DoubleVar(value=1.5)
+        tk.Entry(row, textvariable=self.rod_w, width=8).pack(side='left')
+
+        row = tk.Frame(rods, bg=BG)
+        row.pack(fill='x', padx=4, pady=(2, 0))
+        tk.Label(row, text='On:', bg=BG, width=9, anchor='w',
+                 font=('Helvetica', 9)).pack(side='left')
+        self.rod_scope = tk.StringVar(value=ROD_SCOPE_TOP)
+        ttk.Combobox(row, textvariable=self.rod_scope, state='readonly', width=13,
+                     values=list(ROD_SCOPES)).pack(side='left', fill='x', expand=True)
+
+        row = tk.Frame(rods, bg=BG)
+        row.pack(fill='x', padx=4, pady=(2, 0))
+        tk.Label(row, text='Pushes:', bg=BG, width=9, anchor='w',
+                 font=('Helvetica', 9)).pack(side='left')
+        self.rod_dir = tk.StringVar(value='Down (−Z)')
+        rdir = ttk.Combobox(row, textvariable=self.rod_dir, state='readonly',
+                            width=11, values=list(LOAD_DIRECTION_NAMES))
+        rdir.pack(side='left')
+        rdir.bind('<<ComboboxSelected>>', lambda e: self._on_rod_dir_change())
+        self.rod_dx = tk.DoubleVar(value=0.0)
+        self.rod_dy = tk.DoubleVar(value=0.0)
+        self.rod_dz = tk.DoubleVar(value=-1.0)
+        self.frame_rod_dir = tk.Frame(rods, bg=BG)
+        drow = tk.Frame(self.frame_rod_dir, bg=BG)
+        drow.pack(fill='x', padx=4, pady=(2, 0))
+        for lbl, var in (('dx', self.rod_dx), ('dy', self.rod_dy), ('dz', self.rod_dz)):
+            tk.Label(drow, text=lbl, bg=BG, font=('Helvetica', 8)).pack(side='left')
+            tk.Entry(drow, textvariable=var, width=5).pack(side='left', padx=(1, 5))
+
+        row = tk.Frame(rods, bg=BG)
+        row.pack(fill='x', padx=4, pady=(2, 0))
+        tk.Label(row, text='Quoted:', bg=BG, width=9, anchor='w',
+                 font=('Helvetica', 9)).pack(side='left')
+        self.rod_spread = tk.StringVar(value=mld.SPREAD_LABELS[0][1])
+        ttk.Combobox(row, textvariable=self.rod_spread, state='readonly', width=13,
+                     values=[lbl for _k, lbl in mld.SPREAD_LABELS]
+                    ).pack(side='left', fill='x', expand=True)
+
+        btn = tk.Frame(rods, bg=BG)
+        btn.pack(fill='x', padx=4, pady=(3, 2))
+        tk.Button(btn, text='Apply to rods', command=self._apply_rod_load
+                 ).pack(side='left', padx=2)
+        tk.Button(btn, text='Clear rod loads', command=self._clear_rod_loads
+                 ).pack(side='left', padx=2)
+        self.rod_load_status = tk.Label(rods, text='No rod loads.', bg=BG, fg=HINT_FG,
+                                        font=('Helvetica', 8), justify='left',
+                                        wraplength=PANEL_TEXT_W)
+        self.rod_load_status.pack(anchor='w', padx=6, pady=(0, 4))
+        tk.Label(rods,
+                 text='"Per metre of rod" is the load the member carries '
+                      'itself -- self weight, a hung service, an ice coating. '
+                      '"Per metre projected" is how snow and most code roof '
+                      'loads are quoted: a sloping rod picks up what falls on '
+                      'its PLAN length, not on its true length, so a steeper '
+                      'one carries no more of it and a vertical one carries '
+                      'none at all.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(0, 4))
 
         adv = tk.LabelFrame(box, text='Point loads', bg=BG,
                             font=('Helvetica', 8, 'bold'))

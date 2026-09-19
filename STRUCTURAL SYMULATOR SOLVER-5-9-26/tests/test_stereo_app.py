@@ -5962,3 +5962,172 @@ def test_the_ruled_hyperboloid_bracing_choice_reaches_the_generator():
         mesh = sgx.hyperboloid_tower(5, 20, 6, 16, 1, brace=key)
         counts[key] = len(mesh['members'])
     assert counts['none'] < counts['counter'] < counts['ring']
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Distributed load on the rods, and the two along-the-rod colour modes
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_applying_a_rod_load_reaches_the_solver_and_bows_the_moment(app):
+    """End to end through the real widgets: the panel's w and scope must
+    become member loads, reach analyze, and show up as a moment that
+    actually VARIES along the rod -- which is the entire point of the
+    feature and the thing a purely nodal load cannot produce."""
+    from apps.stereo import stereo_member_loads as mld
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app.rod_w.set(2.0)
+    app._apply_rod_load()
+    assert app.member_loads, 'no rod loads were created'
+    app._analyze()
+    assert app.err is None, app.err
+    varying = [mr for mr in app.results['member_res'] if mld.varies_along_the_rod(mr)]
+    assert len(varying) == len(app.member_loads)
+    mres = varying[0]
+    L = mres['length_m']
+    mid = max(mld.member_diagram(mres, 0.5)[3:], key=abs)
+    assert abs(mid) == pytest.approx(2.0 * L * L / 8.0, rel=1e-6)
+
+
+def test_a_rod_load_shows_the_total_it_actually_applied(app):
+    """The status line is the only feedback that the scope hit what the
+    user meant. A scope that matched nothing, or matched the whole model,
+    both look identical without it."""
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app.rod_w.set(2.0)
+    app._apply_rod_load()
+    text = app.rod_load_status.cget('text')
+    assert str(len(app.member_loads)) in text
+    app._clear_rod_loads()
+    assert app.member_loads == []
+    assert 'No rod loads' in app.rod_load_status.cget('text')
+
+
+def test_applying_a_rod_load_twice_does_not_double_it(app):
+    """One w and one scope on screen has to mean one load. Stacking would
+    quietly double the roof load on a second click of the same button."""
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app.rod_w.set(2.0)
+    app._apply_rod_load()
+    first = len(app.member_loads)
+    app._apply_rod_load()
+    assert len(app.member_loads) == first
+
+
+def test_the_rod_scopes_pick_genuinely_different_rods(app):
+    """A scope list whose entries all resolve to the same set is a dead
+    control that looks like a working one."""
+    counts = {}
+    for scope in (sc.ROD_SCOPE_TOP, sc.ROD_SCOPE_BOTTOM, sc.ROD_SCOPE_WEBS,
+                  sc.ROD_SCOPE_ALL):
+        app.rod_scope.set(scope)
+        counts[scope] = len(app._rods_in_scope())
+    assert counts[sc.ROD_SCOPE_ALL] == len(app.members)
+    assert 0 < counts[sc.ROD_SCOPE_TOP] < counts[sc.ROD_SCOPE_ALL]
+    assert 0 < counts[sc.ROD_SCOPE_BOTTOM] < counts[sc.ROD_SCOPE_ALL]
+    assert 0 < counts[sc.ROD_SCOPE_WEBS] < counts[sc.ROD_SCOPE_ALL]
+    assert counts[sc.ROD_SCOPE_TOP] + counts[sc.ROD_SCOPE_BOTTOM] \
+        + counts[sc.ROD_SCOPE_WEBS] == counts[sc.ROD_SCOPE_ALL]
+
+
+def test_a_rod_load_survives_undo_and_redo(app):
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app._apply_rod_load()
+    applied = len(app.member_loads)
+    app._undo()
+    assert app.member_loads == []
+    app._redo()
+    assert len(app.member_loads) == applied
+
+
+def test_regenerating_drops_the_rod_loads_instead_of_relabelling_them(app):
+    """A rod load is a member INDEX. Carrying one across a regenerate would
+    silently attach it to whatever member now holds that number -- the same
+    trap a welded panel's node indices set."""
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app._apply_rod_load()
+    assert app.member_loads
+    app.grid_family.set(sc.FAMILY_LABEL['dome'])
+    app._on_generator_change()
+    app._generate()
+    assert app.member_loads == []
+
+
+def test_a_stale_rod_load_never_reaches_the_solver(app):
+    """The belt to that braces: even if an index does survive some path
+    not yet imagined, it is dropped before analyze rather than loading a
+    different rod."""
+    app.member_loads = [{'member': len(app.members) + 50, 'w': 3.0,
+                         'dir': (0, 0, -1), 'spread': 'along'}]
+    assert app._valid_member_loads() == []
+    app._analyze()
+    assert app.err is None, app.err
+
+
+@pytest.mark.parametrize('mode', list(sc.COLOUR_MODES))
+def test_every_colour_mode_draws(app, mode):
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app._apply_rod_load()
+    app._analyze()
+    app.colour_mode.set(mode)
+    app._on_colour_mode_change()
+    assert app.canvas.find_withtag('member'), f'{mode} drew no rods'
+
+
+def test_the_along_the_rod_modes_say_so_when_nothing_varies(app):
+    """The honest refusal. Under nodal loads alone a member's shear is
+    constant along it, so there is no field to draw -- and a flat-looking
+    picture with no explanation reads as "no shear here", which is the
+    opposite of the truth."""
+    app.loads = [{'node': 0, 'fx': 0.0, 'fy': 0.0, 'fz': -30.0}]
+    app._analyze()
+    _peak, varies = app._rod_field_anchor(True)
+    assert not varies
+    app.colour_mode.set(sc.COLOUR_ROD_SHEAR)
+    app._on_colour_mode_change()
+    text = ' '.join(app.canvas.itemcget(i, 'text')
+                    for i in app.canvas.find_all()
+                    if app.canvas.type(i) == 'text')
+    assert 'CONSTANT' in text
+
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app._apply_rod_load()
+    app._analyze()
+    _peak, varies = app._rod_field_anchor(True)
+    assert varies
+    app._on_colour_mode_change()
+    text = ' '.join(app.canvas.itemcget(i, 'text')
+                    for i in app.canvas.find_all()
+                    if app.canvas.type(i) == 'text')
+    assert 'CONSTANT' not in text
+
+
+def test_the_rod_field_is_sampled_along_the_rod_not_blended_end_to_end(app):
+    """_draw_gradient_line blends LINEARLY between two end values, which is
+    right for a field defined at the joints and wrong for a member's own
+    moment under a distributed load -- a parabola between those same two
+    ends. Drawing it as a straight blend would flatten the bow the view
+    exists to show, so the midspan colour has to differ from the average of
+    the two end colours."""
+    from apps.stereo import stereo_member_loads as mld
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app.rod_w.set(6.0)
+    app._apply_rod_load()
+    app._analyze()
+    mres = next(mr for mr in app.results['member_res']
+                if mld.varies_along_the_rod(mr))
+    a = app._rod_field_value(mres, 0.0, False)
+    b = app._rod_field_value(mres, 1.0, False)
+    mid = app._rod_field_value(mres, 0.5, False)
+    assert abs(mid - (a + b) / 2.0) > 1e-6
+
+
+def test_the_custom_rod_direction_boxes_appear_only_for_custom(app):
+    _mode(app, 'load')
+    app.rod_dir.set('Custom')
+    app._on_rod_dir_change()
+    app.root.update_idletasks()
+    assert app.frame_rod_dir.winfo_ismapped()
+    app.rod_dir.set('Down (−Z)')
+    app._on_rod_dir_change()
+    app.root.update_idletasks()
+    assert not app.frame_rod_dir.winfo_ismapped()

@@ -23,6 +23,7 @@ from common import declutter_text, LoadScale
 
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
+from apps.stereo import stereo_member_loads as mld
 from apps.stereo.stereo_app_colors import (
     load_path_color,
     force_color, deform_color, util_color, moment_color,
@@ -42,6 +43,7 @@ from apps.stereo.stereo_app_constants import (
     LOAD_PATH_ANIM_TICKS, STRESS_WIDTH_MIN, STRESS_WIDTH_MAX,
     LEGEND_CARD_BG, LEGEND_CARD_EDGE,
     GRADIENT_SEGMENTS, GRADIENT_SEGMENTS_DENSE, GRADIENT_DENSE_MEMBERS,
+    ROD_FIELD_SEGMENTS,
     MOMENT_ZERO_COLOR, MOMENT_NODE_OUTLINE, MOMENT_BACKDROP_COLOR,
     MOMENT_NODE_RADIUS_PX,
     SCALE_P95, FORCE_SCALE_PERCENTILE, CLIP_MARK_COLOR, CLIP_MARK_DASH,
@@ -210,6 +212,78 @@ class StereoRenderMixin:
                 kw['dash'] = dash
             c.create_line(x0, y0, x1, y1, **kw)
 
+    def _draw_field_line(self, c, sx0, sy0, sx1, sy1, value_at, color_fn,
+                         width, tags, dash=None, segments=None):
+        """One rod drawn as a colour blend sampled from `value_at(t)` along
+        it, rather than interpolated between two end values.
+
+        _draw_gradient_line above cannot do this and must not be stretched
+        to: it blends LINEARLY from end to end, which is exactly right for
+        a field that is defined at the joints, and exactly wrong for a
+        member's own moment under a distributed load, which is a PARABOLA
+        between the same two end values. Drawing that as a straight blend
+        would hide the whole effect the view exists to show -- the bow in
+        the middle of the rod.
+        """
+        n = segments or max(self._gradient_segments(), ROD_FIELD_SEGMENTS)
+        for k in range(n):
+            t0, t1 = k / n, (k + 1) / n
+            x0, y0 = sx0 + (sx1 - sx0) * t0, sy0 + (sy1 - sy0) * t0
+            x1, y1 = sx0 + (sx1 - sx0) * t1, sy0 + (sy1 - sy0) * t1
+            kw = {'fill': color_fn(value_at((t0 + t1) / 2.0)),
+                  'width': width, 'tags': tags, 'capstyle': tk.ROUND}
+            if dash:
+                kw['dash'] = dash
+            c.create_line(x0, y0, x1, y1, **kw)
+
+    @staticmethod
+    def _rod_field_value(mres, t, shear):
+        """The signed along-the-rod shear or moment at station `t`.
+
+        Signed, not absolute, and that is the point of the view: a member
+        with fixed-ish ends hogs at the ends and sags in the middle, and a
+        diverging ramp shows the inflection as a line of white across the
+        rod where an absolute one would show a meaningless dip to zero and
+        back.
+
+        Two bending planes, one colour: the component with the larger
+        magnitude governs, and its sign is the one drawn -- the same
+        largest-wins rule node_moment_vectors uses at a joint. For the
+        ordinary case of a load in one plane the other component is zero
+        and the choice never arises.
+        """
+        _N, Vy, Vz, My, Mz = mld.member_diagram(mres, t)
+        pair = (Vy, Vz) if shear else (My, Mz)
+        return max(pair, key=abs)
+
+    def _rod_field_anchor(self, shear):
+        """The peak |value| the along-the-rod ramp is pinned to, and whether
+        ANY member's value actually varies along it.
+
+        The second half matters more than the first. Under nodal loads
+        alone a member's shear is constant and its moment is a straight
+        line between its end values -- there is nothing along the rod to
+        show, and a ramp drawn over it would be a picture of one number per
+        member dressed up as a field. The view says so rather than drawing
+        it (see _draw_legend), which is why this returns the flag rather
+        than leaving the caller to guess from a flat-looking result.
+        """
+        if self.results is None:
+            return 0.0, False
+        peak = 0.0
+        varies = False
+        for mres in self.results['member_res']:
+            if mld.varies_along_the_rod(mres):
+                varies = True
+            worst_v, worst_m = mld.diagram_extremes(mres)
+            peak = max(peak, (worst_v if shear else worst_m))
+        # NOT scaled by 'Load %', exactly as _force_anchor is not: the
+        # drawn VALUE carries the factor, so stepping the slider down moves
+        # the whole model toward the pale middle of a ramp whose numbers
+        # stay pinned to the full-load peak. Scaling both would cancel and
+        # the slider would do nothing at all here.
+        return peak, varies
+
     def _force_anchor(self):
         """The value the axial-force colour ramp's two ends are pinned to.
 
@@ -342,6 +416,11 @@ class StereoRenderMixin:
         by_util = self.colour_by_util.get() and self.member_checks is not None
         by_force = self.colour_by_force.get() and self.results is not None and not by_util
         by_moment = self.colour_by_moment.get() and self.results is not None
+        by_rod_moment = self.colour_by_rod_moment.get() and self.results is not None
+        by_rod_shear = self.colour_by_rod_shear.get() and self.results is not None
+        rod_field = by_rod_moment or by_rod_shear
+        rod_peak, rod_varies = (self._rod_field_anchor(by_rod_shear)
+                                if rod_field else (0.0, False))
         max_abs_N = 0.0
         max_abs_moment = 0.0   # stays 0.0 unless by_moment computes it below;
                                 # declared here (not inside the deformed_only-
@@ -492,7 +571,19 @@ class StereoRenderMixin:
                         and chk.get('slenderness', 0.0) > SLENDERNESS_LIMIT:
                     c.create_line(sx0, sy0, sx1, sy1, fill=SLENDER_HALO_COLOR,
                                  width=width + 5, dash=(4, 3), tags='member')
-                if grad_values is not None and ref_grey is None:
+                if rod_field and ref_grey is None:
+                    # The one colour mode whose value changes WITHIN the
+                    # rod: sampled along it rather than blended between its
+                    # ends, because the moment under a distributed load is
+                    # a parabola and a straight blend would flatten exactly
+                    # the bow this view exists to show.
+                    mres = self.results['member_res'][i]
+                    self._draw_field_line(
+                        c, sx0, sy0, sx1, sy1,
+                        lambda t, _m=mres: self._rod_field_value(_m, t, by_rod_shear) * frac,
+                        lambda v: moment_color(v, rod_peak), width, 'member',
+                        dash=(5, 3) if over else None)
+                elif grad_values is not None and ref_grey is None:
                     self._draw_gradient_line(c, sx0, sy0, sx1, sy1,
                                              grad_values[m['a']], grad_values[m['b']],
                                              grad_color_fn, width, 'member',
@@ -684,6 +775,8 @@ class StereoRenderMixin:
                                stipple='gray12', fill='#333333', tags='lasso')
 
         self._draw_legend(c, by_force, show_def, deformed_only, by_util,
+                          rod_shear=by_rod_shear, rod_moment=by_rod_moment,
+                          rod_peak=rod_peak, rod_varies=rod_varies,
                           max_abs_N=max_abs_N, max_abs_moment=max_abs_moment,
                           frac=frac, clipped=clipped)
         self._to_screen_cache = to_screen   # for hit-testing on click
@@ -1192,7 +1285,9 @@ class StereoRenderMixin:
                          font=('Helvetica', 9, 'bold'), tags='axes')
 
     def _draw_legend(self, c, by_force, show_def=False, deformed_only=False, by_util=False,
-                     max_abs_N=0.0, max_abs_moment=0.0, frac=1.0, clipped=()):
+                     max_abs_N=0.0, max_abs_moment=0.0, frac=1.0, clipped=(),
+                     rod_shear=False, rod_moment=False, rod_peak=0.0,
+                     rod_varies=False):
         # The legend stays in the corner of the display, which is where you
         # look when you are reading colour off the model -- but as a CARD
         # rather than loose text. A card has its own ground, so the ramp and
@@ -1269,7 +1364,28 @@ class StereoRenderMixin:
             y = ty + 12
 
         if not deformed_only:
-            if by_util:
+            if rod_shear or rod_moment:
+                what = 'Shear' if rod_shear else 'Moment'
+                unit = self.u('force') if rod_shear else self.u('moment')
+                caption(f'{what} along each rod, {unit}:')
+                shown, spec = scaled('force' if rod_shear else 'moment', rod_peak)
+                colorbar(lambda v: moment_color(v, rod_peak), -rod_peak, rod_peak,
+                         [(-rod_peak, f'−{shown:{spec}}'), (0.0, '0'),
+                          (rod_peak, f'+{shown:{spec}}')])
+                if not rod_varies:
+                    # The honest refusal. With no load ON the rods there is
+                    # nothing between a member's ends to change the force
+                    # across a cut, so the shear is constant along every
+                    # member and the moment is a straight line between two
+                    # end values. The colours on screen are still true --
+                    # they are just a value PER MEMBER, not a field along
+                    # it -- and saying so beats letting a flat-looking
+                    # picture be read as "no shear here".
+                    caption('No distributed load is on any rod, so shear is')
+                    caption('CONSTANT along each one and moment runs straight')
+                    caption('end to end. Add one under Loads → Distributed')
+                    caption('load on rods to see it actually vary.')
+            elif by_util:
                 caption('Utilization (demand ÷ capacity):')
                 colorbar(util_color, 0.0, 1.2, [(0.0, '0'), (0.5, '0.5'), (1.0, '≥1.0 (over)')])
             elif by_force:

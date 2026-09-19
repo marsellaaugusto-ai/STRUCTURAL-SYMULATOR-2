@@ -20,11 +20,13 @@ from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_checks as sc
 from apps.truss import truss_plates as tp
 from apps.stereo import expr_math as em
+from apps.stereo import stereo_member_loads as mld
 from apps.stereo.stereo_app_constants import (
     DOF_LABELS, FAMILY_KEY, PATTERN_KEY, BRACE_KEY, CHORD_ROLES,
     QUICK_SUPPORT_CUSTOM, QUICK_SUPPORT_PIN, QUICK_SUPPORT_FIXED,
     QUICK_SUPPORT_CLEAR,
     AREA_GRADIENT, AREA_FIELD, AREA_SCOPE_ALL, LOAD_DIRECTIONS,
+    ROD_SCOPE_ALL, ROD_SCOPE_SELECTED, ROD_SCOPE_ROLES,
 )
 
 
@@ -260,6 +262,10 @@ class StereoModelMixin:
         # whichever four nodes now hold those numbers.
         self.panels = []
         self.panel_checks = []
+        # Same reasoning again: a rod load is a member INDEX, so one kept
+        # across a regenerate would land on whatever member now holds that
+        # number.
+        self.member_loads = []
         self.loads = []
         self.results = None
         self.member_checks = None
@@ -609,6 +615,96 @@ class StereoModelMixin:
         q = float(self.area_load_var.get())
         return lambda x, y, z: q
 
+    # ── distributed load along the rods ──────────────────────────────────
+    def _rod_direction(self):
+        """The unit-ish vector a rod load pushes along."""
+        preset = LOAD_DIRECTIONS.get(self.rod_dir.get())
+        if preset is not None:
+            return preset
+        return (float(self.rod_dx.get()), float(self.rod_dy.get()),
+                float(self.rod_dz.get()))
+
+    def _on_rod_dir_change(self):
+        """Show the three component boxes only for a Custom direction --
+        the same rule, and the same pack/pack_forget, _on_area_law_change
+        uses for the area load's own."""
+        if LOAD_DIRECTIONS.get(self.rod_dir.get()) is None:
+            self.frame_rod_dir.pack(fill='x')
+        else:
+            self.frame_rod_dir.pack_forget()
+
+    def _rods_in_scope(self):
+        """Which member indices the chosen scope covers.
+
+        Roles, not picking, because that is how such a load is specified in
+        practice: cladding lands on the top chords and a service run hangs
+        off the bottom ones, and nobody sits and clicks four hundred
+        purlins. 'Selected rod only' is there for the one-off."""
+        scope = self.rod_scope.get()
+        if scope == ROD_SCOPE_SELECTED:
+            return [] if self.selected_member is None else [self.selected_member]
+        if scope == ROD_SCOPE_ALL:
+            return list(range(len(self.members)))
+        roles = ROD_SCOPE_ROLES.get(scope)
+        if roles is None:
+            return list(range(len(self.members)))
+        return [i for i, m in enumerate(self.members) if m.get('role') in roles]
+
+    def _apply_rod_load(self):
+        """Put w kN/m on every rod in scope, REPLACING whatever this feature
+        put there before rather than stacking a second copy on top -- the
+        panel shows one w and one scope, so it has to mean one load."""
+        try:
+            w = float(self.rod_w.get())
+            direction = self._rod_direction()
+        except (tk.TclError, ValueError) as exc:
+            messagebox.showerror('Rod load', str(exc))
+            return
+        targets = self._rods_in_scope()
+        if not targets:
+            messagebox.showerror('Rod load',
+                                 'No rods in that scope. Pick a rod on the '
+                                 'canvas first, or choose a different scope.')
+            return
+        spread = self._rod_spread_key()
+        self._push_undo('rod load')
+        self.member_loads = [{'member': i, 'w': w, 'dir': direction, 'spread': spread}
+                             for i in targets]
+        self.results = None
+        self.member_checks = None
+        self._refresh_rod_load_status()
+        self._refresh_all()
+
+    def _rod_spread_key(self):
+        label = self.rod_spread.get()
+        for key, lbl in mld.SPREAD_LABELS:
+            if lbl == label:
+                return key
+        return mld.ALONG
+
+    def _clear_rod_loads(self):
+        if not self.member_loads:
+            return
+        self._push_undo('clear rod loads')
+        self.member_loads = []
+        self.results = None
+        self.member_checks = None
+        self._refresh_rod_load_status()
+        self._refresh_all()
+
+    def _refresh_rod_load_status(self):
+        if not self.member_loads:
+            self.rod_load_status.config(text='No rod loads.')
+            return
+        total = 0.0
+        for ld in self.member_loads:
+            wx, wy, wz, L = mld.local_intensity(self.nodes, self.members[ld['member']], ld)
+            total += math.hypot(wx, math.hypot(wy, wz)) * L
+        w = self.member_loads[0]['w']
+        self.rod_load_status.config(
+            text=f'{len(self.member_loads)} rod(s) at {w:g} kN/m '
+                 f'-- {self.fmt("force", total)} in total.')
+
     def _all_loads(self):
         """Point loads + (optionally) the area load over the roof/shell
         surface + (optionally) self-weight -- combined once here so _analyze
@@ -627,11 +723,22 @@ class StereoModelMixin:
                 self.nodes, self.members, self.unit_weight_var.get()))
         return loads
 
+    def _valid_member_loads(self):
+        """The rod loads that still point at a member that exists.
+
+        A rod load is a member INDEX, so one kept across a regenerate or an
+        undo would attach itself to whatever member now holds that number --
+        the same trap a panel's node indices set, and clamped the same way
+        rather than trusted."""
+        n = len(self.members)
+        return [ld for ld in getattr(self, 'member_loads', []) if 0 <= ld['member'] < n]
+
     # ── analysis ─────────────────────────────────────────────────────────────
     def _analyze(self):
         loads = self._all_loads()
         res, err = sm.analyze(self.nodes, self.members, loads,
-                              self._active_supports(), panels=self.panels)
+                              self._active_supports(), panels=self.panels,
+                              member_loads=self._valid_member_loads())
         self.err = err
         if err:
             self.results = None

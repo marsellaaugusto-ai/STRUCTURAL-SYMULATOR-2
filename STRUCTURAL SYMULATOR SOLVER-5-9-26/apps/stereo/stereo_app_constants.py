@@ -88,7 +88,17 @@ COLOUR_NONE = 'None'
 COLOUR_FORCE = 'Axial force'
 COLOUR_UTIL = 'Utilization'
 COLOUR_MOMENT = 'Node moment'
-COLOUR_MODES = (COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT)
+# The two along-the-rod fields. These are the only colour modes whose value
+# changes WITHIN a member rather than between members, and they say
+# something true only when a distributed load is actually on the rod: under
+# nodal loads alone a member's shear is constant and its moment runs
+# straight from one end value to the other, so the ramp would be drawing a
+# single number. See stereo_member_loads for why, and _rod_field_anchor for
+# what the view does about a model that carries no rod load at all.
+COLOUR_ROD_MOMENT = 'Moment along rod'
+COLOUR_ROD_SHEAR = 'Shear along rod'
+COLOUR_MODES = (COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT,
+                COLOUR_ROD_MOMENT, COLOUR_ROD_SHEAR)
 
 FILL_NONE = 'None'
 FILL_SHADED = 'Shaded cells'
@@ -126,6 +136,11 @@ FILL_DENSITIES = tuple(FILL_DENSITY_STIPPLE)
 FILL_DENSITY_DEFAULT = 'Light'
 
 
+# An along-the-rod field is a PARABOLA between the member's two ends, so it
+# needs enough pieces to read as a curve rather than as a two-tone rod --
+# more than the linear joint-to-joint blend does, and a floor rather than a
+# fixed count so a dense model's coarser gradient never flattens it away.
+ROD_FIELD_SEGMENTS = 10
 GRADIENT_SEGMENTS = 8
 GRADIENT_SEGMENTS_DENSE = 4
 GRADIENT_DENSE_MEMBERS = 900
@@ -250,6 +265,31 @@ LOAD_DIRECTION_NAMES = tuple(LOAD_DIRECTIONS)
 AREA_SCOPE_ALL = 'Whole roof/shell surface'
 AREA_SCOPE_SELECTED = 'Selected nodes only'
 AREA_SCOPES = (AREA_SCOPE_ALL, AREA_SCOPE_SELECTED)
+
+# Which rods a DISTRIBUTED (along-the-member) load lands on. Roles are
+# offered because that is how such a load is actually specified: cladding
+# and snow arrive on the top chords, a service run hangs off the bottom
+# ones, and nobody loads the webs by hand.
+ROD_SCOPE_TOP = 'Top chords'
+ROD_SCOPE_BOTTOM = 'Bottom chords'
+ROD_SCOPE_CHORDS = 'All chords'
+ROD_SCOPE_WEBS = 'Webs only'
+ROD_SCOPE_ALL = 'Every rod'
+ROD_SCOPE_SELECTED = 'Selected rod only'
+ROD_SCOPES = (ROD_SCOPE_TOP, ROD_SCOPE_BOTTOM, ROD_SCOPE_CHORDS,
+              ROD_SCOPE_WEBS, ROD_SCOPE_ALL, ROD_SCOPE_SELECTED)
+
+# The member roles each scope covers. 'surface_chord' and the rib roles
+# are a single-layer shell's own chords, so a "top chord" load reaches
+# them too -- a shell has one surface and it is the loaded one.
+ROD_SCOPE_ROLES = {
+    ROD_SCOPE_TOP: {'top_chord', 'outer_rib', 'surface_chord', 'purlin', 'hoop'},
+    ROD_SCOPE_BOTTOM: {'bottom_chord', 'inner_rib'},
+    ROD_SCOPE_CHORDS: {'top_chord', 'bottom_chord', 'outer_rib', 'inner_rib',
+                       'surface_chord', 'purlin', 'hoop', 'meridian',
+                       'reinf_chord'},
+    ROD_SCOPE_WEBS: {'web', 'web_diag', 'brace'},
+}
 
 
 # The legend sits in the corner of the canvas -- where you look when reading

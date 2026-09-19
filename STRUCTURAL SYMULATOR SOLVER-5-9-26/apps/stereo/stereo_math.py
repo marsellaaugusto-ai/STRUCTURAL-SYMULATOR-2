@@ -206,7 +206,7 @@ def _rotation_12(local_x, local_y, local_z):
     return T
 
 
-def analyze(nodes, members, loads, supports, panels=None):
+def analyze(nodes, members, loads, supports, panels=None, member_loads=None):
     """Solve the space structure. Returns (result, error). On failure,
     result is None and error is a human-readable string (mirroring every
     other solver in this app, e.g. truss_math.analyze).
@@ -222,12 +222,27 @@ def analyze(nodes, members, loads, supports, panels=None):
                        `panels`, or [] when there are none.
     }
 
+    `member_loads` is optional and defaults to None. Each entry is a
+    distributed load applied ALONG one member (see stereo_member_loads for
+    the dict and for why the two connectivity cases are solved
+    differently). It is what makes a member's shear vary along it at all:
+    under nodal loads alone the shear between two joints is constant, so
+    `member_res` carries 'w_local' -- the local intensity actually on that
+    member -- and stereo_member_loads.member_diagram reads it to give the
+    forces at any station. A member with no load on it gets (0, 0, 0) and
+    the same constant answer at every station, which is the honest one.
+
     `panels` is optional and defaults to None, so every existing caller is
     unaffected. A welded shear panel adds only in-plane SHEAR stiffness over
     its nodes' three translations -- a membrane has no rotational DOF -- so
     the rotational DOFs are deliberately left out of its block rather than
     given a token stiffness.
     """
+    # Imported here rather than at module scope: stereo_member_loads needs
+    # this module's own local-axis and member-vector helpers, so a top-level
+    # import in either direction would be circular.
+    from apps.stereo import stereo_member_loads as mloads
+
     err = check_boundary_setup(nodes, members, supports)
     if err:
         return None, err
@@ -239,6 +254,24 @@ def analyze(nodes, members, loads, supports, panels=None):
         node_r = restraints[sp['node']]
         for d in DOF_NAMES:
             node_r[d] = node_r[d] or r[d]
+
+    member_loads = list(member_loads or [])
+    # A member load is converted to work-equivalent NODAL loads before
+    # assembly (a load between two nodes cannot be fed to a stiffness solve
+    # any other way), and the member's own internal forces are recovered
+    # afterwards by adding its fixed-end vector back in.
+    if member_loads:
+        loads = list(loads) + mloads.equivalent_nodal_loads(nodes, members, member_loads)
+    fixed_end = {}
+    w_local = {}
+    for ld in member_loads:
+        mi = ld['member']
+        f = mloads.fixed_end_local(nodes, members, ld)
+        prev = fixed_end.get(mi)
+        fixed_end[mi] = f if prev is None else [a + b for a, b in zip(prev, f)]
+        wx, wy, wz, _L = mloads.local_intensity(nodes, members[mi], ld)
+        pw = w_local.get(mi, (0.0, 0.0, 0.0))
+        w_local[mi] = (pw[0] + wx, pw[1] + wy, pw[2] + wz)
 
     needs_rot = [False] * N
     for m in members:
@@ -371,10 +404,12 @@ def analyze(nodes, members, loads, supports, panels=None):
         })
 
     member_res = []
-    for m in members:
+    for mi, m in enumerate(members):
         dx, dy, dz, L = member_vector(nodes, m)
+        w_m = w_local.get(mi, (0.0, 0.0, 0.0))
         if L < 1e-9:
-            member_res.append({'N': 0.0, 'conn': m.get('conn', 'pin'), 'length_m': 0.0})
+            member_res.append({'N': 0.0, 'conn': m.get('conn', 'pin'), 'length_m': 0.0,
+                               'w_local': w_m})
             continue
         lx, ly, lz = dx / L, dy / L, dz / L
         a_dof, b_dof = dof_of[m['a']], dof_of[m['b']]
@@ -385,7 +420,8 @@ def analyze(nodes, members, loads, supports, panels=None):
             dirn = np.array([lx, ly, lz])
             elong = float(np.dot(ub - ua, dirn))
             N_force = (m['E'] * 1e9) * (m['A'] * 1e-4) / L * elong
-            member_res.append({'N': N_force / 1e3, 'conn': 'pin', 'length_m': L})
+            member_res.append({'N': N_force / 1e3, 'conn': 'pin', 'length_m': L,
+                               'w_local': w_m})
         else:
             local_x, local_y, local_z = _local_axes(dx, dy, dz, L)
             kloc = _rigid_local_stiffness(m['E'], m['A'], m.get('I', 0.0),
@@ -395,8 +431,15 @@ def analyze(nodes, members, loads, supports, panels=None):
             dgl = np.array([U[i] for i in idx])
             dloc = T @ dgl
             floc = kloc @ dloc
+            fe = fixed_end.get(mi)
+            if fe is not None:
+                # f_end = k*d + f^F: without this the member would report
+                # the end forces of an UNLOADED beam that happens to have
+                # these end displacements, which is a different structure.
+                floc = floc + np.array(fe)
             member_res.append({
                 'N': floc[6] / 1e3, 'conn': 'rigid', 'length_m': L,
+                'w_local': w_m,
                 'Vy_a': floc[1] / 1e3, 'Vz_a': floc[2] / 1e3, 'T': floc[3] / 1e3,
                 'My_a': floc[4] / 1e3, 'Mz_a': floc[5] / 1e3,
                 'My_b': floc[10] / 1e3, 'Mz_b': floc[11] / 1e3,

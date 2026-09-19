@@ -102,6 +102,7 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self.nodes = []
         self.members = []
         self.loads = []
+        self.member_loads = []
         self.panels = []
         self.panel_checks = []
         self._line_pick_first = None
@@ -177,7 +178,8 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
     def _model_snapshot(self):
         return {'nodes': copy.deepcopy(self.nodes), 'members': copy.deepcopy(self.members),
                 'loads': copy.deepcopy(self.loads), 'supports': copy.deepcopy(self.supports),
-                'panels': copy.deepcopy(self.panels)}
+                'panels': copy.deepcopy(self.panels),
+                'member_loads': copy.deepcopy(self.member_loads)}
 
     def _restore_snapshot(self, snap):
         self.nodes = snap['nodes']
@@ -185,6 +187,7 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self.loads = snap['loads']
         self.supports = snap['supports']
         self.panels = snap.get('panels', [])
+        self.member_loads = snap.get('member_loads', [])
         self.results = None
         self.member_checks = None
         self.panel_checks = []
@@ -194,6 +197,11 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         # those indices point past the end of the node list. The very next
         # selection sync then raises IndexError, which is a crash rather
         # than a wrong answer. Drop whatever no longer exists.
+        # A rod load is a member index, so it needs the same clamp for the
+        # same reason: an undo can restore a shorter member list, and a
+        # stale index would silently load a different rod.
+        nm = len(self.members)
+        self.member_loads = [ld for ld in self.member_loads if 0 <= ld['member'] < nm]
         n = len(self.nodes)
         self.selected_nodes = {i for i in self.selected_nodes if i < n}
         if self.selected_member is not None and \

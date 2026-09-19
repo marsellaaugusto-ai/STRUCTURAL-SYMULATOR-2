@@ -285,7 +285,7 @@ class StereoAddonsMixin:
         note = getattr(self, 'col_note', None)
         if note is None:
             return
-        feet = f"{len(bases)} foot{'' if len(bases) == 1 else 's'} pinned"
+        feet = f"{len(bases)} {'foot' if len(bases) == 1 else 'feet'} pinned"
         if freed:
             which = ', '.join(str(i) for i in freed[:6])
             more = f" (+{len(freed) - 6} more)" if len(freed) > 6 else ''

@@ -340,6 +340,7 @@ class StereoShellMixin:
         self._build_selection_panel(self._mode_frames['results'])
         self._build_results_panel(self._mode_frames['results'])
         self._on_connectivity_change()   # hide I/J unless Rigid is selected
+        self._on_col_style_change()      # hide the fields this style ignores
 
     # ── status bar ──────────────────────────────────────────────────────────
     def _build_status_bar(self):

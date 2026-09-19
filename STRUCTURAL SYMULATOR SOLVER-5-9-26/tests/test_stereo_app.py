@@ -1696,7 +1696,19 @@ def test_every_column_style_can_be_added_from_the_panel(app, style):
     cx = sum(app.nodes[i][0] for i in bottom) / len(bottom)
     cy = sum(app.nodes[i][1] for i in bottom) / len(bottom)
     bottom.sort(key=lambda i: (app.nodes[i][0] - cx) ** 2 + (app.nodes[i][1] - cy) ** 2)
-    picked = set(bottom[:9])
+    # The latticed styles run one chord down from each selected node, so
+    # their footprint IS the selection: exactly 3 or 4 nodes, convex, and
+    # no three of them in a line. "The four nearest the centre" is NOT
+    # that -- on this grid it is a kite with three nodes on one row.
+    latticed = style in (sg.COLUMN_LATTICE, sg.COLUMN_TAPERED)
+    if latticed:
+        xs = sorted({round(app.nodes[i][0], 6) for i in bottom})
+        ys = sorted({round(app.nodes[i][1], 6) for i in bottom})
+        picked = {i for i in bottom
+                  if round(app.nodes[i][0], 6) in xs[:2]
+                  and round(app.nodes[i][1], 6) in ys[:2]}
+    else:
+        picked = set(bottom[:9])
     app.selected_nodes = set(picked)
     assert len(picked) >= 3
     n0, m0, sup0 = len(app.nodes), len(app.members), len(app.supports)
@@ -1707,11 +1719,17 @@ def test_every_column_style_can_be_added_from_the_panel(app, style):
     app.col_panels.set(3)
     app._add_column()
     assert len(app.nodes) > n0 and len(app.members) > m0
-    added = len(app.supports) - sup0
+    # Count the NEW pinned nodes, not the net change: a column also hands
+    # its head joints' own supports back to itself, so on a footprint that
+    # was already supported the net change is smaller than the foot count.
+    added = len({s['node'] for s in app.supports if s['node'] >= n0})
     # the plain strut has no capital: one post, and one foot, per node picked
     expected = {sg.COLUMN_PLAIN: len(picked), sg.COLUMN_SHAFT: 1,
-                sg.COLUMN_TRIPOD: 3}.get(style, 4)
+                sg.COLUMN_TRIPOD: 3,
+                sg.COLUMN_LATTICE: len(picked),
+                sg.COLUMN_TAPERED: len(picked)}.get(style, 4)
     assert added == expected, f'{style} pinned {added} feet'
+    assert len(app.supports) <= sup0 + expected
     app._analyze()
     assert app.err is None, f'{style} did not solve from the panel: {app.err}'
 
@@ -5322,3 +5340,104 @@ def test_undo_drops_a_selection_the_restored_model_no_longer_has(app):
     app._undo()
     assert all(i < len(app.nodes) for i in app.selected_nodes)
     app._sync_selection_fields()      # this is what used to raise
+
+
+# ── the column panel shows only the fields its style reads ───────────────────
+
+def test_a_latticed_column_offers_no_capital_fields(app):
+    """A field that does nothing is worse than a missing one: it invites you
+    to set it and then ignores you. The latticed styles have no capital."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_LATTICE)
+    app.root.update_idletasks()
+    assert not _shown(app.frame_col_capital)
+    assert not _shown(app.frame_col_tiers)
+    assert not _shown(app.frame_col_width), 'width is the selection, not a field'
+    assert _shown(app.frame_col_panels)
+
+
+def test_the_shaft_style_still_offers_its_capital_fields(app):
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_SHAFT)
+    app.root.update_idletasks()
+    assert _shown(app.frame_col_capital)
+    assert _shown(app.frame_col_tiers)
+    assert not _shown(app.frame_col_panels)
+
+
+def test_setting_the_style_in_code_refreshes_the_panel(app):
+    """A <<ComboboxSelected>> binding only fires for a real click, so an
+    example or a restored model would leave the previous style's fields on
+    screen. The panel watches the VARIABLE."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_SHAFT)
+    app.root.update_idletasks()
+    assert _shown(app.frame_col_capital)
+    app.col_style.set(sg.COLUMN_TAPERED)
+    app.root.update_idletasks()
+    assert not _shown(app.frame_col_capital)
+
+
+def test_every_style_explains_how_many_nodes_it_wants(app):
+    _mode(app, 'addons')
+    for style in sg.COLUMN_STYLES:
+        app.col_style.set(style)
+        app.root.update_idletasks()
+        hint = app._col_hint.cget('text')
+        assert hint, f'{style} has no hint'
+        assert 'node' in hint.lower()
+
+
+def test_the_optional_fields_keep_their_order_whichever_style_you_came_from(app):
+    """pack_forget then pack APPENDS, which once put Lattice panels below the
+    status note."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_SHAFT)
+    app.root.update_idletasks()
+    app.col_style.set(sg.COLUMN_LATTICE)
+    app.root.update_idletasks()
+    app.col_style.set(sg.COLUMN_LEGS)
+    app.root.update_idletasks()
+    shown = [w for w in app._col_optional.pack_slaves()]
+    want = [f for f in (app.frame_col_capital, app.frame_col_width,
+                        app.frame_col_panels, app.frame_col_tiers) if f in shown]
+    assert shown == want, 'the optional rows came back in a different order'
+
+
+def test_one_foot_is_a_foot_and_three_are_feet(app):
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {app.supports[0]['node']}
+    app._add_column()
+    assert '1 foot pinned' in app.col_note.cget('text')
+
+
+def test_the_cell_census_is_the_first_thing_in_the_analysis_box(app):
+    """It is a reading of the GEOMETRY, so it is the only one of the four
+    that says anything before Analyze has ever been pressed. Fourth, it sat
+    below the fold of a scrolling panel and read as a missing feature."""
+    app.results = None
+    app.member_checks = None
+    _mode(app, 'analyse')
+    app._refresh_analysis_charts()
+    c = app.analysis_canvas
+    texts = [(c.coords(i)[1], c.itemcget(i, 'text'))
+             for i in c.find_all() if c.type(i) == 'text']
+    assert texts
+    census = [y for y, t in texts if 'distinct shapes' in t]
+    assert census, 'the cell census is not drawn at all'
+    others = [y for y, t in texts if 'Analyze' in t]
+    assert others, 'nothing told the user to run Analyze'
+    assert min(census) < min(others), 'the census is below the charts that need a solve'
+
+
+def test_the_cell_census_works_with_no_solve_at_all(app):
+    app.results = None
+    app.member_checks = None
+    _mode(app, 'analyse')
+    app._refresh_analysis_charts()
+    texts = ' '.join(app.analysis_canvas.itemcget(i, 'text')
+                     for i in app.analysis_canvas.find_all()
+                     if app.analysis_canvas.type(i) == 'text')
+    assert 'distinct shapes' in texts
+    assert 'role 0' in texts

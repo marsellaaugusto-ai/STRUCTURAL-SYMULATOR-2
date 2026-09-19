@@ -165,7 +165,9 @@ def cell_census(canvas, width, roles, cells):
     h = 16 + rows * 13
     top = _frame(c, width, h, f'{total} cells in {len(roles)} distinct shapes')
     left, right = 12, width - 14
-    span = right - left - 46
+    # The label reads "role 0: 760 (81%)" -- about 100 px. Reserving 46 let
+    # the widest bar run under its own text.
+    span = right - left - 108
     y = top + 8
     palette = ('#1a6bbd', '#4a90d9', '#7fb3e3', '#aecdee', '#d5e4f7')
     for k, (role_id, idxs) in enumerate(shown):

@@ -346,7 +346,7 @@ class StereoPanelsMixin(_ToolbarModes):
                        bg=BG, font=('Helvetica', 8), anchor='w',
                        command=self._draw).pack(fill='x', padx=6, pady=(0, 4))
 
-        box = tk.LabelFrame(parent, text='What the solve found', bg=BG,
+        box = tk.LabelFrame(parent, text='Analysis', bg=BG,
                             font=('Helvetica', 10, 'bold'))
         box.pack(fill='both', expand=True, padx=6, pady=4)
         self.analysis_canvas = tk.Canvas(box, width=PANEL_W - 30,
@@ -370,11 +370,15 @@ class StereoPanelsMixin(_ToolbarModes):
         res = self.results or {}
         y = 0
         for draw in (
+            # The cell census FIRST: it is a reading of the geometry, so it
+            # is the only one of the four that says anything before Analyze
+            # has ever been pressed. Fourth, it sat below the fold of a
+            # scrolling panel and looked like a missing feature.
+            lambda: self._draw_cell_census(c, width),
             lambda: sa.utilisation_histogram(c, width, self.member_checks, frac),
             lambda: sa.force_split(c, width, res.get('member_res'), frac),
             lambda: sa.support_reactions(c, width, res.get('reactions'),
                                          self.u('force'), frac),
-            lambda: self._draw_cell_census(c, width),
         ):
             y += self._chart_at(c, y, draw)
         # Grow the canvas to whatever the charts needed. A fixed height cut
@@ -592,6 +596,47 @@ class StereoPanelsMixin(_ToolbarModes):
                  font=('Helvetica', 8, 'italic'), wraplength=PANEL_W - 30,
                  justify='left').pack(anchor='w', padx=6, pady=(4, 8))
         self._on_shape_mode_change()
+
+    # How many nodes each column style wants, and which of its fields mean
+    # anything. A field that does nothing is worse than a missing one: it
+    # invites you to set it and then ignores you.
+    COLUMN_STYLE_HINTS = {
+        sg.COLUMN_PLAIN: 'One post straight down from every node you select. '
+                         'Any number of nodes.',
+        sg.COLUMN_SHAFT: 'One shaft to a head, then a capital fanning up to '
+                         'every node you select. At least 3 nodes.',
+        sg.COLUMN_LATTICE: 'One chord straight down from each node you select, '
+                           'X-braced between them. Exactly 3 or 4 nodes, and '
+                           'no capital.',
+        sg.COLUMN_TAPERED: 'As the latticed column, narrowing to 45% of your '
+                           'footprint at the ground. Exactly 3 or 4 nodes.',
+        sg.COLUMN_LEGS: 'Four inclined legs from their own square footprint up '
+                        'to a head and capital. At least 3 nodes.',
+        sg.COLUMN_TRIPOD: 'Three legs at 120 degrees, which cannot rock on an '
+                          'uneven footing. At least 3 nodes.',
+    }
+
+    def _on_col_style_change(self):
+        """Show only the fields the chosen column style actually reads."""
+        style = self.col_style.get()
+        latticed = style in (sg.COLUMN_LATTICE, sg.COLUMN_TAPERED)
+        plain = style == sg.COLUMN_PLAIN
+        footed = style in (sg.COLUMN_LEGS, sg.COLUMN_TRIPOD)
+        # The latticed styles take their footprint from the selection and go
+        # straight to the grid, so neither a width nor a capital means
+        # anything to them; the plain strut has neither either.
+        # Forget them all, then pack the wanted ones in a FIXED order, so the
+        # panel reads the same whichever style you arrived from.
+        order = ((self.frame_col_capital, not (latticed or plain)),
+                 (self.frame_col_width, footed),
+                 (self.frame_col_panels, latticed),
+                 (self.frame_col_tiers, not (latticed or plain)))
+        for frame, _wanted in order:
+            frame.pack_forget()
+        for frame, wanted in order:
+            if wanted:
+                frame.pack(fill='x', pady=(0, 1))
+        self._col_hint.config(text=self.COLUMN_STYLE_HINTS.get(style, ''))
 
     def _set_plan_rule(self, rule):
         """Drop a ready-made plan rule into the field, centred on the domain
@@ -1209,37 +1254,49 @@ class StereoPanelsMixin(_ToolbarModes):
         col = tk.LabelFrame(box, text='Column', bg=BG,
                             font=('Helvetica', 8, 'bold'))
         col.pack(fill='x', padx=6, pady=(4, 4))
-        tk.Label(col, text='Select >=3 nodes (lasso box) for the capital to '
-                          'attach to, then:', bg=BG, font=('Helvetica', 8), fg='#666',
-                wraplength=PANEL_W - 40, justify='left').pack(anchor='w', padx=4, pady=(2, 0))
+        tk.Label(col, text='Lasso the nodes the column stands under, then:',
+                bg=BG, font=('Helvetica', 8), fg='#666',
+                wraplength=PANEL_TEXT_W, justify='left').pack(anchor='w', padx=4, pady=(2, 0))
         self.col_style = tk.StringVar(value=sg.COLUMN_SHAFT)
         style_row = tk.Frame(col, bg=BG)
         style_row.pack(fill='x', padx=6, pady=(3, 0))
         tk.Label(style_row, text='Type:', bg=BG, width=12, anchor='w',
                 font=('Helvetica', 9)).pack(side='left')
-        ttk.Combobox(style_row, textvariable=self.col_style, state='readonly',
-                     width=8, values=list(sg.COLUMN_STYLES)).pack(side='left', fill='x',
-                                                                  expand=True)
+        style_box = ttk.Combobox(style_row, textvariable=self.col_style,
+                                 state='readonly', width=8,
+                                 values=list(sg.COLUMN_STYLES))
+        style_box.pack(side='left', fill='x', expand=True)
+        # A trace on the VARIABLE, not a <<ComboboxSelected>> binding: the
+        # binding only fires for a real click, so anything that sets the
+        # style in code -- an example, a restored model, a test -- would
+        # leave the panel showing the previous style's fields.
+        self.col_style.trace_add('write', lambda *_a: self._on_col_style_change())
         self.col_height = tk.DoubleVar(value=3.0)
         self._labeled_entry(col, 'Shaft height (m):', self.col_height)
         # The capital's own depth, adjustable rather than derived: it is the
         # difference between a shallow wide-spreading capital and a deep
         # steep one, and it moves load between the capital legs and the
         # grid's own chords.
+        # Every field that only SOME styles read lives in this one container,
+        # so hiding and showing them cannot reorder them: pack_forget then
+        # pack appends to the end of the parent, which is how "Lattice
+        # panels" ended up below the status note.
+        opt = tk.Frame(col, bg=BG)
+        opt.pack(fill='x')
+        self._col_optional = opt
         self.col_capital = tk.DoubleVar(value=0.9)
-        self._labeled_entry(col, 'Capital height (m):', self.col_capital)
+        self.frame_col_capital = tk.Frame(opt, bg=BG)
+        self._labeled_entry(self.frame_col_capital, 'Capital height (m):',
+                            self.col_capital)
         self.col_width = tk.DoubleVar(value=0.6)
-        self._labeled_entry(col, 'Column width (m):', self.col_width)
+        self.frame_col_width = tk.Frame(opt, bg=BG)
+        self._labeled_entry(self.frame_col_width, 'Column width (m):', self.col_width)
         self.col_panels = tk.IntVar(value=4)
-        self._labeled_entry(col, 'Lattice panels:', self.col_panels)
-        tk.Label(col, text='Width and panels apply to the latticed and '
-                          'inclined-leg types; those stand on FOUR pinned '
-                          'feet, not one.', bg=BG, font=('Helvetica', 8),
-                fg='#666', wraplength=PANEL_W - 40, justify='left'
-                ).pack(anchor='w', padx=4, pady=(2, 0))
+        self.frame_col_panels = tk.Frame(opt, bg=BG)
+        self._labeled_entry(self.frame_col_panels, 'Lattice panels:', self.col_panels)
         self.col_tiers = tk.IntVar(value=1)
-        tier_row = tk.Frame(col, bg=BG)
-        tier_row.pack(fill='x', padx=6, pady=(2, 0))
+        tier_row = tk.Frame(opt, bg=BG)
+        self.frame_col_tiers = tier_row
         tk.Label(tier_row, text='Capital:', bg=BG, width=12, anchor='w',
                 font=('Helvetica', 9)).pack(side='left')
         tk.Radiobutton(tier_row, text='1 module', value=1, variable=self.col_tiers,
@@ -1282,6 +1339,10 @@ class StereoPanelsMixin(_ToolbarModes):
                  wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(0, 2))
         tk.Button(col, text='Clear every column', fg='#a3241a',
                   command=self._clear_columns).pack(fill='x', padx=6, pady=(0, 4))
+        self._col_hint = tk.Label(col, text='', bg=BG, fg=HINT_FG,
+                                  font=('Helvetica', 8), justify='left',
+                                  wraplength=PANEL_TEXT_W, anchor='w')
+        self._col_hint.pack(anchor='w', padx=6, pady=(0, 2))
         self.col_note = tk.Label(col, text='', bg=BG, fg='#2f6f4f',
                                  font=('Helvetica', 8), justify='left',
                                  wraplength=250, anchor='w')

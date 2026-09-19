@@ -755,14 +755,20 @@ def test_every_column_style_solves_once_all_its_feet_are_pinned(style):
     one node of it leaves three rotations free and the solver reports a
     mechanism. Every foot the builder returns has to be pinned."""
     mesh, degree = _flat_grid_with_degrees()
-    top = sorted(degree, key=degree.get, reverse=True)[:9]
+    # The latticed styles run one chord down from each selected node, so
+    # their footprint IS the selection and it has to enclose an area.
+    top = (_square_footprint(mesh) if style in (sg.COLUMN_LATTICE, sg.COLUMN_TAPERED)
+           else sorted(degree, key=degree.get, reverse=True)[:9])
     nodes, members, bases, head = sg.add_column(mesh['nodes'], mesh['members'], top,
                                                 height=4.0, style=style,
                                                 capital_height=1.0, width=1.2, panels=3)
     assert bases, 'a column with no foot at all'
-    # the plain strut has no capital: it is one post per selected node
+    # the plain strut has no capital: it is one post per selected node, and
+    # the latticed styles have no capital either -- one chord per node.
     expected_feet = {sg.COLUMN_PLAIN: len(top), sg.COLUMN_SHAFT: 1,
-                     sg.COLUMN_TRIPOD: 3}.get(style, 4)
+                     sg.COLUMN_TRIPOD: 3,
+                     sg.COLUMN_LATTICE: len(top),
+                     sg.COLUMN_TAPERED: len(top)}.get(style, 4)
     assert len(bases) == expected_feet
     assert all(nodes[b][2] < nodes[head][2] for b in bases), 'a foot above the head'
     for m in members:
@@ -820,24 +826,53 @@ def test_the_capital_styles_still_demand_a_footprint():
             sg.add_column(mesh['nodes'], mesh['members'], one, height=3.0, style=style)
 
 
-def test_pinning_only_one_foot_of_a_latticed_column_is_a_mechanism():
-    """The reason add_column returns a LIST of feet rather than one node."""
-    mesh, degree = _flat_grid_with_degrees()
-    top = sorted(degree, key=degree.get, reverse=True)[:9]
+def _square_footprint(mesh, n=4):
+    """n top-layer nodes that enclose a real area in plan -- what a latticed
+    column now needs, since its chords run down from the nodes themselves."""
+    nodes = mesh['nodes']
+    zmax = max(p[2] for p in nodes)
+    tops = [i for i, p in enumerate(nodes) if abs(p[2] - zmax) < 1e-9]
+    xs = sorted({round(nodes[i][0], 6) for i in tops})
+    ys = sorted({round(nodes[i][1], 6) for i in tops})
+    quad = [i for i in tops
+            if round(nodes[i][0], 6) in xs[:2] and round(nodes[i][1], 6) in ys[:2]]
+    return quad[:n]
+
+
+def test_a_roof_standing_only_on_a_latticed_column_needs_every_foot_pinned():
+    """The reason add_column returns a LIST of feet rather than one node.
+
+    Worth stating precisely, because the answer CHANGED when the latticed
+    column stopped going through a capital. The old one hung the whole
+    lattice from a single head node, so one pinned foot left it free to spin
+    about the vertical through that head -- a mechanism even with the grid
+    fully supported around it. The new one lands on three or four separate
+    grid joints, so a grid that is itself supported now braces the column,
+    and one foot is enough.
+
+    The property that survives is the one that matters in practice: a roof
+    carried ONLY by its columns, which is what a column is for, is a
+    mechanism unless every foot is restrained."""
+    mesh, _degree = _flat_grid_with_degrees()
+    top = _square_footprint(mesh)
     nodes, members, bases, _head = sg.add_column(mesh['nodes'], mesh['members'], top,
                                                  height=4.0, style=sg.COLUMN_LATTICE)
     for m in members:
         m.setdefault('E', 200e3); m.setdefault('A', 20.0)
-    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
-    supports.append({'node': bases[0], 'type': 'pin'})
     loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
-    _res, err = sm.analyze(nodes, members, loads, supports)
-    assert err is not None
+
+    one = [{'node': bases[0], 'type': 'pin'}]
+    _res, err = sm.analyze(nodes, members, loads, one)
+    assert err is not None, 'one foot held a whole roof up on its own'
+
+    every = [{'node': b, 'type': 'pin'} for b in bases]
+    _res, err = sm.analyze(nodes, members, loads, every)
+    assert err is None, err
 
 
 def test_a_tapered_column_is_narrower_at_its_feet_than_at_its_head():
     mesh, degree = _flat_grid_with_degrees()
-    top = sorted(degree, key=degree.get, reverse=True)[:9]
+    top = _square_footprint(mesh)
     out = {}
     for style in (sg.COLUMN_LATTICE, sg.COLUMN_TAPERED):
         nodes, _members, bases, _head = sg.add_column(
@@ -2136,3 +2171,182 @@ def test_a_masked_lattice_still_solves():
 def test_a_domain_rule_may_name_the_domain_it_is_written_against():
     keep = sg.make_domain_fn('x < Lx / 2', {'Lx': 12.0})
     assert keep(5.0, 0.0) and not keep(7.0, 0.0)
+
+
+# ── the latticed column, rebuilt ─────────────────────────────────────────────
+
+def test_a_latticed_columns_chords_run_straight_down_from_the_nodes_it_carries():
+    """The first version stood on an invented square of its own `width` near
+    the centroid, which is not under the joints it carries at all."""
+    mesh, _degree = _flat_grid_with_degrees()
+    top = _square_footprint(mesh)
+    want = sorted((round(mesh['nodes'][j][0], 6), round(mesh['nodes'][j][1], 6))
+                  for j in top)
+    nodes, _members, bases, _head = sg.add_column(
+        mesh['nodes'], mesh['members'], top, height=4.0, style=sg.COLUMN_LATTICE)
+    got = sorted((round(nodes[b][0], 6), round(nodes[b][1], 6)) for b in bases)
+    assert got == want, 'the feet are not under the nodes the column carries'
+
+
+def test_a_latticed_column_has_no_capital_at_all():
+    """A capital exists to stop a column piercing the grid through ONE joint.
+    A latticed column already arrives at three or four separate joints, so a
+    capital squeezed all of them back through one node on the way -- the very
+    thing it is there to avoid."""
+    mesh, _degree = _flat_grid_with_degrees()
+    top = _square_footprint(mesh)
+    m0 = len(mesh['members'])
+    _nodes, members, _bases, _head = sg.add_column(
+        mesh['nodes'], mesh['members'], top, height=4.0, style=sg.COLUMN_LATTICE)
+    new = members[m0:]
+    assert new, 'the column added nothing'
+    assert not [m for m in new if str(m.get('role', '')).startswith('capital')]
+
+
+def test_a_latticed_column_can_have_three_chords():
+    mesh, _degree = _flat_grid_with_degrees()
+    tri = _square_footprint(mesh, n=3)
+    nodes, members, bases, _head = sg.add_column(
+        mesh['nodes'], mesh['members'], tri, height=4.0,
+        style=sg.COLUMN_LATTICE, panels=3)
+    assert len(bases) == 3
+    chords = [m for m in members if m.get('role') == 'column_chord']
+    assert len(chords) == 3 * 3, '3 chords over 3 panels'
+    want = sorted((round(mesh['nodes'][j][0], 6), round(mesh['nodes'][j][1], 6))
+                  for j in tri)
+    got = sorted((round(nodes[b][0], 6), round(nodes[b][1], 6)) for b in bases)
+    assert got == want
+
+
+@pytest.mark.parametrize('count', [1, 2, 5, 9])
+def test_a_latticed_column_refuses_anything_but_three_or_four_nodes(count):
+    """One chord per node it carries is the whole idea; five nodes is not a
+    column, it is a request the shape cannot answer."""
+    mesh, degree = _flat_grid_with_degrees()
+    top = sorted(degree, key=degree.get, reverse=True)[:count]
+    with pytest.raises(ValueError, match='3 or 4'):
+        sg.add_column(mesh['nodes'], mesh['members'], top, height=4.0,
+                      style=sg.COLUMN_LATTICE)
+
+
+def test_a_latticed_column_refuses_a_collinear_footprint():
+    """Three nodes in a line enclose no area, so the column can fold about
+    that line however it is braced."""
+    mesh, _degree = _flat_grid_with_degrees()
+    nodes = mesh['nodes']
+    zmax = max(p[2] for p in nodes)
+    row_y = min(p[1] for p in nodes if abs(p[2] - zmax) < 1e-9)
+    line = [i for i, p in enumerate(nodes)
+            if abs(p[2] - zmax) < 1e-9 and abs(p[1] - row_y) < 1e-9][:3]
+    assert len(line) == 3
+    with pytest.raises(ValueError, match='straight line'):
+        sg.add_column(nodes, mesh['members'], line, height=4.0,
+                      style=sg.COLUMN_LATTICE)
+
+
+def test_the_bracing_joins_neighbours_not_opposite_corners():
+    """Taken in selection order a four-node footprint can come out as a
+    bow-tie, and the X bracing then crosses the middle of the column instead
+    of lying on its faces."""
+    mesh, _degree = _flat_grid_with_degrees()
+    top = _square_footprint(mesh)
+    scrambled = [top[0], top[3], top[1], top[2]]
+    nodes, members, bases, _head = sg.add_column(
+        mesh['nodes'], mesh['members'], scrambled, height=4.0,
+        style=sg.COLUMN_LATTICE, panels=1)
+    side = min(math.dist(nodes[a][:2], nodes[b][:2])
+               for a in bases for b in bases if a != b)
+    ties = [m for m in members if m.get('role') == 'column_tie'
+            and m['a'] in bases and m['b'] in bases]
+    assert ties
+    for m in ties:
+        d = math.dist(nodes[m['a']][:2], nodes[m['b']][:2])
+        assert d < side * 1.3, 'a tie crosses the footprint diagonally'
+
+
+def test_a_tapered_latticed_column_keeps_the_selections_plan_shape():
+    """Narrowed, not a different footprint: every foot moves toward the
+    centroid by the same fraction."""
+    mesh, _degree = _flat_grid_with_degrees()
+    top = _square_footprint(mesh)
+    nodes, _m, bases, _h = sg.add_column(
+        mesh['nodes'], mesh['members'], top, height=4.0, style=sg.COLUMN_TAPERED)
+    cx = sum(mesh['nodes'][j][0] for j in top) / len(top)
+    cy = sum(mesh['nodes'][j][1] for j in top) / len(top)
+    ratios = []
+    for b in bases:
+        r_top = max(math.dist((mesh['nodes'][j][0], mesh['nodes'][j][1]), (cx, cy))
+                    for j in top)
+        ratios.append(math.dist((nodes[b][0], nodes[b][1]), (cx, cy)) / r_top)
+    assert max(ratios) - min(ratios) < 1e-9, 'the footprint changed shape'
+    assert 0.0 < ratios[0] < 1.0
+
+
+def test_a_footprint_with_three_nodes_in_a_line_is_refused():
+    """Plan area alone is not enough. A kite -- which is exactly what "the
+    four bottom nodes nearest the centre" gives on an odd grid -- encloses a
+    real area while three of its corners sit on one line. The two faces
+    meeting at that middle corner are then coplanar, their bracing lies in
+    one plane, and the column hinges about the line. The solver called that
+    a singular matrix, which tells nobody which four nodes to pick instead.
+    """
+    mesh, _degree = _flat_grid_with_degrees()
+    nodes = mesh['nodes']
+    zmax = max(p[2] for p in nodes)
+
+    def near(px, py):
+        return min((i for i, p in enumerate(nodes) if abs(p[2] - zmax) < 1e-9),
+                   key=lambda i: (nodes[i][0] - px) ** 2 + (nodes[i][1] - py) ** 2)
+
+    xs = sorted({round(p[0], 6) for p in nodes if abs(p[2] - zmax) < 1e-9})
+    ys = sorted({round(p[1], 6) for p in nodes if abs(p[2] - zmax) < 1e-9})
+    x0, x1, x2 = xs[0], xs[1], xs[2]
+    y0, y1 = ys[0], ys[1]
+    kite = [near(x0, y1), near(x1, y1), near(x2, y1), near(x1, y0)]
+    assert len(set(kite)) == 4
+    with pytest.raises(ValueError, match='straight line'):
+        sg.add_column(nodes, mesh['members'], kite, height=4.0,
+                      style=sg.COLUMN_LATTICE)
+
+
+def test_a_footprint_with_a_node_inside_the_others_is_refused():
+    """It would brace across its own middle instead of round its faces."""
+    mesh, _degree = _flat_grid_with_degrees()
+    nodes = mesh['nodes']
+    zmax = max(p[2] for p in nodes)
+
+    def near(px, py):
+        return min((i for i, p in enumerate(nodes) if abs(p[2] - zmax) < 1e-9),
+                   key=lambda i: (nodes[i][0] - px) ** 2 + (nodes[i][1] - py) ** 2)
+
+    xs = sorted({round(p[0], 6) for p in nodes if abs(p[2] - zmax) < 1e-9})
+    ys = sorted({round(p[1], 6) for p in nodes if abs(p[2] - zmax) < 1e-9})
+    inside = [near(xs[0], ys[0]), near(xs[2], ys[0]), near(xs[1], ys[2]),
+              near(xs[1], ys[1])]
+    assert len(set(inside)) == 4
+    with pytest.raises(ValueError, match='convex'):
+        sg.add_column(nodes, mesh['members'], inside, height=4.0,
+                      style=sg.COLUMN_LATTICE)
+
+
+def test_a_square_and_a_diamond_footprint_are_both_accepted():
+    """The guard must not become "axis-aligned squares only"."""
+    mesh, _degree = _flat_grid_with_degrees()
+    nodes = mesh['nodes']
+    zmax = max(p[2] for p in nodes)
+
+    def near(px, py):
+        return min((i for i, p in enumerate(nodes) if abs(p[2] - zmax) < 1e-9),
+                   key=lambda i: (nodes[i][0] - px) ** 2 + (nodes[i][1] - py) ** 2)
+
+    xs = sorted({round(p[0], 6) for p in nodes if abs(p[2] - zmax) < 1e-9})
+    ys = sorted({round(p[1], 6) for p in nodes if abs(p[2] - zmax) < 1e-9})
+    square = [near(xs[0], ys[0]), near(xs[1], ys[0]),
+              near(xs[1], ys[1]), near(xs[0], ys[1])]
+    diamond = [near(xs[1], ys[0]), near(xs[2], ys[1]),
+               near(xs[1], ys[2]), near(xs[0], ys[1])]
+    for footprint in (square, diamond):
+        assert len(set(footprint)) == 4
+        _n, _m, bases, _h = sg.add_column(nodes, mesh['members'], footprint,
+                                          height=4.0, style=sg.COLUMN_LATTICE)
+        assert len(bases) == 4

@@ -48,7 +48,7 @@ from apps.stereo.stereo_geometry_core import _add_member
 #             footing under a triangular or hexagonal grid.
 COLUMN_PLAIN = 'Plain vertical strut (no capital)'
 COLUMN_SHAFT = 'Single shaft'
-COLUMN_LATTICE = 'Latticed (4 chords)'
+COLUMN_LATTICE = 'Latticed (3 or 4 chords)'
 COLUMN_TAPERED = 'Latticed, tapered'
 COLUMN_LEGS = 'Four inclined legs'
 COLUMN_TRIPOD = 'Tripod (3 legs)'
@@ -165,27 +165,110 @@ def _build_shaft(nodes, members, seen, style, cx, cy, head, head_z, foot_z,
             _add_member(members, seen, a, b, role='column_tie')
         return feet
 
-    # ── the two latticed styles ──────────────────────────────────────────
-    taper = 0.45 if style == COLUMN_TAPERED else 1.0
+    raise ValueError(f'{style!r} does not build a shaft through a head; '
+                     'the latticed styles run their chords down from the '
+                     'selected nodes (see _build_lattice_column).')
+
+
+def _angular_order(nodes, target_nodes):
+    """The targets, sorted the way they sit around their own centroid.
+
+    A ring tie or an X brace has to join NEIGHBOURS. Taken in selection
+    order, a four-node footprint can easily come out as a bow-tie, and the
+    bracing then crosses the middle of the column instead of its faces.
+    """
+    cx = sum(nodes[j][0] for j in target_nodes) / len(target_nodes)
+    cy = sum(nodes[j][1] for j in target_nodes) / len(target_nodes)
+    return sorted(target_nodes,
+                  key=lambda j: math.atan2(nodes[j][1] - cy, nodes[j][0] - cx))
+
+
+def _build_lattice_column(nodes, members, seen, style, target_nodes,
+                          height, panels, taper):
+    """A latticed column whose chords run VERTICALLY DOWN from the nodes it
+    carries, with no capital.
+
+    The first version of this built its own square footprint at an arbitrary
+    `width` around the centroid and then fanned a capital from a single head
+    node up to the selected nodes. That was wrong twice over. The chords did
+    not stand under the joints they carry -- they stood under an invented
+    square that happened to be near them -- and the capital was redundant: a
+    latticed column already HAS four (or three) separate load paths arriving
+    at four separate joints, which is the whole reason to latticework it. The
+    capital squeezed all four back through one node on the way, which is the
+    single joint a capital exists to avoid.
+
+    So: one chord per selected node, straight down. Horizontal ties at every
+    panel level, X bracing on each face between levels, and the selected
+    nodes themselves as the top ring.
+
+    `taper` is the fraction of the top footprint the FOOT ring keeps (1.0 for
+    a parallel column). The plan shape is the selection's own, scaled toward
+    its centroid -- a tapered column is the same column narrowed, not a
+    different footprint.
+    """
+    ring0 = _angular_order(nodes, target_nodes)
+    n = len(ring0)
+    if n not in (3, 4):
+        raise ValueError('a latticed column runs one chord down from each node '
+                         'it carries, so select exactly 3 or 4 nodes '
+                         f'(got {n}).')
+    cx = sum(nodes[j][0] for j in ring0) / n
+    cy = sum(nodes[j][1] for j in ring0) / n
+    # The footprint has to be a CONVEX polygon with no three vertices in a
+    # line. Plan area alone is not enough: four nodes shaped like a kite --
+    # say (15,12), (18,15), (15,15), (12,15), which is what "the four
+    # bottom nodes nearest the centre" gives on an odd grid -- enclose a
+    # real area while three of them sit on one line. The two faces meeting
+    # at that middle vertex are then coplanar, their X bracing lies in one
+    # plane, and the column hinges about the line. The solver reports that
+    # as a singular matrix, which tells the user nothing about which four
+    # nodes to pick instead.
+    turns = []
+    for i in range(n):
+        ax, ay, _ = nodes[ring0[i - 1]]
+        bx, by, _ = nodes[ring0[i]]
+        dx, dy, _ = nodes[ring0[(i + 1) % n]]
+        cross = (bx - ax) * (dy - by) - (by - ay) * (dx - bx)
+        scale = math.hypot(bx - ax, by - ay) * math.hypot(dx - bx, dy - by)
+        turns.append(cross / scale if scale > 1e-12 else 0.0)
+    if min(abs(t) for t in turns) < 1e-6:
+        raise ValueError('three of the selected nodes are in a straight line in '
+                         'plan, so two faces of the column would be coplanar and '
+                         'it could hinge about that line. Pick a footprint whose '
+                         'corners all turn -- a triangle or a quadrilateral.')
+    if not (all(t > 0 for t in turns) or all(t < 0 for t in turns)):
+        raise ValueError('the selected nodes do not form a convex footprint in '
+                         'plan (one of them lies inside the others), so the '
+                         'column would brace across its own middle.')
+
     panels = max(1, int(panels))
-    levels = []
-    for k in range(panels + 1):
-        t = k / panels                       # 0 at the foot, 1 at the head
-        z = foot_z + t * (head_z - foot_z)
-        half = 0.5 * width * (taper + (1.0 - taper) * t)
-        levels.append(_foot_ring(nodes, cx, cy, z, half))
-    for ring in levels:                      # horizontal ties at every level
+    top_z = min(nodes[j][2] for j in ring0)
+    levels = [list(ring0)]
+    for k in range(1, panels + 1):
+        t = k / panels                       # 0 at the selected nodes, 1 at the feet
+        shrink = 1.0 + (taper - 1.0) * t
+        z = top_z - t * height
+        ring = []
+        for j in ring0:
+            x, y, _z = nodes[j]
+            ring.append(len(nodes))
+            nodes.append((cx + (x - cx) * shrink, cy + (y - cy) * shrink, z))
+        levels.append(ring)
+
+    for ring in levels:
         for a, b in zip(ring, ring[1:] + ring[:1]):
+            # On the top ring these may already exist as grid chords;
+            # _add_member skips a duplicate, so a footprint whose nodes are
+            # not neighbours in the grid still gets closed.
             _add_member(members, seen, a, b, role='column_tie')
-    for lo, hi in zip(levels, levels[1:]):   # chords and X bracing per face
-        for i in range(4):
-            j = (i + 1) % 4
+    for lo, hi in zip(levels, levels[1:]):
+        for i in range(n):
+            j = (i + 1) % n
             _add_member(members, seen, lo[i], hi[i], role='column_chord')
             _add_member(members, seen, lo[i], hi[j], role='column_web')
             _add_member(members, seen, lo[j], hi[i], role='column_web')
-    for n in levels[-1]:                     # the top ring carries the head
-        _add_member(members, seen, n, head, role='column_chord')
-    return levels[0]
+    return levels[-1]
 
 
 def add_column(nodes, members, target_nodes, height, tiers=1,
@@ -263,6 +346,15 @@ def add_column(nodes, members, target_nodes, height, tiers=1,
     returned has to be restrained.
     """
     target_nodes = list(target_nodes)
+    if style not in COLUMN_STYLES:
+        raise ValueError(f'unknown column style {style!r}.')
+    if style in (COLUMN_LATTICE, COLUMN_TAPERED) and len(target_nodes) not in (3, 4):
+        # Said here as well as in _build_lattice_column so the message is
+        # right for a count of 1 or 2, which the capital guard below would
+        # otherwise answer by naming a capital these styles do not have.
+        raise ValueError('a latticed column runs one chord down from each node '
+                         'it carries, so select exactly 3 or 4 nodes '
+                         f'(got {len(target_nodes)}).')
     if style != COLUMN_PLAIN and len(target_nodes) < 3:
         raise ValueError('a capital needs at least 3 attachment nodes to distribute load usefully.')
     if not target_nodes:
@@ -299,13 +391,24 @@ def add_column(nodes, members, target_nodes, height, tiers=1,
             bases.append(foot)
         return nodes, members, bases, target_nodes[0]
 
-    cx = sum(nodes[j][0] for j in target_nodes) / len(target_nodes)
-    cy = sum(nodes[j][1] for j in target_nodes) / len(target_nodes)
-    cz = sum(nodes[j][2] for j in target_nodes) / len(target_nodes)
-
     nodes = list(nodes)
     members = list(members)
     seen = {(min(m['a'], m['b']), max(m['a'], m['b'])) for m in members}
+
+    if style in (COLUMN_LATTICE, COLUMN_TAPERED):
+        # No head and no capital: the chords ARE the connection to the grid,
+        # landing on the selected joints themselves. `head` is reported as
+        # the first target for the same reason the plain strut reports one --
+        # there is no head node to report, and the caller only uses it to
+        # know which joints the column now carries.
+        bases = _build_lattice_column(
+            nodes, members, seen, style, target_nodes, height, panels,
+            0.45 if style == COLUMN_TAPERED else 1.0)
+        return nodes, members, bases, target_nodes[0]
+
+    cx = sum(nodes[j][0] for j in target_nodes) / len(target_nodes)
+    cy = sum(nodes[j][1] for j in target_nodes) / len(target_nodes)
+    cz = sum(nodes[j][2] for j in target_nodes) / len(target_nodes)
 
     # The head sits a short distance below the (average) attachment
     # surface -- never AT it, or the capital legs would be coplanar with the

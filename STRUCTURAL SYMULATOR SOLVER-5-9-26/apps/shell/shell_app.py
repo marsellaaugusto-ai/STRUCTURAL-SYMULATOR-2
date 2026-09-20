@@ -213,10 +213,15 @@ class RecordList(tk.Frame):
         for f in self.fields:
             self.vars[f['key']].set(self._show(f, rec.get(f['key'], '')))
 
-    def _load_selected(self):
+    def sel_index(self):
+        """The selected row's index in the record list, or None."""
         sel = self.tree.selection()
-        if sel:
-            self._fill_form(self.records()[int(sel[0])])
+        return int(sel[0]) if sel else None
+
+    def _load_selected(self):
+        sel = self.sel_index()
+        if sel is not None:
+            self._fill_form(self.records()[sel])
 
     def _read_form(self):
         rec = {}
@@ -361,6 +366,10 @@ class ShellApp(UnitsMixin, tk.Frame):
         self.v_cut_dims = tk.BooleanVar(value=True)
         self.v_cut_field = tk.BooleanVar(value=True)
         self.mode = 'definitions'
+        self.v_pick = tk.BooleanVar(value=True)
+        self.v_pick_type = tk.StringVar(value='pinned')
+        self.v_pick_block = tk.DoubleVar(value=sm.DEFAULT_BLOCK)
+        self.hover_node = None
         self.status = tk.StringVar(value='')
 
         self._build_ui()
@@ -454,6 +463,7 @@ class ShellApp(UnitsMixin, tk.Frame):
         self.cam = view3d.Orbit3D(self.zc)
         self.cam.bind_orbit(on_change=self._draw, on_click=self._on_click)
         self.zc.canvas.bind('<Configure>', self._on_configure)
+        self.zc.canvas.bind('<Motion>', self._on_motion)
         pw.add(self.zc, stretch='always', minsize=200)
         info = tk.Frame(pw, bg=BG)
         self.info = tk.Text(info, height=9, font=('Consolas', 9), wrap='none', bg='#fbfbfa')
@@ -895,6 +905,190 @@ class ShellApp(UnitsMixin, tk.Frame):
             peak = max(peak, float(np.abs(d).max()))
         return peak
 
+    # ══════════════════════════════════════════════════════════════════════
+    #  Supports: picked on the model, placed as blocks
+    # ══════════════════════════════════════════════════════════════════════
+    # A corner of an element IS a node of the mesh -- the point the solver
+    # assembles stiffness at -- so clicking one is not an approximation of a
+    # support, it is the support, where you put it. What arrives there is a
+    # point support ON A BLOCK, because a shell sitting on a mathematical
+    # point is a singularity whose shear grows without limit as the mesh
+    # refines. You pick where a block goes; you cannot pick a point.
+    PICK_PX = 22
+
+    def nearest_node(self, px, py, limit=None):
+        """The mesh node nearest a screen position, or None.
+
+        Ties are broken towards the viewer: on a dome the near and far
+        surfaces project on top of each other, and picking the one behind
+        would put a support where you cannot see it.
+        """
+        if self.geom is None:
+            return None
+        X = self._nodes_for_view()
+        sx, sy = self.cam.project(X)
+        d2 = (sx - px) ** 2 + (sy - py) ** 2
+        lim = (self.PICK_PX if limit is None else limit) ** 2
+        near = np.nonzero(d2 < lim)[0]
+        if not len(near):
+            return None
+        depth = self.cam.depth(X)
+        return int(near[np.argmin(d2[near] - 1e-3 * depth[near])])
+
+    def support_node_index(self):
+        """Node -> the index of the point support standing on it."""
+        out = {}
+        g = self.geom
+        if g is None:
+            return out
+        X = g['X']
+        for i, spec in enumerate(self.model.data.get('supports', [])):
+            if spec.get('at') != 'point':
+                continue
+            try:
+                px, py = (self.model.ws.scalar(str(v))
+                          for v in str(spec.get('which', '')).split(','))
+            except Exception:
+                continue
+            out[int(np.argmin((X[:, 0] - px) ** 2 + (X[:, 1] - py) ** 2))] = i
+        return out
+
+    def toggle_support_at(self, px, py):
+        """Click a corner: put a support there, or take the one there away."""
+        n = self.nearest_node(px, py)
+        if n is None:
+            self.status.set('No element corner near the pointer.')
+            return
+        here = self.support_node_index()
+        sups = self.model.data.setdefault('supports', [])
+        if n in here:
+            spec = sups.pop(here[n])
+            self.status.set('Support removed from the corner at x = %.3g, y = %.3g.'
+                            % (self.geom['X'][n, 0], self.geom['X'][n, 1]))
+        else:
+            X = self.geom['X']
+            sups.append({'at': 'point', 'which': '%g, %g' % (X[n, 0], X[n, 1]),
+                         'type': self.v_pick_type.get(),
+                         'block': float(self.v_pick_block.get() or sm.DEFAULT_BLOCK)})
+            self.status.set('%s support on a %.3g m block at x = %.3g, y = %.3g.'
+                            % (sm.SUPPORT_LABELS.get(self.v_pick_type.get(),
+                                                     self.v_pick_type.get()),
+                               float(self.v_pick_block.get() or sm.DEFAULT_BLOCK),
+                               X[n, 0], X[n, 1]))
+        self._after_support_edit()
+
+    def _after_support_edit(self):
+        self.rl_supports.refresh()
+        self._model_changed()
+        self._refresh_geometry_quietly()
+        self._draw()
+
+    def _refresh_geometry_quietly(self):
+        """Rebuild the mesh for the drawing without demanding an analysis."""
+        try:
+            self._rebuild_geometry()
+        except Exception:
+            pass
+
+    def add_supports_at(self, nodes):
+        """Put one point support on each of these nodes, skipping any that
+        already carry one."""
+        X = self.geom['X']
+        here = self.support_node_index()
+        sups = self.model.data.setdefault('supports', [])
+        added = 0
+        for n in nodes:
+            if n in here:
+                continue
+            sups.append({'at': 'point', 'which': '%g, %g' % (X[n, 0], X[n, 1]),
+                         'type': self.v_pick_type.get(),
+                         'block': float(self.v_pick_block.get() or sm.DEFAULT_BLOCK)})
+            added += 1
+        self.status.set('%d corners supported.' % added)
+        self._after_support_edit()
+        return added
+
+    def quick_support(self, what):
+        """The three support sets a shell almost always wants."""
+        g = self.geom
+        if g is None:
+            return 0
+        ids, X = g['ids'], g['X']
+        if what == 'corners':
+            nodes = [ids[0, 0], ids[0, -1], ids[-1, -1], ids[-1, 0]]
+        elif what == 'boundary':
+            nodes = sorted({int(a) for a, _b, _e in ssd.boundary_edges(g['elems'])} |
+                           {int(b) for _a, b, _e in ssd.boundary_edges(g['elems'])})
+        elif what == 'lowest':
+            # the lowest ring: boundary nodes within one element depth of the
+            # lowest point, which on a vault or a hypar is the springing line
+            bnd = sorted({int(a) for a, _b, _e in ssd.boundary_edges(g['elems'])} |
+                         {int(b) for _a, b, _e in ssd.boundary_edges(g['elems'])})
+            z = X[bnd, 2]
+            nodes = [n for n, zz in zip(bnd, z) if zz <= z.min() + 0.02 * max(np.ptp(X[:, 2]), 1e-9)]
+        else:
+            return 0
+        return self.add_supports_at(nodes)
+
+    def clear_supports(self):
+        self.model.data['supports'] = []
+        self.status.set('Every support removed. The shell is a mechanism until you add one.')
+        self._after_support_edit()
+
+    def toggle_sandbox(self):
+        """Switch the selected support off, or back on, without deleting it."""
+        rl = self.rl_supports
+        sel = rl.sel_index()
+        sups = self.model.data.get('supports', [])
+        if sel is None or sel >= len(sups):
+            self.status.set('Pick a support row first.')
+            return
+        spec = sups[sel]
+        spec['off'] = not spec.get('off')
+        self.status.set('Support %d is %s. Press Analyze & design to see what it was carrying.'
+                        % (sel + 1, 'switched OFF' if spec['off'] else 'back on'))
+        self._after_support_edit()
+
+    def _draw_pickable_corners(self, X, sx, sy):
+        """In Supports mode, show what is pickable and what is taken.
+
+        Only in that mode: 600-odd corner markers over a solved model would
+        bury the result you are reading.
+        """
+        if self.mode != 'supports' or not self.v_pick.get():
+            return
+        cv = self.zc.canvas
+        g = self.geom
+        ids = g['ids']
+        # the corners, thinned so a fine mesh does not become a field of dots
+        step = max(1, int(np.ceil(max(ids.shape) / 26)))
+        show = np.unique(np.concatenate([ids[::step, ::step].ravel(),
+                                         ids[0, :], ids[-1, :], ids[:, 0], ids[:, -1]]))
+        taken = self.support_node_index()
+        for n in show:
+            x, y = float(sx[n]), float(sy[n])
+            if abs(x) > 30000 or abs(y) > 30000:
+                continue
+            if n in taken:
+                continue
+            cv.create_rectangle(x - 2, y - 2, x + 2, y + 2, outline='#8c979f',
+                                fill='#ffffff', width=1, tags='pick')
+        for n in taken:
+            x, y = float(sx[n]), float(sy[n])
+            cv.create_rectangle(x - 4, y - 4, x + 4, y + 4, outline='#12457a',
+                                fill='#1a6bbd', width=1, tags='pick')
+        if self.hover_node is not None and self.hover_node < len(sx):
+            x, y = float(sx[self.hover_node]), float(sy[self.hover_node])
+            cv.create_oval(x - 8, y - 8, x + 8, y + 8, outline='#c0561f', width=2, tags='pick')
+
+    def _on_motion(self, e):
+        if self.mode != 'supports' or not self.v_pick.get() or self.geom is None:
+            return
+        n = self.nearest_node(e.x, e.y)
+        if n != self.hover_node:
+            self.hover_node = n
+            self._draw()
+
     # -- numeric fields whose model value is kept in SI -------------------------
     def _si_entry(self, parent, label, q, get_si, set_si, width=9, note=''):
         """A labelled entry showing a model value in the current units; the
@@ -1153,6 +1347,41 @@ class ShellApp(UnitsMixin, tk.Frame):
                  'which: "all" or corner names x0y0,x1y1… for corners; x0/x1/y0/y1 for an '
                  'edge; "x, y" for a point. Point supports sit on a solid block of this size.')
         self.rl_supports.pack(fill='x')
+        pick = tk.LabelFrame(p, text='Pick them on the model', bg=BG,
+                             font=('Helvetica', 9, 'bold'))
+        pick.pack(fill='x', pady=(6, 2))
+        tk.Checkbutton(pick, text='click a corner of an element to support it',
+                       variable=self.v_pick, bg=BG, font=('Helvetica', 9),
+                       command=self._draw).pack(anchor='w')
+        tk.Label(pick, text='A corner is a node of the mesh, so this is the support itself, '
+                            'not an approximation of one. What lands there is a point support '
+                            'on a solid block — a shell on a true point is a singularity.',
+                 bg=BG, fg='#555', wraplength=PANEL_W - 40, justify='left',
+                 font=('Helvetica', 8)).pack(anchor='w', padx=4, pady=(0, 4))
+        row = tk.Frame(pick, bg=BG)
+        row.pack(fill='x', pady=2)
+        tk.Label(row, text='holds', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        ttk.Combobox(row, textvariable=self.v_pick_type, state='readonly', width=9,
+                     values=list(sm.SUPPORT_TYPES)).pack(side='left', padx=4)
+        tk.Label(row, text='block', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        tk.Entry(row, textvariable=self.v_pick_block, width=5).pack(side='left', padx=4)
+        tk.Label(row, text='m', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        row = tk.Frame(pick, bg=BG)
+        row.pack(fill='x', pady=2)
+        for text, what in (('four corners', 'corners'), ('whole boundary', 'boundary'),
+                           ('lowest ring', 'lowest')):
+            tk.Button(row, text=text, font=('Helvetica', 9),
+                      command=lambda w=what: self.quick_support(w)).pack(side='left', padx=(0, 4))
+        row = tk.Frame(pick, bg=BG)
+        row.pack(fill='x', pady=2)
+        tk.Button(row, text='switch the selected one off / on', font=('Helvetica', 9),
+                  command=self.toggle_sandbox).pack(side='left')
+        tk.Button(row, text='clear', font=('Helvetica', 9), fg='#a33',
+                  command=self.clear_supports).pack(side='left', padx=4)
+        tk.Label(pick, text='Switching one off leaves it in the model and out of the stiffness, '
+                            'so you can see what it was carrying without editing the design to ask.',
+                 bg=BG, fg='#555', wraplength=PANEL_W - 40, justify='left',
+                 font=('Helvetica', 8)).pack(anchor='w', padx=4, pady=(0, 4))
         self.rl_beams = RecordList(
             p, self, 'Edge beams and ribs',
             [dict(key='line', label='line', kind='combo',
@@ -1759,6 +1988,7 @@ class ShellApp(UnitsMixin, tk.Frame):
                                   width=1, tags=('face', f'e{e}'))
         self._draw_structure(X, sx, sy)
         self._draw_cuts(X, sx, sy)
+        self._draw_pickable_corners(X, sx, sy)
         if self.v_principal.get() and self.res is not None:
             self._draw_principal(X, cen)
         if self.sel is not None and self.sel < len(el):
@@ -1917,6 +2147,9 @@ class ShellApp(UnitsMixin, tk.Frame):
     # ══════════════════════════════════════════════════════════════════════
     def _on_click(self, e):
         if self.geom is None:
+            return
+        if self.mode == 'supports' and self.v_pick.get():
+            self.toggle_support_at(e.x, e.y)
             return
         X = self._nodes_for_view()
         cen = X[self.geom['elems']].mean(axis=1)

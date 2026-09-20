@@ -397,6 +397,13 @@ class ShellModel:
         support_nodes = []
         heads = []
         for si, spec in enumerate(self.data.get('supports', [])):
+            # The sandbox: a support switched OFF stays in the model, in the
+            # list and in the drawing, and is left out of the stiffness. It is
+            # how you find out what a support was carrying without editing the
+            # design to ask -- and without the answer being "the matrix is
+            # singular", which is what deleting one usually gets you.
+            if spec.get('off'):
+                continue
             code = SUPPORT_TYPES.get(spec.get('type', 'pinned'), spec.get('type'))
             if not (isinstance(code, str) and len(code) == 6 and set(code) <= {'0', '1'}):
                 raise ModelError(f'Support {si + 1}: unknown type {spec.get("type")!r}.')

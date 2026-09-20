@@ -255,3 +255,114 @@ def test_the_deflection_is_given_against_the_span_not_only_in_millimetres(app):
     s = app.status.get()
     i = s.index('span/')
     assert float(s[i + 5:].split()[0].rstrip('·').strip()) > 1.0
+
+
+# ── supports, picked on the model ──────────────────────────────────────────
+
+def _screen_of(app, node):
+    sx, sy = app.cam.project(app.geom['X'])
+    return float(sx[node]), float(sy[node])
+
+
+def test_clicking_a_corner_puts_a_support_on_it(app):
+    app.set_mode('supports')
+    app.update()
+    n = app.geom['ids'][0, 0]
+    before = len(app.model.data['supports'])
+    app.toggle_support_at(*_screen_of(app, n))
+    assert len(app.model.data['supports']) == before + 1
+    assert n in app.support_node_index()
+
+
+def test_what_lands_there_is_a_block_not_a_point(app):
+    """A shell on a mathematical point is a singularity; the tab has always
+    known that, and picking must not be a way around it."""
+    app.set_mode('supports')
+    app.v_pick_block.set(1.5)
+    app.toggle_support_at(*_screen_of(app, app.geom['ids'][0, 0]))
+    spec = app.model.data['supports'][-1]
+    assert spec['at'] == 'point'
+    assert spec['block'] == pytest.approx(1.5)
+
+
+def test_clicking_the_same_corner_again_takes_it_away(app):
+    app.set_mode('supports')
+    n = app.geom['ids'][-1, -1]
+    app.toggle_support_at(*_screen_of(app, n))
+    assert n in app.support_node_index()
+    app.toggle_support_at(*_screen_of(app, n))
+    assert n not in app.support_node_index()
+
+
+def test_clicking_empty_space_says_so_and_changes_nothing(app):
+    app.set_mode('supports')
+    before = list(app.model.data['supports'])
+    app.toggle_support_at(-500.0, -500.0)
+    assert app.model.data['supports'] == before
+    assert 'No element corner' in app.status.get()
+
+
+def test_the_type_chosen_in_the_panel_is_what_arrives(app):
+    app.set_mode('supports')
+    app.v_pick_type.set('vertical')
+    app.toggle_support_at(*_screen_of(app, app.geom['ids'][0, -1]))
+    assert app.model.data['supports'][-1]['type'] == 'vertical'
+
+
+@pytest.mark.parametrize('what,least', [('corners', 4), ('boundary', 8), ('lowest', 1)])
+def test_the_quick_actions_support_what_they_say(app, what, least):
+    app.set_mode('supports')
+    app.model.data['supports'] = []
+    n = app.quick_support(what)
+    assert n >= least
+    assert len(app.support_node_index()) == n
+
+
+def test_a_quick_action_does_not_double_up_on_a_corner_already_taken(app):
+    app.set_mode('supports')
+    app.model.data['supports'] = []
+    app.quick_support('corners')
+    again = app.quick_support('corners')
+    assert again == 0
+    assert len(app.model.data['supports']) == 4
+
+
+def test_clearing_leaves_a_mechanism_and_says_so(app):
+    app.clear_supports()
+    assert app.model.data['supports'] == []
+    assert 'mechanism' in app.status.get()
+    assert app.analyze() is False       # refused, with a reason, not a crash
+    assert app.error
+
+
+def test_the_sandbox_switches_a_support_off_without_deleting_it(app):
+    app.set_mode('supports')
+    app.model.data['supports'] = []
+    app.quick_support('corners')
+    assert app.analyze(), app.error
+    before = app._peak_deflection()
+    app.rl_supports.tree.selection_set('0')
+    app.toggle_sandbox()
+    assert len(app.model.data['supports']) == 4      # still there
+    assert app.model.data['supports'][0]['off'] is True
+    assert app.analyze(), app.error
+    assert app._peak_deflection() > before, 'removing a support should not stiffen it'
+    app.rl_supports.tree.selection_set('0')
+    app.toggle_sandbox()
+    assert app.model.data['supports'][0]['off'] is False
+
+
+def test_the_sandbox_needs_a_row_picked(app):
+    app.set_mode('supports')
+    app.rl_supports.tree.selection_remove(*app.rl_supports.tree.selection())
+    app.toggle_sandbox()
+    assert 'Pick a support row' in app.status.get()
+
+
+def test_the_corners_are_only_drawn_where_you_are_placing_them(app):
+    app.set_mode('supports')
+    app.update()
+    assert app.zc.canvas.find_withtag('pick')
+    app.set_mode('loads')
+    app.update()
+    assert not app.zc.canvas.find_withtag('pick')

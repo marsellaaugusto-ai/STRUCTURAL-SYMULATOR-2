@@ -31,6 +31,10 @@ class StereoReportsMixin:
         self._me_maybe_refresh_topology()
         self._refresh_status()
         self._refresh_shape_note()
+        # The control table is a view of the profile, so it has to
+        # follow an undo as well as an edit -- otherwise the table
+        # shows a curve that no longer exists.
+        self._bz_refresh_list()
         # Only when that mode is showing: rebuilding four charts on every
         # model change costs a cell-detection pass, and nobody is looking.
         if self.active_mode.get() == 'analyse':

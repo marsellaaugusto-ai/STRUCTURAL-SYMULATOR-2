@@ -103,6 +103,9 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self.members = []
         self.loads = []
         self.member_loads = []
+        self._bz_profile = None    # the fitted, then edited, Bezier chain
+        self._bz_grid = None       # or the fitted patch's control heights
+        self._bz_drag = None       # the control currently being dragged
         self.panels = []
         self.panel_checks = []
         self._line_pick_first = None
@@ -184,7 +187,14 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         return {'nodes': copy.deepcopy(self.nodes), 'members': copy.deepcopy(self.members),
                 'loads': copy.deepcopy(self.loads), 'supports': copy.deepcopy(self.supports),
                 'panels': copy.deepcopy(self.panels),
-                'member_loads': copy.deepcopy(self.member_loads)}
+                'member_loads': copy.deepcopy(self.member_loads),
+                # The Bezier profile is model state, not panel state: it is
+                # what the mesh was built FROM, and every drag of a handle
+                # is a model change. Leaving it out made undo restore the
+                # nodes while the curve that produced them kept the edit --
+                # so the next Build silently undid the undo.
+                'bz_profile': copy.deepcopy(self._bz_profile),
+                'bz_grid': copy.deepcopy(self._bz_grid)}
 
     def _restore_snapshot(self, snap):
         self.nodes = snap['nodes']
@@ -193,6 +203,9 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self.supports = snap['supports']
         self.panels = snap.get('panels', [])
         self.member_loads = snap.get('member_loads', [])
+        self._bz_profile = copy.deepcopy(snap.get('bz_profile'))
+        self._bz_grid = copy.deepcopy(snap.get('bz_grid'))
+        self._bz_drag = None
         self.results = None
         self.member_checks = None
         self.panel_checks = []

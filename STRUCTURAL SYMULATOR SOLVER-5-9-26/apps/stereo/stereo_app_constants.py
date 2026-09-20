@@ -147,6 +147,25 @@ FILL_DENSITY_DEFAULT = 'Light'
 # Parallel keeps equal lengths equal on screen; perspective divides by
 # distance. Parallel is the default because it is the right one for
 # measuring and for reading a repeating module.
+# Where the Shape tab's surface comes from. A typed formula is exact and
+# completely inflexible; a fitted Bezier is approximate and editable
+# everywhere. The selector exists because those are genuinely different
+# tools for different moments, not two ways of doing one thing.
+# How close a click has to be to grab a control handle. Generous, because
+# a handle is a small target and the cost of missing is a box-select that
+# throws away the selection you had.
+BZ_HANDLE_GRAB_PX = 10
+BZ_HANDLE_COLOR = '#e07b39'
+BZ_HANDLE_KNOT_COLOR = '#c2410c'
+BZ_POLYGON_COLOR = '#f0a875'
+BZ_CURVE_COLOR = '#1a3b5c'
+
+SOURCE_FORMULA = 'Typed formula'
+SOURCE_EXTRUDE = 'Bezier profile, extruded'
+SOURCE_SPIN = 'Bezier profile, spun (surface of revolution)'
+SOURCE_PATCH = 'Bezier patch (grid of control heights)'
+SHAPE_SOURCES = (SOURCE_FORMULA, SOURCE_EXTRUDE, SOURCE_SPIN, SOURCE_PATCH)
+
 PROJECTION_PARALLEL = 'parallel'
 PROJECTION_PERSPECTIVE = 'perspective'
 PROJECTION_MODES = (PROJECTION_PARALLEL, PROJECTION_PERSPECTIVE)

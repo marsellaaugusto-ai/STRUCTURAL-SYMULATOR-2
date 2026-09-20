@@ -6656,3 +6656,193 @@ def test_a_line_across_the_view_does_not_converge_even_in_perspective(app):
     pts = app._screen_positions()
     gaps = [math.dist(pts[a], pts[b]) for a, b in zip(bottom, bottom[1:])]
     assert max(gaps) == pytest.approx(min(gaps), rel=1e-6)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Bezier profiles and patches in the Shape panel
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _spin(app, formula='3 + 1.6*sin(x*0.9)'):
+    from apps.stereo import stereo_geometry as sgx
+    _shape(app)
+    app.shape_source.set(sc.SOURCE_SPIN)
+    app.shape_z_top.set(formula)
+    app.shape_p0.set('0'); app.shape_p1.set('6')
+    app.shape_q0.set('0'); app.shape_q1.set('2*pi')
+    app.shape_n1.set(8); app.shape_n2.set(14)
+    app.shape_lattice.set(sgx.LATTICE_SINGLE)
+    app._on_shape_mode_change()
+    app.shape_pattern.set(sgx.PATTERN_ISOMETRIC)
+    app._bz_fit()
+
+
+def test_the_bezier_panel_shows_only_for_a_bezier_source(app):
+    _shape(app)
+    for source, shown in ((sc.SOURCE_FORMULA, False), (sc.SOURCE_EXTRUDE, True),
+                          (sc.SOURCE_SPIN, True), (sc.SOURCE_PATCH, True)):
+        app.shape_source.set(source)
+        app.root.update_idletasks()
+        assert bool(app.frame_bezier.winfo_ismapped()) is shown
+
+
+def test_fitting_a_profile_reports_how_close_it_came(app):
+    """Reported, never promised. A fit is an approximation and the only
+    honest thing to do with one is put the real number on screen."""
+    _spin(app)
+    said = app.bz_error_note.cget('text')
+    assert 'segments' in said and '%' in said
+    assert app._bz_profile is not None
+    assert app.bz_list.size() == len(app._bz_profile['ctrl'])
+
+
+def test_a_spin_profile_builds_a_solid_of_revolution(app):
+    _spin(app)
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == '', app.shape_status.cget('text')
+    zs = [n[2] for n in app.nodes]
+    radii = [math.hypot(n[0], n[1]) for n in app.nodes]
+    assert min(zs) == pytest.approx(0.0, abs=1e-6)
+    assert max(zs) == pytest.approx(6.0, abs=1e-6)
+    # a real waist-and-belly profile, not a cylinder
+    assert max(radii) - min(radii) > 1.0
+
+
+def test_editing_a_control_changes_the_surface_that_gets_built(app):
+    """The point of the whole feature: the formula got you close, the
+    handles get you the rest of the way."""
+    _spin(app)
+    app._build_shape_mesh()
+    before = max(math.hypot(n[0], n[1]) for n in app.nodes)
+    index = 12
+    app._bz_set_control(index, app._bz_profile['ctrl'][index] + 2.5)
+    app._build_shape_mesh()
+    after = max(math.hypot(n[0], n[1]) for n in app.nodes)
+    assert after > before + 1.0
+
+
+def test_the_table_and_the_3d_drag_are_the_same_edit(app):
+    """Two ways in, one code path out -- otherwise they drift and the same
+    move means two things."""
+    _spin(app)
+    handles = app._bz_handle_screen()
+    assert handles
+    index, sx, sy = handles[12]
+    assert app._bz_handle_at(sx, sy) == index
+    before = app._bz_profile['ctrl'][index]
+    app._on_canvas_press(FakeEvent(sx, sy))
+    assert app._bz_drag == index
+    app._on_canvas_motion(FakeEvent(sx + 40, sy))
+    app._on_canvas_release(FakeEvent(sx + 40, sy))
+    assert app._bz_drag is None
+    dragged = app._bz_profile['ctrl'][index]
+    assert dragged != pytest.approx(before)
+
+
+def test_a_drag_keeps_the_curve_smooth(app):
+    from apps.stereo import stereo_bezier as bzx
+    _spin(app)
+    handles = app._bz_handle_screen()
+    index, sx, sy = handles[10]
+    app._on_canvas_press(FakeEvent(sx, sy))
+    app._on_canvas_motion(FakeEvent(sx + 30, sy))
+    app._on_canvas_release(FakeEvent(sx + 30, sy))
+    assert bzx.is_smooth(app._bz_profile)
+
+
+def test_a_drag_is_undoable(app):
+    """The profile is MODEL state -- it is what the mesh was built from --
+    so leaving it out of the snapshot made undo restore the nodes while the
+    curve kept the edit, and the next Build silently undid the undo."""
+    _spin(app)
+    handles = app._bz_handle_screen()
+    index, sx, sy = handles[12]
+    before = app._bz_profile['ctrl'][index]
+    app._on_canvas_press(FakeEvent(sx, sy))
+    app._on_canvas_motion(FakeEvent(sx + 40, sy))
+    app._on_canvas_release(FakeEvent(sx + 40, sy))
+    edited = app._bz_profile['ctrl'][index]
+    app._undo()
+    assert app._bz_profile['ctrl'][index] == pytest.approx(before)
+    app._redo()
+    assert app._bz_profile['ctrl'][index] == pytest.approx(edited)
+
+
+def test_clicking_away_from_a_handle_still_lassoes(app):
+    """A handle grab has to win over the lasso where there IS a handle, and
+    lose everywhere else -- or the lasso stops working in Shape mode."""
+    _spin(app)
+    app._on_canvas_press(FakeEvent(3, 3))
+    assert app._bz_drag is None
+    assert app._lasso_press == (3, 3)
+
+
+@pytest.mark.parametrize('mode', list(sc.PROJECTION_MODES))
+def test_handles_can_be_grabbed_in_either_projection(app, mode):
+    """The handles are placed through the same projection the model is, so
+    perspective must not move them out from under the cursor."""
+    _spin(app)
+    app.projection_mode.set(mode)
+    app._draw()
+    for index, sx, sy in app._bz_handle_screen()[::5]:
+        assert app._bz_handle_at(sx, sy) == index
+
+
+def test_the_patch_says_when_it_is_too_coarse_to_design_from(app):
+    """A degree-n patch has n-1 interior bends each way and cannot follow
+    more waves than that. Silence there would read as success."""
+    _shape(app)
+    app.shape_source.set(sc.SOURCE_PATCH)
+    app.shape_z_top.set('3*cos(x)*cos(y)')
+    app.shape_p0.set('-9'); app.shape_p1.set('9')
+    app.shape_q0.set('-9'); app.shape_q1.set('9')
+    app.bz_degree.set(5)
+    app._bz_fit()
+    said = app.bz_error_note.cget('text')
+    assert 'too far off' in said, said
+    # Degree 14, not 10: measured, 2.86 waves each way still comes out
+    # 6.5% wrong at degree 10 and only reaches 0.25% at 14. The warning was
+    # right and the first guess at this number was not.
+    app.bz_degree.set(14)
+    app._bz_fit()
+    assert 'too far off' not in app.bz_error_note.cget('text')
+
+
+def test_the_preview_draws_the_bezier_surface_not_the_formula(app):
+    """They are different surfaces the moment a handle moves, and for a
+    spin they are not even the same KIND -- the formula is a radius against
+    height, so drawing it as a height field would put a sheet in the air
+    beside the solid actually being built."""
+    _spin(app)
+    app._build_shape_mesh()
+    surfaces = app._preview_surfaces()
+    assert len(surfaces) == 1
+    surface = surfaces[0][0]
+    # the spin surface puts the profile on the RADIUS at that height
+    from apps.stereo import stereo_bezier as bzx
+    x, y, z = surface(3.0, 0.0)
+    assert z == pytest.approx(3.0)
+    assert x == pytest.approx(bzx.profile_value(app._bz_profile, 3.0))
+
+
+def test_a_bezier_source_that_was_never_fitted_still_builds(app):
+    """Falling back to the typed formula rather than failing: choosing the
+    source and pressing Build before Fit is an obvious thing to do."""
+    _shape(app)
+    app.shape_source.set(sc.SOURCE_EXTRUDE)
+    app._bz_profile = None
+    app.shape_z_top.set('2*cos(x/3)')
+    app.shape_p0.set('-6'); app.shape_p1.set('6')
+    app.shape_q0.set('-6'); app.shape_q1.set('6')
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == ''
+    assert app.nodes
+
+
+def test_a_broken_formula_reports_instead_of_fitting_nonsense(app):
+    _shape(app)
+    app.shape_source.set(sc.SOURCE_SPIN)
+    app.shape_z_top.set('!!broken!!')
+    app._bz_fit()
+    assert app._bz_profile is None
+    assert app.bz_list.size() == 0
+    assert app.bz_error_note.cget('text')

@@ -22,6 +22,7 @@ from apps.stereo import expr_math as em
 from apps.stereo import stereo_examples as sx
 from apps.stereo import stereo_app_analysis as sa
 from apps.stereo import stereo_member_loads as mld
+from apps.stereo import stereo_bezier as bz
 from apps.stereo.stereo_app_constants import (
     BG, CANVAS_BG, PANEL_W, MODULE_PANEL_W,
     DOF_LABELS, PRESET_NAMES, GRID_PATTERNS, PATTERN_LABEL, GRID_FAMILIES,
@@ -37,6 +38,7 @@ from apps.stereo.stereo_app_constants import (
     LOAD_DIRECTION_NAMES, AREA_SCOPE_ALL, AREA_SCOPES,
     ROD_SCOPES, ROD_SCOPE_TOP,
     SHAPE_PLAN_PRESETS, PANEL_TEXT_W,
+    SHAPE_SOURCES, SOURCE_FORMULA, SOURCE_EXTRUDE, SOURCE_SPIN, SOURCE_PATCH,
     PROJECTION_PARALLEL, PROJECTION_PERSPECTIVE,
     CAMERA_DISTANCE_DEFAULT, CAMERA_DISTANCE_MIN, CAMERA_DISTANCE_MAX,
     HYPERBOLOID_BRACES, BRACE_LABEL,
@@ -540,6 +542,7 @@ class StereoPanelsMixin(_ToolbarModes):
         """
         surf = tk.LabelFrame(parent, text='Surface', bg=BG, font=('Helvetica', 10, 'bold'))
         surf.pack(fill='x', padx=6, pady=(6, 4))
+        self.frame_shape_surf = surf
 
         self.shape_two = tk.BooleanVar(value=False)
         tk.Radiobutton(surf, text='One surface', value=False, variable=self.shape_two,
@@ -548,6 +551,26 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Radiobutton(surf, text='Two surfaces (top + bottom)', value=True,
                        variable=self.shape_two, bg=BG, font=('Helvetica', 9),
                        command=self._on_shape_mode_change).pack(anchor='w', padx=6)
+
+        # Where the surface comes from. A typed formula is exact and
+        # completely inflexible -- to move one part of it you need an
+        # expression that moves that part and nothing else, which for
+        # anything but the simplest shapes does not exist. A fitted Bezier
+        # is approximate and editable everywhere. Type what you can
+        # describe, fit it, then edit what you could not.
+        row = tk.Frame(surf, bg=BG)
+        row.pack(fill='x', padx=6, pady=(4, 2))
+        tk.Label(row, text='From:', bg=BG, width=6, anchor='w',
+                 font=('Helvetica', 9)).pack(side='left')
+        self.shape_source = tk.StringVar(value=SOURCE_FORMULA)
+        ttk.Combobox(row, textvariable=self.shape_source, state='readonly',
+                     width=22, values=list(SHAPE_SOURCES)
+                    ).pack(side='left', fill='x', expand=True)
+        self.shape_source.trace_add('write', lambda *_a: self._on_shape_mode_change())
+        self.shape_source_note = tk.Label(surf, text='', bg=BG, fg=HINT_FG,
+                                          font=('Helvetica', 8), justify='left',
+                                          wraplength=PANEL_TEXT_W)
+        self.shape_source_note.pack(anchor='w', padx=6, pady=(2, 0))
 
         self.shape_z_top = tk.StringVar(value='0')
         self.shape_z_bot = tk.StringVar(value='0')
@@ -569,6 +592,69 @@ class StereoPanelsMixin(_ToolbarModes):
                             'parametric surfaces and the maths keypad.',
                  bg=BG, fg='#666', font=('Helvetica', 8), wraplength=PANEL_W - 44,
                  justify='left').pack(anchor='w', padx=6, pady=(2, 6))
+
+        # ── Bezier ───────────────────────────────────────────────────────
+        self.frame_bezier = tk.LabelFrame(parent, text='Bezier', bg=BG,
+                                          font=('Helvetica', 10, 'bold'))
+        self.bz_segments = tk.IntVar(value=bz.DEFAULT_SEGMENTS)
+        self.bz_degree = tk.IntVar(value=6)
+        self.bz_keep_smooth = tk.BooleanVar(value=True)
+        self.frame_bz_profile = tk.Frame(self.frame_bezier, bg=BG)
+        self._labeled_entry(self.frame_bz_profile, 'Segments:', self.bz_segments)
+        tk.Label(self.frame_bz_profile,
+                 text='Each segment is a cubic that passes exactly through the '
+                      'formula at its ends and matches its slope there, so the '
+                      'chain is smooth by construction and every control point '
+                      'means something: the ones ON the curve are points it goes '
+                      'through, the ones between are tangent handles.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(2, 2))
+        self.frame_bz_patch = tk.Frame(self.frame_bezier, bg=BG)
+        self._labeled_entry(self.frame_bz_patch, 'Degree each way:', self.bz_degree)
+        tk.Label(self.frame_bz_patch,
+                 text='A patch of degree n has n-1 interior bends each way and '
+                      'CANNOT follow a surface with more waves than that, however '
+                      'it is fitted. Two waves each way at degree 5 comes out about '
+                      'half the height of the surface wrong. Raise the degree, or '
+                      'use a profile with a spin or an extrude, where segments buy '
+                      'accuracy far more cheaply.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(2, 2))
+
+        btn = tk.Frame(self.frame_bezier, bg=BG)
+        btn.pack(fill='x', padx=6, pady=(2, 2))
+        tk.Button(btn, text='Fit to the formula', command=self._bz_fit
+                 ).pack(side='left', padx=2)
+        tk.Button(btn, text='Reset edits', command=self._bz_reset
+                 ).pack(side='left', padx=2)
+        tk.Checkbutton(self.frame_bezier, text='Keep the curve smooth when editing',
+                       variable=self.bz_keep_smooth, bg=BG, font=('Helvetica', 8)
+                      ).pack(anchor='w', padx=6)
+        self.bz_error_note = tk.Label(self.frame_bezier, text='Not fitted yet.',
+                                      bg=BG, fg='#2f6f4f', font=('Helvetica', 8),
+                                      justify='left', wraplength=PANEL_TEXT_W)
+        self.bz_error_note.pack(anchor='w', padx=6, pady=(2, 2))
+
+        # The control table. A Listbox rather than a grid of Entry widgets:
+        # a degree-8 patch is 81 controls and 81 live Entries is both slow
+        # to build and impossible to scan. Pick a row, type the value.
+        self.bz_list = tk.Listbox(self.frame_bezier, height=7, font=('Courier', 8),
+                                  exportselection=False)
+        self.bz_list.pack(fill='x', padx=6, pady=(2, 2))
+        self.bz_list.bind('<<ListboxSelect>>', lambda _e: self._bz_on_pick())
+        erow = tk.Frame(self.frame_bezier, bg=BG)
+        erow.pack(fill='x', padx=6, pady=(0, 4))
+        tk.Label(erow, text='value:', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        self.bz_value = tk.StringVar(value='')
+        entry = tk.Entry(erow, textvariable=self.bz_value, width=10)
+        entry.pack(side='left', padx=(3, 4))
+        entry.bind('<Return>', lambda _e: self._bz_apply_value())
+        tk.Button(erow, text='Set', command=self._bz_apply_value).pack(side='left')
+        tk.Label(self.frame_bezier,
+                 text='Drag the orange handles in the 3D view to shape it there '
+                      'instead.', bg=BG, fg=HINT_FG, font=('Helvetica', 8),
+                 justify='left', wraplength=PANEL_TEXT_W
+                ).pack(anchor='w', padx=6, pady=(0, 4))
 
         # ── lattice ──────────────────────────────────────────────────────
         lat = tk.LabelFrame(parent, text='Lattice', bg=BG, font=('Helvetica', 10, 'bold'))
@@ -778,7 +864,23 @@ class StereoPanelsMixin(_ToolbarModes):
     def _on_shape_mode_change(self):
         """Show only the fields the chosen surface mode, lattice and domain
         actually use, and say what the resulting module size will be."""
-        two = bool(self.shape_two.get())
+        source = self.shape_source.get()
+        bezier = source != SOURCE_FORMULA
+        # A Bezier source edits ONE curve, so the two-surface radio has
+        # nothing to offer it: there is no second curve to be the other
+        # surface. Hidden rather than disabled, because a control that is
+        # never available in this mode is not a choice being withheld.
+        for frame in (self.frame_bezier,):
+            frame.pack_forget()
+        if bezier:
+            self.frame_bezier.pack(fill='x', padx=6, pady=(0, 4), after=self.frame_shape_surf)
+            self.frame_bz_profile.pack_forget()
+            self.frame_bz_patch.pack_forget()
+            (self.frame_bz_patch if source == SOURCE_PATCH
+             else self.frame_bz_profile).pack(fill='x')
+        self.shape_source_note.config(text=self.SHAPE_SOURCE_NOTES.get(source, ''))
+
+        two = bool(self.shape_two.get()) and not bezier
         single = self.shape_lattice.get() == sg.LATTICE_SINGLE
         for frame in (self.frame_shape_bot, self.frame_shape_depth, self.frame_shape_pole):
             frame.pack_forget()
@@ -802,6 +904,20 @@ class StereoPanelsMixin(_ToolbarModes):
             self.shape_module_note.config(text=f'module ≈ {abs(dp):.2f} × {abs(dq):.2f}')
         except (tk.TclError, ValueError, ZeroDivisionError):
             self.shape_module_note.config(text='')
+
+    # What each source reads the formula box AS, which is the one thing
+    # that is not obvious from its name: a spin reads it as a RADIUS
+    # against height, not as a height against x.
+    SHAPE_SOURCE_NOTES = {
+        SOURCE_FORMULA: '',
+        SOURCE_EXTRUDE: 'The formula is the SECTION, z against x, swept along y. '
+                        'Fit it, then drag the handles.',
+        SOURCE_SPIN: 'The formula is the RADIUS against height, spun about Z. '
+                     'Set the first range to the height and the second to 0 .. '
+                     '2*pi for a closed solid, or less for a segment of one.',
+        SOURCE_PATCH: 'The formula is the whole surface z(x, y), fitted to a grid '
+                      'of control heights you can then raise and lower.',
+    }
 
     # Why each lattice x pattern pair is or is not a buildable frame. The
     # UI and stereo_geometry_custom_surface.custom_surface_lattice must

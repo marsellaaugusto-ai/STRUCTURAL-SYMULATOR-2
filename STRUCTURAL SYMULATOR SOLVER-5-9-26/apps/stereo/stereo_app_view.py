@@ -16,10 +16,12 @@ import tkinter as tk
 import math
 
 from apps.stereo import stereo_math as sm
+from apps.stereo import expr_math as em
 from apps.stereo.stereo_app_canvas_geom import _point_segment_distance
 from apps.stereo.stereo_app_constants import (
     DOF_LABELS, LASSO_DRAG_THRESHOLD_PX, MEMBER_SEL_HIT_PX,
     PROJECTION_PERSPECTIVE, PERSPECTIVE_MIN_DENOM,
+    SOURCE_SPIN, SOURCE_EXTRUDE, BZ_HANDLE_GRAB_PX,
 )
 
 
@@ -129,11 +131,21 @@ class StereoViewMixin:
     # ── lasso (rubber-band) multi-select, mirroring truss_app.py's own
     # _on_press/_on_drag_motion/_on_release box-select ──────────────────────
     def _on_canvas_press(self, event):
+        # A handle grab has to win over the lasso, or dragging a control
+        # would box-select the model behind it instead.
+        grabbed = self._bz_handle_at(event.x, event.y)
+        if grabbed is not None:
+            self._bz_drag = grabbed
+            self._push_undo('drag control point')
+            return
         self._lasso_press = (event.x, event.y)
         self._lasso_dragging = False
         self._lasso_cur = None
 
     def _on_canvas_motion(self, event):
+        if getattr(self, '_bz_drag', None) is not None:
+            self._bz_drag_to(event.x, event.y)
+            return
         if self._lasso_press is None:
             return
         x0, y0 = self._lasso_press
@@ -146,6 +158,10 @@ class StereoViewMixin:
             self._draw()
 
     def _on_canvas_release(self, event):
+        if getattr(self, '_bz_drag', None) is not None:
+            self._bz_drag = None
+            self.canvas.focus_set()
+            return
         self.canvas.focus_set()   # so a following Delete/Backspace reaches us
         additive = bool(event.state & 0x0001)   # Shift held: add to selection
         if self.disc_pick_mode.get():
@@ -358,6 +374,118 @@ class StereoViewMixin:
             note.config(text=(f'eye {self.camera_distance.get() / 10.0:.1f}x the model'
                               if perspective else 'no eye position: sizes are true'))
         self._draw()
+
+    def _bz_handle_geometry(self):
+        """[(index, (x, y, z), (ux, uy, uz))] for the profile's control
+        points: where each one sits in the world, and the unit direction
+        its VALUE moves along.
+
+        The parameter position of a control is fixed by the fit -- a chain
+        of cubics over a uniform parameter range -- so only the value is
+        editable, and it moves along ONE known axis. That is what makes a
+        two-dimensional screen drag unambiguous here without asking the
+        user to pick a plane first: for a spin the value is a radius, so it
+        moves along +X in the theta=0 plane; for an extrude it is a height,
+        so it moves along +Z. A full Bezier PATCH has its controls spread
+        over a surface with no such single axis, which is why the patch is
+        edited in the table and not by dragging.
+        """
+        profile = getattr(self, '_bz_profile', None)
+        if profile is None:
+            return []
+        source = self.shape_source.get()
+        if source not in (SOURCE_SPIN, SOURCE_EXTRUDE):
+            return []
+        a, b = profile['a'], profile['b']
+        ctrl = profile['ctrl']
+        last = len(ctrl) - 1
+        try:
+            edge = self._shape_num(self.shape_q0, 'y from')
+        except em.ExpressionError:
+            edge = 0.0
+        out = []
+        for i, value in enumerate(ctrl):
+            t = a + (b - a) * (i / last if last else 0.0)
+            if source == SOURCE_SPIN:
+                out.append((i, (value, 0.0, t), (1.0, 0.0, 0.0)))
+            else:
+                out.append((i, (t, edge, value), (0.0, 0.0, 1.0)))
+        return out
+
+    def _bz_handle_screen(self):
+        """[(index, sx, sy)] -- the handles in canvas pixels, through the
+        SAME projection and centring the model is drawn with, so a click
+        lands where the handle looks like it is."""
+        if not self.nodes:
+            return []
+        geometry = self._bz_handle_geometry()
+        if not geometry:
+            return []
+        self._refresh_camera_distance()
+        proj = [self._project(x, y, z) for x, y, z in self.nodes]
+        xs = [p[0] for p in proj]
+        ys = [p[1] for p in proj]
+        cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+        out = []
+        for index, point, _direction in geometry:
+            px, py, _d = self._project(*point)
+            sx, sy = self.zc.w2s((px - cx) * self.PX_PER_M, (py - cy) * self.PX_PER_M)
+            out.append((index, sx, sy))
+        return out
+
+    def _bz_handle_at(self, ex, ey, max_px=BZ_HANDLE_GRAB_PX):
+        """The control under the cursor, nearest first."""
+        best = None
+        best_d = max_px
+        for index, sx, sy in self._bz_handle_screen():
+            d = math.hypot(sx - ex, sy - ey)
+            if d <= best_d:
+                best_d = d
+                best = index
+        return best
+
+    def _bz_drag_to(self, ex, ey):
+        """Move the grabbed control so it follows the cursor along its own
+        value axis.
+
+        Projected onto that axis rather than solved for: the handle can
+        only move one way, so the honest reading of a two-dimensional drag
+        is how far along that way the cursor went. Taking the screen
+        direction from the projection means it stays correct as the camera
+        orbits, and under perspective as well as parallel, instead of
+        assuming screen-up is world-up.
+        """
+        index = getattr(self, '_bz_drag', None)
+        profile = getattr(self, '_bz_profile', None)
+        if index is None or profile is None:
+            return
+        geometry = {i: (p, d) for i, p, d in self._bz_handle_geometry()}
+        if index not in geometry:
+            return
+        point, direction = geometry[index]
+        self._refresh_camera_distance()
+        proj = [self._project(x, y, z) for x, y, z in self.nodes]
+        if not proj:
+            return
+        xs = [p[0] for p in proj]
+        ys = [p[1] for p in proj]
+        cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+
+        def to_screen(world):
+            px, py, _d = self._project(*world)
+            return self.zc.w2s((px - cx) * self.PX_PER_M, (py - cy) * self.PX_PER_M)
+
+        here = to_screen(point)
+        ahead = to_screen(tuple(point[k] + direction[k] for k in range(3)))
+        axis = (ahead[0] - here[0], ahead[1] - here[1])
+        length2 = axis[0] ** 2 + axis[1] ** 2
+        if length2 < 1e-9:
+            # The value axis points straight at the camera, so a drag says
+            # nothing about it. Refusing beats moving the control by an
+            # arbitrary amount.
+            return
+        moved = ((ex - here[0]) * axis[0] + (ey - here[1]) * axis[1]) / length2
+        self._bz_set_control(index, profile['ctrl'][index] + moved)
 
     def _refresh_camera_distance(self):
         """Set the eye distance for perspective, as a MULTIPLE of the

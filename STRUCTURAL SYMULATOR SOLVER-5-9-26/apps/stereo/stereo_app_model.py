@@ -21,12 +21,14 @@ from apps.stereo import stereo_checks as sc
 from apps.truss import truss_plates as tp
 from apps.stereo import expr_math as em
 from apps.stereo import stereo_member_loads as mld
+from apps.stereo import stereo_bezier as bz
 from apps.stereo.stereo_app_constants import (
     DOF_LABELS, FAMILY_KEY, PATTERN_KEY, BRACE_KEY, CHORD_ROLES,
     QUICK_SUPPORT_CUSTOM, QUICK_SUPPORT_PIN, QUICK_SUPPORT_FIXED,
     QUICK_SUPPORT_CLEAR,
     AREA_GRADIENT, AREA_FIELD, AREA_SCOPE_ALL, LOAD_DIRECTIONS,
     ROD_SCOPE_ALL, ROD_SCOPE_SELECTED, ROD_SCOPE_ROLES,
+    SOURCE_FORMULA, SOURCE_EXTRUDE, SOURCE_SPIN, SOURCE_PATCH,
 )
 
 
@@ -301,8 +303,184 @@ class StereoModelMixin:
                         push_undo=push_undo, undo_label='clear')
 
     # ── Shape mode: build from the surfaces and lattice in the panel ───────
+    # ── Bezier profiles and patches ──────────────────────────────────────
+    def _bz_formula_fn(self):
+        """The typed formula as a one-argument function of the profile's own
+        parameter, which is x for an extrude and HEIGHT for a spin.
+
+        Both read the z-top box, because that box is where you write the
+        shape either way -- a spin's profile is a radius, not a height, but
+        it is still the one curve being described, and a second box that
+        was live only for one source would be worse than reusing this one.
+        """
+        fn = sg.make_height_field_surface(self.shape_z_top.get())
+        return lambda t: fn(t, 0.0)[2]
+
+    def _bz_fit(self):
+        """Fit a profile or a patch to the typed formula, and say how close
+        it came.
+
+        Reported, never promised: a fit is an approximation, and the only
+        honest thing to do with one is put the real number for the curve in
+        front of you on the screen. A patch especially -- it has a hard
+        ceiling on how many waves it can follow, and silence there would
+        read as success.
+        """
+        source = self.shape_source.get()
+        try:
+            p0 = self._shape_num(self.shape_p0, 'x from')
+            p1 = self._shape_num(self.shape_p1, 'x to')
+            q0 = self._shape_num(self.shape_q0, 'y from')
+            q1 = self._shape_num(self.shape_q1, 'y to')
+            if source == SOURCE_PATCH:
+                surface = sg.make_height_field_surface(self.shape_z_top.get())
+                f = lambda x, y: surface(x, y)[2]
+                degree = max(1, int(self.bz_degree.get()))
+                self._bz_grid = bz.fit_patch(f, (p0, p1), (q0, q1), degree, degree)
+                self._bz_profile = None
+                _worst, frac = bz.patch_error(self._bz_grid, f, (p0, p1), (q0, q1))
+                n = len(self._bz_grid)
+                note = (f'{n}x{n} controls, worst error {frac * 100:.2f}% of the '
+                        f'surface height.')
+                if frac > 0.05:
+                    note += ('  That is too far off to design from -- raise the '
+                             'degree, or use a profile with a spin or an extrude.')
+            else:
+                f = self._bz_formula_fn()
+                self._bz_profile = bz.fit_profile(f, p0, p1,
+                                                  int(self.bz_segments.get()))
+                self._bz_grid = None
+                _worst, frac = bz.fit_error(self._bz_profile, f)
+                note = (f'{self._bz_profile["segments"]} segments, '
+                        f'{len(self._bz_profile["ctrl"])} controls, worst error '
+                        f'{frac * 100:.3f}% of the curve height.')
+        except (em.ExpressionError, ValueError, tk.TclError, ZeroDivisionError) as exc:
+            self._bz_profile = None
+            self._bz_grid = None
+            self.bz_error_note.config(text=str(exc), fg='#a3241a')
+            self._bz_refresh_list()
+            return
+        self.bz_error_note.config(text=note, fg='#2f6f4f')
+        self._bz_refresh_list()
+        self._draw()
+
+    def _bz_reset(self):
+        """Throw the edits away and fit again, which is the only way back to
+        the formula once a control has been dragged."""
+        self._bz_fit()
+
+    def _bz_refresh_list(self):
+        """Repopulate the control table.
+
+        Knots are marked differently from handles because they mean a
+        different thing -- a point the curve passes THROUGH, against a
+        direction it leaves in -- and editing them behaves differently too.
+        """
+        listbox = getattr(self, 'bz_list', None)
+        if listbox is None:
+            return
+        keep = listbox.curselection()
+        listbox.delete(0, 'end')
+        profile = getattr(self, '_bz_profile', None)
+        grid = getattr(self, '_bz_grid', None)
+        if profile is not None:
+            knots = set(bz.knot_indices(profile))
+            for i, value in enumerate(profile['ctrl']):
+                mark = 'ON ' if i in knots else '   '
+                listbox.insert('end', f'{i:3d} {mark}{value:+10.4f}')
+        elif grid is not None:
+            for i, row in enumerate(grid):
+                for j, value in enumerate(row):
+                    listbox.insert('end', f'{i:2d},{j:<2d}  {value:+10.4f}')
+        if keep and keep[0] < listbox.size():
+            listbox.selection_set(keep[0])
+
+    def _bz_on_pick(self):
+        """Put the picked control's value in the edit box, so Set replaces
+        it rather than the user retyping a number they can already see."""
+        index = self._bz_selected_index()
+        if index is None:
+            return
+        profile = getattr(self, '_bz_profile', None)
+        if profile is not None:
+            self.bz_value.set(f'{profile["ctrl"][index]:.4f}')
+        else:
+            grid = getattr(self, '_bz_grid', None)
+            if grid:
+                cols = len(grid[0])
+                self.bz_value.set(f'{grid[index // cols][index % cols]:.4f}')
+        self._draw()
+
+    def _bz_selected_index(self):
+        listbox = getattr(self, 'bz_list', None)
+        if listbox is None:
+            return None
+        picked = listbox.curselection()
+        return picked[0] if picked else None
+
+    def _bz_apply_value(self):
+        """Set the picked control to the typed value."""
+        index = self._bz_selected_index()
+        if index is None:
+            return
+        try:
+            value = em.evaluate_number(self.bz_value.get(), 'value')
+        except em.ExpressionError as exc:
+            self.bz_error_note.config(text=str(exc), fg='#a3241a')
+            return
+        self._bz_set_control(index, value)
+
+    def _bz_set_control(self, index, value):
+        """The one place a control is moved, shared by the table and by the
+        3D drag, so the two can never disagree about what an edit does."""
+        profile = getattr(self, '_bz_profile', None)
+        if profile is not None:
+            bz.set_control(profile, index, value,
+                           keep_smooth=bool(self.bz_keep_smooth.get()))
+        else:
+            grid = getattr(self, '_bz_grid', None)
+            if not grid:
+                return
+            cols = len(grid[0])
+            grid[index // cols][index % cols] = value
+        self._bz_refresh_list()
+        self.bz_error_note.config(
+            text='Edited. The error above was measured against the formula '
+                 'BEFORE these edits, so it no longer describes this curve.',
+            fg='#8a6d1f')
+        self._draw()
+
+    def _bz_surface(self):
+        """The current Bezier surface, or None when there is nothing fitted
+        -- in which case the caller falls back to the typed formula, so an
+        unfitted Bezier source still builds something rather than failing."""
+        source = self.shape_source.get()
+        if source == SOURCE_PATCH:
+            grid = getattr(self, '_bz_grid', None)
+            if not grid:
+                return None
+            return bz.patch_surface(grid, (self._shape_num(self.shape_p0, 'x from'),
+                                           self._shape_num(self.shape_p1, 'x to')),
+                                    (self._shape_num(self.shape_q0, 'y from'),
+                                     self._shape_num(self.shape_q1, 'y to')))
+        profile = getattr(self, '_bz_profile', None)
+        if profile is None:
+            return None
+        if source == SOURCE_SPIN:
+            return bz.spin_surface(profile)
+        if source == SOURCE_EXTRUDE:
+            return bz.extruded_surface(profile)
+        return None
+
     def _shape_surfaces(self):
-        """(top, bottom_or_None) compiled from the panel's own fields."""
+        """(top, bottom_or_None) for the build, from whichever source the
+        panel is set to."""
+        built = self._bz_surface()
+        if built is not None:
+            # A Bezier source is a single surface by construction: there is
+            # one curve being edited, so offering a second one here would
+            # be a control with nothing behind it.
+            return built, None
         top = sg.make_height_field_surface(self.shape_z_top.get())
         if not self.shape_two.get():
             return top, None

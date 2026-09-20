@@ -24,6 +24,7 @@ from common import declutter_text, LoadScale
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_member_loads as mld
+from apps.stereo import stereo_bezier as bz
 from apps.stereo import expr_math as em
 from apps.stereo.stereo_app_colors import (
     surface_preview_color,
@@ -47,6 +48,7 @@ from apps.stereo.stereo_app_constants import (
     GRADIENT_SEGMENTS, GRADIENT_SEGMENTS_DENSE, GRADIENT_DENSE_MEMBERS,
     ROD_FIELD_SEGMENTS,
     SURFACE_PREVIEW_STEPS, SURFACE_PREVIEW_STIPPLE, SURFACE_PREVIEW_LINE,
+    BZ_HANDLE_COLOR, BZ_HANDLE_KNOT_COLOR, BZ_POLYGON_COLOR,
     MOMENT_ZERO_COLOR, MOMENT_NODE_OUTLINE, MOMENT_BACKDROP_COLOR,
     MOMENT_NODE_RADIUS_PX,
     SCALE_P95, FORCE_SCALE_PERCENTILE, CLIP_MARK_COLOR, CLIP_MARK_DASH,
@@ -417,6 +419,10 @@ class StereoRenderMixin:
         # drawing.
         if self.show_surface_preview.get():
             self._draw_surface_preview(c, to_screen)
+        # ON TOP of the preview but under the model: the handles are the
+        # thing being manipulated, so they must be visible and clickable,
+        # while the rods stay readable through them.
+        self._draw_bezier_handles(c)
 
         show_def = self.show_deformed.get() and self.results is not None
         deformed_only = show_def and self.deformed_only.get()
@@ -806,6 +812,40 @@ class StereoRenderMixin:
 
     DISC_STEPS = 48
 
+    def _draw_bezier_handles(self, c):
+        """The profile's control polygon and its handles, drawn where they
+        can be grabbed.
+
+        Knots are drawn differently from tangent handles because they mean
+        different things and behave differently when dragged -- a knot is a
+        point the curve goes THROUGH and takes its handles with it; a
+        handle only bends the curve toward itself. Same distinction the
+        numeric table makes, so the two read as one feature.
+
+        The curve itself is drawn too, at a finer step than the lattice, so
+        you can see what you are shaping BEFORE rebuilding the mesh -- which
+        is the same argument the surface preview makes, one dimension down.
+        """
+        handles = self._bz_handle_screen()
+        if not handles:
+            return
+        profile = getattr(self, '_bz_profile', None)
+        if profile is None:
+            return
+        points = {i: (sx, sy) for i, sx, sy in handles}
+        ordered = [points[i] for i in sorted(points)]
+        if len(ordered) >= 2:
+            flat = [v for point in ordered for v in point]
+            c.create_line(*flat, fill=BZ_POLYGON_COLOR, width=1, dash=(3, 2),
+                          tags='bezier')
+        knots = set(bz.knot_indices(profile))
+        for index, sx, sy in handles:
+            knot = index in knots
+            r = 5 if knot else 3
+            c.create_oval(sx - r, sy - r, sx + r, sy + r,
+                          fill=BZ_HANDLE_KNOT_COLOR if knot else BZ_HANDLE_COLOR,
+                          outline='#ffffff', width=1, tags='bezier')
+
     def _draw_surface_preview(self, c, to_screen):
         """The CONTINUOUS surface behind the lattice, the way GeoGebra 3D
         draws one: shaded quads plus iso-lines.
@@ -907,7 +947,19 @@ class StereoRenderMixin:
     def _preview_surfaces(self):
         """[(surface, tint)] for the preview: the top surface, plus the
         bottom one in two-surface mode so a crossing pair is VISIBLE as a
-        crossing rather than only reported as an error after Build."""
+        crossing rather than only reported as an error after Build.
+
+        A Bezier source draws the FITTED AND EDITED surface, not the
+        formula it came from. Those are different surfaces the moment a
+        handle moves, and for a spin they are not even the same KIND of
+        surface -- the formula is a radius against height, so drawing it as
+        a height field would put a sheet in the air next to the solid of
+        revolution actually being built. A preview that does not show what
+        Build will make is worse than no preview.
+        """
+        built = self._bz_surface()
+        if built is not None:
+            return [(built, 0)]
         try:
             top = sg.make_height_field_surface(self.shape_z_top.get())
         except em.ExpressionError:

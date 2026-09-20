@@ -95,6 +95,7 @@
   .plate{background:#ffffff;border:1px solid var(--rule);border-radius:4px;
          padding:10px 12px;overflow-x:auto}
   .plate svg{display:block;min-width:660px;width:100%;height:auto}
+  .plate img{display:block;width:100%;height:auto;min-width:660px;border:1px solid var(--rule)}
   figcaption{font-size:.86rem;color:var(--ink-3);margin-top:8px;max-width:58rem;line-height:1.5}
   figcaption b{color:var(--ink-2);font-weight:600}
 
@@ -149,147 +150,128 @@
 <div class="wrap">
 
 <header class="mast">
-  <div class="eyebrow">Plan · rev. 4 · nothing in the app has been changed</div>
+  <div class="eyebrow">Plan · rev. 5 · written with the tab open in front of me</div>
   <h1>Rebuilding the Shell tab</h1>
   <p class="standfirst">What I would change, why, and what it would look like — written before a
   line of it exists, so that if I have misunderstood you, it costs a read rather than a week.</p>
   <div class="byline">
     <span>2026-09-20</span><span>branch <code>claude/shell-rc-rebuild</code></span>
-    <span>rev. 4 — the zip arrived, and there is no Shell tab in it</span>
+    <span>rev. 5 — the Shell tab is here, and running</span>
   </div>
 </header>
 
 <section>
-  <h2><span class="num">0</span>Where the Shell app actually is</h2>
-  <p>The first draft of this plan said flatly that there is no shell simulator anywhere. That was
-  true of <i>this repository</i> and wrong about the project. Here is the corrected picture.</p>
-  <h4>What I found</h4>
-  <ul>
-    <li>A Claude Code session titled <b>“Shell structural calculator”</b> ran on
-      <b>14–15 September</b>. It has <b>no git repository attached</b> — it ran against a folder on
-      your own computer. That is why none of its work is in this repo, and why no branch, no zip
-      and no deleted file in the history contains it. The session is currently unreachable
-      (“computer unreachable”, logged 15 September), so I cannot reach into it either.</li>
-    <li>The <b>Structural Solver Reading List</b> of 18 September — one of the pages those
-      sessions published — names the project's tabs in its footer as
-      <span class="path">Truss · Beam · Arch · Cable · Cable Web · Perforated Beam · Stereo
-      Structure · Shell</span>. Eight. The <code>main.py</code> in this repository wires up
-      <b>seven</b>.</li>
-    <li>A third session, <b>“App documentation review”</b> (12 September), ended by asking you
-      whether to <i>“sync the repo to the zip's state”</i> — and never got an answer. So the
-      repository has been behind your working folder since at least that date.</li>
-  </ul>
+  <h2><span class="num">0</span>The tab is here, and Stage 0 is done</h2>
+  <p>Three revisions of this plan were written without the code. The fourth was written after a
+  zip arrived that turned out to be the Stereo delivery — same MD5 as the one this branch already
+  carried, seven tabs, no shell. This one is the real thing:
+  <code>STRUCTURAL_SYMULATOR_final_20260915_with_shell.zip</code>, and
+  <span class="path">apps/shell/</span> in it is a complete, working, tested eighth tab.</p>
   <div class="note ok">
-    <h4>Then the zip arrived, on 20 September, and settled it</h4>
-    <p><code>structural_simulator_stereo_utilization_rodloads.zip</code> is
-    <b>byte-identical</b> to the delivery zip already committed on the Stereo branch — same MD5,
-    <code>a42a51b1…</code>. It holds seven app folders: truss, beam, arch, cable, cable_web,
-    perforated_beam, stereo. <b>There is no shell app in it.</b> The one file whose name contains
-    “shell” is <span class="path">apps/stereo/stereo_app_shell.py</span>, which is the Stereo
-    tab's <i>window</i> shell — the mode rail and the status bar — and has nothing to do with
-    shell structures.</p>
-    <p>I ran it to be sure, rather than reading the listing: the app starts, all seven tabs come
-    up, and Stereo solves a 221-node grid to a governing utilisation of 0.75. Seven tabs, not
-    eight.</p>
-    <p>So: <b>the Shell tab is being built, not ported.</b> Your message says to add it to this
-    app, and that is what the rest of this plan now means.</p>
+    <h4>Stage 0 is committed</h4>
+    <p><b>What came across:</b> the eight <span class="path">apps/shell/</span> modules,
+    <code>formula.py</code> and <code>view3d.py</code>, three test files, four documents and their
+    images. <code>units.py</code> was a clean replacement — a strict superset adding the four
+    quantities a shell needs (kN/m², kN·m/m, cm²/m, kN/m³), and this branch had not touched it
+    since 10 September. <code>main.py</code> gained five lines, CRLF preserved.</p>
+    <p><b>What was deliberately left behind:</b> that zip forked <i>before</i> the Stereo UI
+    rebuild, so every <span class="path">apps/stereo</span> file in it is older and smaller —
+    <code>stereo_app_panels</code> 1029 lines against 2187, <code>test_stereo_app</code> 4538
+    against 6970. Taking any of them would have silently undone the 16–20 September work. It also
+    carries <code>stereo_voronoi_surface.py</code>, which this branch deleted on purpose. Stereo is
+    untouched.</p>
+    <p><b>Verified:</b> 316 tests across the five affected files, all passing on a virtual display.
+    The app starts, all eight tabs come up, and the Shell tab solves its default hypar — 576
+    elements, 2 cases, 3 combinations, worst element at utilisation 2.41, governed by shear into a
+    support block.</p>
   </div>
-  <h4>What I could and could not read</h4>
-  <p>I have no way to read your Claude conversations — there is no tool for it in this session,
-  and none of the six published pages is called <span class="path">CLAUDE CARPETA DE TRABAJO</span>.
-  What I could reach, and have read, is what those conversations <i>published</i>:</p>
-  <ul>
-    <li><b>Structural Solver Reading List</b> (18 Sep) — thirty-four open-source projects sorted by
-      which tab they would improve. Its “Shell (RC) tab” section is the single most informative
-      thing I have about your shell app, and §1 below is built from it.</li>
-    <li><b>Rebuilding the Stereo Interface</b> (19 Sep) — the plan you said worked. This document
-      now follows its shape: the ambiguity settled first, then the faults, then the proposal, then
-      a full inventory with a verdict per feature, then phases, then questions.</li>
-    <li><b>Laying a Grid on a Surface</b>, <b>Stereo Feature Index</b>, <b>Stereo Voronoi
-      Assessment</b> — all Stereo, all already reflected in the repository's own guides.</li>
-  </ul>
-  <p>If there is anything else in that folder I should be working from — notes, a spec, an earlier
-  plan for the Shell tab — paste it or send the file, and I will fold it in the same way.</p>
+  <p>One consequence worth recording: the app now has <b>two expression parsers</b> —
+  <span class="path">apps/stereo/expr_math.py</span> (244 lines, grown since the fork) and
+  <code>formula.py</code> (729 lines, which the zip's Stereo had begun moving onto). They are
+  divergent evolutions of one idea and eventually one should win. Not now: choosing would mean
+  touching Stereo, and Stage 0 was about not touching Stereo.</p>
+  <h4>And the tab can be looked at, from here</h4>
+  <p><span class="path">tests/tools/shoot.py</span> starts a virtual display, builds the real app,
+  optionally drives it and writes PNGs. Every “today” picture below is one of those — the actual
+  window, not a drawing of it. It is also how any change in this plan will be shown working.</p>
 </section>
 
 <section>
-  <h2><span class="num">1</span>What the Shell tab should be, and where that comes from</h2>
-  <p>Every line of this table comes from the <i>Structural Solver Reading List</i>, which describes
-  a “Shell (RC) tab” in the present tense — its element, its limits, its files. Since the zip has
-  no such tab, that description is either of a folder I have still not seen, or it was written
-  about the Shell tab as <i>intended</i>. Either way the table is now the <b>specification</b>
-  rather than a description of existing code: it is what to build, and it is a good brief. The
-  third column, which used to say how I would confirm each row against the code, now says what
-  each one costs to build.</p>
+  <h2><span class="num">1</span>What the tab actually is</h2>
+  <p>Rev. 3 inferred this from a reading list. It was right, and if anything it undersold the tab.
+  Here is what is in the code, so the rest of the plan can stop proposing things that exist.</p>
+  <figure>
+    <div class="plate"><img src="shell_plan_figures/today_utilisation.png"
+      alt="The Shell (RC) tab as it is today: a preset hypar solved, coloured by structural
+      utilisation, with the colour list in the top toolbar and a four-page panel on the left."></div>
+    <figcaption><b>Today, photographed rather than described.</b> The default preset — a hypar
+    saddle on four edge beams, 24 × 24 elements — analysed and designed. Note three things, because
+    they are the three complaints: the <b>Show</b> list is a combobox in the top-right corner;
+    <b>Section cut…</b> is a small link in the second row; and the model is a <b>sheet</b>, with no
+    thickness anywhere in it.</figcaption>
+  </figure>
+  <h4>What it already does, and does well</h4>
   <div class="tbl"><table>
-    <tr><th>What it asks for</th><th>The words it says it in</th><th>What it costs</th></tr>
-    <tr><td>A <b>reinforced-concrete</b> shell tab</td>
-        <td>the section is headed “Shell (RC) tab”, and it opens with a program that “designs
-        reinforced-concrete shell reinforcement”</td>
-        <td>a CIRSOC 201 check module — Stage 1</td></tr>
-    <tr><td>Element: <b>MITC4</b></td>
-        <td>“OpenSees … whose shell element is called <code>ShellMITC4</code> — <i>the same
-        formulation the Shell tab uses</i>”</td>
-        <td>the element itself — Stage 1, and the bulk of it</td></tr>
-    <tr><td>The old limit: the plan <b>must be a rectangle</b></td>
-        <td>“the mesher that would let the Shell tab handle a plan that is not a rectangle”, and of
-        Gmsh: “this is what breaks the rectangular-plan limit — circles, polygons and holes”</td>
-        <td>nothing: route A removes the limit for free</td></tr>
-    <tr><td>A code-check layer in <code>shell_codes.py</code>, kept apart from the solver</td>
-        <td>“shows a code-check layer kept apart from the solver — the same idea as
-        <code>shell_codes.py</code>, for steel”</td>
-        <td>a module boundary, drawn on day one</td></tr>
-    <tr><td><b>Edge beams</b>, with at least a preliminary check</td>
-        <td>“would turn the Shell tab's <i>preliminary edge-beam check</i> into a real N–M design”</td>
-        <td>a beam element along a chain of shell edges — Stage 3</td></tr>
-    <tr><td>No form-finding</td>
-        <td>“the piece the Shell tab does not have — finding the shape instead of checking it”</td>
-        <td>out of scope, and §13 says so</td></tr>
-    <tr><td>Hypars among the cases it serves</td>
-        <td>“the best second opinion available on a hypar”</td>
-        <td>a generator each — §7</td></tr>
-    <tr><td>Shares <code>units.py</code> and the app's conventions</td>
-        <td>it is listed as one of the eight tabs of the same program</td>
-        <td>free: the tab imports what the other seven do</td></tr>
+    <tr><th>Area</th><th>What is there</th></tr>
+    <tr><td>Engine</td><td>MITC4 shell element and a 3-D beam element, sparse solve, and a
+      <b>free-motion check</b> that solves for a random load and measures the residual before
+      trusting anything — because a sparse solver does not fail on a mechanism, it returns a wrong
+      factorisation.</td></tr>
+    <tr><td>Verification</td><td>Simply-supported plate against the series solution,
+      <b>Scordelis–Lo</b> (the standard shell test, ratio 0.989), and the hypar against membrane
+      theory with progressively stiffer edge beams (1.036 → 1.005).</td></tr>
+    <tr><td>Geometry</td><td>A GeoGebra-style definitions list: <code>a = 12</code>,
+      <code>z(x,y) = 2 f x y/(a b)</code>, <code>t = 0.10</code>, every number with a
+      <b>slider that redraws the surface live</b>. Plan limits and thickness may themselves be
+      formulas.</td></tr>
+    <tr><td>Code</td><td><code>shell_codes.py</code> as swappable classes: CIRSOC 201-2024 draft and
+      CIRSOC 201-2005.</td></tr>
+    <tr><td>Design</td><td>Per element, per combination: the sandwich method onto top and bottom
+      layers, <b>Nielsen's rule</b> for orthogonal reinforcement, concrete compression, transverse
+      shear, local buckling, bar spacing and fit, minimum steel, cover — and <b>punching at every
+      support block and column head</b> on the code's critical perimeter.</td></tr>
+    <tr><td>Thickening</td><td><b>Show first</b>: <i>Thickness needed</i> and <i>Thickness to add</i>
+      maps change nothing. Then a toggle raises the elements that need it, in steps, tapered, and
+      re-analyses until everything passes — because a thicker patch attracts more force. Plus
+      <b>drawn zones</b> as rules (<code>abs(x) &lt; 1 and abs(y) &lt; 1 → t ≥ 20 cm</code>).</td></tr>
+    <tr><td>Loads</td><td>Cases D, L, Lr, S, W, E; loads as formulas in x, y; CIRSOC 102 wind with a
+      city table and Cp patterns; combinations and an envelope.</td></tr>
+    <tr><td>Output</td><td>~30 colour maps, principal directions, deformed shape, click-to-read,
+      a written report, and an Excel round trip.</td></tr>
   </table></div>
-  <h4>And two papers you sent, which change more</h4>
-  <p>Both are about exactly this structure, and between them they settle several things this plan
-  had been guessing at.</p>
-  <div class="tbl"><table>
-    <tr><th>Paper</th><th>What it gives this plan</th></tr>
-    <tr><td><b>Mekjavić &amp; Pičulin</b>, <i>Structural analysis and optimization of concrete
-      spherical and groined shells</i>, Tehnički vjesnik 17 (2010) 537–544</td>
-      <td>A published verification case with numbers (§9). The thickening rule's real criterion,
-      its step size and its shape (§10). The comparison table the tab should print, and the proof
-      that it matters. Isler's Δ/L ≤ 1/300. The edge-disturbance zone that decides the mesh.</td></tr>
-    <tr><td><b>Cassinello, Schlaich &amp; Torroja</b>, <i>Félix Candela. In memoriam</i>, Informes
-      de la Construcción 62 (2010) 5–26</td>
-      <td>The hypar families and why they are built that way (§7): <code>z = kxy</code>, the two
-      families of straight generators, and the umbrella. Candela designed by membrane theory
-      alone — which is a question this tab can now answer rather than assume (§8). And the
-      buckling warning: a shell buckles where it runs out of double curvature.</td></tr>
-  </table></div>
-
-  <h4>Four things this changes in the plan</h4>
+  <h4>Three things in the code that constrain any design, and belong in the guide</h4>
   <ol>
-    <li><b>The colour analysis is a reinforced-concrete list, not a steel one.</b> Von Mises on a
-    fibre is the wrong headline for an RC shell. What you design from is Wood–Armer design moments
-    and required steel per metre, top and bottom, in each direction — so those are the modes that
-    get rows, and §8 is rewritten around them.</li>
-    <li><b>The rectangular-plan limit is the biggest single gain available</b>, and §7 now treats
-    it as the point of bringing the wizard over rather than as a side effect.</li>
-    <li><b>Edge beams are in scope.</b> The first draft excluded them; the brief asks for them,
-    the Kresge study shows they are worth more than extra thickness, and a shell on a free edge
-    without one is not a real design. They are Stage 3.</li>
-    <li><b>The element question is answered anyway.</b> MITC4 is what the brief names and what I
-    would have chosen; with route A the mesh is structured quads, so no triangle element is needed
-    at all.</li>
-    <li><b>Automatic thickening is the point of the tab, not a tidying-up step.</b> The first paper
-    measures what it is worth on a real shell: the same concrete, redistributed, takes the peak
-    tension from 14.4 MPa to 3.9 and the deflection from 299 mm to 50. §10 is rewritten around
-    that, and it now has a figure of its own.</li>
-    <li><b>The plan needs numbers to be judged against.</b> §9 now carries a real acceptance test
-    rather than a promise of one.</li>
+    <li><b>CIRSOC 201-2024 has no shell chapter.</b> Its C 1.2.10.7 defers to
+    <i>Recomendación CIRSOC 201.03</i>, which is still being written — the same move ACI made when
+    it split shells into ACI 318.2. The general rules come from the 2024 draft; the shell rules from
+    CIRSOC 201-2005. The report already lists them under “verify before sign-off”.</li>
+    <li><b>The wind speeds are CIRSOC 102-2005</b>, which went with a 1.6 factor, while the 2024
+    combinations expect the larger 2024 speeds at 1.0. The tab knows which edition the speed came
+    from and scales W by 1.6. Get that wrong and wind is under-counted by 1.6.</li>
+    <li><b>Cover sets a floor on thickness.</b> At 35 mm cover for a roof exposed to weather, no
+    shell is thinner than <b>8.6 cm</b> with one central mesh or <b>12.2 cm</b> with two. Candela's
+    4 cm shells would not comply as built.</li>
+  </ol>
+  <div class="note">
+    <h4>One decision in there I would not have made, and would not change</h4>
+    <p><b>Supports are solid blocks, not points.</b> A shell on a mathematical point is a
+    singularity: the shear beside it grows without limit as the mesh refines — measured in the
+    build report as 0.76 → 3.32 at a hypar corner. So every point support and column head is a
+    rigid block of a stated size, and the check there is the code's punching check on a perimeter
+    d/2 outside it, which is mesh-independent. Everything §6 proposes about picking supports has to
+    respect that: you pick where a block goes, not where a point goes.</p>
+  </div>
+  <h4>What this changes in the rest of the plan</h4>
+  <ol>
+    <li><b>§9 becomes a read, not a write.</b> The solver exists, it is verified against published
+    answers, and it is the element I would have chosen. What is left is to add the Mekjavić dome to
+    its verification set and the two cheap maps of §7 and §8.</li>
+    <li><b>§10 shrinks, and sharpens.</b> Automatic thickening is built, and the show-first
+    behaviour is exactly right. What is missing is the part you asked for: seeing it — in the 3-D
+    model and in a section — and the comparison table and sweep that turn it into a design tool.</li>
+    <li><b>§3 to §8 stand as written.</b> The window, thickness in 3-D, the sections, picking
+    supports, the wizard's plan rule, the colour list and its guide: every one of those is still
+    missing or still in the toolbar, and the screenshots below show it.</li>
   </ol>
 </section>
 
@@ -951,10 +933,21 @@
 
 <section>
   <h2><span class="num">4</span>Thickness, drawn as thickness</h2>
-  <p>Today the model is a mid-surface: a sheet with no edge. That is a perfectly sound way to
+  <p>The model is a mid-surface: a sheet with no edge. That is a perfectly sound way to
   <i>solve</i> a shell — MITC4 elements really do live on the mid-surface — but it is a bad way to
   <i>look</i> at one, because the single number that tells you whether the design is reasonable is
-  nowhere in the picture.</p>
+  nowhere in the picture. The tab knows the thickness of every element; the drawing does not use
+  it.</p>
+  <figure>
+    <div class="plate"><img src="shell_plan_figures/today_thickness_needed.png"
+      alt="The same hypar showing the Thickness needed map: pale over the whole shell at the 8.6 cm
+      detailing minimum, with dark patches only at the four corner support blocks reaching 14 cm."></div>
+    <figcaption><b>The map exists; the thickness does not.</b> <i>Thickness needed</i> on the same
+    model: 8.6 cm nearly everywhere — the detailing minimum — rising to 14 cm only in the rings
+    around the four corner blocks. That is the answer to “where does it need to be thicker”, and it
+    is a good answer. What you cannot do is <i>see</i> it: not as a solid, and not in a section.
+    That is what the next two sections are for.</figcaption>
+  </figure>
   <figure>
     <div class="plate"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 366" width="100%" role="img">
 <rect width="1080" height="366" fill="#ffffff"/>
@@ -3098,31 +3091,17 @@
 </section>
 
 <section>
-  <h2><span class="num">9</span>The solver: what stays, and what I would add</h2>
-  <p>The zip settled this: there is no shell solver to port, so it gets written. <b>MITC4</b> is
-  what the brief names and what I would have chosen anyway — it does not lock in shear as the
+  <h2><span class="num">9</span>The solver: what it is, and the one thing to add</h2>
+  <p>This section was three pages long when I thought the solver had to be written. It does not.
+  <b>MITC4 is what the tab uses and what I would have chosen</b> — it does not lock in shear as the
   shell gets thin, and it is the element OpenSees ships as <code>ShellMITC4</code>, so an
-  independent second opinion is a <code>pip install</code> away rather than an argument.</p>
-  <h4>What gets written, in this order</h4>
-  <ul>
-    <li><b>The element</b> — MITC4, four nodes, six freedoms each, membrane plus plate bending,
-    assembled sparse. Route A means a structured quad mesh, so no triangle element is needed at
-    all; DKT comes back only if a truly unstructured mesh ever does.</li>
-    <li><b>The checks, in their own module.</b> The brief calls it <code>shell_codes.py</code> and
-    keeping it apart from the solver is the right architecture, so that is how it starts: CIRSOC
-    201 for concrete — punching, principal tension against f<sub>ctm</sub>, Wood–Armer moments and
-    the steel they demand — and a CIRSOC 301 entry point beside it for the steel path.</li>
-    <li><b>The boundary check</b> Stereo runs before every solve, so an under-restrained model gets
-    a sentence instead of a singular matrix.</li>
-    <li><b>Edge beams</b> — an ordinary frame element along a chain of shell edge nodes, with the
-    varying-depth law the Kresge study shows is worth having.</li>
-  </ul>
-  <p>Everything else the tab needs already exists in this repository and is imported, not written:
-  <code>units.py</code>, the Excel helpers, the zoom canvas, the expression parser and the whole
-  surface wizard.</p>
-  <h4>The acceptance test</h4>
-  <p>The first paper hands this plan something it badly needed: a shell whose answers are
-  published, computed two ways, with a mesh study behind them.</p>
+  independent second opinion is a <code>pip install</code> away rather than an argument. It is
+  verified against the series solution for a plate, against Scordelis–Lo, and against membrane
+  theory for a hypar.</p>
+  <h4>The one thing I would add to its verification set</h4>
+  <p>Everything it is checked against is flat or singly ruled. The first paper hands us a
+  <b>doubly curved</b> case with published numbers, computed two ways, with a mesh study behind
+  it — and a dome is the family you picked first.</p>
   <figure>
     <div class="plate"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 420" width="100%" role="img">
 <rect width="1080" height="420" fill="#ffffff"/>
@@ -3249,41 +3228,33 @@
 <text x="738.00" y="335.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >elements. If the element cannot hit this, nothing</text>
 <text x="738.00" y="349.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >built on top of it is worth drawing.</text>
 </svg></div>
-    <figcaption><b>The case Stage 1 has to reproduce.</b> A rigidly supported spherical dome,
-    r = 28.80 m, t = 10.2 cm, solved by membrane theory, by Geckeler's classical bending theory and
-    by finite elements at two mesh densities. The middle panel is the reason it is the right test:
-    at the fixed edge, membrane theory says the hoop force is −43.8 kN/m and the truth is −10.5.
-    That whole disagreement lives in the last 7.8° of the meridian.</figcaption>
+    <figcaption><b>The case worth adding.</b> A rigidly supported spherical dome, r = 28.80 m,
+    t = 10.2 cm, by membrane theory, by Geckeler's classical bending theory and by finite elements
+    at two mesh densities. The middle panel is why it earns its place: at the fixed edge, membrane
+    theory says the hoop force is −43.8 kN/m and the truth is −10.5, and that whole disagreement
+    lives in the last 7.8° of the meridian. Nothing currently in the verification set exercises a
+    boundary layer like that.</figcaption>
   </figure>
-  <p>Three things follow from that picture, and all three are work:</p>
-  <ul>
-    <li><b>Stage 1 is measurable.</b> Six numbers, published, with a closed-form solution beside
-    them. Either the element hits them or it does not.</li>
-    <li><b>The mesh has to be finer at the edges</b>, and the tab can work out by how much. The
-    edge disturbance decays as e<sup>−βψ</sup> with β = [3(1−ν²)]<sup>¼</sup>√(r/t), which is 22.0
-    for this dome — so it is spent 7.8° from the edge, which is 3.9 m of a 14.1 m meridian. A
-    uniform mesh of 8 elements up the meridian puts <i>two</i> elements in the zone where all the
-    bending is. The Mesh panel should compute β from the geometry, say how many elements land
-    inside the boundary layer, and offer to refine there.</li>
-    <li><b>A convergence check belongs in the tab</b>, not in the user's head. The paper refined
-    6 014 → 12 028 elements until the forces stopped moving; the tab can do the same on request and
-    report what changed, which is the only honest way to know a mesh is fine enough.</li>
-  </ul>
-
-  <h4>Size and speed, honestly</h4>
-  <p>A 32 × 32 quad mesh is 1 089 nodes × 6 = 6 534 unknowns. Dense, that matrix is 340 MB and the
-  solve is minutes; sparse, it is a few MB and well under a second. SciPy is already a hard
-  dependency of this project (<span class="path">requirements.txt</span> says so, for Cable Web),
-  so the assembly should be sparse — if your current one is dense, that alone is the difference
-  between a 32 × 32 mesh and a 96 × 96 one. Above that the Tk canvas, not the solver, becomes the
-  limit, so the Mesh panel states the element count before you press Generate and warns past a
-  threshold.</p>
+  <p>And one consequence that is real work rather than a test: <b>the mesh should be finer at the
+  edges, and the tab can work out by how much.</b> The edge disturbance decays as
+  e<sup>−βψ</sup> with β = [3(1−ν²)]<sup>¼</sup>√(r/t), which is 22.0 for that dome — spent 7.8°
+  from the edge, 3.9 m of a 14.1 m meridian. The mesh is uniform at a size you type, so on a
+  0.5 m element that boundary layer gets eight elements and on a 2 m element it gets two. The
+  Mesh controls should compute β from the geometry, say how many elements land inside the
+  boundary layer, and offer to refine there. The build report already flags a mesh too coarse to
+  resolve a support block; this is the same idea one step earlier.</p>
 </section>
 
 <section>
-  <h2><span class="num">10</span>Automatic thickening, which is the point of the tab</h2>
-  <p>The first draft treated this as a feature to make legible. The first paper shows it is more
-  than that: it is the design decision, and it is worth a great deal.</p>
+  <h2><span class="num">10</span>Automatic thickening: built, and half-visible</h2>
+  <p>This is built, and the shape of it is right — including the part I would have had to argue
+  for. <i>Analyze &amp; design</i> <b>only shows</b> where the shell must be thicker; nothing
+  changes until you switch the toggle on. Then it raises the elements that need it, in steps,
+  tapered into the thinner shell around them, and re-analyses until everything passes, because a
+  thicker patch attracts more force. Zones you type as rules override it. Its criterion is the
+  code's own checks, punching at the blocks included.</p>
+  <p>So §10 is no longer about building a rule. It is about the three things that turn a working
+  rule into a design tool.</p>
   <figure>
     <div class="plate"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 520" width="100%" role="img">
 <rect width="1080" height="520" fill="#ffffff"/>
@@ -3411,183 +3382,135 @@
 <text x="388.00" y="451.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >So automatic thickening is not a tidying-up step. It is the design decision the tab exists to make — which is why it gets</text>
 <text x="388.00" y="466.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >a mode, a criterion you can name, limits you can build to, a convergence report, and this table.</text>
 </svg></div>
-    <figcaption><b>The Thickness mode.</b> The rule with its criterion named, limits you can
-    actually build to, a convergence report, and the comparison table the whole mode exists to
-    produce. The numbers in that table are the Kresge Auditorium results from Mekjavić &amp;
-    Pičulin's Table 3 — real measurements of what redistributing the same concrete is worth,
-    printed in the shape the mode would print them.</figcaption>
+    <figcaption><b>What the Thickness mode would add.</b> The panel on the left is close to what
+    exists, moved into a mode and with its criterion named in one line. The two things on the right
+    are new: the <b>comparison table</b>, and the levers it compares across. The numbers in it are
+    the Kresge Auditorium results from Mekjavić &amp; Pičulin's Table 3 — real measurements of what
+    redistributing the same concrete is worth, in the shape this mode would print them.</figcaption>
   </figure>
-  <h4>What the paper establishes, and what each thing becomes here</h4>
-  <div class="tbl"><table>
-    <tr><th>In the paper</th><th>In the tab</th></tr>
-    <tr><td>The criterion was <b>punching design at the supports</b>, run by the code-check module
-      against Eurocode 2</td>
-      <td>The criterion is named in the panel and chosen from a list — punching at a support,
-      principal tension over f<sub>ctm</sub>, the bars not fitting, or a utilisation target. Yours
-      wins if it is none of these; the point is that it is <i>stated</i>. Against CIRSOC 201 here,
-      not EC2.</td></tr>
-    <tr><td>Thickness raised <b>stepwise, 10 → 40 cm in 2.5 cm increments</b>; on Kresge, 8 → 30 cm
-      at the three supports</td>
-      <td>min, max and a build step you set. 25 mm by default, because a slab specified in 3.7 mm
-      increments is not a slab anyone pours.</td></tr>
-    <tr><td>“A clear distribution of larger thickness around the supports and a nice gradation
-      towards the centre”</td>
-      <td>Exactly the map figure 1C draws and figure 2 cuts through. The smoothing radius is what
-      turns a jagged element-by-element result into that gradation.</td></tr>
-    <tr><td>Three designs compared on stress, deflection and reinforcement</td>
-      <td>The comparison table, kept as you go, so “is this better?” is answered rather than
-      remembered.</td></tr>
-    <tr><td>The levers were <b>thickness distribution, edge-beam size and concrete class</b> —
-      and separately, <b>the rise</b></td>
-      <td>All four. The first three live in the Thickness mode; the rise is a shape parameter, so
-      it gets the sweep described below.</td></tr>
-  </table></div>
-
-  <h4>The sweep</h4>
-  <p>The same paper varies one shape parameter and tabulates the result: raising the Ehima dome's
-  rise from 7 m to 9 m drops the peak tension 23%, the deflection 34% and the reinforcement 20%.
-  That is three solves and a table, and it is the most useful thing a shell tab can do — so
-  <b>pick a parameter, give it a range and a step, and the tab solves across it and plots the four
-  status-bar numbers against it.</b> Rise, thickness, edge-beam depth, support spacing: all of them
-  are one number in a panel that already exists.</p>
-  <p>It is also the honest answer to a question the tab will otherwise invite. Thickening makes a
-  shell work; changing its shape often makes it work better, for less concrete. The paper's own
-  conclusion on Ehima is that the shell should have been built flatter — no amount of thickening
-  would have told anyone that.</p>
-
-  <h4>And what it reports</h4>
-  <ul>
-    <li><b>It iterates and says so:</b> pass 1 raised 84 elements, pass 2 raised 11, pass 3 none —
-    converged. A run that does not converge says that instead of stopping quietly at a limit.</li>
-    <li><b>It leaves a map behind</b>, which is what lets the section drawings band the zones it
-    acted on and print the multiplier it applied there.</li>
-    <li><b>It never hides the trade:</b> concrete volume up, steel down, deflection down — every
-    row of the comparison table, every time.</li>
-  </ul>
-  <div class="note warn">
-    <p>If your existing rule differs from any of this, yours wins. A thickening rule is a design
-    decision, not an implementation detail, and I would rather read yours than invent one.</p>
-  </div>
+  <h4>One: see it</h4>
+  <p>§4 and §5. The thickness in the 3-D model as a solid, and in a section at true scale with the
+  thickened zones banded. The tab already knows the number for every element; nothing in the
+  picture uses it. This is the single largest gap between what the tab computes and what it
+  shows.</p>
+  <h4>Two: compare designs</h4>
+  <p>The Kresge study varies three things — the thickness distribution, the edge-beam size, and the
+  concrete class — and tabulates peak tension, deflection and reinforcement for each. All three are
+  already inputs here: the thickness is a formula, edge beams are a table, the class is on the
+  Design page. What is missing is the table that holds the results side by side, so “is this
+  better?” is answered rather than remembered. Four rows the table should carry that nothing
+  currently prints: <b>Δ/L against Isler's 1/300</b>, the <b>percentage of the shell in
+  tension</b>, <b>L/t</b>, and <b>concrete volume against steel tonnage</b>.</p>
+  <h4>Three: sweep a parameter</h4>
+  <p>The same paper raises the Ehima dome's rise from 7 m to 9 m and cuts peak tension 23%,
+  deflection 34% and reinforcement 20%. In this tab that is <i>one slider</i> — the rise is already
+  a named number with a slider beside it. Give the slider a range and a step, solve across it, and
+  plot those four metrics. It is the cheapest large feature in the plan, because the sliders, the
+  solver and the metrics all exist; only the loop and the chart do not.</p>
+  <p>It is also the honest answer to a question the tab invites. Thickening makes a shell work;
+  changing its shape often makes it work better, for less concrete. No amount of thickening would
+  have told anyone that Ehima should have been built flatter.</p>
 </section>
 
 <section>
   <h2><span class="num">11</span>Every feature, and what happens to it</h2>
-  <p>The Stereo plan had a table like this and you said that plan worked, so here is the same
-  thing for the Shell tab. Since the zip has no Shell tab, “keep” now means <i>build it this way
-  and leave it alone afterwards</i>, and “rewrite” means <i>do not build the version the brief
-  describes</i> — the rectangular plan and the toolbar colour list are the two things it asks for
-  that this plan deliberately does not deliver.</p>
+  <p>Now that the code is here, this table is no longer provisional. <b>Keep</b> means the work
+  does not touch it.</p>
   <div class="tbl"><table>
     <tr><th>Feature</th><th>Verdict</th><th>Why</th></tr>
-    <tr><td>MITC4 element, assembly, solve</td><td class="keep">Keep</td>
-        <td>The right element. Ported unchanged; only the sparse-assembly question in §9 is worth
-        checking.</td></tr>
-    <tr><td><code>shell_codes.py</code> (RC checks)</td><td class="keep">Keep</td>
-        <td>Already separate from the solver, which is what makes adding steel cheap.</td></tr>
-    <tr><td>Automatic thickening rule</td><td class="keep">Keep, make legible</td>
-        <td>Your design decision. §10 draws it and reports it; it does not change it.</td></tr>
-    <tr><td>Edge beams, preliminary check</td><td class="keep">Keep, then upgrade</td>
-        <td>Drawn as solids and cut in section now; <code>concreteproperties</code> turns the check
-        into a real N–M design later, if you want it (question 10).</td></tr>
+    <tr><td>MITC4 + beam engine, sparse solve, free-motion check</td><td class="keep">Keep</td>
+        <td>Right element, verified against three published cases. Add the Mekjavić dome to its
+        set — that is a test file, not a change.</td></tr>
+    <tr><td><code>shell_codes.py</code>, CIRSOC 201-2024 / 2005</td><td class="keep">Keep</td>
+        <td>Already swappable classes, already apart from the solver.</td></tr>
+    <tr><td>RC design: sandwich + Nielsen, punching at blocks</td><td class="keep">Keep</td>
+        <td>More complete than the plan had assumed. Wood–Armer is not needed — Nielsen's rule on
+        sandwich layers is the same job done for membrane <i>and</i> bending together.</td></tr>
+    <tr><td>Support blocks and column heads</td><td class="keep">Keep</td>
+        <td>The decision that makes the numbers near a support mean anything.</td></tr>
+    <tr><td>Automatic thickening: show first, then toggle, taper, zones</td><td class="keep">Keep</td>
+        <td>The behaviour is right. §10 adds seeing it, comparing it, and sweeping it.</td></tr>
+    <tr><td>Definitions list with live sliders (<code>formula.py</code>)</td><td class="keep">Keep</td>
+        <td>This is the surface wizard, and it is better than Stereo's: the slider redraws without
+        re-solving. §7 adds only the plan rule.</td></tr>
+    <tr><td>Wind from CIRSOC 102, load cases, combinations, envelope</td><td class="keep">Keep</td></tr>
+    <tr><td>Report, Excel round trip</td><td class="keep">Keep</td></tr>
+    <tr><td>The 3-D model drawn as a sheet</td><td class="kill">Rewrite</td>
+        <td>§4. Two offset faces and an edge band, at the thickness the tab already knows.</td></tr>
+    <tr><td><i>Section cut…</i>, a link that plots a result along a line</td><td class="kill">Rewrite</td>
+        <td>§5. Persistent cuts, a list, and a drawing that is the shell's real profile.</td></tr>
+    <tr><td>The <b>Show</b> list in the top toolbar</td><td class="kill">Rewrite</td>
+        <td>§8. Into the panel, one line of description per row, a <code>?</code> per row.</td></tr>
+    <tr><td>Supports placed by name in a table</td><td class="kill">Rewrite</td>
+        <td>§6. Click the element corners — respecting that what you place is a block.</td></tr>
+    <tr><td>Four notebook pages in one scrolling panel</td><td class="kill">Rewrite</td>
+        <td>§3. The mode rail, one panel, canvas cards, a status bar.</td></tr>
     <tr><td>Rectangular plan only</td><td class="back">Replace</td>
-        <td>The plan-shape rule from Stereo, route A in §7. The single biggest gain in the
-        plan.</td></tr>
-    <tr><td>Colour list in the top toolbar</td><td class="kill">Rewrite</td>
-        <td>Becomes the Analyse panel, with a description per row and a guide card.</td></tr>
-    <tr><td>Section cut list and drawing</td><td class="kill">Rewrite</td>
-        <td>Becomes the Sections mode: persistent cuts, true-scale drawing, thickness dimensioned.</td></tr>
-    <tr><td>3D view without thickness</td><td class="kill">Rewrite</td>
-        <td>Drawn as the solid it is, with a cutaway and an exaggeration switch.</td></tr>
-    <tr><td>Supports</td><td class="kill">Rewrite</td>
-        <td>Picking on element corners, six freedoms, presets, quick actions, sandbox.</td></tr>
-    <tr><td>The window as a whole</td><td class="kill">Rewrite</td>
-        <td>The Stereo shell: mode rail, one context panel, canvas cards, status bar.</td></tr>
-    <tr><td>Units</td><td class="keep">Keep</td>
-        <td><code>units.py</code> is app-wide and orthogonal to all of this.</td></tr>
-    <tr><td>Excel import / export</td><td class="keep">Keep</td>
-        <td>As in every other tab.</td></tr>
-    <tr><td><code>.vtu</code> export (PyVista)</td><td class="back">Add</td>
-        <td>Your own reading list calls it the cheapest large win: the model opens in ParaView, and
-        other engineers accept the format.</td></tr>
-    <tr><td>Form finding</td><td class="kill">Not now</td>
-        <td>Named as absent in the reading list, and it is a project of its own — Kratos and
-        <code>compas_tno</code> are the routes when you want it.</td></tr>
-    <tr><td>Gmsh meshing</td><td class="back">Optional, later</td>
-        <td>Route B in §7 — declined for now: route A is the decision.</td></tr>
+        <td>§7, route A — and the tab's own open-items list asks for exactly this, “a domain rule,
+        as Stereo has”.</td></tr>
+    <tr><td>Δ/L, tension area, L/t, volume and steel</td><td class="back">Add</td>
+        <td>§8 and §10. None of the four is printed today.</td></tr>
+    <tr><td>Gaussian curvature map, straight generators</td><td class="back">Add</td>
+        <td>§7. Buckling risk and buildability, both known from the surface before any solve.</td></tr>
     <tr><td>Parameter sweep</td><td class="back">Add</td>
-        <td>One shape number across a range, four metrics plotted. The Ehima study in one
-        button.</td></tr>
-    <tr><td>Straight generators, Gaussian curvature</td><td class="back">Add</td>
-        <td>Buildability and buckling, both known from the surface alone, both cheap.</td></tr>
-    <tr><td>Edge refinement + convergence check</td><td class="back">Add</td>
-        <td>The boundary layer is where the bending is, and a uniform mesh misses it.</td></tr>
-    <tr><td>Ribs, as an alternative to thickening</td><td class="back">Later, not never</td>
-        <td>The first draft excluded them. The Evoluon result is that a ribbed 8 cm shell beats a
-        thicker plain one — so ribs are a real answer to the same question thickening answers, and
-        they belong in the Thickness mode eventually.</td></tr>
+        <td>§10. The sliders already exist; only the loop and the chart do not.</td></tr>
+    <tr><td>Edge-beam design, preliminary</td><td class="back">Later</td>
+        <td>The tab's own open item 7. <code>concreteproperties</code> for a real N–M check.</td></tr>
+    <tr><td>Two expression parsers</td><td class="back">Later</td>
+        <td><code>formula.py</code> and <code>expr_math.py</code>. One should win; choosing means
+        touching Stereo.</td></tr>
+    <tr><td>Form finding, global buckling</td><td class="kill">Not now</td>
+        <td>The tab's open items 4 and 6, and §13 here.</td></tr>
   </table></div>
 </section>
 
 <section>
   <h2><span class="num">12</span>How I would build it</h2>
-  <p>Seven stages. Each ends with the app running and its tests passing, so you can stop me at any
-  boundary and still have something that works. Tests go in <span class="path">tests/</span>
-  beside the 54 files already there and run in the same pytest suite.</p>
+  <p>Six stages left. Each ends with the app running and its tests passing, so you can stop me at
+  any boundary and still have something that works. Tests go in <span class="path">tests/</span>
+  beside the 57 files now there.</p>
   <div class="note ok">
-    <p><b>Stage 0 is done.</b> It was “bring the working folder into the repository”; the zip you
-    sent is byte-identical to what this branch already carries, so there is nothing to sync. The
-    branch is current with your app as of 20 September, and it runs here — which is what the new
-    <span class="path">tests/tools/shoot.py</span> is for.</p>
+    <p><b>Stage 0 — done and committed.</b> The Shell tab, <code>formula.py</code>,
+    <code>view3d.py</code>, the units superset and the tests are on this branch; Stereo untouched;
+    316 tests green.</p>
   </div>
 
   <div class="stage"><span class="tag">Stage 1</span><div>
-    <p><b>Write the solver, and prove it.</b> <span class="path">apps/shell/</span>: the mesh data
-    model, the MITC4 element, the sparse assembly, the boundary check, and
-    <code>shell_codes.py</code> against CIRSOC 201. Then the verification set: <b>the Mekjavić
-    dome of §9 first</b> — six published numbers — plus a patch test the element must pass exactly,
-    a simply supported square plate (Timoshenko) and a clamped circular plate.</p>
-    <p class="sub">No UI beyond a Generate and an Analyze. This is the longest stage and the one
-    that decides whether anything after it is worth drawing.</p>
+    <p><b>Thickness in the 3-D model.</b> The offset faces, the edge band, the cutaway, the
+    true-scale / exaggerate switch — and the edge beams drawn as the solids they are. Tests on the
+    geometry it generates, screenshots through <span class="path">shoot.py</span>.</p>
+    <p class="sub">First because it is the largest gap between what the tab computes and what it
+    shows, and because every later picture is better for it.</p>
   </div></div>
 
   <div class="stage"><span class="tag">Stage 2</span><div>
-    <p><b>The window.</b> Mode rail, one context panel, canvas, status bar, view cube, cards,
-    Alt+1…9, focus rings — the Stereo shell, adapted. Existing panels move into their modes with no
-    behaviour change.</p>
-    <p class="sub">The biggest diff, the least new logic — exactly as in the Stereo rebuild.</p>
+    <p><b>Sections.</b> Persistent cuts as model objects, the list with its per-cut readout, the
+    live plane, and the drawing at true scale with the thickened zones banded and the cut face
+    carrying the model's own colour.</p>
   </div></div>
 
   <div class="stage"><span class="tag">Stage 3</span><div>
-    <p><b>Thickness in 3D, and supports on the corners.</b> The solid drawing, the exaggeration
-    switch, the cutaway, the edge beams as solids; picking, presets, the six freedoms, the quick
-    actions, the sandbox.</p>
-    <p class="sub">The two things you asked for that change the picture most.</p>
+    <p><b>The window.</b> The mode rail, one context panel, canvas cards, the status bar with its
+    four numbers, Alt+1…9. The four existing pages move into modes with no behaviour change; the
+    <b>Show</b> list moves into the Analyse panel with a line of description per row.</p>
+    <p class="sub">The biggest diff and the least new logic — as in the Stereo rebuild.</p>
   </div></div>
 
   <div class="stage"><span class="tag">Stage 4</span><div>
-    <p><b>Sections.</b> The mode, the persistent cut list, the live plane, the true-scale drawing,
-    the stations, the thickening bands, the first export format.</p>
+    <p><b>Supports on the element corners</b>, with the block that each one places, plus the
+    presets, the quick actions and the sandbox.</p>
   </div></div>
 
   <div class="stage"><span class="tag">Stage 5</span><div>
-    <p><b>Shape mode, the wizard, and the end of the rectangular plan.</b> Ported from this branch:
-    expression parser, keypad, domains, plan-shape rule, summit finder, crossing check.</p>
-    <p class="sub">Cheap, because it is mostly a move — the branch already carries it.</p>
+    <p><b>The plan rule, and the two cheap maps.</b> Route A from the Stereo branch removes the
+    rectangular-plan limit; Gaussian curvature and the straight generators come with the surface
+    and cost one pass each.</p>
   </div></div>
 
   <div class="stage"><span class="tag">Stage 6</span><div>
-    <p><b>Colour, the guide, and the reinforcement maps.</b> The docked list, the <code>?</code>
-    cards, the guide page, Wood–Armer and A<sub>s</sub>, tension against f<sub>ctm</sub>, Gaussian
-    curvature, the four status-bar numbers, and the element table.</p>
-  </div></div>
-
-  <div class="stage"><span class="tag">Stage 7</span><div>
-    <p><b>The Thickness mode as figure 8 draws it.</b> The named criterion, the build step, the
-    smoothing, the convergence report, the edge-beam depth law, the design comparison table — and
-    the parameter sweep. Verified against the paper: the Kresge case should show the same direction
-    and order of magnitude the published table does.</p>
-    <p class="sub">Deliberately last, because it is the piece that needs everything else working
-    first — and it is the piece the tab exists for.</p>
+    <p><b>The guide, the comparison table and the sweep.</b> The <code>?</code> cards and the guide
+    page; the design comparison with Δ/L, tension area, L/t, volume and steel; the parameter sweep
+    and its chart; and the Mekjavić dome added to the verification set.</p>
   </div></div>
 </section>
 
@@ -3617,19 +3540,15 @@
 
 <section>
   <h2><span class="num">14</span>Questions</h2>
-  <p>Six are now answered and are marked <b style="color:var(--ok)">answered</b>. One question is
-  left that only you can settle, and it is the first one. The rest carry the default I would use if
-  you say nothing — and none of them blocks a start.</p>
+  <p>The code answered most of these on its own. What is left is a choice of order, not of
+  substance — nothing here blocks a start.</p>
 
   <div class="qs">
     <div class="q"><span class="num">1</span><div class="qbody">
       <p><b>Send the working folder.</b></p>
-      <div class="note ok"><p><b>Answered, and it changed the job.</b> The zip is the app as this
-      branch already has it, and it has no Shell tab — so the tab is written rather than ported,
-      and §1's table is the brief rather than a description. Nothing is blocking now.</p>
-      <p><b>One line would still change this:</b> if a Shell tab does exist in some other folder,
-      send it and I will port it instead — the interface half of this plan is unaffected either
-      way, but the solver half would become a read rather than a write.</p></div>
+      <div class="note ok"><p><b>Answered: <code>…final_20260915_with_shell.zip</code>.</b> Stage 0
+      is committed, the tab runs on this branch, and §1 is written from the code rather than about
+      it. The solver is a read, not a write.</p></div>
     </div></div>
 
     <div class="q"><span class="num">2</span><div class="qbody">
@@ -3649,8 +3568,9 @@
 
     <div class="q"><span class="num">4</span><div class="qbody">
       <p><b>Thin shell, thick plate, or both?</b></p>
-      <div class="note ok"><p><b>Answered by the evidence, not by guesswork:</b> your tab already
-      uses MITC4, which handles both. DKT triangles are only needed if question 7 goes to Gmsh.</p></div>
+      <div class="note ok"><p><b>Answered by the code:</b> MITC4, which handles both, with a
+      stabiliser for rotation about the normal that the build report shows is insensitive across
+      two orders of magnitude. No triangle element is needed under route A.</p></div>
     </div></div>
 
     <div class="q"><span class="num">5</span><div class="qbody">
@@ -3666,9 +3586,11 @@
     </div></div>
 
     <div class="q"><span class="num">6</span><div class="qbody">
-      <p><b>What is your automatic thickening rule?</b> The criterion, the limits, the step.</p>
-      <p class="default">Expected to be answered by the zip. If it is not legible in the code I will
-      ask again rather than guess.</p>
+      <p><b>What is your automatic thickening rule?</b></p>
+      <div class="note ok"><p><b>Answered by the code.</b> The criterion is the code's own checks —
+      including punching at the blocks — and the rule raises failing elements in steps, tapers them
+      into the shell around them, and re-analyses until everything passes. Typed zones override it.
+      It stays exactly as it is; §10 only adds seeing, comparing and sweeping.</p></div>
     </div></div>
 
     <div class="q"><span class="num">7</span><div class="qbody">
@@ -3711,10 +3633,20 @@
     </div></div>
   </div>
 
+    <div class="q"><span class="num">12</span><div class="qbody">
+      <p><b>Is Stage 1 the right thing to do first?</b> I think thickness in the 3-D model is,
+      because it is the largest gap between what the tab already computes and what it shows, and
+      because every screenshot after it is better for it. The case for doing the window first is
+      that everything else lands inside it.</p>
+      <p class="default">Unless you say otherwise: <b>thickness first</b>, sections second, the
+      window third.</p>
+    </div></div>
+  </div>
+
   <hr class="soft">
-  <p>Nothing in the app has been changed. This page and its eight figures are the only output of
-  this round — they are the thing to argue with. Tell me where I have it wrong and I will redraw
-  the relevant picture before writing any code.</p>
+  <p>Stage 0 is committed; nothing else in the app has been changed. This page and its figures are the only output of
+  the planning rounds — they are the thing to argue with. Tell me where I have it wrong and I will
+  redraw the relevant picture before writing the code.</p>
 </section>
 
 <section>

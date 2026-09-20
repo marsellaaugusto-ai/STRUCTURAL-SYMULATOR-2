@@ -3017,74 +3017,82 @@
 </section>
 
 <section>
-  <h2><span class="num">12</span>Questions</h2>
-  <p>Answer the ones you have opinions about. Each carries the default I would use if you say
-  nothing, so silence is an answer too — it just means you get my guess.</p>
+  <h2><span class="num">12</span>Questions, and what has been answered</h2>
+  <p>Four of these came back straight away, on 2026-09-20. They are marked
+  <b style="color:var(--ok)">answered</b> below, and the plan above already assumes them. The rest
+  still carry the default I would use if you say nothing.</p>
 
   <div class="qs">
     <div class="q"><span class="num">1</span><div class="qbody">
-      <p><b>Where is the old Shell app?</b> A zip, a folder, a paste — whatever is easiest.
-      If it truly does not exist as code any more, tell me that and I will build from zero.</p>
-      <p class="default">If you say nothing: <b>I build from zero</b>, and questions 4–6 become blocking.</p>
+      <p><b>Where is the old Shell app?</b></p>
+      <div class="note ok"><p><b>Answered: a zip is coming.</b> So the shell solver and the
+      automatic-thickening rule get <i>ported</i>, not reinvented, and your numbers do not move.
+      Until it arrives I can build the window, the mesh and the drawing, but not the physics —
+      so this is the one thing still blocking the start of Stage 1.</p></div>
     </div></div>
 
     <div class="q"><span class="num">2</span><div class="qbody">
       <p><b>A new tab, or a replacement?</b> Does Shell sit alongside the existing seven tabs as
       an eighth, or does it replace something?</p>
-      <p class="default">If you say nothing: <b>a new eighth tab</b>, nothing else touched.</p>
+      <p class="default">Unless you say otherwise: <b>a new eighth tab</b>, nothing else touched.</p>
     </div></div>
 
     <div class="q"><span class="num">3</span><div class="qbody">
-      <p><b>Which shell families matter most to you?</b> I listed nine in §6. Which three would
-      you actually use? They get built first and get worked examples; the rest follow.</p>
-      <p class="default">If you say nothing: <b>dome, barrel vault, hypar</b>.</p>
+      <p><b>Which shell families matter most?</b></p>
+      <div class="note ok"><p><b>Answered: the dome and the spherical cap first</b> — including the
+      elliptic dome and the paraboloid dish, which are the same generator with different radii.
+      They get the worked examples and the verification cases; barrel vault, hypar and folded
+      plate follow in that order unless you move them.</p></div>
     </div></div>
 
     <div class="q"><span class="num">4</span><div class="qbody">
-      <p><b>Is it a thin shell, a thick plate, or both?</b> It decides the element. MITC4 handles
-      both; if everything you build is thin, DKT-only is simpler and faster.</p>
-      <p class="default">If you say nothing: <b>MITC4 + DKT</b>, which covers both.</p>
+      <p><b>Thin shell, thick plate, or both?</b> It decides the element — and it is probably
+      answered by the old app's solver when it arrives.</p>
+      <p class="default">Unless you say otherwise: <b>MITC4 + DKT</b>, which covers both.</p>
     </div></div>
 
     <div class="q"><span class="num">5</span><div class="qbody">
-      <p><b>Concrete or steel?</b> — the §8 question. What does the utilisation check mean in
-      your shell app today?</p>
-      <p class="default">If you say nothing: <b>steel to CIRSOC 301</b>, matching the rest of the app.</p>
+      <p><b>Concrete or steel?</b></p>
+      <div class="note ok"><p><b>Answered: both, switchable.</b> A material selector in the
+      Thickness mode, with two independent check paths and two verification sets. That lands one
+      stage later than a single material would, and it makes the thickening rule material-aware:
+      steel thickens against stress on the governing fibre, concrete against a cracked-section
+      check and minimum reinforcement.</p>
+      <p><b>One thing still missing:</b> <i>which</i> concrete code — CIRSOC 201, EHE, ACI 318 or
+      Eurocode 2? Unless you say otherwise I will use <b>CIRSOC 201</b>, to sit beside the
+      CIRSOC 301 steel path the rest of the app already uses.</p></div>
     </div></div>
 
     <div class="q"><span class="num">6</span><div class="qbody">
-      <p><b>What is your automatic thickening rule?</b> The criterion, the limits, the step. Even
-      a rough description is enough for me to keep your behaviour rather than invent one.</p>
-      <p class="default">If you say nothing: <b>thicken until utilisation ≤ a target</b>, in a
-      settable step, smoothed, with min and max.</p>
+      <p><b>What is your automatic thickening rule?</b> The criterion, the limits, the step.</p>
+      <p class="default">Expected to be answered by the zip. If it is not legible in the code I
+      will ask again rather than guess.</p>
     </div></div>
 
     <div class="q"><span class="num">7</span><div class="qbody">
-      <p><b>How do you get sections out?</b> DXF for CAD, or a table of numbers per station?
-      Both eventually — which first?</p>
-      <p class="default">If you say nothing: <b>the table first</b>, DXF after.</p>
+      <p><b>How do you get sections out?</b> DXF for CAD, or a table of numbers per station?</p>
+      <p class="default">Unless you say otherwise: <b>the table first</b>, DXF after.</p>
     </div></div>
 
     <div class="q"><span class="num">8</span><div class="qbody">
-      <p><b>Should the Stereo branch be merged first?</b> <code>claude/stereo-ui-rebuild</code> is
-      30 000 lines ahead of <code>main</code> and never merged — the wizard and the UI patterns I
-      want to reuse live there. Merging it first is cleanest; otherwise I copy the modules across
-      and we carry two copies for a while.</p>
-      <p class="default">If you say nothing: <b>I branch from the Stereo branch</b> and keep one
-      copy, and we merge them together later.</p>
+      <p><b>Which branch should the Shell work start from?</b></p>
+      <div class="note ok"><p><b>Answered, and already done:</b> this branch now sits on top of
+      <code>claude/stereo-ui-rebuild</code>, so there is exactly one copy of
+      <code>expr_math.py</code>, the maths keypad, the domain handling and the plan-shape mask.
+      Shell and Stereo merge to <code>main</code> together.</p></div>
     </div></div>
 
     <div class="q"><span class="num">9</span><div class="qbody">
       <p><b>Do you need edge beams and ribs as real elements?</b> Beam elements welded to the
-      shell edge, rather than a thickened strip. Real for a built shell; a fair amount of work.</p>
-      <p class="default">If you say nothing: <b>no</b> — thickened strips only, in the first pass.</p>
+      shell edge, rather than a thickened strip.</p>
+      <p class="default">Unless you say otherwise: <b>no</b> — thickened strips only, in the first pass.</p>
     </div></div>
   </div>
 
   <hr class="soft">
-  <p>Nothing in the repository has been changed. This page, and the six figures in it, are the
-  only output of this round — they are the thing to argue with. Tell me where I have it wrong
-  and I will redraw the relevant picture before writing any code.</p>
+  <p>Nothing in the app has been changed. This page and its six figures are the only output of
+  this round — they are the thing to argue with. Tell me where I have it wrong and I will redraw
+  the relevant picture before writing any code.</p>
 </section>
 
 </div>

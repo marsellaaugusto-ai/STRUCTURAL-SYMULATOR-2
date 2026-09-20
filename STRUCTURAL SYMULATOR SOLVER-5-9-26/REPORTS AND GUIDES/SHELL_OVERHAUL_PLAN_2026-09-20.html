@@ -149,13 +149,13 @@
 <div class="wrap">
 
 <header class="mast">
-  <div class="eyebrow">Plan · rev. 3 · nothing in the app has been changed</div>
+  <div class="eyebrow">Plan · rev. 4 · nothing in the app has been changed</div>
   <h1>Rebuilding the Shell tab</h1>
   <p class="standfirst">What I would change, why, and what it would look like — written before a
   line of it exists, so that if I have misunderstood you, it costs a read rather than a week.</p>
   <div class="byline">
     <span>2026-09-20</span><span>branch <code>claude/shell-rc-rebuild</code></span>
-    <span>rev. 3 — read against two papers on concrete shells</span>
+    <span>rev. 4 — the zip arrived, and there is no Shell tab in it</span>
   </div>
 </header>
 
@@ -179,12 +179,20 @@
       whether to <i>“sync the repo to the zip's state”</i> — and never got an answer. So the
       repository has been behind your working folder since at least that date.</li>
   </ul>
-  <div class="note warn">
-    <h4>So the Shell tab is not new, and this is not a new tab</h4>
-    <p>It exists, it is the eighth tab of the same program, and your working folder is the copy
-    of record. This repository is a snapshot that predates it. That changes the job from “build a
-    Shell tab” to <b>“rebuild the interface of an existing Shell tab, and bring the working folder
-    into the repository so the two stop diverging.”</b></p>
+  <div class="note ok">
+    <h4>Then the zip arrived, on 20 September, and settled it</h4>
+    <p><code>structural_simulator_stereo_utilization_rodloads.zip</code> is
+    <b>byte-identical</b> to the delivery zip already committed on the Stereo branch — same MD5,
+    <code>a42a51b1…</code>. It holds seven app folders: truss, beam, arch, cable, cable_web,
+    perforated_beam, stereo. <b>There is no shell app in it.</b> The one file whose name contains
+    “shell” is <span class="path">apps/stereo/stereo_app_shell.py</span>, which is the Stereo
+    tab's <i>window</i> shell — the mode rail and the status bar — and has nothing to do with
+    shell structures.</p>
+    <p>I ran it to be sure, rather than reading the listing: the app starts, all seven tabs come
+    up, and Stereo solves a 221-node grid to a governing utilisation of 0.75. Seven tabs, not
+    eight.</p>
+    <p>So: <b>the Shell tab is being built, not ported.</b> Your message says to add it to this
+    app, and that is what the rest of this plan now means.</p>
   </div>
   <h4>What I could and could not read</h4>
   <p>I have no way to read your Claude conversations — there is no tool for it in this session,
@@ -205,41 +213,44 @@
 </section>
 
 <section>
-  <h2><span class="num">1</span>What I know about your Shell tab without having seen it</h2>
-  <p>Every line of this table comes from the reading list, which was written while the Shell tab
-  was in front of whoever wrote it. It is strong evidence, but it is second-hand: it is a
-  description of the code, not the code. Each row says how I would confirm it in one minute once
-  the folder arrives.</p>
+  <h2><span class="num">1</span>What the Shell tab should be, and where that comes from</h2>
+  <p>Every line of this table comes from the <i>Structural Solver Reading List</i>, which describes
+  a “Shell (RC) tab” in the present tense — its element, its limits, its files. Since the zip has
+  no such tab, that description is either of a folder I have still not seen, or it was written
+  about the Shell tab as <i>intended</i>. Either way the table is now the <b>specification</b>
+  rather than a description of existing code: it is what to build, and it is a good brief. The
+  third column, which used to say how I would confirm each row against the code, now says what
+  each one costs to build.</p>
   <div class="tbl"><table>
-    <tr><th>What it says</th><th>The words it says it in</th><th>Confirm by</th></tr>
-    <tr><td>It is a <b>reinforced-concrete</b> shell tab</td>
+    <tr><th>What it asks for</th><th>The words it says it in</th><th>What it costs</th></tr>
+    <tr><td>A <b>reinforced-concrete</b> shell tab</td>
         <td>the section is headed “Shell (RC) tab”, and it opens with a program that “designs
         reinforced-concrete shell reinforcement”</td>
-        <td>the material constants in the solver</td></tr>
-    <tr><td>Its element is <b>MITC4</b></td>
+        <td>a CIRSOC 201 check module — Stage 1</td></tr>
+    <tr><td>Element: <b>MITC4</b></td>
         <td>“OpenSees … whose shell element is called <code>ShellMITC4</code> — <i>the same
         formulation the Shell tab uses</i>”</td>
-        <td>the element routine's name</td></tr>
-    <tr><td>Its plan <b>must be a rectangle</b></td>
+        <td>the element itself — Stage 1, and the bulk of it</td></tr>
+    <tr><td>The old limit: the plan <b>must be a rectangle</b></td>
         <td>“the mesher that would let the Shell tab handle a plan that is not a rectangle”, and of
         Gmsh: “this is what breaks the rectangular-plan limit — circles, polygons and holes”</td>
-        <td>the mesh generator's signature</td></tr>
-    <tr><td>It has a code-check layer in <code>shell_codes.py</code>, kept apart from the solver</td>
+        <td>nothing: route A removes the limit for free</td></tr>
+    <tr><td>A code-check layer in <code>shell_codes.py</code>, kept apart from the solver</td>
         <td>“shows a code-check layer kept apart from the solver — the same idea as
         <code>shell_codes.py</code>, for steel”</td>
-        <td>the file is either there or it is not</td></tr>
-    <tr><td>It has <b>edge beams</b>, with a preliminary check</td>
+        <td>a module boundary, drawn on day one</td></tr>
+    <tr><td><b>Edge beams</b>, with at least a preliminary check</td>
         <td>“would turn the Shell tab's <i>preliminary edge-beam check</i> into a real N–M design”</td>
-        <td>the edge-beam function</td></tr>
-    <tr><td>It has <b>no form-finding</b></td>
+        <td>a beam element along a chain of shell edges — Stage 3</td></tr>
+    <tr><td>No form-finding</td>
         <td>“the piece the Shell tab does not have — finding the shape instead of checking it”</td>
-        <td>—</td></tr>
-    <tr><td>Hypars are a case it is used on</td>
+        <td>out of scope, and §13 says so</td></tr>
+    <tr><td>Hypars among the cases it serves</td>
         <td>“the best second opinion available on a hypar”</td>
-        <td>its examples</td></tr>
-    <tr><td>It shares <code>units.py</code> and the app's conventions</td>
+        <td>a generator each — §7</td></tr>
+    <tr><td>Shares <code>units.py</code> and the app's conventions</td>
         <td>it is listed as one of the eight tabs of the same program</td>
-        <td>its imports</td></tr>
+        <td>free: the tab imports what the other seven do</td></tr>
   </table></div>
   <h4>And two papers you sent, which change more</h4>
   <p>Both are about exactly this structure, and between them they settle several things this plan
@@ -267,12 +278,12 @@
     get rows, and §8 is rewritten around them.</li>
     <li><b>The rectangular-plan limit is the biggest single gain available</b>, and §7 now treats
     it as the point of bringing the wizard over rather than as a side effect.</li>
-    <li><b>Edge beams already exist.</b> The first draft said the plan would not include them.
-    Wrong: they are there, and the work is to draw them, cut them in section, and later upgrade
-    their check — not to invent them.</li>
-    <li><b>The element question is already answered.</b> MITC4 is what you have and what I would
-    have chosen; the only open part is whether triangles are needed too, which depends on the
-    meshing decision in §7.</li>
+    <li><b>Edge beams are in scope.</b> The first draft excluded them; the brief asks for them,
+    the Kresge study shows they are worth more than extra thickness, and a shell on a free edge
+    without one is not a real design. They are Stage 3.</li>
+    <li><b>The element question is answered anyway.</b> MITC4 is what the brief names and what I
+    would have chosen; with route A the mesh is structured quads, so no triangle element is needed
+    at all.</li>
     <li><b>Automatic thickening is the point of the tab, not a tidying-up step.</b> The first paper
     measures what it is worth on a real shell: the same concrete, redistributed, takes the peak
     tension from 14.4 MPa to 3.9 and the deflection from 299 mm to 50. §10 is rewritten around
@@ -3088,29 +3099,27 @@
 
 <section>
   <h2><span class="num">9</span>The solver: what stays, and what I would add</h2>
-  <p>On the evidence of §1 the engine is already the right one, so this section is much shorter
-  than it was in the first draft. <b>MITC4 is what you have and what I would have chosen</b> — it
-  does not lock in shear as the shell gets thin, and it is the same element OpenSees ships, which
-  means a second opinion is a <code>pip install</code> away.</p>
-  <h4>Kept, untouched</h4>
+  <p>The zip settled this: there is no shell solver to port, so it gets written. <b>MITC4</b> is
+  what the brief names and what I would have chosen anyway — it does not lock in shear as the
+  shell gets thin, and it is the element OpenSees ships as <code>ShellMITC4</code>, so an
+  independent second opinion is a <code>pip install</code> away rather than an argument.</p>
+  <h4>What gets written, in this order</h4>
   <ul>
-    <li>The element, the assembly and the solve.</li>
-    <li><code>shell_codes.py</code> — the code-check layer, already separate from the solver, which
-    is the correct architecture and the reason a second material can be added without touching the
-    physics.</li>
-    <li>Your automatic-thickening rule. §10 is about making it legible, not about changing it.</li>
-    <li>The edge beams and their preliminary check.</li>
-  </ul>
-  <h4>Added</h4>
-  <ul>
-    <li><b>DKT triangles</b> — only if the meshing question in §7 goes to Gmsh. A structured quad
-    mesh needs no triangle.</li>
-    <li><b>A steel path</b> beside the RC one, since you asked for both switchable: the same
-    element, a different <code>shell_codes</code> entry point, and von Mises on the fibres becomes
-    a meaningful colour mode instead of a hidden one.</li>
+    <li><b>The element</b> — MITC4, four nodes, six freedoms each, membrane plus plate bending,
+    assembled sparse. Route A means a structured quad mesh, so no triangle element is needed at
+    all; DKT comes back only if a truly unstructured mesh ever does.</li>
+    <li><b>The checks, in their own module.</b> The brief calls it <code>shell_codes.py</code> and
+    keeping it apart from the solver is the right architecture, so that is how it starts: CIRSOC
+    201 for concrete — punching, principal tension against f<sub>ctm</sub>, Wood–Armer moments and
+    the steel they demand — and a CIRSOC 301 entry point beside it for the steel path.</li>
     <li><b>The boundary check</b> Stereo runs before every solve, so an under-restrained model gets
     a sentence instead of a singular matrix.</li>
+    <li><b>Edge beams</b> — an ordinary frame element along a chain of shell edge nodes, with the
+    varying-depth law the Kresge study shows is worth having.</li>
   </ul>
+  <p>Everything else the tab needs already exists in this repository and is imported, not written:
+  <code>units.py</code>, the Excel helpers, the zoom canvas, the expression parser and the whole
+  surface wizard.</p>
   <h4>The acceptance test</h4>
   <p>The first paper hands this plan something it badly needed: a shell whose answers are
   published, computed two ways, with a mesh study behind them.</p>
@@ -3463,10 +3472,11 @@
 
 <section>
   <h2><span class="num">11</span>Every feature, and what happens to it</h2>
-  <p>The Stereo plan had a table like this and you said that plan worked, so here is the same thing
-  for the Shell tab. It is <b>provisional</b> — built on §1 rather than on the code — and the first
-  thing I would do with the folder is correct it and show you the corrected version before touching
-  anything.</p>
+  <p>The Stereo plan had a table like this and you said that plan worked, so here is the same
+  thing for the Shell tab. Since the zip has no Shell tab, “keep” now means <i>build it this way
+  and leave it alone afterwards</i>, and “rewrite” means <i>do not build the version the brief
+  describes</i> — the rectangular plan and the toolbar colour list are the two things it asks for
+  that this plan deliberately does not deliver.</p>
   <div class="tbl"><table>
     <tr><th>Feature</th><th>Verdict</th><th>Why</th></tr>
     <tr><td>MITC4 element, assembly, solve</td><td class="keep">Keep</td>
@@ -3520,27 +3530,24 @@
 
 <section>
   <h2><span class="num">12</span>How I would build it</h2>
-  <p>Seven stages now, because §0 added one at the front. Each ends with the app running and its
-  tests passing, so you can stop me at any boundary and still have something that works. Tests go
-  in <span class="path">tests/</span> beside the 54 files already there and run in the same pytest
-  suite.</p>
-
-  <div class="stage"><span class="tag">Stage 0</span><div>
-    <p><b>Bring the working folder into the repository.</b> The Shell tab and anything else that
-    has drifted, as one commit with a manifest of what changed, then the whole suite run. This has
-    been an open item since 12 September and everything else depends on it.</p>
-    <p class="sub">Risk: low, but it is the stage where surprises surface. I would show you the
-    inventory diff before committing.</p>
-  </div></div>
+  <p>Seven stages. Each ends with the app running and its tests passing, so you can stop me at any
+  boundary and still have something that works. Tests go in <span class="path">tests/</span>
+  beside the 54 files already there and run in the same pytest suite.</p>
+  <div class="note ok">
+    <p><b>Stage 0 is done.</b> It was “bring the working folder into the repository”; the zip you
+    sent is byte-identical to what this branch already carries, so there is nothing to sync. The
+    branch is current with your app as of 20 September, and it runs here — which is what the new
+    <span class="path">tests/tools/shoot.py</span> is for.</p>
+  </div>
 
   <div class="stage"><span class="tag">Stage 1</span><div>
-    <p><b>Read the solver, correct §1 and §11, and run the acceptance test.</b> Confirm the
-    element, the thickening rule, the edge-beam check and the mesh generator. Then the verification
-    set: <b>the Mekjavić dome of §9 first</b> — six published numbers — plus a patch test the
-    element must pass exactly, a simply supported square plate (Timoshenko) and a clamped circular
-    plate.</p>
-    <p class="sub">No UI work. If the engine disagrees with §1, or misses the dome, you see that
-    before I build anything on top of it.</p>
+    <p><b>Write the solver, and prove it.</b> <span class="path">apps/shell/</span>: the mesh data
+    model, the MITC4 element, the sparse assembly, the boundary check, and
+    <code>shell_codes.py</code> against CIRSOC 201. Then the verification set: <b>the Mekjavić
+    dome of §9 first</b> — six published numbers — plus a patch test the element must pass exactly,
+    a simply supported square plate (Timoshenko) and a clamped circular plate.</p>
+    <p class="sub">No UI beyond a Generate and an Analyze. This is the longest stage and the one
+    that decides whether anything after it is worth drawing.</p>
   </div></div>
 
   <div class="stage"><span class="tag">Stage 2</span><div>
@@ -3616,10 +3623,13 @@
 
   <div class="qs">
     <div class="q"><span class="num">1</span><div class="qbody">
-      <p><b>Send the working folder.</b> The Shell app, and ideally the whole folder, since §0
-      suggests more than the Shell tab has drifted.</p>
-      <div class="note ok"><p><b>Answered: a zip is coming</b> — and it is now the <i>only</i>
-      thing blocking Stage 0, and every stage after it. Everything else in this plan is decided.</p></div>
+      <p><b>Send the working folder.</b></p>
+      <div class="note ok"><p><b>Answered, and it changed the job.</b> The zip is the app as this
+      branch already has it, and it has no Shell tab — so the tab is written rather than ported,
+      and §1's table is the brief rather than a description. Nothing is blocking now.</p>
+      <p><b>One line would still change this:</b> if a Shell tab does exist in some other folder,
+      send it and I will port it instead — the interface half of this plan is unaffected either
+      way, but the solver half would become a read rather than a write.</p></div>
     </div></div>
 
     <div class="q"><span class="num">2</span><div class="qbody">

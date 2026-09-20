@@ -514,3 +514,41 @@ def test_a_cut_plan_weighs_less(app):
     g = app.geom
     whole = _ss.solid_volume(g['X'], g['elems'], g['t'])
     assert cut < whole
+
+
+# ── the guide ──────────────────────────────────────────────────────────────
+
+def test_every_colour_map_has_a_sentence(app):
+    """A list of thirty names with no explanation is the complaint this whole
+    mode exists to answer; a map added later without a note would quietly
+    bring it back."""
+    missing = [name for name in sa.FIELDS
+               if name not in sa.FIELD_HELP and not name.startswith(('Steel', 'Utilisation: '))]
+    assert not missing, 'no note for: %s' % missing
+
+
+def test_the_guide_card_opens_on_the_map_you_are_reading(app):
+    app.set_mode('analyse')
+    app.v_field.set('Membrane shear Nxy')
+    win = app.open_field_guide()
+    app.update()
+    assert 'Nxy' in win.title()
+    text = win.winfo_children()[1].get('1.0', 'end')
+    assert 'q/2k' in text or 'shear' in text
+    win.destroy()
+
+
+def test_the_guide_always_carries_the_three_caveats_and_the_block(app):
+    win = app.open_field_guide()
+    text = win.winfo_children()[1].get('1.0', 'end')
+    for probe in ('201.03', 'CIRSOC 102-2005', '8.6 cm', 'singularity'):
+        assert probe in text, probe
+    win.destroy()
+
+
+def test_the_guide_says_which_scales_are_comparable_between_models(app):
+    app.v_field.set('Utilisation (structural checks)')
+    win = app.open_field_guide()
+    text = win.winfo_children()[1].get('1.0', 'end')
+    assert 'red is 1.0 in every model' in text
+    win.destroy()

@@ -59,20 +59,58 @@ MODES = (
 # "Deflection" explains itself -- so this is the ones where the name alone
 # leaves a real question: what is it per, which face, and against what.
 FIELD_HELP = {
-    'Surface (shaded)': 'No result: the shape itself, lit so the curvature reads.',
-    'Thickness t': 'What the slab IS, element by element — the t you defined, '
-                   'raised by any thickening zone and by the automatic layer.',
-    'Thickness needed': 'The smallest t at which every check passes here. Read it '
-                        'next to the moment map: they should look related.',
-    'Thickness to add': 'Thickness needed minus the thickness there now. Zero '
-                        'over most of a working shell.',
-    'Gaussian curvature K': 'k1 k2 at each point, from the shape alone \u2014 no analysis '
-                            'needed. Positive on a dome, negative on a hypar, ZERO where the '
-                            'surface goes locally flat. A thin shell in compression buckles '
-                            'where it runs out of double curvature, so the pale band is the '
-                            'warning.',
-    'Deflection': 'Displacement magnitude. Isler held his own shells to a '
-                  'deflection of span/300.',
+    'Surface (shaded)': 'No result at all: the shape itself, lit so the curvature reads. '
+                        'Useful while you are still dragging sliders.',
+    'Height z': 'The mid-surface, as a height. A sanity check on the formula more than a '
+                'result.',
+    'Thickness t': 'What the slab IS, element by element \u2014 the t you defined, raised by any '
+                   'thickening zone and by the automatic layer. Read it next to Moment Mx: '
+                   'they should look related.',
+    'Gaussian curvature K': 'k\u2081k\u2082 at each point, from the shape alone \u2014 no analysis needed. '
+                            'Positive on a dome, negative on a hypar, ZERO where the surface '
+                            'goes locally flat. A thin shell in compression buckles where it '
+                            'runs out of double curvature, so a pale band is a warning the '
+                            'solve cannot give you.',
+    'Vertical deflection': 'How far each point dropped. Isler held his own shells to '
+                           'span/300; the status bar prints the ratio.',
+    'Membrane Nx': 'Force per metre of width, in the plane of the shell, on the x face. '
+                   'Positive is tension. Membrane action is what a shell carries load with.',
+    'Membrane Ny': 'The same on the y face. A well-shaped shell is mostly compression in '
+                   'both.',
+    'Membrane shear Nxy': 'In-plane shear per metre. On a hypar under uniform load this is '
+                          'the whole load path \u2014 membrane theory says Nxy = q/2k and Nx, Ny '
+                          'are nearly zero.',
+    'Principal N1 (tension)': 'The larger principal membrane force. Where this is positive '
+                              'the concrete is in tension and the steel is doing the work; '
+                              'Candela kept it below the tensile strength almost everywhere.',
+    'Principal N2 (compression)': 'The smaller one. Compare its peak with the concrete '
+                                  'strength, and read it beside the curvature map: high '
+                                  'compression where K is near zero is where buckling lives.',
+    'Moment Mx': 'Bending moment per metre about the y axis \u2014 the shell acting as a plate '
+                 'rather than as a shell. In pure membrane action this is nearly zero, so '
+                 'wherever it is large the shape failed to carry the load in its own plane.',
+    'Moment My': 'The same about the x axis.',
+    'Twisting Mxy': 'The twisting moment. It is not designed for directly: it is folded into '
+                    'the design moments the steel is sized from.',
+    'Transverse shear |Q|': 'Out-of-plane shear per metre. It matters near supports, ribs and '
+                            'edge beams, and it is the check a thin shell rarely fails and a '
+                            'thick one can.',
+    'Utilisation (structural checks)': 'Demand \u00f7 capacity over the real checks \u2014 steel, '
+                                       'concrete, shear, buckling, punching at the blocks. '
+                                       'The scale is absolute: red is 1.0 in every model, '
+                                       'which makes it the one map comparable between them.',
+    'Utilisation (worst check)': 'The same, with the detailing minimum folded in. A shell at '
+                                 'the cover minimum reads 0.86 here and 0.1 on the structural '
+                                 'map, and neither is wrong.',
+    'Governing check': 'Which check decides the thickness at each element. Categorical, not '
+                       'a ramp: the legend lists the checks it found.',
+    'Thickness needed': 'The smallest t at which every check passes here. Zero difference '
+                        'from t means the element is already fine.',
+    'Thickness to add': 'Thickness needed minus what is there now. Over most of a working '
+                        'shell this is zero, and the rings round the supports are the whole '
+                        'answer.',
+    'Deflection': 'Displacement magnitude. Isler held his own shells to a deflection of '
+                  'span/300.',
 }
 RAIL_BG = '#eef2f6'
 RAIL_ON = '#ffffff'
@@ -569,7 +607,10 @@ class ShellApp(UnitsMixin, tk.Frame):
         self.field_list.bind('<<ListboxSelect>>', self._on_field_pick)
         self.field_help = tk.Label(p, text='', bg=BG, fg='#555', wraplength=PANEL_W - 30,
                                    justify='left', font=('Helvetica', 8))
-        self.field_help.pack(anchor='w', padx=8, pady=(4, 8))
+        self.field_help.pack(anchor='w', padx=8, pady=(4, 2))
+        tk.Button(p, text='?  what am I looking at', font=('Helvetica', 9), fg='#1a6bbd',
+                  relief='flat', bd=0, command=self.open_field_guide).pack(anchor='w', padx=8,
+                                                                          pady=(0, 8))
         row = tk.Frame(p, bg=BG)
         row.pack(fill='x', padx=8)
         tk.Label(row, text='for', bg=BG, font=('Helvetica', 9)).pack(side='left')
@@ -1133,6 +1174,67 @@ class ShellApp(UnitsMixin, tk.Frame):
                            font=('Helvetica', 9),
                            text='no straight line lies in this surface \u2014 it is '
                                 'synclastic here')
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  The guide
+    # ══════════════════════════════════════════════════════════════════════
+    # Three things are worth knowing about ANY map before it is trusted, and
+    # none of them is in the name: what the quantity is per, what the scale
+    # is anchored to, and which of the four caveats in section 4 of the build
+    # report applies. One source, shown in three places -- the line under the
+    # list, this card, and the guide page in REPORTS AND GUIDES.
+    GUIDE_TAIL = (
+        'THE SCALE. Most maps are anchored to THIS model\u2019s own range, so two '
+        'models are not comparable by colour alone \u2014 the legend always prints '
+        'the numbers. Two are absolute and therefore are comparable: '
+        'Utilisation, where red is 1.0 in every model, and Gaussian curvature, '
+        'which is a property of the shape.\n\n'
+        'THE UNITS follow the selector at the top of the window: membrane '
+        'forces as a line load (kN/m), moments per metre (kN\u00b7m/m), steel as '
+        'area per metre (cm\u00b2/m), thickness as a section length (cm).\n\n'
+        'AND THE THREE THINGS THAT CONSTRAIN ANY DESIGN HERE:\n'
+        '  1. CIRSOC 201-2024 has no shell chapter. Its C 1.2.10.7 defers to '
+        'Recomendaci\u00f3n CIRSOC 201.03, which is still being written, so the '
+        'general rules come from the 2024 draft and the shell rules from '
+        'CIRSOC 201-2005. The report lists them under \u201cverify before '
+        'sign-off\u201d.\n'
+        '  2. The wind speeds are CIRSOC 102-2005, which went with a 1.6 '
+        'factor, while the 2024 combinations expect the larger 2024 speeds at '
+        '1.0. The tab knows which edition the speed came from and scales W by '
+        '1.6; get that wrong and wind is under-counted by 1.6.\n'
+        '  3. Cover sets a floor on thickness. At 35 mm for a roof exposed to '
+        'the weather, no shell is thinner than 8.6 cm with one central mesh or '
+        '12.2 cm with two. Candela\u2019s 4 cm shells would not comply as built.\n\n'
+        'A SUPPORT IS A BLOCK, NOT A POINT. A shell on a mathematical point is '
+        'a singularity: the shear beside it grows without limit as the mesh '
+        'refines. Every point support and column head is a rigid block of a '
+        'stated size, and the check there is the code\u2019s punching check on a '
+        'perimeter d/2 outside it, which is mesh-independent. The element '
+        'values right beside a block still move a little with the mesh.')
+
+    def open_field_guide(self):
+        name = self.v_field.get()
+        win = tk.Toplevel(self)
+        win.title('What am I looking at? \u2014 %s' % name)
+        win.geometry('640x540')
+        head = tk.Frame(win, bg=TB)
+        head.pack(fill='x')
+        tk.Label(head, text=name, bg=TB, font=('Helvetica', 12, 'bold'),
+                 anchor='w').pack(fill='x', padx=12, pady=(8, 2))
+        q = FIELDS[name][3]
+        tk.Label(head, text=('measured in %s' % units.label(q)) if q else 'no unit \u2014 a ratio '
+                 'or a category', bg=TB, fg='#555', font=('Helvetica', 9),
+                 anchor='w').pack(fill='x', padx=12, pady=(0, 8))
+        body = tk.Text(win, wrap='word', font=('Helvetica', 10), padx=14, pady=12,
+                       bg='#ffffff', relief='flat')
+        ys = ttk.Scrollbar(win, orient='vertical', command=body.yview)
+        body.configure(yscrollcommand=ys.set)
+        ys.pack(side='right', fill='y')
+        body.pack(fill='both', expand=True)
+        body.insert('end', FIELD_HELP.get(name, 'No note for this map yet.') + '\n\n')
+        body.insert('end', self.GUIDE_TAIL)
+        body.configure(state='disabled')
+        return win
 
     # -- numeric fields whose model value is kept in SI -------------------------
     def _si_entry(self, parent, label, q, get_si, set_si, width=9, note=''):

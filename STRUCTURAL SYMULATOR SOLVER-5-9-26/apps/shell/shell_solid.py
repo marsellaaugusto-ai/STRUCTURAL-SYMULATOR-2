@@ -309,3 +309,113 @@ def strip_index(xs, ys, axis, pos):
     """
     grid = np.asarray(xs if axis == 'x' else ys, float)
     return int(np.clip(np.searchsorted(grid, pos) - 1, 0, len(grid) - 2))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  What the surface alone already knows
+# ═══════════════════════════════════════════════════════════════════════════
+# Two readings that need no analysis at all, because they are properties of
+# the shape. Both are cheap, and both answer a question the solve cannot.
+
+def gaussian_curvature(X, ids):
+    """K = k1 k2 at every node of a structured grid, from the surface itself.
+
+    A thin shell in compression buckles where it runs out of double
+    curvature -- Candela's own list of what a shell must have. K is exactly
+    that quantity: positive on a dome, negative on a hypar, and ZERO where
+    the surface is locally flat or singly curved, which is where the
+    trouble is. Knowing it before a single element is assembled is the
+    cheapest warning in the tab.
+
+    Computed from the first and second fundamental forms with centred
+    differences over the parameter grid. The boundary rows take the value
+    of their neighbour rather than a one-sided estimate: a one-sided second
+    derivative on a coarse mesh is noise, and a false alarm along every
+    edge would train you to ignore the map.
+    """
+    X = np.asarray(X, float)
+    ids = np.asarray(ids, int)
+    P = X[ids]                                    # (nv, nu, 3)
+    nv, nu = ids.shape
+
+    def d(a, axis):
+        return np.gradient(a, axis=axis, edge_order=1)
+
+    Xu, Xv = d(P, 1), d(P, 0)
+    Xuu, Xvv = d(Xu, 1), d(Xv, 0)
+    Xuv = d(Xu, 0)
+    n = np.cross(Xu, Xv)
+    L = np.linalg.norm(n, axis=2, keepdims=True)
+    n = n / np.where(L < 1e-30, 1.0, L)
+    E = np.sum(Xu * Xu, axis=2)
+    F = np.sum(Xu * Xv, axis=2)
+    G = np.sum(Xv * Xv, axis=2)
+    Ln = np.sum(Xuu * n, axis=2)
+    Mn = np.sum(Xuv * n, axis=2)
+    Nn = np.sum(Xvv * n, axis=2)
+    den = E * G - F * F
+    K = np.where(np.abs(den) > 1e-30, (Ln * Nn - Mn * Mn) / np.where(np.abs(den) > 1e-30, den, 1.0), 0.0)
+    if nv > 2:
+        K[0, :], K[-1, :] = K[1, :], K[-2, :]
+    if nu > 2:
+        K[:, 0], K[:, -1] = K[:, 1], K[:, -2]
+    out = np.zeros(len(X))
+    out[ids.ravel()] = K.ravel()
+    return out
+
+
+def ruling_directions(X, ids, tol=1e-3):
+    """Where the surface is RULED, and along which directions.
+
+    A hyperbolic paraboloid is z = k x y, and the reason Candela built 800
+    of them is not the mathematics: it is that the surface is swept by two
+    families of STRAIGHT lines, so its formwork is straight boards. A shell
+    tab that can draw a hypar and cannot show you its generators is
+    withholding the one thing that decides whether it can be built.
+
+    A surface is ruled through a point when the normal curvature vanishes
+    in some direction, which for K <= 0 happens along the asymptotic
+    directions. Returns, per node, the two in-plane directions (unit, in
+    the parameter basis Xu, Xv) or NaN where the surface is synclastic and
+    no straight line lies on it.
+    """
+    X = np.asarray(X, float)
+    ids = np.asarray(ids, int)
+    P = X[ids]
+    Xu, Xv = np.gradient(P, axis=1, edge_order=1), np.gradient(P, axis=0, edge_order=1)
+    Xuu = np.gradient(Xu, axis=1, edge_order=1)
+    Xvv = np.gradient(Xv, axis=0, edge_order=1)
+    Xuv = np.gradient(Xu, axis=0, edge_order=1)
+    n = np.cross(Xu, Xv)
+    L = np.linalg.norm(n, axis=2, keepdims=True)
+    n = n / np.where(L < 1e-30, 1.0, L)
+    Ln = np.sum(Xuu * n, axis=2)
+    Mn = np.sum(Xuv * n, axis=2)
+    Nn = np.sum(Xvv * n, axis=2)
+    # L du^2 + 2 M du dv + N dv^2 = 0. Solved as a homogeneous pair rather
+    # than as a ratio: on z = k x y the centre has L = N = 0 and M != 0, so
+    # BOTH rulings are lost if you divide by L -- which is the one surface
+    # this function exists for.
+    disc = Mn * Mn - Ln * Nn
+    scale = np.abs(Ln * Nn) + Mn * Mn + 1e-30
+    ok = disc / scale >= -tol
+    root = np.sqrt(np.maximum(disc, 0.0))
+    big_L = np.abs(Ln) >= np.abs(Nn)
+    both_zero = (np.abs(Ln) < 1e-12) & (np.abs(Nn) < 1e-12)
+    out = np.full((len(X), 2, 3), np.nan)
+    for sgn, k in ((+1, 0), (-1, 1)):
+        # case A, |L| largest: du/dv = (-M + s root) / L
+        rA = (-Mn + sgn * root) / np.where(np.abs(Ln) > 1e-30, Ln, 1.0)
+        dirA = Xu * rA[..., None] + Xv
+        # case B, |N| largest: dv/du = (-M + s root) / N
+        rB = (-Mn + sgn * root) / np.where(np.abs(Nn) > 1e-30, Nn, 1.0)
+        dirB = Xu + Xv * rB[..., None]
+        dirv = np.where(big_L[..., None], dirA, dirB)
+        # case C, both vanish: the rulings are the parameter lines themselves
+        dirC = Xu if k == 0 else Xv
+        dirv = np.where(both_zero[..., None], dirC, dirv)
+        Ld = np.linalg.norm(dirv, axis=2, keepdims=True)
+        dirv = dirv / np.where(Ld < 1e-30, 1.0, Ld)
+        dirv = np.where(ok[..., None], dirv, np.nan)
+        out[ids.ravel(), k, :] = dirv.reshape(-1, 3)
+    return out

@@ -273,3 +273,83 @@ def test_a_cut_along_y_runs_in_x():
     X, el, ids, xs, ys = grid_with_ids(nx=4, ny=3, w=4.0, h=3.0)
     p = ss.section_profile(X, el, np.full(len(el), 0.1), ids, 'y', 1)
     assert np.allclose(p['s'], np.linspace(0.0, 4.0, 5))
+
+
+# ── what the surface alone knows ───────────────────────────────────────────
+
+def surf_grid(n, f, half=3.0):
+    u = np.linspace(-half, half, n + 1)
+    XX, YY = np.meshgrid(u, u)
+    ZZ = f(XX, YY)
+    X = np.stack([XX.ravel(), YY.ravel(), ZZ.ravel()], axis=1)
+    ids = np.arange(len(X)).reshape(n + 1, n + 1)
+    return X, ids
+
+
+def test_a_flat_plate_has_no_curvature_at_all():
+    X, ids = surf_grid(10, lambda x, y: 0.0 * x)
+    K = ss.gaussian_curvature(X, ids)
+    assert np.allclose(K, 0.0, atol=1e-9)
+
+
+def test_a_sphere_reads_its_own_radius():
+    """K = 1/R^2 on a sphere: the one case with an exact answer."""
+    R = 8.0
+    n = 24
+    u = np.linspace(-0.35, 0.35, n + 1)
+    UU, VV = np.meshgrid(u, u)
+    X = np.stack([R * np.sin(UU.ravel()), R * np.sin(VV.ravel()),
+                  R * np.cos(UU.ravel()) * np.cos(VV.ravel())], axis=1)
+    ids = np.arange(len(X)).reshape(n + 1, n + 1)
+    K = ss.gaussian_curvature(X, ids)
+    mid = ids[n // 2, n // 2]
+    assert K[mid] == pytest.approx(1.0 / R ** 2, rel=0.05)
+    assert np.all(K > 0)                      # synclastic everywhere
+
+
+def test_a_hypar_is_anticlastic_everywhere():
+    X, ids = surf_grid(16, lambda x, y: 0.12 * x * y)
+    K = ss.gaussian_curvature(X, ids)
+    assert np.all(K < 0), 'z = k x y is a saddle at every point'
+
+
+def test_a_barrel_vault_is_flat_in_one_direction_and_says_so():
+    """Singly curved: K = 0. This is the map that warns about buckling, and
+    a cylinder is exactly the shape that has no second curvature to lose."""
+    X, ids = surf_grid(16, lambda x, y: 0.9 * np.cos(0.4 * x))
+    K = ss.gaussian_curvature(X, ids)
+    assert np.allclose(K, 0.0, atol=1e-6)
+
+
+def test_a_hypar_is_ruled_by_two_straight_families():
+    """Candela's whole argument: the formwork is straight boards."""
+    k = 0.12
+    X, ids = surf_grid(12, lambda x, y: k * x * y)
+    R = ss.ruling_directions(X, ids)
+    mid = ids[6, 6]
+    d0, d1 = R[mid, 0], R[mid, 1]
+    assert np.all(np.isfinite(d0)) and np.all(np.isfinite(d1))
+    # on z = k x y through the centre the rulings are the x and y axes
+    assert min(abs(d0[0]), abs(d0[1])) < 0.1
+    assert min(abs(d1[0]), abs(d1[1])) < 0.1
+    assert abs(np.dot(d0, d1)) < 0.2, 'the two families are distinct'
+
+
+def test_a_dome_carries_no_straight_line_and_the_answer_is_not_a_number():
+    X, ids = surf_grid(12, lambda x, y: 2.0 - 0.05 * (x ** 2 + y ** 2))
+    R = ss.ruling_directions(X, ids)
+    mid = ids[6, 6]
+    assert np.isnan(R[mid]).all(), 'a synclastic surface has no ruling to draw'
+
+
+def test_a_ruling_really_lies_in_the_surface():
+    """Step along the direction the function returns and the surface should
+    still be there -- which is what 'straight board' means."""
+    k = 0.10
+    X, ids = surf_grid(20, lambda x, y: k * x * y)
+    R = ss.ruling_directions(X, ids)
+    n0 = ids[10, 10]
+    p = X[n0]
+    for d in R[n0]:
+        q = p + 0.5 * d
+        assert abs(q[2] - k * q[0] * q[1]) < 2e-2

@@ -66,6 +66,11 @@ FIELD_HELP = {
                         'next to the moment map: they should look related.',
     'Thickness to add': 'Thickness needed minus the thickness there now. Zero '
                         'over most of a working shell.',
+    'Gaussian curvature K': 'k1 k2 at each point, from the shape alone \u2014 no analysis '
+                            'needed. Positive on a dome, negative on a hypar, ZERO where the '
+                            'surface goes locally flat. A thin shell in compression buckles '
+                            'where it runs out of double curvature, so the pale band is the '
+                            'warning.',
     'Deflection': 'Displacement magnitude. Isler held his own shells to a '
                   'deflection of span/300.',
 }
@@ -82,6 +87,7 @@ FIELDS = {
     'Surface (shaded)': ('geom', None, None, None),
     'Height z': ('geom', 'z', 'sequential', 'length'),
     'Thickness t': ('geom', 't', 'sequential', 'section_length'),
+    'Gaussian curvature K': ('geom', 'K', 'diverging', None),
     'Vertical deflection': ('disp', 'uz', 'diverging', 'deflection'),
     'Membrane Nx': ('force', 'Nx', 'diverging', 'line_load'),
     'Membrane Ny': ('force', 'Ny', 'diverging', 'line_load'),
@@ -370,6 +376,7 @@ class ShellApp(UnitsMixin, tk.Frame):
         self.v_pick_type = tk.StringVar(value='pinned')
         self.v_pick_block = tk.DoubleVar(value=sm.DEFAULT_BLOCK)
         self.hover_node = None
+        self.v_rulings = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value='')
 
         self._build_ui()
@@ -575,7 +582,8 @@ class ShellApp(UnitsMixin, tk.Frame):
         for text, var in (('mesh lines', self.v_mesh_lines),
                           ('solid — show the thickness', self.v_solid),
                           ('deformed', self.v_deformed),
-                          ('principal directions', self.v_principal)):
+                          ('principal directions', self.v_principal),
+                          ('straight generators (ruled surfaces)', self.v_rulings)):
             tk.Checkbutton(p, text=text, variable=var, bg=BG, font=('Helvetica', 9),
                            command=self._draw).pack(anchor='w', padx=16)
         row = tk.Frame(p, bg=BG)
@@ -1089,6 +1097,43 @@ class ShellApp(UnitsMixin, tk.Frame):
             self.hover_node = n
             self._draw()
 
+    def _draw_rulings(self, X):
+        """The straight lines that lie IN the surface, where there are any.
+
+        Drawn short and from every few nodes rather than swept end to end:
+        the point is to show which way the boards run and that they are
+        straight, and a full sweep of a 24 x 24 grid is a black square.
+        """
+        cv = self.zc.canvas
+        g = self.geom
+        R = ssd.ruling_directions(g['X'], g['ids'])
+        ids = g['ids']
+        step = max(1, int(np.ceil(max(ids.shape) / 14)))
+        take = ids[::step, ::step].ravel()
+        # only where the shell actually is: a plan rule leaves the cut-away
+        # nodes in the grid, and a generator drawn from one runs out over
+        # empty air, which reads as the shell being bigger than it is
+        used = g.get('used')
+        if used is not None:
+            take = take[used[take]]
+        h = 0.45 * float(g['h_el']) * step
+        drawn = 0
+        for n in take:
+            for k, col in ((0, '#7b2fa8'), (1, '#1a7a3a')):
+                d = R[n, k]
+                if not np.all(np.isfinite(d)):
+                    continue
+                p0, p1 = g['X'][n] - d * h, g['X'][n] + d * h
+                (ax, ay), (bx, by) = (self.cam.project(p0), self.cam.project(p1))
+                cv.create_line(float(ax[0]), float(ay[0]), float(bx[0]), float(by[0]),
+                               fill=col, width=2)
+                drawn += 1
+        if not drawn:
+            cv.create_text(self.zc.canvas.winfo_width() - 12, 12, anchor='ne', fill='#a8431f',
+                           font=('Helvetica', 9),
+                           text='no straight line lies in this surface \u2014 it is '
+                                'synclastic here')
+
     # -- numeric fields whose model value is kept in SI -------------------------
     def _si_entry(self, parent, label, q, get_si, set_si, width=9, note=''):
         """A labelled entry showing a model value in the current units; the
@@ -1196,6 +1241,34 @@ class ShellApp(UnitsMixin, tk.Frame):
             self.plan_vars[k] = v
         tk.Label(p, text='(metres — formulas in the definitions are always in metres)',
                  bg=BG, fg='#888', font=('Helvetica', 8), anchor='w').pack(fill='x')
+        # Two ranges can only describe a rectangle, and almost no real shell
+        # has a rectangular plan. A rule over the plan cuts that rectangle
+        # into one -- and it is the tab's own open item 5, "non-rectangular
+        # plans (a domain rule, as Stereo has)".
+        tk.Label(p, text='keep where', bg=BG, font=('Helvetica', 9),
+                 anchor='w').pack(fill='x', pady=(6, 0))
+        self.v_plan_rule = tk.StringVar(value=str(self.model.data.get('plan_rule', '') or ''))
+        e = tk.Entry(p, textvariable=self.v_plan_rule, font=('Consolas', 9))
+        e.pack(fill='x')
+        e.bind('<Return>', lambda _ev: self._set_plan_rule())
+        e.bind('<FocusOut>', lambda _ev: self._set_plan_rule())
+        row = tk.Frame(p, bg=BG)
+        row.pack(fill='x', pady=2)
+        for text, rule in (('round', 'hypot(x, y) < min(a, b)/2'),
+                           ('ring', 'min(a, b)/4 < hypot(x, y) < min(a, b)/2'),
+                           ('L-shape', 'not (x > 0 and y > 0)'),
+                           ('clear', '')):
+            tk.Button(row, text=text, font=('Helvetica', 8),
+                      command=lambda r=rule: (self.v_plan_rule.set(r),
+                                              self._set_plan_rule())).pack(side='left', padx=(0, 3))
+        tk.Label(p, text='Empty keeps the whole rectangle. An element is judged at its centre, '
+                         'so the cut overshoots the line by at most one element — that overshoot '
+                         'is the framing around the opening.',
+                 bg=BG, fg='#888', wraplength=PANEL_W - 30, justify='left',
+                 font=('Helvetica', 8), anchor='w').pack(fill='x')
+        self.plan_rule_note = tk.Label(p, text='', bg=BG, fg='#666',
+                                       font=('Helvetica', 8), anchor='w')
+        self.plan_rule_note.pack(fill='x')
         self._si_entry(p, 'Element size', 'length',
                        lambda: float(self.model.data['mesh'].get('size') or 0.5),
                        lambda v: self.model.data['mesh'].__setitem__('size', max(v, 0.05)))
@@ -1325,6 +1398,28 @@ class ShellApp(UnitsMixin, tk.Frame):
         if name and self.model.data.get(key) != name:
             self.model.data[key] = name
             self._model_changed()
+
+    def _set_plan_rule(self):
+        val = self.v_plan_rule.get().strip()
+        if val == str(self.model.data.get('plan_rule', '') or ''):
+            return
+        self.model.data['plan_rule'] = val
+        self._model_changed()
+        self._refresh_geometry_quietly()
+        self._refresh_plan_rule_note()
+        self._draw()
+
+    def _refresh_plan_rule_note(self):
+        if not hasattr(self, 'plan_rule_note'):
+            return
+        g = self.geom
+        if g is None or g.get('kept') is None:
+            self.plan_rule_note.config(text='', fg='#666')
+            return
+        whole = g['nx'] * g['ny']
+        self.plan_rule_note.config(
+            text='Plan cut: %d of %d elements removed, %d left.'
+                 % (whole - len(g['elems']), whole, len(g['elems'])), fg='#666')
 
     def _set_plan(self, key):
         val = self.plan_vars[key].get().strip()
@@ -1726,7 +1821,8 @@ class ShellApp(UnitsMixin, tk.Frame):
             g = self.model.mesh()
             self.geom = g
             self.error = ''
-            self.mesh_note.config(text=f'  {g["nx"]} × {g["ny"]} = {g["nx"] * g["ny"]} elements')
+            self.mesh_note.config(text=f'  {g["nx"]} × {g["ny"]} = {len(g["elems"])} elements')
+            self._refresh_plan_rule_note()
         except (sm.ModelError, formula.FormulaError) as exc:
             self.error = str(exc)
             self.status.set(f'Cannot draw the surface: {exc}')
@@ -1860,6 +1956,9 @@ class ShellApp(UnitsMixin, tk.Frame):
                 return None, None, None
             if key == 'z':
                 return g['X'][g['elems']][:, :, 2].mean(axis=1), scale, q
+            if key == 'K':
+                K = ssd.gaussian_curvature(g['X'], g['ids'])
+                return K[g['elems']].mean(axis=1), scale, q
             t = self.res.fem['shells'].a if self.res is not None else g['t']
             return t, scale, q
         if self.res is None:
@@ -1989,6 +2088,8 @@ class ShellApp(UnitsMixin, tk.Frame):
         self._draw_structure(X, sx, sy)
         self._draw_cuts(X, sx, sy)
         self._draw_pickable_corners(X, sx, sy)
+        if self.v_rulings.get():
+            self._draw_rulings(X)
         if self.v_principal.get() and self.res is not None:
             self._draw_principal(X, cen)
         if self.sel is not None and self.sel < len(el):

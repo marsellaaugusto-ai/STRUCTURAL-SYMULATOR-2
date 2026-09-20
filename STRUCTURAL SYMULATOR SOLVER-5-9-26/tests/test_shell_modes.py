@@ -366,3 +366,151 @@ def test_the_corners_are_only_drawn_where_you_are_placing_them(app):
     app.set_mode('loads')
     app.update()
     assert not app.zc.canvas.find_withtag('pick')
+
+
+# ── what the shape alone knows ─────────────────────────────────────────────
+
+def test_the_curvature_map_needs_no_analysis(app):
+    """It is a property of the surface, so it must draw before any solve."""
+    assert app.res is None
+    app.v_field.set('Gaussian curvature K')
+    app._draw()
+    vals, scale, _q = app.field_values()
+    assert vals is not None and len(vals) == len(app.geom['elems'])
+    assert scale == 'diverging'
+    assert app.zc.canvas.find_withtag('face')
+
+
+def test_the_preset_hypar_reads_as_a_saddle_everywhere(app):
+    vals, _s, _q = app.field_values('Gaussian curvature K')
+    assert np.all(vals < 0), 'z = k x y is anticlastic at every point'
+
+
+def test_the_generators_are_drawn_on_a_hypar_and_only_when_asked(app):
+    app.v_rulings.set(False)
+    app._draw()
+    n_plain = len(app.zc.canvas.find_all())
+    app.v_rulings.set(True)
+    app._draw()
+    assert len(app.zc.canvas.find_all()) > n_plain
+
+
+def test_a_dome_is_told_it_has_no_straight_lines(app):
+    app.add_definition('zz(x, y) = 3 - 0.04 (x^2 + y^2)')
+    app._set_role('surface', 'zz')
+    app._rebuild_geometry()
+    app.v_rulings.set(True)
+    app._draw()
+    texts = ' '.join(app.zc.canvas.itemcget(i, 'text') for i in app.zc.canvas.find_all()
+                     if app.zc.canvas.type(i) == 'text')
+    assert 'synclastic' in texts
+
+
+def test_a_dome_reads_as_synclastic_in_the_curvature_map(app):
+    app.add_definition('zz(x, y) = 3 - 0.04 (x^2 + y^2)')
+    app._set_role('surface', 'zz')
+    app._rebuild_geometry()
+    vals, _s, _q = app.field_values('Gaussian curvature K')
+    assert np.all(vals > 0)
+
+
+# ── the plan rule: the end of the rectangle ────────────────────────────────
+
+def test_no_rule_keeps_the_whole_rectangle(app):
+    g = app.geom
+    assert len(g['elems']) == g['nx'] * g['ny']
+    assert g['kept'] is None
+
+
+def test_a_rule_cuts_the_rectangle_into_a_plan(app):
+    whole = len(app.geom['elems'])
+    app.v_plan_rule.set('hypot(x, y) < 5')
+    app._set_plan_rule()
+    assert len(app.geom['elems']) < whole
+    assert 'removed' in app.plan_rule_note.cget('text')
+
+
+def test_the_cut_is_element_granular_and_judged_at_the_centre(app):
+    app.v_plan_rule.set('x < 0')
+    app._set_plan_rule()
+    cen = app.geom['centroids']
+    assert np.all(cen[:, 0] < 0), 'an element whose centre fails the rule is out'
+
+
+def test_clearing_the_rule_puts_the_rectangle_back(app):
+    whole = len(app.geom['elems'])
+    app.v_plan_rule.set('hypot(x, y) < 4')
+    app._set_plan_rule()
+    assert len(app.geom['elems']) < whole
+    app.v_plan_rule.set('')
+    app._set_plan_rule()
+    assert len(app.geom['elems']) == whole
+
+
+def test_a_rule_that_keeps_nothing_is_refused_with_a_reason(app):
+    app.v_plan_rule.set('hypot(x, y) < 0.0001')
+    app._set_plan_rule()
+    assert app.error
+    assert 'no elements' in app.error
+
+
+def test_a_rule_that_will_not_compile_reports_instead_of_crashing(app):
+    app.v_plan_rule.set('hypot(x, ) <<')
+    app._set_plan_rule()
+    assert app.error
+    assert app.analyze() is False
+
+
+def test_a_cut_plan_supported_on_its_own_new_edge_solves(app):
+    app.v_plan_rule.set('hypot(x, y) < 5')
+    app._set_plan_rule()
+    app.model.data['supports'] = []
+    app.model.data['beams'] = []
+    app._rebuild_geometry()
+    n = app.quick_support('boundary')
+    assert n > 20, 'the new boundary should have found the round edge'
+    assert app.analyze(), app.error
+
+
+def test_the_cut_away_nodes_do_not_make_the_system_singular(app):
+    """They carry nothing, so they are held still -- which must not be
+    mistaken for the shell being supported there."""
+    app.v_plan_rule.set('hypot(x, y) < 5')
+    app._set_plan_rule()
+    used = app.geom['used']
+    assert not used.all(), 'the cut should leave some nodes unused'
+    app.model.data['supports'] = []
+    app.model.data['beams'] = []
+    app._rebuild_geometry()
+    assert app.analyze() is False, 'an unsupported disc is still a mechanism'
+    assert 'support' in app.error or 'mechanism' in app.error
+
+
+def test_a_rib_that_pokes_outside_the_cut_is_not_anchored_to_ground(app):
+    """The orphan nodes are held still, but never one a beam uses: that
+    would tie the rib to ground at whichever end poked out."""
+    app.v_plan_rule.set('hypot(x, y) < 5')
+    app.model.data['beams'] = [{'line': 'x=0', 'b': 25.0, 'h': 50.0, 'offset': 'below'}]
+    app._set_plan_rule()
+    # One pinned corner inside the disc: enough for the model to get as far
+    # as assembling, not enough to hold a disc. The rib runs the whole width,
+    # so its ends are outside the cut -- if those were pinned the shell would
+    # hang off them and solve. It must still read as a mechanism.
+    app.model.data['supports'] = [{'at': 'point', 'which': '0, 0',
+                                   'type': 'pinned', 'block': 1.0}]
+    app._rebuild_geometry()
+    assert app.analyze() is False
+    assert 'mechanism' in app.error
+
+
+def test_a_cut_plan_weighs_less(app):
+    app.v_plan_rule.set('hypot(x, y) < 5')
+    app._set_plan_rule()
+    g = app.geom
+    import apps.shell.shell_solid as _ss
+    cut = _ss.solid_volume(g['X'], g['elems'], g['t'])
+    app.v_plan_rule.set('')
+    app._set_plan_rule()
+    g = app.geom
+    whole = _ss.solid_volume(g['X'], g['elems'], g['t'])
+    assert cut < whole

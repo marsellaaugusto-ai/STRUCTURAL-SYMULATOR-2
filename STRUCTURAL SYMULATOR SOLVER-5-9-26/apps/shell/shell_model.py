@@ -282,10 +282,33 @@ class ShellModel:
                          -1).reshape(-1, 4)
         cen = X[elems].mean(axis=1)
         h_el = float(np.hypot(xs[1] - xs[0], ys[1] - ys[0]))
+        keep = None
+        rule = self.plan_rule_fn()
+        if rule is not None:
+            # Judged at the element's CENTRE, so an element is in or out as a
+            # whole. The cut is therefore element-granular: it overshoots the
+            # line by at most one element, and that overshoot is the framing
+            # around the opening rather than a ragged edge.
+            try:
+                ok = np.asarray(rule(cen[:, 0], cen[:, 1]), bool) & np.ones(len(cen), bool)
+            except formula.FormulaError as exc:
+                raise ModelError(f'Plan rule: {exc}') from None
+            if not ok.any():
+                raise ModelError('The plan rule keeps no elements at all.')
+            keep = np.nonzero(ok)[0]
+            elems = elems[keep]
+            cen = cen[keep]
         t = self.element_thickness(cen[:, 0], cen[:, 1], h_el=h_el)
+        # Nodes no element uses any more. They keep their numbers -- ids, the
+        # edges, the section strips and every support name are written against
+        # this grid, and renumbering to save a few unknowns would rewrite all
+        # of them. They are simply held still instead (see build()), which
+        # costs nothing and changes no result, because nothing touches them.
+        used = np.zeros(len(X), bool)
+        used[elems.ravel()] = True
         return {'X': X, 'elems': elems, 'ids': ids, 'xs': xs, 'ys': ys,
                 'nx': nx, 'ny': ny, 'plan': (x0, x1, y0, y1), 't': t,
-                'centroids': cen, 'h_el': h_el}
+                'centroids': cen, 'h_el': h_el, 'kept': keep, 'used': used}
 
     def element_thickness(self, xc, yc, with_auto=True, h_el=None):
         """Thickness at element centres: the t(x, y) definition, raised by any
@@ -349,6 +372,25 @@ class ShellModel:
                                             dict(ws._ns_funcs), ws._autocall)
         except formula.FormulaError as exc:
             raise ModelError(f'Load "{expr}": {exc}') from None
+
+    def plan_rule_fn(self):
+        """The `keep where` rule over the plan, or None.
+
+        Compiled exactly like a load formula, so it may use x, y and every
+        number and function you have defined -- `hypot(x, y) < 6`,
+        `not (x > 0 and y > 0)`, `abs(x) + abs(y) < a`.
+        """
+        expr = str(self.data.get('plan_rule', '') or '').strip()
+        if not expr:
+            return None
+        ws = self.ws
+        names = dict(ws._ns_values)
+        names.update(self.load_names())
+        try:
+            return formula.compile_function(expr, formula.COORDS, names,
+                                            dict(ws._ns_funcs), ws._autocall)
+        except formula.FormulaError as exc:
+            raise ModelError(f'Plan rule "{expr}": {exc}') from None
 
     # -- the finite-element model ------------------------------------------
     def build(self):
@@ -460,6 +502,23 @@ class ShellModel:
         Xfull = np.vstack(Xall)
         if not fixed:
             raise ModelError('The shell has no supports. Add supports or a column.')
+        # The nodes the plan rule cut away are held still, so the system is
+        # not singular for a reason that has nothing to do with the design.
+        # NOT the ones a beam, a rib or a column still uses, though: pinning
+        # those would anchor a rib to ground at whichever end poked outside
+        # the cut, and the shell would hang off a support nobody asked for.
+        # A node that no element of any kind touches cannot change an answer;
+        # one that a frame touches decides it.
+        nshell = len(m['used'])
+        touched = np.zeros(nshell, bool)
+        for fr in frames:
+            for n in (fr.a, fr.b):
+                if 0 <= n < nshell:
+                    touched[n] = True
+        orphans = np.nonzero(~m['used'] & ~touched)[0]
+        for n in orphans:
+            for k in range(fe.NDOF):
+                fixed.add(fe.NDOF * int(n) + k)
         in_head = np.zeros(len(m['elems']), bool)
         for hd in heads:
             in_head[hd['head_elems']] = True

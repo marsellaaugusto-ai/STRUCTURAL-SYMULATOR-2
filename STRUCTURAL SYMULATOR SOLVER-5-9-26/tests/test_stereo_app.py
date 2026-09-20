@@ -2232,6 +2232,15 @@ def test_every_example_carries_a_truthful_wizard_note(app):
         assert recipe.get('note'), f'{label} has an empty note'
         if recipe.get('mode'):
             assert 'exact settings' in recipe['note']
+        elif recipe.get('source'):
+            # A third origin, added with the Bezier examples: built by the
+            # SHAPE panel, not by the wizard and not by a raw generator.
+            # Its note has to name the Bezier source, because "exact
+            # settings" would point at wizard fields that did not make it
+            # and "not a wizard surface" would say nothing about where it
+            # DID come from.
+            assert 'Bezier' in recipe['note'], recipe['note']
+            assert recipe['source'] in ('extrude', 'spin', 'patch')
         else:
             assert 'Not a wizard surface' in recipe['note']
 
@@ -6846,3 +6855,116 @@ def test_a_broken_formula_reports_instead_of_fitting_nonsense(app):
     assert app._bz_profile is None
     assert app.bz_list.size() == 0
     assert app.bz_error_note.cget('text')
+
+
+# ── auto-ranged utilization colours ───────────────────────────────────────
+
+def test_util_color_absolute_scale_is_unchanged_by_default():
+    """The default must still be the ABSOLUTE, code-defined scale: red at
+    capacity, the same from one model to the next. Adding the `top`
+    parameter must not have moved it."""
+    from apps.stereo.stereo_app_colors import util_color
+    assert util_color(0.0) == util_color(0.0, 1.0)
+    assert util_color(0.5) == util_color(0.5, 1.0)
+    assert util_color(1.0) == util_color(1.0, 1.0)
+    assert util_color(1.0) == util_color(9.9), 'over capacity must stay pinned at red'
+
+
+def test_util_color_auto_range_spreads_a_lightly_loaded_model():
+    """The bug this was added for: a structure whose worst rod is at 2% of
+    capacity comes out one flat green under the absolute scale, so the
+    variation the thickness view plainly shows is invisible in colour.
+
+    Auto-ranged to the model's own peak, the same numbers must span the
+    whole ramp instead.
+    """
+    from apps.stereo.stereo_app_colors import util_color
+
+    def spread(colors):
+        """The largest single-channel difference across a set of colours.
+
+        Counting DISTINCT hex strings is the wrong measure and was the
+        first version of this test: the absolute scale does return four
+        different strings here (#2e7d32 ... #377f31), but they differ by
+        at most 9 in one channel and are indistinguishable on screen --
+        which is exactly the complaint that started this. What matters is
+        how far apart they LOOK.
+        """
+        rgb = [tuple(int(c[i:i + 2], 16) for i in (1, 3, 5)) for c in colors]
+        return max(max(v[k] for v in rgb) - min(v[k] for v in rgb)
+                   for k in range(3))
+
+    peak = 0.0216                        # measured on the user's wave model
+    levels = (0.0, peak / 4, peak / 2, peak)
+    absolute = spread([util_color(u) for u in levels])
+    ranged = spread([util_color(u, peak) for u in levels])
+    assert absolute <= 12, (
+        f'the absolute scale varies by {absolute}/255 here -- it should be '
+        'effectively one flat colour')
+    assert ranged > 100, (
+        f'auto-range only spread these by {ranged}/255; the whole point is '
+        'that they become plainly different colours')
+    assert util_color(peak, peak) == util_color(1.0), 'the peak should reach red'
+
+
+def test_util_color_auto_range_never_stretches_past_capacity(app):
+    """The safety half. Auto-ranging an OVERLOADED model would slide the red
+    end out to its peak and paint a rod at exactly 1.0 -- at capacity -- in
+    mid-amber. _util_top caps at 1.0 so auto-range can only ever stretch UP
+    TO capacity, never beyond."""
+    from apps.stereo.stereo_app_colors import util_color
+    app.util_autorange.set(True)
+    app.member_checks = [{'checked': True, 'util': u} for u in (0.2, 1.0, 2.4)]
+    assert app._util_top(1.0) == 1.0
+    assert util_color(1.0, app._util_top(1.0)) == util_color(1.0), \
+        'a rod at capacity must be red whatever the scale'
+    # and for a lightly loaded model it really does range
+    app.member_checks = [{'checked': True, 'util': u} for u in (0.001, 0.02)]
+    assert app._util_top(1.0) == pytest.approx(0.02)
+
+
+def test_util_top_is_one_when_auto_range_is_off_or_nothing_is_checked(app):
+    app.util_autorange.set(False)
+    app.member_checks = [{'checked': True, 'util': 0.02}]
+    assert app._util_top(1.0) == 1.0
+    app.util_autorange.set(True)
+    app.member_checks = None
+    assert app._util_top(1.0) == 1.0
+    app.member_checks = [{'checked': False, 'util': None}]
+    assert app._util_top(1.0) == 1.0
+    app.member_checks = [{'checked': True, 'util': 0.0}]
+    assert app._util_top(1.0) == 1.0, 'a zero peak must not divide by zero'
+
+
+def test_the_surface_preview_only_draws_over_the_shape_panel(app):
+    """The preview shows what the SHAPE panel would build. Drawn over a
+    model that came from anywhere else it painted a flat sheet at z=0
+    straight through every example and every family Generate, belonging to
+    nothing on screen."""
+    app.show_surface_preview.set(True)
+    app._set_mode('shape')
+    assert app._surface_preview_applies()
+    app._set_mode('build')
+    assert not app._surface_preview_applies()
+    # and the checkbox still wins
+    app._set_mode('shape')
+    app.show_surface_preview.set(False)
+    assert not app._surface_preview_applies()
+
+
+def test_loading_an_example_keeps_the_rod_loads_it_ships_with(app):
+    """A rod load is a member INDEX, so _load_mesh clears them on every
+    regenerate -- except the ones the incoming mesh brought itself, whose
+    indices are by construction its own."""
+    from apps.stereo import stereo_examples as sx
+    label, builder = [(l, b) for l, b in sx.EXAMPLES
+                      if 'ALONG THE RODS' in l][0]
+    app._load_example(builder, label)
+    assert app.member_loads, 'the rod-load example arrived with no rod loads'
+    for ml in app.member_loads:
+        assert 0 <= ml['member'] < len(app.members)
+    # while an example that ships none still comes in clean
+    label2, builder2 = [(l, b) for l, b in sx.EXAMPLES
+                        if 'Schwedler dome' in l][0]
+    app._load_example(builder2, label2)
+    assert app.member_loads == []

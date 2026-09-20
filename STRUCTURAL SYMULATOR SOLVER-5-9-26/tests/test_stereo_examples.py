@@ -20,10 +20,10 @@ def _solves(mesh):
     return err
 
 
-def test_examples_table_has_eleven_distinct_entries():
-    assert len(sx.EXAMPLES) == 11
+def test_examples_table_has_seventeen_distinct_entries():
+    assert len(sx.EXAMPLES) == 17
     labels = [label for label, _builder in sx.EXAMPLES]
-    assert len(set(labels)) == 11
+    assert len(set(labels)) == 17
 
 
 @pytest.mark.parametrize('label,builder', sx.EXAMPLES)
@@ -205,3 +205,86 @@ def test_truss_bridge_example_deck_spans_the_full_width():
     mesh = sx.truss_bridge_example()
     ys = [y for _x, y, _z in mesh['nodes']]
     assert max(ys) - min(ys) == pytest.approx(8.0)
+
+
+# ── the six examples added for the Bezier / isometric / rod-load features ──
+
+def test_the_rod_load_example_actually_carries_rod_loads():
+    """The example exists to demonstrate the one thing that makes shear
+    vary along a member, so it is worthless if it arrives with no load on
+    it -- which is what happened before _load_mesh learned to keep the
+    loads a mesh brings with it (it cleared them, correctly, for every
+    OTHER mesh, since a rod load is a member index)."""
+    mesh = sx.rod_load_purlin_roof()
+    loads = mesh.get('member_loads')
+    assert loads, 'the rod-load example carries no rod loads'
+    for ml in loads:
+        assert 0 <= ml['member'] < len(mesh['members'])
+        assert ml['w'] > 0.0
+    # and they must be on the TOP layer, where a roof skin would sit
+    nodes = mesh['nodes']
+    z_top = max(n[2] for n in nodes)
+    for ml in loads:
+        m = mesh['members'][ml['member']]
+        assert abs(nodes[m['a']][2] - z_top) < 1e-9
+        assert abs(nodes[m['b']][2] - z_top) < 1e-9
+
+
+def test_the_rod_load_example_makes_shear_vary_along_its_rods():
+    """The claim the example's own docstring makes, checked rather than
+    asserted in prose: under these loads the shear is not constant."""
+    from apps.stereo import stereo_member_loads as mld
+    mesh = sx.rod_load_purlin_roof()
+    nodes, members = mesh['nodes'], mesh['members']
+    for m in members:
+        m.setdefault('E', 200e3); m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    res, err = sm.analyze(nodes, members, [], supports,
+                          member_loads=mesh['member_loads'])
+    assert err is None, err
+    assert any(mld.varies_along_the_rod(mr) for mr in res['member_res'])
+
+
+def test_the_isometric_two_surface_example_stays_inside_its_domain():
+    """The whole point of the isometric work: the pattern is triangular but
+    the DOMAIN stays Cartesian. An oblique basis laid over the domain
+    instead runs well past two of its edges."""
+    mesh = sx.two_surface_isometric()
+    xs = [n[0] for n in mesh['nodes']]
+    ys = [n[1] for n in mesh['nodes']]
+    assert min(xs) >= -6.0 - 1e-9 and max(xs) <= 6.0 + 1e-9
+    assert min(ys) >= -6.0 - 1e-9 and max(ys) <= 6.0 + 1e-9
+    # and it really is triangulated, not a square grid wearing the name
+    assert len(mesh['members']) > 2 * len(mesh['nodes'])
+
+
+def test_the_spun_example_is_a_solid_of_revolution_not_a_height_field():
+    """A spin reads the formula as a RADIUS against height. The example is
+    waisted -- narrower in the middle than at either end -- which is
+    exactly the case no z=f(x,y) height field can express, since the
+    surface is vertical there."""
+    import math as _m
+    mesh = sx.bezier_spun_tower()
+    nodes = mesh['nodes']
+    zs = [n[2] for n in nodes]
+    lo, hi = min(zs), max(zs)
+
+    def radius_near(z):
+        band = [n for n in nodes if abs(n[2] - z) < (hi - lo) * 0.08]
+        return max(_m.hypot(n[0], n[1]) for n in band) if band else 0.0
+
+    waist = radius_near((lo + hi) / 2.0)
+    assert waist < radius_near(lo + (hi - lo) * 0.02)
+    assert waist < radius_near(hi - (hi - lo) * 0.02)
+
+
+def test_the_bezier_examples_match_what_the_shape_panel_would_build():
+    """Each Bezier example must be the SAME surface a hand-driven fit
+    produces, or the example teaches a shape the panel cannot reproduce."""
+    from apps.stereo import stereo_bezier as bz
+    expr, lo, hi, segs = '3.2 * cos(pi * x / 18)', -9.0, 9.0, 8
+    profile = sx._fit(expr, lo, hi, segs)
+    assert profile['segments'] == segs
+    _worst, frac = bz.fit_error(profile, lambda t: 3.2 * __import__('math').cos(
+        __import__('math').pi * t / 18.0))
+    assert frac < 0.01, f'the fitted vault profile is {frac * 100:.2f}% off'

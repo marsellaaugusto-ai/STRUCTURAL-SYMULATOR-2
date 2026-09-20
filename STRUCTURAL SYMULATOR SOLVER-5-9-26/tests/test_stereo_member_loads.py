@@ -283,3 +283,53 @@ def test_diagram_extremes_finds_the_midspan_peak():
     worst_v, worst_m = ml.diagram_extremes(mres)
     assert worst_v == pytest.approx(W * L / 2.0, abs=1e-6)
     assert worst_m == pytest.approx(W * L * L / 8.0, abs=1e-3)
+
+
+# ── the two branches must agree on SIGN, not just on magnitude ────────────
+
+@pytest.mark.parametrize('conn', ['pin', 'rigid'])
+def test_the_moment_diagram_obeys_its_own_sign_convention(conn):
+    """member_diagram documents dMy/dx = +Vz and dMz/dx = -Vy, and BOTH
+    branches have to mean it.
+
+    This is checked by differentiating the returned moment numerically
+    rather than by comparing against a hand-written formula, so the test
+    cannot drift into re-stating whatever the code happens to do.
+
+    It exists because the pin branch used to return both moments with the
+    opposite sign: a pinned rod sagging under a downward load reported the
+    moment a rigid rod would report for HOGGING. Every check in this file
+    went through abs() or math.hypot() -- magnitudes were right -- so
+    nothing caught it, while _rod_field_value colours the moment-along-rod
+    view by the signed value and painted every pinned rod inverted.
+    """
+    span = 4.0
+    mres = {'conn': conn, 'length_m': span, 'N': 0.0,
+            'Vy_a': 3.0, 'Vz_a': 7.0, 'My_a': 0.0, 'Mz_a': 0.0,
+            'w_local': (0.0, -2.0, -5.0)}
+    h = 1e-6
+    for t in (0.2, 0.35, 0.65, 0.8):   # never 0.5: both sides vanish there
+        _n0, _vy0, _vz0, My0, Mz0 = ml.member_diagram(mres, t - h / span)
+        _n1, _vy1, _vz1, My1, Mz1 = ml.member_diagram(mres, t + h / span)
+        _n, Vy, Vz, _my, _mz = ml.member_diagram(mres, t)
+        assert (My1 - My0) / (2 * h) == pytest.approx(Vz, abs=1e-3)
+        assert (Mz1 - Mz0) / (2 * h) == pytest.approx(-Vy, abs=1e-3)
+
+
+def test_a_sagging_pin_rod_and_a_sagging_rigid_rod_agree_in_sign():
+    """The user-visible half of the bug above: the moment-along-rod view
+    must not paint a pinned rod the opposite colour to a rigid rod bending
+    the same way under the same load."""
+    nodes, members = _beam('pin')
+    w_local = ml.local_intensity(nodes, members[0],
+                                 {'w': W, 'dir': Z_PLANE, 'spread': ml.ALONG})[:3]
+    pin = {'conn': 'pin', 'length_m': L, 'N': 0.0, 'w_local': w_local}
+    # The same span carrying the same load, simply supported, as a frame
+    # element: end shear -w*L/2 in local z gives zero moment at both ends.
+    rigid = {'conn': 'rigid', 'length_m': L, 'N': 0.0,
+             'Vy_a': 0.0, 'Vz_a': -w_local[2] * L / 2.0,
+             'My_a': 0.0, 'Mz_a': 0.0, 'w_local': w_local}
+    pin_mid = ml.member_diagram(pin, 0.5)[3]
+    rigid_mid = ml.member_diagram(rigid, 0.5)[3]
+    assert pin_mid == pytest.approx(rigid_mid, abs=1e-9)
+    assert pin_mid == pytest.approx(W * L * L / 8.0, abs=1e-9)

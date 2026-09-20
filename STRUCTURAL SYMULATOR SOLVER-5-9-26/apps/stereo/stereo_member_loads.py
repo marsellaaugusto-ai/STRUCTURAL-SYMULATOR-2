@@ -232,8 +232,18 @@ def member_diagram(mres, t):
         N = mres.get('N', 0.0) + wx * (L / 2.0 - x)
         Vy = wy * (x - L / 2.0)
         Vz = wz * (x - L / 2.0)
-        My = wz * x * (L - x) / 2.0
-        Mz = -wy * x * (L - x) / 2.0
+        # The SIGNS here must match the rigid branch's convention below --
+        # dMy/dx = +Vz and dMz/dx = -Vy -- and not merely the magnitudes.
+        # They did not: this used to return +wz*x*(L-x)/2 and
+        # -wy*x*(L-x)/2, whose derivatives are -Vz and +Vy, so a pinned rod
+        # reported its sagging moment with the opposite sign to a rigid rod
+        # sagging exactly the same way. Magnitudes were right, which is why
+        # every check that went through abs() or hypot() passed, but
+        # _rod_field_value colours the moment view by the SIGNED value, so
+        # every pinned rod in the moment-along-rod view was painted as
+        # though it were hogging. Most rods in a space truss are pins.
+        My = -wz * x * (L - x) / 2.0
+        Mz = wy * x * (L - x) / 2.0
         return N, Vy, Vz, My, Mz
     # A frame element. The end forces already carry the fixed-end vector
     # (analyze adds it), so the diagram is the straightforward integration

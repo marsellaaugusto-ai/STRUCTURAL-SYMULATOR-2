@@ -289,6 +289,37 @@ class StereoRenderMixin:
         # the slider would do nothing at all here.
         return peak, varies
 
+    def _util_top(self, frac=1.0):
+        """The utilization that the colour ramp's red end is pinned to.
+
+        1.0 -- at capacity -- unless 'Auto-range utilization' is on, in
+        which case this model's own peak, so the ramp spans only the range
+        the model actually occupies. Returns 1.0 rather than 0 for a model
+        with no checked member (or a peak of exactly zero) so the ramp
+        stays well-defined and every rod simply comes out at the green end,
+        instead of a divide-by-zero painting an unloaded model solid red.
+
+        This is the ONLY place the choice is made: every util_color call in
+        the renderer, the cell fill, the rod gradient and the legend all
+        read it, so the legend can never disagree with the picture.
+        """
+        if not self.util_autorange.get() or self.member_checks is None:
+            return 1.0
+        peak = max((c['util'] * frac for c in self.member_checks
+                    if c and c.get('checked') and c.get('util') is not None),
+                   default=0.0)
+        if peak <= 1e-12:
+            return 1.0
+        # Never stretch the ramp PAST capacity. Auto-ranging a model whose
+        # peak is over 1.0 would slide the red end out to that peak and
+        # paint a rod sitting at exactly 1.0 -- at capacity -- in mid-amber,
+        # which reads as "moderate" (measured: a peak of 2.4 put util 1.0 at
+        # #d7a127). Capping at 1.0 means auto-range can only ever stretch
+        # the ramp UP TO capacity, never beyond it: for an overloaded model
+        # it falls back to the absolute scale, which is the one that already
+        # has plenty of contrast and where red means what it says.
+        return min(peak, 1.0)
+
     def _force_anchor(self):
         """The value the axial-force colour ramp's two ends are pinned to.
 
@@ -417,7 +448,7 @@ class StereoRenderMixin:
         # preview is the surface the model was CUT FROM, so it belongs
         # behind the model in the same way a drawing board is behind the
         # drawing.
-        if self.show_surface_preview.get():
+        if self._surface_preview_applies():
             self._draw_surface_preview(c, to_screen)
         # ON TOP of the preview but under the model: the handles are the
         # thing being manipulated, so they must be visible and clickable,
@@ -488,7 +519,8 @@ class StereoRenderMixin:
                           and self.member_checks[i].get('checked') else 0.0)
                          for i in range(len(self.members))]
                 grad_values = self._nodal_average(n_nodes, self.members, utils)
-                grad_color_fn = util_color
+                util_top = self._util_top(frac)
+                grad_color_fn = lambda v: util_color(v, util_top)
             elif by_force:
                 forces = [mr['N'] * frac for mr in self.results['member_res']]
                 grad_values = self._nodal_average(n_nodes, self.members, forces)
@@ -558,7 +590,7 @@ class StereoRenderMixin:
                     color = MOMENT_BACKDROP_COLOR
                 elif by_util:
                     util = chk['util'] * frac if chk and chk.get('checked') else 0.0
-                    color = util_color(util)
+                    color = util_color(util, self._util_top(frac))
                 elif by_force:
                     N = self.results['member_res'][i]['N'] * frac
                     color = force_color(N, max_abs_N)
@@ -944,6 +976,28 @@ class StereoRenderMixin:
         x, y = sg._domain_to_xy('polar' if polar else 'cartesian', p, q, pole)
         return surface(x, y)
 
+    def _surface_preview_applies(self):
+        """Whether the surface preview should be drawn at all.
+
+        Its own checkbox is not enough. The preview shows the surface the
+        SHAPE panel would build -- a design aid for deciding a subdivision
+        before committing to it -- and the Shape panel always holds some
+        expression, defaulting to '0'. Drawn unconditionally, that painted
+        a flat sheet at z=0 straight through every model that did not come
+        from the Shape panel: every ready-made example, and every Generate
+        from a family panel. The plane belonged to no part of what was on
+        screen, which makes it worse than absent.
+
+        So it is drawn only while the Shape panel is the one in front,
+        which is exactly when it is a preview of something. Switching modes
+        does not disturb the checkbox, so a user who turned it off keeps it
+        off when they come back.
+        """
+        if not self.show_surface_preview.get():
+            return False
+        mode = getattr(self, 'active_mode', None)
+        return mode is not None and mode.get() == 'shape'
+
     def _preview_surfaces(self):
         """[(surface, tint)] for the preview: the top surface, plus the
         bottom one in two-surface mode so a crossing pair is VISIBLE as a
@@ -1032,7 +1086,7 @@ class StereoRenderMixin:
                 depth += d
             chk = checks[pi] if pi < len(checks) else None
             if chk and chk.get('valid') and chk.get('util') is not None:
-                color = util_color(chk['util'] * frac)
+                color = util_color(chk['util'] * frac, self._util_top(frac))
             else:
                 color = PANEL_UNCHECKED_COLOR
             drawn.append((depth / len(loop), pts, color))
@@ -1119,7 +1173,8 @@ class StereoRenderMixin:
                      for mi in cell['members']
                      if mi < len(self.member_checks)
                      and self.member_checks[mi].get('checked')]
-            return util_color(sum(utils) / len(utils)) if utils else None
+            return (util_color(sum(utils) / len(utils), self._util_top(frac))
+                    if utils else None)
         if by_force and self.results is not None:
             member_res = self.results['member_res']
             forces = [member_res[mi]['N'] * frac for mi in cell['members']
@@ -1563,8 +1618,47 @@ class StereoRenderMixin:
                     caption('end to end. Add one under Loads → Distributed')
                     caption('load on rods to see it actually vary.')
             elif by_util:
-                caption('Utilization (demand ÷ capacity):')
-                colorbar(util_color, 0.0, 1.2, [(0.0, '0'), (0.5, '0.5'), (1.0, '≥1.0 (over)')])
+                util_top = self._util_top(frac)
+                if self.util_autorange.get() and util_top < 1.0:
+                    # Auto-range: the ramp no longer means "at capacity", so
+                    # label the ticks with the utilizations they ACTUALLY
+                    # stand for and say the scale is this model's own. A bar
+                    # still reading 0 / 0.5 / 1.0 here would be a lie -- the
+                    # red end is util_top, which may be a few percent.
+                    caption('Utilization (demand ÷ capacity), '
+                            'AUTO-RANGED to this model:')
+                    # Bare numbers on the ticks: the bar is only BAR_W wide
+                    # and the right-hand tick is anchored 'e', so any label
+                    # longer than a number runs left across the midpoint
+                    # tick and the two overprint each other. The words that
+                    # explain what the top of the bar MEANS go in the
+                    # captions underneath, where they have the full width.
+                    colorbar(lambda u: util_color(u, util_top), 0.0, util_top,
+                             [(0.0, '0'),
+                              (util_top / 2.0, f'{util_top / 2.0:.3f}'),
+                              (util_top, f'{util_top:.3f}')])
+                    caption('Relative scale: red = the busiest rod HERE '
+                            f'({util_top:.3f}), not at')
+                    caption('capacity. Every rod is under '
+                            f'{util_top * 100.0:.1f}% of capacity.')
+                else:
+                    caption('Utilization (demand ÷ capacity):')
+                    colorbar(lambda u: util_color(u, util_top), 0.0, 1.2,
+                             [(0.0, '0'), (0.5, '0.5'), (1.0, '≥1.0 (over)')])
+                    if self.member_checks is not None:
+                        peak = max((cc['util'] * frac for cc in self.member_checks
+                                    if cc and cc.get('checked')
+                                    and cc.get('util') is not None), default=None)
+                        # A structure whose worst rod is far down the bar is
+                        # SUPPOSED to look uniformly green, but that reads as
+                        # a broken gradient unless the legend says the peak
+                        # out loud. Turn on Auto-range to see the spread.
+                        if peak is not None and peak < 0.25:
+                            caption(f'Peak is only {peak:.3f} ('
+                                    f'{peak * 100.0:.1f}% of capacity), so the whole')
+                            caption('model sits at the green end of this absolute')
+                            caption('scale. Tick "Auto-range utilization" to')
+                            caption('stretch the ramp over this model\'s own range.')
             elif by_force:
                 caption(f'Axial force, {self.u("force")} '
                         '(+ tension / − compression):')

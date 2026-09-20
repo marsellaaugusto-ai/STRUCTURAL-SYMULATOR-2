@@ -307,6 +307,11 @@ class StereoShellMixin:
             # happened while another mode was showing.
             self._refresh_analysis_charts()
         self.panel_outer.fit_to_content()
+        # The surface preview only belongs over the Shape panel (see
+        # _surface_preview_applies), so leaving or entering that mode
+        # changes what the canvas should show even though the model has
+        # not moved.
+        self._draw()
 
     # ── context panel ───────────────────────────────────────────────────────
     def _build_context_panel(self, parent):

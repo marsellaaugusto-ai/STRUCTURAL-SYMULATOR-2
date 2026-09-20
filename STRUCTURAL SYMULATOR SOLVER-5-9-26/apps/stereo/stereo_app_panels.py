@@ -113,6 +113,7 @@ class StereoPanelsMixin(_ToolbarModes):
         self.colour_mode = tk.StringVar(value=COLOUR_FORCE)
         self.force_scale = tk.StringVar(value=SCALE_P95)
         self.moment_axis = tk.StringVar(value=MOMENT_AXIS_RESULTANT)
+        self.util_autorange = tk.BooleanVar(value=False)
         self.smooth_gradient = tk.BooleanVar(value=False)
         self.thickness_by_stress = tk.BooleanVar(value=False)
         self.hide_zero_force = tk.BooleanVar(value=False)
@@ -170,6 +171,8 @@ class StereoPanelsMixin(_ToolbarModes):
                                        width=15, values=MOMENT_AXES)
         moment_axis_box.pack(side='left', padx=(2, 0))
         moment_axis_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
+        tk.Checkbutton(g, text='Auto-range utilization', variable=self.util_autorange,
+                       bg=BG, command=self._draw).pack(side='left', padx=(6, 0))
 
         # ── 4 · DRAW RODS AS ─────────────────────────────────────────────────
         g = self._pop_group(body, 'DRAW RODS AS')
@@ -321,6 +324,20 @@ class StereoPanelsMixin(_ToolbarModes):
                                 width=8, values=MOMENT_AXES)
         axis_box.pack(side='left', fill='x', expand=True)
         axis_box.bind('<<ComboboxSelected>>', lambda _e: self._draw())
+
+        tk.Checkbutton(parent, text='Auto-range the utilization colours',
+                       variable=self.util_autorange, bg=BG, font=('Helvetica', 9),
+                       anchor='w', justify='left', wraplength=PANEL_TEXT_W,
+                       command=self._draw).pack(fill='x', padx=6)
+        tk.Label(parent, text='Off (the default), the utilization colours read an '
+                              'absolute scale: red always means at or over capacity, '
+                              'so a lightly-loaded structure is meant to look green all '
+                              'over. On, the same ramp is stretched across only this '
+                              "model's own range, which shows WHERE the demand "
+                              'concentrates but stops red meaning "at capacity". '
+                              'Over-capacity rods stay dashed either way.',
+                 bg=BG, font=('Helvetica', 8), fg=HINT_FG, anchor='w', justify='left',
+                 wraplength=PANEL_TEXT_W).pack(fill='x', padx=6, pady=(0, 4))
 
         box = tk.LabelFrame(parent, text='Draw the rods as', bg=BG,
                             font=('Helvetica', 10, 'bold'))

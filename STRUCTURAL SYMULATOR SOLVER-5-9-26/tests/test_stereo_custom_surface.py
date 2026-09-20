@@ -110,16 +110,79 @@ def test_diagonal_pattern_only_connects_diagonal_neighbours():
             'diagonal pattern produced an axis-aligned member'
 
 
-def test_isometric_pattern_is_a_true_equilateral_triangle_lattice():
-    surf = sg.make_height_field_surface('0')
-    mesh = sg.custom_surface_grid(surf, coord='cartesian', pattern='isometric',
-                                  p_range=(0.0, 4.0), q_range=(0.0, 4.0),
-                                  n1=4, n2=4, module='2d')
-    lengths = [_dist(mesh['nodes'], m['a'], m['b']) for m in mesh['members']]
-    cell = lengths[0]
-    for L in lengths:
-        assert L == pytest.approx(cell, rel=1e-6), \
-            'an isometric lattice member is not the same length as the rest'
+def test_isometric_pattern_stays_inside_its_cartesian_domain():
+    """The property that actually matters, and the one the user asked for:
+    the module is triangular but the DOMAIN stays Cartesian.
+
+    This test used to assert that every member had exactly the same length.
+    That was true only of the old oblique-basis layout, which bought its
+    perfect equilateral triangles by shearing off the domain entirely -- on
+    a 12 m square it ran 6.75 m past the far edge (a 106% overshoot) and
+    left a third of its nodes outside the rectangle it was given. The two
+    properties cannot both hold: a rectangle whose sides are not in the
+    ratio of a triangular lattice cannot be tiled exactly by one.
+
+    So staying inside the domain wins, and the cost is measured rather than
+    hidden -- see the next test for how near-equilateral the result stays.
+    """
+    for span in (4.0, 12.0):
+        for n1 in (4, 6, 8):
+            mesh = sg.custom_surface_grid(sg.make_height_field_surface('0'),
+                                          coord='cartesian', pattern='isometric',
+                                          p_range=(0.0, span), q_range=(0.0, span),
+                                          n1=n1, n2=n1, module='2d')
+            xs = [n[0] for n in mesh['nodes']]
+            ys = [n[1] for n in mesh['nodes']]
+            assert min(xs) >= -1e-9 and max(xs) <= span + 1e-9, \
+                f'isometric ran outside x for span={span} n1={n1}'
+            assert min(ys) >= -1e-9 and max(ys) <= span + 1e-9, \
+                f'isometric ran outside y for span={span} n1={n1}'
+            # and the far edge is actually reached, not merely not exceeded
+            assert max(xs) == pytest.approx(span)
+            assert max(ys) == pytest.approx(span)
+
+
+def test_isometric_triangles_stay_near_equilateral():
+    """How much the fit-the-rectangle constraint costs, in numbers.
+
+    Rows are staggered and spaced to divide the domain a whole number of
+    times, so the row height is not exactly the ideal dx*sin(60) and the
+    triangles come out isosceles rather than equilateral. Measured across
+    spans of 4 and 12 m and n1 of 4, 6, 8 and 12, the diagonal differs from
+    the in-row chord by at most 5.7% (worst case n1=4; n1=6 and 12 are
+    0.8%, n1=8 is 2.0%), and the deviation depends only on n1, not on the
+    span -- it is scale-invariant. A lattice that far from equilateral is
+    still a triangulated, self-bracing one; 6% is the documented ceiling.
+    """
+    worst = 0.0
+    for span in (4.0, 12.0):
+        for n1 in (4, 6, 8, 12):
+            mesh = sg.custom_surface_grid(sg.make_height_field_surface('0'),
+                                          coord='cartesian', pattern='isometric',
+                                          p_range=(0.0, span), q_range=(0.0, span),
+                                          n1=n1, n2=n1, module='2d')
+            nodes = mesh['nodes']
+            rows = sorted({round(n[1], 9) for n in nodes})
+            dx = span / n1
+            h = rows[1] - rows[0]
+            diagonal = math.hypot(dx / 2.0, h)
+            worst = max(worst, abs(diagonal - dx) / dx)
+    assert worst <= 0.06, f'isometric triangles are {worst * 100:.1f}% off equilateral'
+
+
+def test_isometric_rows_are_staggered_not_stacked():
+    """A staggered lattice, not a rectangular grid wearing the name: every
+    other row is offset by half a cell, which is what makes the cells
+    triangles at all."""
+    span, n1 = 12.0, 6
+    mesh = sg.custom_surface_grid(sg.make_height_field_surface('0'),
+                                  coord='cartesian', pattern='isometric',
+                                  p_range=(0.0, span), q_range=(0.0, span),
+                                  n1=n1, n2=n1, module='2d')
+    nodes = mesh['nodes']
+    rows = sorted({round(n[1], 9) for n in nodes})
+    row_xs = [sorted(n[0] for n in nodes if abs(n[1] - y) < 1e-9) for y in rows[:2]]
+    assert row_xs[0] != row_xs[1], 'consecutive isometric rows are not staggered'
 
 
 def test_isometric_module_never_wraps_even_over_a_full_polar_sweep():

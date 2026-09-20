@@ -501,6 +501,20 @@ def custom_surface_grid(surface, coord='cartesian', pattern='square',
         raise ValueError(f"module must be '2d' or '3d', got {module!r}")
     if offset_side not in ('top', 'bottom'):
         raise ValueError(f"offset_side must be 'top' or 'bottom', got {offset_side!r}")
+    if pattern == PATTERN_ISOMETRIC:
+        # One isometric implementation, not two. _domain_lattice lays the
+        # triangular module out in an OBLIQUE basis, which shears the whole
+        # lattice across the Cartesian rectangle it was asked for: on a
+        # 12 m domain it ran 6.75 m past the far edge (a 106% overshoot)
+        # and left a third of the nodes outside. isometric_lattice staggers
+        # the rows inside the rectangle and clamps the ends onto the edge
+        # instead. That fix reached the Shape panel (which goes through
+        # custom_surface_lattice) but NOT this function or
+        # custom_surface_between, so the Custom Surface Wizard -- which
+        # calls these two directly -- still built the sheared version.
+        return isometric_lattice(surface, None, coord=coord, p_range=p_range,
+                                 q_range=q_range, n1=n1, depth=depth,
+                                 pole=pole, double=(module == '3d'))
 
     grid_pq, imax, jmax, wrap_j = _domain_lattice(coord, pattern, p_range, q_range, n1, n2)
     bank = _NodeBank()
@@ -569,6 +583,13 @@ def custom_surface_between(surface_top, surface_bottom, coord='cartesian', patte
     Returns the shared {'nodes','members','support_candidates','load_nodes'}
     dict, exactly like custom_surface_grid's own '3d' module.
     """
+    if pattern == PATTERN_ISOMETRIC:
+        # Same delegation, same reason, as custom_surface_grid above: the
+        # oblique-basis isometric shears out of the domain, and the wizard
+        # reaches this function directly.
+        return isometric_lattice(surface_top, surface_bottom, coord=coord,
+                                 p_range=p_range, q_range=q_range, n1=n1,
+                                 pole=pole, double=True)
     where = surfaces_cross(surface_top, surface_bottom, coord=coord,
                            p_range=p_range, q_range=q_range, n1=n1, n2=n2,
                            pole=pole)

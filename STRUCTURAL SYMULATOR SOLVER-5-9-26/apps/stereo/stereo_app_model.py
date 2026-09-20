@@ -274,8 +274,11 @@ class StereoModelMixin:
         self.panel_checks = []
         # Same reasoning again: a rod load is a member INDEX, so one kept
         # across a regenerate would land on whatever member now holds that
-        # number.
-        self.member_loads = []
+        # number. The only rod loads that survive are ones the INCOMING mesh
+        # brought with it, whose indices are by construction its own -- that
+        # is how an example can ship the load it exists to demonstrate.
+        self.member_loads = [dict(ml) for ml in (mesh.get('member_loads') or [])
+                             if 0 <= ml.get('member', -1) < len(self.members)]
         self.loads = []
         self.results = None
         self.member_checks = None

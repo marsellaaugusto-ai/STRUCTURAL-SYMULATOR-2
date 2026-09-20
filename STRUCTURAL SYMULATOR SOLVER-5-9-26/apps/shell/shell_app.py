@@ -31,6 +31,7 @@ import view3d
 from common import ZoomCanvas, ScrollPanel, UnitsMixin, _ensure_openpyxl
 from apps.shell import shell_model as sm
 from apps.shell import shell_design as sd
+from apps.shell import shell_solid as ssd
 from apps.shell import shell_codes as codes
 from apps.shell import shell_wind as wind
 from apps.shell import shell_reports as rp
@@ -269,6 +270,11 @@ class ShellApp(UnitsMixin, tk.Frame):
         self.v_deformed = tk.BooleanVar(value=False)
         self.v_def_scale = tk.DoubleVar(value=1.0)
         self.v_principal = tk.BooleanVar(value=False)
+        # The shell is a slab, and the tab knows how thick. Drawn as a solid
+        # by default: at true scale a 10 cm shell on a 12 m span is still a
+        # visible band at the free edge, and that band is the whole point.
+        self.v_solid = tk.BooleanVar(value=True)
+        self.v_exag = tk.DoubleVar(value=1.0)
         self.status = tk.StringVar(value='')
 
         self._build_ui()
@@ -318,13 +324,19 @@ class ShellApp(UnitsMixin, tk.Frame):
                       command=lambda n=name: self.set_view(n)).pack(side='left')
         tk.Button(tb2, text='Fit', relief='flat', bd=0, padx=6, font=('Helvetica', 10),
                   command=lambda: (self._fit(), self._draw())).pack(side='left')
-        for text, var in (('mesh lines', self.v_mesh_lines), ('deformed', self.v_deformed),
+        for text, var in (('mesh lines', self.v_mesh_lines), ('solid', self.v_solid),
+                          ('deformed', self.v_deformed),
                           ('principal directions', self.v_principal)):
             tk.Checkbutton(tb2, text=text, variable=var, bg=TB, font=('Helvetica', 9),
                            command=self._draw).pack(side='left', padx=(6, 0))
         tk.Scale(tb2, from_=0.2, to=5.0, resolution=0.1, orient='horizontal',
                  variable=self.v_def_scale, length=80, showvalue=False, bg=TB, bd=0,
                  highlightthickness=0, command=lambda _v: self._draw()).pack(side='left')
+        tk.Label(tb2, text='t ×', bg=TB, font=('Helvetica', 9)).pack(side='left', padx=(8, 0))
+        self.exag_box = ttk.Combobox(tb2, textvariable=self.v_exag, state='readonly', width=4,
+                                     values=('1', '2', '5', '10', '25'))
+        self.exag_box.pack(side='left')
+        self.exag_box.bind('<<ComboboxSelected>>', lambda _e: self._draw())
         tk.Frame(tb2, width=1, bg='#ccc').pack(side='left', fill='y', padx=6, pady=3)
         for text, cmd in (('Section cut…', self.open_section_cut), ('Report', self.open_report),
                           ('Export Excel', self._export_dialog),
@@ -1204,19 +1216,32 @@ class ShellApp(UnitsMixin, tk.Frame):
         outline = self.v_mesh_lines.get()
         in_head = self.res.fem.get('in_head') if self.res is not None else None
         lim = 30000
-        for e in order:
-            idx = el[e]
-            pts = np.stack([sx[idx], sy[idx]], axis=1)
-            if np.abs(pts).max() > lim:
-                continue
+
+        def face_colour(e, role):
+            """One element's colour, on whichever of its faces this is."""
             col = fills[e]
+            if in_head is not None and in_head[e]:
+                return '#555555'
             if vals is None:
-                col = view3d.shade(col, lit[e])
-            elif in_head is not None and in_head[e]:
-                col = '#555555'
-            cv.create_polygon(*pts.ravel(), fill=col,
-                              outline='#6b6b6b' if outline else col, width=1,
-                              tags=('face', f'e{e}'))
+                return view3d.shade(col, lit[e])
+            if role == ssd.SIDE:
+                # the cut face, darkened: it is the same element, seen through
+                # its thickness, and it should read as an edge rather than as a
+                # neighbouring element with a different result
+                return view3d.shade(col, 0.68)
+            return col
+
+        if self.v_solid.get():
+            self._draw_solid(X, el, g['t'], face_colour, outline, lim)
+        else:
+            for e in order:
+                idx = el[e]
+                pts = np.stack([sx[idx], sy[idx]], axis=1)
+                if np.abs(pts).max() > lim:
+                    continue
+                cv.create_polygon(*pts.ravel(), fill=face_colour(e, ssd.TOP),
+                                  outline='#6b6b6b' if outline else face_colour(e, ssd.TOP),
+                                  width=1, tags=('face', f'e{e}'))
         self._draw_structure(X, sx, sy)
         if self.v_principal.get() and self.res is not None:
             self._draw_principal(X, cen)
@@ -1229,6 +1254,60 @@ class ShellApp(UnitsMixin, tk.Frame):
         cv.create_text(10, cv.winfo_height() - 8 if cv.winfo_height() > 20 else 500, anchor='sw',
                        text='drag: orbit · wheel: zoom · middle-drag: pan · click: read an element',
                        fill='#999', font=('Helvetica', 8))
+        if self.v_solid.get():
+            k = float(self.v_exag.get() or 1.0)
+            t = g['t']
+            note = ('thickness %.0f–%.0f mm, drawn to scale'
+                    % (1000 * float(np.min(t)), 1000 * float(np.max(t)))) if k == 1.0 else \
+                   ('thickness %.0f–%.0f mm, DRAWN ×%g' % (1000 * float(np.min(t)),
+                                                           1000 * float(np.max(t)), k))
+            cv.create_text(10, (cv.winfo_height() - 22) if cv.winfo_height() > 40 else 486,
+                           anchor='sw', text=note,
+                           fill='#999' if k == 1.0 else BAD_C, font=('Helvetica', 8))
+
+    def _draw_solid(self, X, el, t, face_colour, outline, lim):
+        """Paint the shell as the slab it is: a top, a soffit and a band
+        round every free edge.
+
+        Three things make this cost about what the sheet cost. Faces whose
+        normal points away from the camera are dropped before anything is
+        drawn, which removes the soffit whenever you are above the shell and
+        the top whenever you are under it -- about half of them, always. The
+        corners of every face are projected in ONE call rather than per face.
+        And the mesh lines go on the top faces only: drawn on the band as
+        well, a 24 x 24 shell gets a second grid along its edge that reads as
+        detail and is noise.
+        """
+        cv = self.zc.canvas
+        faces = ssd.solid_faces(X, el, t, float(self.v_exag.get() or 1.0))
+        poly, own, role, nrm = faces['poly'], faces['elem'], faces['role'], faces['normal']
+        if not len(poly):
+            return
+        toward = self.cam.basis()[2]
+        facing = nrm @ toward > 0.0
+        cen = poly.mean(axis=1)
+        order = np.argsort(self.cam.depth(cen))          # far first
+        order = order[facing[order]]
+        px, py = self.cam.project(poly.reshape(-1, 3))
+        px = px.reshape(-1, 4)
+        py = py.reshape(-1, 4)
+        light = np.array([-0.45, -0.35, 0.82])
+        light /= np.linalg.norm(light)
+        lit = 0.55 + 0.50 * np.abs(nrm @ light) ** 1.5
+        for f in order:
+            xs_, ys_ = px[f], py[f]
+            if np.abs(xs_).max() > lim or np.abs(ys_).max() > lim:
+                continue
+            e = int(own[f])
+            col = face_colour(e, role[f])
+            # shade the SIDE and the soffit by their own normals so the slab
+            # reads as a solid; the top keeps the field colour flat, as it
+            # always has, because that is the face you read numbers off
+            if role[f] != ssd.TOP:
+                col = view3d.shade(col, float(lit[f]))
+            edge = '#6b6b6b' if (outline and role[f] == ssd.TOP) else col
+            cv.create_polygon(*np.stack([xs_, ys_], axis=1).ravel(), fill=col,
+                              outline=edge, width=1, tags=('face', f'e{e}'))
 
     def _draw_structure(self, X, sx, sy):
         """Edge beams, columns, supports and blocks (from the last analysis

@@ -40,6 +40,38 @@ from apps.shell import shell_fe as fe
 BG = '#f5f5f3'
 TB = '#ebebea'
 PANEL_W = 360
+RAIL_W = 74
+
+# The tab used to put four notebook pages and every display control on
+# screen at once. You are always doing exactly ONE of these things, so only
+# that one's controls are on screen; the rest are forgotten by the geometry
+# manager rather than hidden, so nothing off-screen keeps claiming width.
+# (key, glyph, label, what it answers)
+MODES = (
+    ('definitions', '∫', 'Surface', 'the shape, its numbers and their sliders'),
+    ('supports', '△', 'Supports', 'where it stands, its edge beams and columns'),
+    ('loads', '↓', 'Loads', 'what it carries'),
+    ('design', '▤', 'Design', 'the code, the concrete, the thickening rule'),
+    ('sections', '✂', 'Sections', 'cuts through the slab'),
+    ('analyse', '◑', 'Analyse', 'what to colour it by, and how to draw it'),
+)
+# One line per colour map, shown under the list. Not every map needs one --
+# "Deflection" explains itself -- so this is the ones where the name alone
+# leaves a real question: what is it per, which face, and against what.
+FIELD_HELP = {
+    'Surface (shaded)': 'No result: the shape itself, lit so the curvature reads.',
+    'Thickness t': 'What the slab IS, element by element — the t you defined, '
+                   'raised by any thickening zone and by the automatic layer.',
+    'Thickness needed': 'The smallest t at which every check passes here. Read it '
+                        'next to the moment map: they should look related.',
+    'Thickness to add': 'Thickness needed minus the thickness there now. Zero '
+                        'over most of a working shell.',
+    'Deflection': 'Displacement magnitude. Isler held his own shells to a '
+                  'deflection of span/300.',
+}
+RAIL_BG = '#eef2f6'
+RAIL_ON = '#ffffff'
+RAIL_STRIPE = '#1a6bbd'
 OK_C, BAD_C, NOTE_C = '#1a7a3a', '#c0392b', '#888888'
 
 ENVELOPE_MAX = 'Envelope: max of all combinations'
@@ -245,6 +277,55 @@ class RecordList(tk.Frame):
 # ═══════════════════════════════════════════════════════════════════════════
 #  The tab
 # ═══════════════════════════════════════════════════════════════════════════
+class InfoTip:
+    """A one-line hint on hover.
+
+    The rail is six glyphs. A glyph is a good target and a poor label, so
+    each one carries the sentence the mode answers -- and its shortcut,
+    because a shortcut nobody is told about is not a shortcut.
+    """
+    DELAY_MS = 600
+
+    def __init__(self, widget, text):
+        self.widget, self.text, self._after, self._tip = widget, text, None, None
+        widget.bind('<Enter>', self._enter, add='+')
+        widget.bind('<Leave>', self._leave, add='+')
+        widget.bind('<Button-1>', self._leave, add='+')
+
+    def _enter(self, _e=None):
+        self._cancel()
+        self._after = self.widget.after(self.DELAY_MS, self._show)
+
+    def _leave(self, _e=None):
+        self._cancel()
+        if self._tip is not None:
+            self._tip.destroy()
+            self._tip = None
+
+    def _cancel(self):
+        if self._after is not None:
+            try:
+                self.widget.after_cancel(self._after)
+            except Exception:
+                pass
+            self._after = None
+
+    def _show(self):
+        self._after = None
+        if self._tip is not None:
+            return
+        try:
+            x = self.widget.winfo_rootx() + self.widget.winfo_width() + 6
+            y = self.widget.winfo_rooty() + 6
+            self._tip = tk.Toplevel(self.widget)
+            self._tip.wm_overrideredirect(True)
+            self._tip.wm_geometry('+%d+%d' % (x, y))
+            tk.Label(self._tip, text=self.text, bg='#ffffe0', relief='solid', bd=1,
+                     font=('Helvetica', 8), justify='left').pack()
+        except tk.TclError:
+            self._tip = None
+
+
 class ShellApp(UnitsMixin, tk.Frame):
     #: What the model fields hold (shell_model's docstring): f'c and fy in
     #: MPa; everything else as the app-wide storage convention.
@@ -275,6 +356,11 @@ class ShellApp(UnitsMixin, tk.Frame):
         # visible band at the free edge, and that band is the whole point.
         self.v_solid = tk.BooleanVar(value=True)
         self.v_exag = tk.DoubleVar(value=1.0)
+        self.cuts = []
+        self.v_cut_pos = tk.StringVar(value='0')
+        self.v_cut_dims = tk.BooleanVar(value=True)
+        self.v_cut_field = tk.BooleanVar(value=True)
+        self.mode = 'definitions'
         self.status = tk.StringVar(value='')
 
         self._build_ui()
@@ -305,16 +391,6 @@ class ShellApp(UnitsMixin, tk.Frame):
         tk.Button(tb, text='Clear thickening', relief='flat', bd=0, padx=6,
                   font=('Helvetica', 9), fg='#a33',
                   command=self.clear_thickening).pack(side='left')
-        tk.Frame(tb, width=1, bg='#ccc').pack(side='left', fill='y', padx=6, pady=3)
-        tk.Label(tb, text='Show:', bg=TB, font=('Helvetica', 10)).pack(side='left')
-        self.field_box = ttk.Combobox(tb, textvariable=self.v_field, state='readonly', width=30,
-                                      values=list(FIELDS))
-        self.field_box.pack(side='left', padx=2)
-        self.field_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
-        tk.Label(tb, text='for:', bg=TB, font=('Helvetica', 10)).pack(side='left')
-        self.select_box = ttk.Combobox(tb, textvariable=self.v_select, state='readonly', width=34)
-        self.select_box.pack(side='left', padx=2)
-        self.select_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
 
         tb2 = tk.Frame(self, bg=TB)
         tb2.pack(fill='x', padx=6)
@@ -324,21 +400,8 @@ class ShellApp(UnitsMixin, tk.Frame):
                       command=lambda n=name: self.set_view(n)).pack(side='left')
         tk.Button(tb2, text='Fit', relief='flat', bd=0, padx=6, font=('Helvetica', 10),
                   command=lambda: (self._fit(), self._draw())).pack(side='left')
-        for text, var in (('mesh lines', self.v_mesh_lines), ('solid', self.v_solid),
-                          ('deformed', self.v_deformed),
-                          ('principal directions', self.v_principal)):
-            tk.Checkbutton(tb2, text=text, variable=var, bg=TB, font=('Helvetica', 9),
-                           command=self._draw).pack(side='left', padx=(6, 0))
-        tk.Scale(tb2, from_=0.2, to=5.0, resolution=0.1, orient='horizontal',
-                 variable=self.v_def_scale, length=80, showvalue=False, bg=TB, bd=0,
-                 highlightthickness=0, command=lambda _v: self._draw()).pack(side='left')
-        tk.Label(tb2, text='t ×', bg=TB, font=('Helvetica', 9)).pack(side='left', padx=(8, 0))
-        self.exag_box = ttk.Combobox(tb2, textvariable=self.v_exag, state='readonly', width=4,
-                                     values=('1', '2', '5', '10', '25'))
-        self.exag_box.pack(side='left')
-        self.exag_box.bind('<<ComboboxSelected>>', lambda _e: self._draw())
         tk.Frame(tb2, width=1, bg='#ccc').pack(side='left', fill='y', padx=6, pady=3)
-        for text, cmd in (('Section cut…', self.open_section_cut), ('Report', self.open_report),
+        for text, cmd in (('Report', self.open_report),
                           ('Export Excel', self._export_dialog),
                           ('Import Excel', self._import_dialog)):
             tk.Button(tb2, text=text, relief='flat', bd=0, padx=6, font=('Helvetica', 10),
@@ -346,19 +409,46 @@ class ShellApp(UnitsMixin, tk.Frame):
 
         body = tk.Frame(self, bg=BG)
         body.pack(fill='both', expand=True, padx=6, pady=6)
+        # ── the mode rail, and the one panel it drives ───────────────────
+        rail = tk.Frame(body, bg=RAIL_BG, width=RAIL_W)
+        rail.pack(side='left', fill='y')
+        rail.pack_propagate(False)
         left = tk.Frame(body, bg=BG, width=PANEL_W)
         left.pack(side='left', fill='y', padx=(0, 6))
         left.pack_propagate(False)
-        self.nb = ttk.Notebook(left)
-        self.nb.pack(fill='both', expand=True)
         self.pages = {}
-        for name in ('Definitions', 'Supports', 'Loads', 'Design'):
-            sp_ = ScrollPanel(self.nb, width=PANEL_W - 8, bg=BG)
-            self.nb.add(sp_, text=name)
-            self.pages[name] = sp_.interior
+        self._panels = {}
+        self._rail_buttons = {}
+        for n, (key, glyph, label, tip) in enumerate(MODES, start=1):
+            cell = tk.Frame(rail, bg=RAIL_BG, height=54)
+            cell.pack(fill='x')
+            cell.pack_propagate(False)
+            stripe = tk.Frame(cell, bg=RAIL_BG, width=3)
+            stripe.pack(side='left', fill='y')
+            inner = tk.Frame(cell, bg=RAIL_BG)
+            inner.pack(fill='both', expand=True)
+            g = tk.Label(inner, text=glyph, bg=RAIL_BG, font=('Helvetica', 15))
+            g.pack(pady=(6, 0))
+            t_ = tk.Label(inner, text=label, bg=RAIL_BG, font=('Helvetica', 8))
+            t_.pack()
+            self._rail_buttons[key] = (cell, stripe, inner, g, t_)
+            for w in (cell, inner, g, t_):
+                w.bind('<Button-1>', lambda _e, k=key: self.set_mode(k))
+            InfoTip(cell, '%s \u2014 %s   (Alt+%d)' % (label, tip, n))
+            sp_ = ScrollPanel(left, width=PANEL_W - 8, bg=BG)
+            self._panels[key] = sp_
+            self.pages[label] = sp_.interior
+            self.pages[key] = sp_.interior
+        # Alt rather than a bare digit: most of the work here is typing
+        # numbers into fields, and the shortcut has to fire from inside a
+        # focused entry without typing into it.
+        top = self.winfo_toplevel()
+        for n, (key, *_r) in enumerate(MODES, start=1):
+            top.bind('<Alt-Key-%d>' % n, lambda _e, k=key: self.set_mode(k))
 
         pw = tk.PanedWindow(body, orient='vertical', sashwidth=5, bg=BG)
         pw.pack(side='left', fill='both', expand=True)
+        self._pw = pw
         self.zc = ZoomCanvas(pw, bg='white', highlightthickness=1)
         self.zc._on_zoom_changed = self._draw
         self.cam = view3d.Orbit3D(self.zc)
@@ -371,17 +461,439 @@ class ShellApp(UnitsMixin, tk.Frame):
         self.info.configure(yscrollcommand=ys.set)
         ys.pack(side='right', fill='y')
         self.info.pack(fill='both', expand=True)
+        self._info_pane = info
         pw.add(info, stretch='never', minsize=80, height=170)
+        # The section drawing takes the same slot, because it answers the same
+        # question at the same moment: what did the last analysis find, here.
+        # It is a full-width canvas rather than a 360 px panel because a
+        # section at true scale is wide and short, and squeezing it into the
+        # panel is what made the old dialog unreadable.
+        sec = tk.Frame(pw, bg=BG)
+        self._sec_pane = sec
+        self.sec_canvas = tk.Canvas(sec, bg='white', highlightthickness=1,
+                                    highlightbackground='#ccc')
+        self.sec_canvas.pack(fill='both', expand=True)
+        self.sec_canvas.bind('<Configure>', lambda _e: self._draw_section())
 
         sb = tk.Frame(self, bg=TB)
         sb.pack(fill='x', side='bottom')
         tk.Label(sb, textvariable=self.status, bg=TB, anchor='w',
                  font=('Helvetica', 10)).pack(fill='x', padx=8, pady=3)
 
-        self._build_definitions(self.pages['Definitions'])
-        self._build_supports(self.pages['Supports'])
-        self._build_loads(self.pages['Loads'])
-        self._build_design(self.pages['Design'])
+        self._build_definitions(self.pages['definitions'])
+        self._build_supports(self.pages['supports'])
+        self._build_loads(self.pages['loads'])
+        self._build_design(self.pages['design'])
+        self._build_sections(self.pages['sections'])
+        self._build_analyse(self.pages['analyse'])
+        self.set_mode('definitions')
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Modes
+    # ══════════════════════════════════════════════════════════════════════
+    def set_mode(self, key):
+        """Show one mode's panel and forget the rest.
+
+        `pack_forget`, not `lower()`: a hidden-but-packed panel still claims
+        its width from the geometry manager, which is exactly how the old
+        layout ended up with 360 px of controls on screen whatever you were
+        doing.
+        """
+        if key not in self._panels:
+            return
+        self.mode = key
+        for k, sp_ in self._panels.items():
+            if k == key:
+                sp_.pack(fill='both', expand=True)
+            else:
+                sp_.pack_forget()
+        for k, (cell, stripe, inner, g, t_) in self._rail_buttons.items():
+            on = k == key
+            bg = RAIL_ON if on else RAIL_BG
+            for w in (cell, inner, g, t_):
+                w.configure(bg=bg)
+            stripe.configure(bg=RAIL_STRIPE if on else RAIL_BG)
+            t_.configure(font=('Helvetica', 8, 'bold' if on else 'normal'))
+        # the bottom pane answers the mode's own question
+        want = self._sec_pane if key == 'sections' else self._info_pane
+        other = self._info_pane if key == 'sections' else self._sec_pane
+        # panes() hands back Tcl path names, which are not the widgets; compare
+        # as strings or the forget below silently never fires and both panes
+        # stay on screen sharing one slot
+        here = [str(w) for w in self._pw.panes()]
+        try:
+            if str(other) in here:
+                self._pw.forget(other)
+            if str(want) not in here:
+                self._pw.add(want, stretch='never', minsize=80, height=170)
+        except tk.TclError:
+            pass
+        if key == 'sections':
+            self._draw_section()
+        self._draw()
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Analyse: the list that used to be a combobox in the corner
+    # ══════════════════════════════════════════════════════════════════════
+    def _build_analyse(self, p):
+        tk.Label(p, text='Colour the shell by', bg=BG,
+                 font=('Helvetica', 10, 'bold')).pack(anchor='w', padx=8, pady=(8, 2))
+        wrap = tk.Frame(p, bg=BG)
+        wrap.pack(fill='x', padx=8)
+        ys = ttk.Scrollbar(wrap, orient='vertical')
+        self.field_list = tk.Listbox(wrap, height=14, exportselection=False,
+                                     font=('Helvetica', 9), activestyle='none',
+                                     yscrollcommand=ys.set)
+        ys.config(command=self.field_list.yview)
+        ys.pack(side='right', fill='y')
+        self.field_list.pack(side='left', fill='x', expand=True)
+        for name in FIELDS:
+            self.field_list.insert('end', name)
+        self.field_list.bind('<<ListboxSelect>>', self._on_field_pick)
+        self.field_help = tk.Label(p, text='', bg=BG, fg='#555', wraplength=PANEL_W - 30,
+                                   justify='left', font=('Helvetica', 8))
+        self.field_help.pack(anchor='w', padx=8, pady=(4, 8))
+        row = tk.Frame(p, bg=BG)
+        row.pack(fill='x', padx=8)
+        tk.Label(row, text='for', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        self.select_box = ttk.Combobox(row, textvariable=self.v_select, state='readonly', width=30)
+        self.select_box.pack(side='left', padx=4)
+        self.select_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
+
+        tk.Label(p, text='Draw it as', bg=BG,
+                 font=('Helvetica', 10, 'bold')).pack(anchor='w', padx=8, pady=(12, 2))
+        for text, var in (('mesh lines', self.v_mesh_lines),
+                          ('solid — show the thickness', self.v_solid),
+                          ('deformed', self.v_deformed),
+                          ('principal directions', self.v_principal)):
+            tk.Checkbutton(p, text=text, variable=var, bg=BG, font=('Helvetica', 9),
+                           command=self._draw).pack(anchor='w', padx=16)
+        row = tk.Frame(p, bg=BG)
+        row.pack(fill='x', padx=16, pady=(4, 0))
+        tk.Label(row, text='thickness ×', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        self.exag_box = ttk.Combobox(row, textvariable=self.v_exag, state='readonly', width=5,
+                                     values=('1', '2', '5', '10', '25'))
+        self.exag_box.pack(side='left', padx=4)
+        self.exag_box.bind('<<ComboboxSelected>>', lambda _e: self._draw())
+        tk.Label(p, text='At ×1 the slab is drawn to scale. Anything else is a lie about a '
+                         'dimension, so the canvas says so in red.', bg=BG, fg='#555',
+                 wraplength=PANEL_W - 30, justify='left',
+                 font=('Helvetica', 8)).pack(anchor='w', padx=16, pady=(2, 6))
+        row = tk.Frame(p, bg=BG)
+        row.pack(fill='x', padx=16)
+        tk.Label(row, text='deformed ×', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        tk.Scale(row, from_=0.2, to=5.0, resolution=0.1, orient='horizontal',
+                 variable=self.v_def_scale, length=120, showvalue=True, bg=BG, bd=0,
+                 highlightthickness=0, command=lambda _v: self._draw()).pack(side='left')
+        self._sync_field_list()
+        self.v_field.trace_add('write', self._sync_field_list)
+
+    def _sync_field_list(self, *_a):
+        """Point the list at whatever v_field currently holds.
+
+        Bound to the variable rather than called from the picker, because
+        the field is also set from elsewhere -- analyse() switches to
+        'Thickness to add' after a thickening run, and a list still
+        highlighting the row from before would be describing the wrong map.
+        """
+        if not hasattr(self, 'field_list'):
+            return
+        try:
+            i = list(FIELDS).index(self.v_field.get())
+        except ValueError:
+            return
+        self.field_list.selection_clear(0, 'end')
+        self.field_list.selection_set(i)
+        self.field_list.see(i)
+        self.field_help.config(text=FIELD_HELP.get(self.v_field.get(), ''))
+
+    def _on_field_pick(self, _e=None):
+        sel = self.field_list.curselection()
+        if not sel:
+            return
+        self.v_field.set(self.field_list.get(sel[0]))
+        self.field_help.config(text=FIELD_HELP.get(self.v_field.get(), ''))
+        self._draw()
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Sections
+    # ══════════════════════════════════════════════════════════════════════
+    # The tab could already plot a RESULT along a line, in a window you
+    # opened, read and threw away. This is the other half and the part that
+    # was missing: the cuts are objects you keep, and the drawing is the
+    # slab itself at true scale, so "where is it getting thicker" is a thing
+    # you can see rather than infer from a colour map.
+    CUT_COLOURS = ('#1a6bbd', '#c0561f', '#7b2fa8', '#1a7a3a', '#a8431f')
+
+    def _build_sections(self, p):
+        tk.Label(p, text='Cuts through the slab', bg=BG,
+                 font=('Helvetica', 10, 'bold')).pack(anchor='w', padx=8, pady=(8, 2))
+        tk.Label(p, text='Each cut keeps its colour: the line on the model, its row here and '
+                         'the drawing below are the same colour, so no cut has to be hunted for.',
+                 bg=BG, fg='#555', wraplength=PANEL_W - 30, justify='left',
+                 font=('Helvetica', 8)).pack(anchor='w', padx=8, pady=(0, 6))
+        wrap = tk.Frame(p, bg=BG)
+        wrap.pack(fill='x', padx=8)
+        ys = ttk.Scrollbar(wrap, orient='vertical')
+        self.cut_list = tk.Listbox(wrap, height=7, exportselection=False,
+                                   font=('Consolas', 9), activestyle='none',
+                                   yscrollcommand=ys.set)
+        ys.config(command=self.cut_list.yview)
+        ys.pack(side='right', fill='y')
+        self.cut_list.pack(side='left', fill='x', expand=True)
+        self.cut_list.bind('<<ListboxSelect>>', lambda _e: (self._draw(), self._draw_section()))
+
+        row = tk.Frame(p, bg=BG)
+        row.pack(fill='x', padx=8, pady=(6, 0))
+        tk.Label(row, text='at', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        self.v_cut_pos = tk.StringVar(value='0')
+        tk.Entry(row, textvariable=self.v_cut_pos, width=8).pack(side='left', padx=4)
+        tk.Label(row, text='m', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        row2 = tk.Frame(p, bg=BG)
+        row2.pack(fill='x', padx=8, pady=(4, 0))
+        tk.Button(row2, text='+ cut along x', font=('Helvetica', 9),
+                  command=lambda: self.add_cut('x')).pack(side='left')
+        tk.Button(row2, text='+ cut along y', font=('Helvetica', 9),
+                  command=lambda: self.add_cut('y')).pack(side='left', padx=4)
+        tk.Button(row2, text='remove', font=('Helvetica', 9), fg='#a33',
+                  command=self.remove_cut).pack(side='left')
+        tk.Label(p, text='A cut along x is the plane x = position, and it runs in y.',
+                 bg=BG, fg='#555', wraplength=PANEL_W - 30, justify='left',
+                 font=('Helvetica', 8)).pack(anchor='w', padx=8, pady=(4, 8))
+        tk.Checkbutton(p, text='dimension every station', variable=self.v_cut_dims, bg=BG,
+                       font=('Helvetica', 9),
+                       command=self._draw_section).pack(anchor='w', padx=16)
+        tk.Checkbutton(p, text='colour the cut face by the current map',
+                       variable=self.v_cut_field, bg=BG, font=('Helvetica', 9),
+                       command=self._draw_section).pack(anchor='w', padx=16)
+        self.cut_note = tk.Label(p, text='', bg=BG, fg='#555', wraplength=PANEL_W - 30,
+                                 justify='left', font=('Helvetica', 8))
+        self.cut_note.pack(anchor='w', padx=8, pady=(8, 8))
+
+    def add_cut(self, axis):
+        try:
+            pos = self.model.ws.scalar(self.v_cut_pos.get())
+        except formula.FormulaError as exc:
+            self.status.set(f'Cut position: {exc}')
+            return
+        self.cuts.append({'axis': axis, 'pos': float(pos),
+                          'colour': self.CUT_COLOURS[len(self.cuts) % len(self.CUT_COLOURS)]})
+        self._refresh_cuts()
+        self.cut_list.selection_clear(0, 'end')
+        self.cut_list.selection_set(len(self.cuts) - 1)
+        self._draw()
+        self._draw_section()
+
+    def remove_cut(self):
+        sel = self.cut_list.curselection()
+        if not sel:
+            return
+        self.cuts.pop(sel[0])
+        self._refresh_cuts()
+        self._draw()
+        self._draw_section()
+
+    def _refresh_cuts(self):
+        """Redraw the list, with what each cut is worth knowing about it."""
+        if not hasattr(self, 'cut_list'):
+            return
+        self.cut_list.delete(0, 'end')
+        for n, c in enumerate(self.cuts, start=1):
+            t_txt = ''
+            pr = self._cut_profile(c)
+            if pr is not None:
+                q = 'section_length'
+                lo = units.from_si(q, float(np.min(pr['t'])))
+                hi = units.from_si(q, float(np.max(pr['t'])))
+                t_txt = '  t %.4g-%.4g' % (lo, hi)
+            self.cut_list.insert('end', 'S%d  %s = %-7.4g%s' % (n, c['axis'], c['pos'], t_txt))
+            self.cut_list.itemconfig(n - 1, foreground=c['colour'])
+
+    def _selected_cut(self):
+        sel = self.cut_list.curselection() if hasattr(self, 'cut_list') else ()
+        if not sel or sel[0] >= len(self.cuts):
+            return None
+        return self.cuts[sel[0]]
+
+    def _cut_profile(self, cut, exaggerate=True):
+        g = self.geom
+        if g is None or cut is None:
+            return None
+        idx = ssd.strip_index(g['xs'], g['ys'], cut['axis'], cut['pos'])
+        k = float(self.v_exag.get() or 1.0) if exaggerate else 1.0
+        return ssd.section_profile(g['X'], g['elems'], g['t'], g['ids'],
+                                   cut['axis'], idx, k)
+
+    def _draw_section(self):
+        """The selected cut, drawn as the slab at true scale.
+
+        Horizontal is the plan coordinate along the cut and vertical is z, at
+        the SAME scale, because that is what a section is. The thickness is
+        therefore the drawing rather than a number beside it -- which is the
+        whole point, and is also why the exaggeration factor from the 3-D
+        view carries over and is labelled here too.
+        """
+        cv = getattr(self, 'sec_canvas', None)
+        if cv is None:
+            return
+        cv.delete('all')
+        W = max(cv.winfo_width(), 400)
+        H = max(cv.winfo_height(), 120)
+        cut = self._selected_cut()
+        if cut is None:
+            cv.create_text(14, 14, anchor='nw', fill='#999', font=('Helvetica', 9),
+                           text='No cut selected. Add one on the left, or pick a row.')
+            return
+        pr = self._cut_profile(cut)
+        if pr is None:
+            cv.create_text(14, 14, anchor='nw', fill=BAD_C, font=('Helvetica', 9),
+                           text=self.error or 'No surface.')
+            return
+        s_all = np.concatenate([pr['s_top'], pr['s_bot']])
+        z_all = np.concatenate([pr['z_top'], pr['z_bot']])
+        m = 34
+        span_s = max(np.ptp(s_all), 1e-9)
+        span_z = max(np.ptp(z_all), 1e-9)
+        # ONE scale for both axes: a section with two scales is a graph, and
+        # a graph cannot show you a thickness
+        sc = min((W - 2 * m) / span_s, (H - 2 * m - 16) / span_z)
+        x0 = m + ((W - 2 * m) - span_s * sc) / 2.0 - s_all.min() * sc
+        y0 = m + ((H - 2 * m - 16) - span_z * sc) / 2.0 + z_all.max() * sc
+
+        def P(sv, zv):
+            return x0 + np.asarray(sv) * sc, y0 - np.asarray(zv) * sc
+
+        # the cut face, span by span, in the model's own colour when asked
+        vals = None
+        if self.v_cut_field.get():
+            v, scale, _q = self.field_values()
+            if v is not None and scale != 'categorical':
+                cols, _lo, _hi = view3d.colours_for(np.asarray(v)[pr['elems']], scale)
+                vals = cols
+        xt, yt = P(pr['s_top'], pr['z_top'])
+        xb, yb = P(pr['s_bot'], pr['z_bot'])
+        for i in range(len(pr['elems'])):
+            poly = [xt[i], yt[i], xt[i + 1], yt[i + 1],
+                    xb[i + 1], yb[i + 1], xb[i], yb[i]]
+            col = vals[i] if vals is not None else '#c6d3de'
+            cv.create_polygon(*poly, fill=col, outline=col)
+        cv.create_line(*np.stack([xt, yt], 1).ravel(), fill='#2c3740', width=2)
+        cv.create_line(*np.stack([xb, yb], 1).ravel(), fill='#2c3740', width=2)
+        xm, ym = P(pr['s'], pr['z'])
+        cv.create_line(*np.stack([xm, ym], 1).ravel(), fill='#54606a', width=1, dash=(5, 4))
+
+        # where the automatic layer or a zone raised the shell above its
+        # own formula: the band is the answer to "where is it thickening"
+        base = self._base_thickness_along(cut, pr)
+        if base is not None:
+            raised = pr['t'] > base + 1e-6
+            for i in range(len(pr['elems'])):
+                if raised[i] and raised[i + 1]:
+                    cv.create_line(xt[i], m - 10, xt[i + 1], m - 10, fill='#c0561f', width=6)
+            if raised.any():
+                cv.create_text(x0 + (s_all.min() + 0.02 * span_s) * sc, m - 20, anchor='w',
+                               fill='#a8431f', font=('Helvetica', 8),
+                               text='thickened above the formula')
+
+        if self.v_cut_dims.get():
+            q = 'section_length'
+            step = max(1, len(pr['s']) // 12)
+            for i in range(0, len(pr['s']), step):
+                cv.create_line(xt[i], yt[i], xb[i], yb[i], fill='#1a6bbd')
+                cv.create_text(xb[i], yb[i] + 8, anchor='n', fill='#1a6bbd',
+                               font=('Helvetica', 8),
+                               text='%.4g' % units.from_si(q, float(pr['t'][i])))
+            cv.create_text(W / 2, H - 6, anchor='s', fill='#1a6bbd', font=('Helvetica', 8),
+                           text='thickness at each station, %s' % units.label(q))
+        k = pr['exaggeration']
+        head = ('S%d  ·  %s = %.4g m  ·  drawn at true scale'
+                % (self.cuts.index(cut) + 1, cut['axis'], cut['pos'])) if k == 1.0 else \
+               ('S%d  ·  %s = %.4g m  ·  THICKNESS DRAWN ×%g'
+                % (self.cuts.index(cut) + 1, cut['axis'], cut['pos'], k))
+        cv.create_text(12, 10, anchor='nw', fill=cut['colour'] if k == 1.0 else BAD_C,
+                       font=('Helvetica', 9, 'bold'), text=head)
+
+    def _base_thickness_along(self, cut, pr):
+        """The thickness the FORMULA alone asks for along this cut.
+
+        Compared with what is actually there, it is how the drawing knows
+        which spans the automatic layer or a zone raised -- without which
+        "show first" is still only a colour map.
+        """
+        g = self.geom
+        try:
+            cen = g['X'][g['elems'][pr['elems']]].mean(axis=1)
+            base_el = self.model.element_thickness(cen[:, 0], cen[:, 1], with_auto=False)
+        except Exception:
+            return None
+        base = np.empty(len(pr['t']))
+        base[:-1] = base_el
+        base[-1] = base_el[-1]
+        base[1:-1] = 0.5 * (base_el[:-1] + base_el[1:])
+        return base
+
+    def _draw_cuts(self, X, sx, sy):
+        """The cut lines on the 3-D model, each in its row's colour."""
+        cv = self.zc.canvas
+        sel = self._selected_cut()
+        for c in self.cuts:
+            pr = self._cut_profile(c)
+            if pr is None:
+                continue
+            g = self.geom
+            idx = ssd.strip_index(g['xs'], g['ys'], c['axis'], c['pos'])
+            ids = g['ids']
+            a = ids[:, idx] if c['axis'] == 'x' else ids[idx, :]
+            b = ids[:, idx + 1] if c['axis'] == 'x' else ids[idx + 1, :]
+            px = 0.5 * (sx[a] + sx[b])
+            py = 0.5 * (sy[a] + sy[b])
+            if np.abs(px).max() > 30000 or np.abs(py).max() > 30000:
+                continue
+            cv.create_line(*np.stack([px, py], 1).ravel(), fill=c['colour'],
+                           width=4 if c is sel else 2)
+
+    def _shape_line(self):
+        """The numbers a shell designer reads first, in front of the result.
+
+        Four of them, and none was printed anywhere before: how much
+        concrete is in it, how slender it is, how far it moved, and against
+        what. Isler held his own shells to span/300, so the deflection is
+        shown as that ratio rather than as a millimetre count nobody can
+        place.
+        """
+        g = self.geom
+        if g is None:
+            return ''
+        t = np.asarray(g['t'], float)
+        vol = ssd.solid_volume(g['X'], g['elems'], t)
+        x0, x1, y0, y1 = g['plan']
+        span = max(x1 - x0, y1 - y0)
+        bits = ['%d elements' % len(g['elems']),
+                't %.4g-%.4g %s' % (units.from_si('section_length', float(t.min())),
+                                    units.from_si('section_length', float(t.max())),
+                                    units.label('section_length')),
+                'L/t %.0f' % (span / max(float(t.mean()), 1e-9)),
+                '%.3g m3 concrete' % vol]
+        if self.res is not None:
+            try:
+                d = self._peak_deflection()
+                if d > 0:
+                    bits.append('peak %.4g %s = span/%.0f'
+                                % (units.from_si('deflection', d),
+                                   units.label('deflection'), span / d))
+            except Exception:
+                pass
+        return '  \u00b7  '.join(bits) + '  \u00b7  '
+
+    def _peak_deflection(self):
+        """Largest downward movement of the mid-surface, in metres."""
+        U = self.res.U
+        nn = len(self.geom['X'])
+        peak = 0.0
+        for c in range(U.shape[1]):
+            d = U[:, c].reshape(-1, 6)[:nn, :3]
+            peak = max(peak, float(np.abs(d).max()))
+        return peak
 
     # -- numeric fields whose model value is kept in SI -------------------------
     def _si_entry(self, parent, label, q, get_si, set_si, width=9, note=''):
@@ -1034,7 +1546,10 @@ class ShellApp(UnitsMixin, tk.Frame):
         self.geom = self.res.fem['mesh']
         self._refresh_select_values()
         n_need = int(self.des.needs_thicker.sum() + self.des.cannot.sum())
+        self._refresh_cuts()
+        self._draw_section()
         self.status.set(
+            self._shape_line() +
             f'Analysed: {len(self.res.cases)} cases, {len(self.res.combos)} combinations. '
             + (f'{int(self.des.fails.sum())} elements fail; {n_need} need to be thicker — '
                'shown in "Thickness needed".' if n_need or self.des.fails.any()
@@ -1243,6 +1758,7 @@ class ShellApp(UnitsMixin, tk.Frame):
                                   outline='#6b6b6b' if outline else face_colour(e, ssd.TOP),
                                   width=1, tags=('face', f'e{e}'))
         self._draw_structure(X, sx, sy)
+        self._draw_cuts(X, sx, sy)
         if self.v_principal.get() and self.res is not None:
             self._draw_principal(X, cen)
         if self.sel is not None and self.sel < len(el):

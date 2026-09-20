@@ -189,3 +189,87 @@ def test_an_empty_mesh_does_not_raise():
     f = ss.solid_faces(X, el, np.zeros(0))
     assert len(f['poly']) == 0
     assert ss.solid_volume(X, el, np.zeros(0)) == 0.0
+
+
+# ── the section profile ────────────────────────────────────────────────────
+
+def grid_with_ids(nx=4, ny=3, w=4.0, h=3.0, zfun=None):
+    xs = np.linspace(0.0, w, nx + 1)
+    ys = np.linspace(0.0, h, ny + 1)
+    XX, YY = np.meshgrid(xs, ys)
+    ZZ = np.zeros_like(XX) if zfun is None else zfun(XX, YY)
+    X = np.stack([XX.ravel(), YY.ravel(), ZZ.ravel()], axis=1)
+    ids = np.arange(len(X)).reshape(ny + 1, nx + 1)
+    elems = np.stack([ids[:-1, :-1], ids[:-1, 1:], ids[1:, 1:], ids[1:, :-1]],
+                     -1).reshape(-1, 4)
+    return X, elems, ids, xs, ys
+
+
+def test_a_cut_through_a_flat_plate_is_two_parallel_lines_t_apart():
+    X, el, ids, xs, ys = grid_with_ids()
+    t = np.full(len(el), 0.18)
+    p = ss.section_profile(X, el, t, ids, 'x', 1)
+    assert np.allclose(p['z_top'] - p['z_bot'], 0.18)
+    assert np.allclose(p['z'], 0.0)
+    assert np.allclose(p['s'], np.linspace(0.0, 3.0, 4))     # the y stations
+    assert np.allclose(p['s_top'], p['s'])                   # flat: no sideways shift
+
+
+def test_a_cut_runs_down_the_middle_of_its_strip_not_along_an_edge():
+    """A ridge at one node line: a profile taken on the edge would read the
+    ridge, one taken down the middle reads half of it."""
+    X, el, ids, xs, ys = grid_with_ids(nx=2, ny=2, w=2.0, h=2.0,
+                                       zfun=lambda x, y: np.where(np.isclose(x, 0.0), 1.0, 0.0))
+    p = ss.section_profile(X, el, np.full(len(el), 0.1), ids, 'x', 0)
+    assert np.allclose(p['z'], 0.5)      # midway between the 1.0 line and the 0.0 one
+
+
+def test_the_strip_is_picked_the_same_way_the_result_plots_pick_it():
+    X, el, ids, xs, ys = grid_with_ids(nx=4, ny=3, w=4.0, h=3.0)
+    assert ss.strip_index(xs, ys, 'x', 0.0) == 0
+    assert ss.strip_index(xs, ys, 'x', 2.5) == 2
+    assert ss.strip_index(xs, ys, 'x', 99.0) == 3            # clamped, not an error
+    assert ss.strip_index(xs, ys, 'y', 1.5) == 1
+
+
+def test_the_profile_names_the_element_behind_every_span():
+    X, el, ids, xs, ys = grid_with_ids(nx=4, ny=3)
+    p = ss.section_profile(X, el, np.full(len(el), 0.1), ids, 'x', 2)
+    assert len(p['elems']) == len(p['s']) - 1
+    cen = X[el[p['elems']]].mean(axis=1)
+    assert np.allclose(cen[:, 0], 2.5)                        # the column at x = 2.5
+
+
+def test_a_varying_thickness_shows_as_a_taper_in_the_profile():
+    X, el, ids, xs, ys = grid_with_ids(nx=2, ny=2, w=2.0, h=2.0)
+    t = np.array([0.10, 0.40, 0.10, 0.40])                    # thick at x > 1
+    p = ss.section_profile(X, el, t, ids, 'y', 0)
+    d = p['z_top'] - p['z_bot']
+    assert d[0] < d[-1]                                       # thin end, thick end
+    assert d[0] == pytest.approx(0.10) and d[-1] == pytest.approx(0.40)
+
+
+def test_on_a_sloping_shell_the_offset_moves_along_the_section_too():
+    """The whole reason the profile is not two copies of z shifted by t/2."""
+    X, el, ids, xs, ys = grid_with_ids(nx=2, ny=4, w=2.0, h=4.0,
+                                       zfun=lambda x, y: 0.9 * y)      # a 42 degree ramp
+    p = ss.section_profile(X, el, np.full(len(el), 0.30), ids, 'x', 0)
+    assert not np.allclose(p['s_top'], p['s'])
+    # the offset is perpendicular: its length is exactly t/2
+    d = np.hypot(p['s_top'] - p['s'], p['z_top'] - p['z'])
+    assert np.allclose(d, 0.15)
+
+
+def test_the_profile_honours_the_exaggeration_and_says_so():
+    X, el, ids, xs, ys = grid_with_ids()
+    p1 = ss.section_profile(X, el, np.full(len(el), 0.2), ids, 'x', 1, 1.0)
+    p5 = ss.section_profile(X, el, np.full(len(el), 0.2), ids, 'x', 1, 5.0)
+    assert np.allclose(p5['z_top'] - p5['z_bot'], 5.0 * (p1['z_top'] - p1['z_bot']))
+    assert np.allclose(p5['t'], p1['t'])          # t itself is not exaggerated
+    assert p5['exaggeration'] == 5.0
+
+
+def test_a_cut_along_y_runs_in_x():
+    X, el, ids, xs, ys = grid_with_ids(nx=4, ny=3, w=4.0, h=3.0)
+    p = ss.section_profile(X, el, np.full(len(el), 0.1), ids, 'y', 1)
+    assert np.allclose(p['s'], np.linspace(0.0, 4.0, 5))

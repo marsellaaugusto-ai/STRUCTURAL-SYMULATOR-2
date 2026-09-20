@@ -3470,9 +3470,18 @@
   any boundary and still have something that works. Tests go in <span class="path">tests/</span>
   beside the 57 files now there.</p>
   <div class="note ok">
-    <p><b>Stage 0 — done and committed.</b> The Shell tab, <code>formula.py</code>,
-    <code>view3d.py</code>, the units superset and the tests are on this branch; Stereo untouched;
-    316 tests green.</p>
+    <p><b>Stage 0 — done.</b> The Shell tab, <code>formula.py</code>, <code>view3d.py</code>, the
+    units superset and the tests are on this branch; Stereo untouched. Full suite 2678 green.</p>
+    <p><b>Stage 1 — done.</b> <code>shell_solid.py</code>: the slab drawn as a top, a soffit and a
+    band round every free edge, at true scale by default, with the exaggeration labelled in red
+    when it is not 1. 23 geometry tests; full suite 2693 green.</p>
+    <p><b>Stage 2 — done.</b> Cuts are objects now: a list, a colour each, the trace on the model,
+    and a drawing at true scale with the thickness dimensioned at every station and the thickened
+    spans banded.</p>
+    <p><b>Stage 3 — done.</b> Six modes on a rail, one panel at a time, Alt+1…6; the colour list
+    out of the toolbar and into a visible list with a sentence per row; the status line carrying
+    element count, thickness range, L/t, concrete volume and deflection as span/N. 27 interface
+    tests.</p>
   </div>
 
   <div class="stage"><span class="tag">Stage 1</span><div>

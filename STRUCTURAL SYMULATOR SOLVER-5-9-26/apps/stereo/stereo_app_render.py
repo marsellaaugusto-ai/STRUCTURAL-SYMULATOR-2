@@ -24,7 +24,9 @@ from common import declutter_text, LoadScale
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_member_loads as mld
+from apps.stereo import expr_math as em
 from apps.stereo.stereo_app_colors import (
+    surface_preview_color,
     load_path_color,
     force_color, deform_color, util_color, moment_color,
     reaction_moment_signed,
@@ -44,6 +46,7 @@ from apps.stereo.stereo_app_constants import (
     LEGEND_CARD_BG, LEGEND_CARD_EDGE,
     GRADIENT_SEGMENTS, GRADIENT_SEGMENTS_DENSE, GRADIENT_DENSE_MEMBERS,
     ROD_FIELD_SEGMENTS,
+    SURFACE_PREVIEW_STEPS, SURFACE_PREVIEW_STIPPLE, SURFACE_PREVIEW_LINE,
     MOMENT_ZERO_COLOR, MOMENT_NODE_OUTLINE, MOMENT_BACKDROP_COLOR,
     MOMENT_NODE_RADIUS_PX,
     SCALE_P95, FORCE_SCALE_PERCENTILE, CLIP_MARK_COLOR, CLIP_MARK_DASH,
@@ -392,6 +395,7 @@ class StereoRenderMixin:
         # green overlay in parallel (see _draw_deformed_overlay), it never
         # replaces this, so the real structure stays exactly where clicks,
         # the lasso and everything else expect to find it.
+        self._refresh_camera_distance()
         proj = [self._project(x, y, z) for x, y, z in self.nodes]
 
         xs = [p[0] for p in proj]; ys = [p[1] for p in proj]
@@ -407,6 +411,13 @@ class StereoRenderMixin:
         # UNLESS "Deformed only" asks to see the deformed shape by itself,
         # in which case the reference structure (and everything keyed to
         # it -- labels, load arrows) is skipped entirely below.
+        # Underneath everything, including the deformed overlay: the
+        # preview is the surface the model was CUT FROM, so it belongs
+        # behind the model in the same way a drawing board is behind the
+        # drawing.
+        if self.show_surface_preview.get():
+            self._draw_surface_preview(c, to_screen)
+
         show_def = self.show_deformed.get() and self.results is not None
         deformed_only = show_def and self.deformed_only.get()
         if show_def:
@@ -794,6 +805,120 @@ class StereoRenderMixin:
         return self._shaded_cells
 
     DISC_STEPS = 48
+
+    def _draw_surface_preview(self, c, to_screen):
+        """The CONTINUOUS surface behind the lattice, the way GeoGebra 3D
+        draws one: shaded quads plus iso-lines.
+
+        Sampled at its own fixed density, deliberately NOT at the
+        subdivision the mesh uses. The whole reason to draw it is to see
+        the surface BEFORE committing to a subdivision -- a preview that
+        changed resolution with n1/n2 would be showing you the mesh a
+        second time and would go flat exactly when the mesh is coarse,
+        which is when you most need to see what you are approximating.
+
+        Drawn from the Shape panel's own expressions rather than from the
+        model, so it keeps telling the truth while you edit the formula and
+        before you press Build. Anything that will not compile simply draws
+        nothing -- the panel already says why in red, and a half-drawn
+        surface on top of that would be noise.
+        """
+        surfaces = self._preview_surfaces()
+        if not surfaces:
+            return
+        try:
+            p0 = self._shape_num(self.shape_p0, 'x from')
+            p1 = self._shape_num(self.shape_p1, 'x to')
+            q0 = self._shape_num(self.shape_q0, 'y from')
+            q1 = self._shape_num(self.shape_q1, 'y to')
+        except em.ExpressionError:
+            return
+        polar = self.shape_coord.get() == 'polar'
+        try:
+            pole = (self._shape_num(self.shape_pole_x, 'pole x'),
+                    self._shape_num(self.shape_pole_y, 'pole y'))
+        except em.ExpressionError:
+            pole = (0.0, 0.0)
+
+        n = SURFACE_PREVIEW_STEPS
+        quads = []
+        for surface, tint in surfaces:
+            try:
+                grid = [[self._preview_point(surface, p0, p1, q0, q1, i, j, n,
+                                             polar, pole)
+                         for j in range(n + 1)] for i in range(n + 1)]
+            except (em.ExpressionError, ValueError, OverflowError, ZeroDivisionError):
+                continue
+            zs = [pt[2] for row in grid for pt in row if pt is not None]
+            if not zs:
+                continue
+            lo, hi = min(zs), max(zs)
+            span = (hi - lo) or 1.0
+            for i in range(n):
+                for j in range(n):
+                    corners = (grid[i][j], grid[i + 1][j],
+                               grid[i + 1][j + 1], grid[i][j + 1])
+                    if any(pt is None for pt in corners):
+                        continue
+                    projected = [self._project(*pt) for pt in corners]
+                    mid_z = sum(pt[2] for pt in corners) / 4.0
+                    depth = sum(pr[2] for pr in projected) / 4.0
+                    quads.append((depth, projected,
+                                  surface_preview_color((mid_z - lo) / span, tint)))
+        # No z-buffer on a Tk canvas, so the painter's algorithm: farthest
+        # first. Without this the near face of a fold is painted over by
+        # the far one and the surface reads inside out.
+        quads.sort(key=lambda item: -item[0])
+        for _depth, projected, colour in quads:
+            pts = []
+            for px, py, _d in projected:
+                pts.extend(to_screen(px, py))
+            c.create_polygon(*pts, fill=colour, outline=colour,
+                             stipple=SURFACE_PREVIEW_STIPPLE, tags='surface_preview')
+
+        # Iso-lines every other station: the wireframe that makes the shape
+        # readable where the shading alone is ambiguous.
+        for surface, _tint in surfaces:
+            for along_i in (True, False):
+                for k in range(0, n + 1, 2):
+                    pts = []
+                    for m in range(n + 1):
+                        i, j = (k, m) if along_i else (m, k)
+                        try:
+                            pt = self._preview_point(surface, p0, p1, q0, q1, i, j, n,
+                                                     polar, pole)
+                        except (em.ExpressionError, ValueError, OverflowError,
+                                ZeroDivisionError):
+                            pt = None
+                        if pt is None:
+                            continue
+                        px, py, _d = self._project(*pt)
+                        pts.extend(to_screen(px, py))
+                    if len(pts) >= 4:
+                        c.create_line(*pts, fill=SURFACE_PREVIEW_LINE, width=1,
+                                      tags='surface_preview')
+
+    def _preview_point(self, surface, p0, p1, q0, q1, i, j, n, polar, pole):
+        p = p0 + (p1 - p0) * i / n
+        q = q0 + (q1 - q0) * j / n
+        x, y = sg._domain_to_xy('polar' if polar else 'cartesian', p, q, pole)
+        return surface(x, y)
+
+    def _preview_surfaces(self):
+        """[(surface, tint)] for the preview: the top surface, plus the
+        bottom one in two-surface mode so a crossing pair is VISIBLE as a
+        crossing rather than only reported as an error after Build."""
+        try:
+            top = sg.make_height_field_surface(self.shape_z_top.get())
+        except em.ExpressionError:
+            return []
+        out = [(top, 0)]
+        if self.shape_two.get():
+            try:
+                out.append((sg.make_height_field_surface(self.shape_z_bot.get()), 1))
+            except em.ExpressionError:
+                pass
+        return out
 
     def _draw_pick_overlay(self, c, proj, to_screen):
         """The footprint disc, and the pending end of a line pick.

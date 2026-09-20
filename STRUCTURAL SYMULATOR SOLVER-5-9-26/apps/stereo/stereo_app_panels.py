@@ -18,6 +18,7 @@ from apps.stereo.stereo_app_shell import HINT_FG
 
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
+from apps.stereo import expr_math as em
 from apps.stereo import stereo_examples as sx
 from apps.stereo import stereo_app_analysis as sa
 from apps.stereo import stereo_member_loads as mld
@@ -36,6 +37,8 @@ from apps.stereo.stereo_app_constants import (
     LOAD_DIRECTION_NAMES, AREA_SCOPE_ALL, AREA_SCOPES,
     ROD_SCOPES, ROD_SCOPE_TOP,
     SHAPE_PLAN_PRESETS, PANEL_TEXT_W,
+    PROJECTION_PARALLEL, PROJECTION_PERSPECTIVE,
+    CAMERA_DISTANCE_DEFAULT, CAMERA_DISTANCE_MIN, CAMERA_DISTANCE_MAX,
     HYPERBOLOID_BRACES, BRACE_LABEL,
 )
 
@@ -129,6 +132,10 @@ class StereoPanelsMixin(_ToolbarModes):
         self.show_axes = tk.BooleanVar(value=True)
         self.show_module_card = tk.BooleanVar(value=True)
         self.load_path_anim = tk.BooleanVar(value=False)
+        self.show_surface_preview = tk.BooleanVar(value=True)
+        self.projection_mode = tk.StringVar(value=PROJECTION_PARALLEL)
+        self.camera_distance = tk.IntVar(value=CAMERA_DISTANCE_DEFAULT)
+        self._persp_d = 1.0
 
     def _fill_display_popover(self, body):
         """Everything that is display STATE rather than a verb.
@@ -232,6 +239,22 @@ class StereoPanelsMixin(_ToolbarModes):
         # Independent annotations drawn over whatever the groups above
         # produced -- every one of these is on or off by itself, which is why
         # they are all checkboxes and all live together.
+        # ── 2 · PROJECTION ───────────────────────────────────────────────
+        g = self._pop_group(body, 'PROJECTION')
+        for value, label in ((PROJECTION_PARALLEL, 'Parallel'),
+                             (PROJECTION_PERSPECTIVE, 'Perspective')):
+            tk.Radiobutton(g, text=label, value=value, variable=self.projection_mode,
+                           bg=BG, command=self._on_projection_change
+                          ).pack(side='left', padx=(0, 6))
+        self.camera_scale = tk.Scale(
+            g, from_=CAMERA_DISTANCE_MIN, to=CAMERA_DISTANCE_MAX, orient='horizontal',
+            variable=self.camera_distance, length=110, showvalue=False, bg=BG, bd=0,
+            highlightthickness=0, command=lambda _=None: self._draw())
+        self.camera_scale.pack(side='left', padx=(6, 2))
+        self.camera_note = tk.Label(g, text='', bg=BG, fg=HINT_FG,
+                                    font=('Helvetica', 8), width=20, anchor='w')
+        self.camera_note.pack(side='left')
+
         g = self._pop_group(body, 'SHOW')
         tk.Checkbutton(g, text='Rods', variable=self.show_members, bg=BG,
                        command=self._draw).pack(side='left')
@@ -246,6 +269,8 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Checkbutton(g, text='Reactions', variable=self.show_reactions, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
         tk.Checkbutton(g, text='Axes + ground', variable=self.show_axes, bg=BG,
+                       command=self._draw).pack(side='left', padx=(4, 0))
+        tk.Checkbutton(g, text='Surface', variable=self.show_surface_preview, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
         tk.Checkbutton(g, text='Load-path arrows', variable=self.load_path_anim, bg=BG,
                       command=self._on_load_path_anim_toggle).pack(side='left', padx=(4, 0))
@@ -532,6 +557,14 @@ class StereoPanelsMixin(_ToolbarModes):
         self._shape_entry(self.frame_shape_bot, 'z bottom =', self.shape_z_bot)
         self.frame_shape_depth = tk.Frame(surf, bg=BG)
         self._labeled_entry(self.frame_shape_depth, 'Depth (m):', self.shape_depth)
+        # The same toggle as in the Display popover, repeated here because
+        # this is where you are editing the thing it draws -- reaching for
+        # the popover to see what your own formula looks like is a step too
+        # many.
+        tk.Checkbutton(surf, text='Show the surface itself, not just the lattice',
+                       variable=self.show_surface_preview, bg=BG,
+                       font=('Helvetica', 8), command=self._draw
+                      ).pack(anchor='w', padx=6, pady=(2, 0))
         tk.Label(surf, text='x, y are metres in plan. Use the wizard under Generate for '
                             'parametric surfaces and the maths keypad.',
                  bg=BG, fg='#666', font=('Helvetica', 8), wraplength=PANEL_W - 44,
@@ -555,6 +588,33 @@ class StereoPanelsMixin(_ToolbarModes):
                                            wraplength=PANEL_W - 44, justify='left')
         self.shape_lattice_note.pack(anchor='w', padx=6, pady=(2, 6))
 
+        # ── module pattern ───────────────────────────────────────────────
+        # A SEPARATE question from the lattice above: that one says how the
+        # two layers register, this one says what shape the module is. They
+        # are independent, but not every pair of answers is a real space
+        # frame, so the impossible ones are disabled with the reason rather
+        # than silently approximated -- see _on_shape_mode_change.
+        tk.Label(lat, text='Module pattern -- what shape the cell is, which is a '
+                           'different question from how the layers register.',
+                 bg=BG, fg='#666', font=('Helvetica', 8), wraplength=PANEL_W - 44,
+                 justify='left').pack(anchor='w', padx=6, pady=(4, 2))
+        self.shape_pattern = tk.StringVar(value=sg.PATTERN_SQUARE)
+        self._shape_pattern_buttons = {}
+        prow = tk.Frame(lat, bg=BG)
+        prow.pack(fill='x', padx=6, pady=(0, 2))
+        for key, label in ((sg.PATTERN_SQUARE, 'Square'),
+                           (sg.PATTERN_DIAGONAL, 'Diagonal'),
+                           (sg.PATTERN_ISOMETRIC, 'Isometric')):
+            rb = tk.Radiobutton(prow, text=label, value=key, variable=self.shape_pattern,
+                                bg=BG, font=('Helvetica', 9),
+                                command=self._on_shape_mode_change)
+            rb.pack(side='left', padx=(0, 6))
+            self._shape_pattern_buttons[key] = rb
+        self.shape_pattern_note = tk.Label(lat, text='', bg=BG, fg='#8a6d1f',
+                                           font=('Helvetica', 8),
+                                           wraplength=PANEL_W - 44, justify='left')
+        self.shape_pattern_note.pack(anchor='w', padx=6, pady=(0, 6))
+
         # ── domain ───────────────────────────────────────────────────────
         dom = tk.LabelFrame(parent, text='Domain', bg=BG, font=('Helvetica', 10, 'bold'))
         dom.pack(fill='x', padx=6, pady=(0, 4))
@@ -565,10 +625,14 @@ class StereoPanelsMixin(_ToolbarModes):
             tk.Radiobutton(row, text=label, value=value, variable=self.shape_coord,
                            bg=BG, font=('Helvetica', 9),
                            command=self._on_shape_mode_change).pack(side='left')
-        self.shape_p0 = tk.DoubleVar(value=0.0)
-        self.shape_p1 = tk.DoubleVar(value=12.0)
-        self.shape_q0 = tk.DoubleVar(value=0.0)
-        self.shape_q1 = tk.DoubleVar(value=12.0)
+        # StringVar, not DoubleVar: a DoubleVar makes Tk itself reject every
+        # keystroke that is not already a number, so '2*pi' could not even be
+        # TYPED. These go through expr_math.evaluate_number instead, which is
+        # the same whitelist every other expression in this tab uses.
+        self.shape_p0 = tk.StringVar(value='0')
+        self.shape_p1 = tk.StringVar(value='12')
+        self.shape_q0 = tk.StringVar(value='0')
+        self.shape_q1 = tk.StringVar(value='12')
         self.shape_n1 = tk.IntVar(value=6)
         self.shape_n2 = tk.IntVar(value=6)
         self.shape_p_label = tk.StringVar(value='x from / to:')
@@ -579,8 +643,8 @@ class StereoPanelsMixin(_ToolbarModes):
                                           font=('Helvetica', 8))
         self.shape_module_note.pack(anchor='w', padx=6, pady=(0, 4))
 
-        self.shape_pole_x = tk.DoubleVar(value=0.0)
-        self.shape_pole_y = tk.DoubleVar(value=0.0)
+        self.shape_pole_x = tk.StringVar(value='0')
+        self.shape_pole_y = tk.StringVar(value='0')
         self.frame_shape_pole = tk.Frame(dom, bg=BG)
         prow = tk.Frame(self.frame_shape_pole, bg=BG)
         prow.pack(fill='x', padx=6, pady=2)
@@ -674,8 +738,8 @@ class StereoPanelsMixin(_ToolbarModes):
         wrong the moment the domain moves, and nobody wants to re-derive
         the centre by hand to try a round roof."""
         try:
-            x0, x1 = float(self.shape_p0.get()), float(self.shape_p1.get())
-            y0, y1 = float(self.shape_q0.get()), float(self.shape_q1.get())
+            x0, x1 = self._shape_num(self.shape_p0, 'x from'), self._shape_num(self.shape_p1, 'x to')
+            y0, y1 = self._shape_num(self.shape_q0, 'y from'), self._shape_num(self.shape_q1, 'y to')
         except (tk.TclError, ValueError):
             x0, x1, y0, y1 = 0.0, 12.0, 0.0, 12.0
         cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
@@ -693,13 +757,21 @@ class StereoPanelsMixin(_ToolbarModes):
                                                                     fill='x', expand=True)
         return row
 
+    @staticmethod
+    def _shape_num(var, what):
+        """One domain box as a number, so '2*pi' works where a bare float
+        used to be the only thing Tk would even let you type. Raises
+        ExpressionError NAMING THE BOX, so the panel can say which of the
+        six is wrong rather than only that something is."""
+        return em.evaluate_number(var.get(), what)
+
     def _shape_range(self, parent, label_var, v0, v1, n):
         row = tk.Frame(parent, bg=BG)
         row.pack(fill='x', padx=6, pady=2)
         tk.Label(row, textvariable=label_var, bg=BG, width=11, anchor='w',
                  font=('Helvetica', 9)).pack(side='left')
-        tk.Entry(row, textvariable=v0, width=6).pack(side='left')
-        tk.Entry(row, textvariable=v1, width=6).pack(side='left', padx=(3, 6))
+        tk.Entry(row, textvariable=v0, width=7).pack(side='left')
+        tk.Entry(row, textvariable=v1, width=7).pack(side='left', padx=(3, 5))
         tk.Label(row, text='÷', bg=BG, font=('Helvetica', 9)).pack(side='left')
         tk.Entry(row, textvariable=n, width=4).pack(side='left', padx=(3, 0))
 
@@ -721,12 +793,59 @@ class StereoPanelsMixin(_ToolbarModes):
             text=('A flat single layer of PINNED bars is a mechanism -- no out-of-plane '
                   'stiffness at all. Give it curvature, or set Rigid under Section.')
             if single else '')
+        self._sync_shape_patterns()
         try:
-            dp = (float(self.shape_p1.get()) - float(self.shape_p0.get())) / max(1, int(self.shape_n1.get()))
-            dq = (float(self.shape_q1.get()) - float(self.shape_q0.get())) / max(1, int(self.shape_n2.get()))
+            dp = (self._shape_num(self.shape_p1, 'x to') - self._shape_num(self.shape_p0, 'x from')) \
+                / max(1, int(self.shape_n1.get()))
+            dq = (self._shape_num(self.shape_q1, 'y to') - self._shape_num(self.shape_q0, 'y from')) \
+                / max(1, int(self.shape_n2.get()))
             self.shape_module_note.config(text=f'module ≈ {abs(dp):.2f} × {abs(dq):.2f}')
         except (tk.TclError, ValueError, ZeroDivisionError):
             self.shape_module_note.config(text='')
+
+    # Why each lattice x pattern pair is or is not a buildable frame. The
+    # UI and stereo_geometry_custom_surface.custom_surface_lattice must
+    # agree about this, so the reasons live here in one place and the
+    # generator raises with the same argument -- a greyed button that the
+    # generator would in fact accept (or the reverse) is worse than either.
+    SHAPE_PATTERN_BLOCKED = {
+        sg.PATTERN_ISOMETRIC: (
+            'Isometric needs "Single layer" or "Double layer, aligned". An '
+            'offset lattice has to offset INTO a half-module, and a '
+            'triangular grid has no such thing: the centre of a triangle is '
+            'not a lattice point of the triangle below it.'),
+        sg.PATTERN_DIAGONAL: (
+            'This lattice already says which layer runs diagonally -- that is '
+            'what its name means. The diagonal MODULE pattern applies to a '
+            'single layer.'),
+    }
+
+    def _sync_shape_patterns(self):
+        """Enable only the module patterns the chosen lattice can actually
+        be built on, and say why the others are out.
+
+        A disabled control with no reason beside it reads as a bug. These
+        three are disabled often enough -- the default lattice blocks two of
+        them -- that the reason has to be on screen, not in a docstring.
+        """
+        lattice = self.shape_lattice.get()
+        allowed = {sg.PATTERN_SQUARE}
+        if lattice in (sg.LATTICE_SINGLE, sg.LATTICE_ALIGNED):
+            allowed |= {sg.PATTERN_DIAGONAL, sg.PATTERN_ISOMETRIC}
+        for key, button in self._shape_pattern_buttons.items():
+            button.config(state='normal' if key in allowed else 'disabled')
+        current = self.shape_pattern.get()
+        if current not in allowed:
+            # Fall back rather than leave a disabled option selected, which
+            # would build something other than what the panel shows.
+            self.shape_pattern.set(sg.PATTERN_SQUARE)
+            current = sg.PATTERN_SQUARE
+        blocked = [k for k in self._shape_pattern_buttons if k not in allowed]
+        self.shape_pattern_note.config(
+            text=self.SHAPE_PATTERN_BLOCKED[blocked[0]] if len(blocked) == 1
+            else ('Only the square module fits this lattice. '
+                  + self.SHAPE_PATTERN_BLOCKED[sg.PATTERN_ISOMETRIC])
+            if blocked else '')
 
     def _refresh_shape_note(self):
         """Keep the Shape mode honest about where the current model came

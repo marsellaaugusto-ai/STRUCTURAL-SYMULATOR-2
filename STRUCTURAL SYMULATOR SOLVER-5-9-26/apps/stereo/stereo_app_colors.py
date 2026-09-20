@@ -191,3 +191,19 @@ def moment_color(m_signed, max_abs_m):
     if m_signed >= 0:
         return _lerp_hex(MOMENT_ZERO_COLOR, MOMENT_POS_HIGH, frac)
     return _lerp_hex(MOMENT_ZERO_COLOR, MOMENT_NEG_HIGH, frac)
+
+
+def surface_preview_color(frac, tint=0):
+    """A point on the surface preview, low to high across that surface's own
+    z range.
+
+    Its OWN ramp rather than force_color's or moment_color's: those mean
+    something (tension/compression, hogging/sagging) and reusing one here
+    would invite the preview to be read as a result. This is geometry, so it
+    says only "higher" and "lower", and `tint` gives the second surface of a
+    pair a different pair of ends so the two never look like one surface
+    folded.
+    """
+    from apps.stereo.stereo_app_constants import SURFACE_PREVIEW_TINTS
+    lo, hi = SURFACE_PREVIEW_TINTS[tint % len(SURFACE_PREVIEW_TINTS)]
+    return _lerp_hex(lo, hi, max(0.0, min(1.0, frac)))

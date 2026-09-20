@@ -282,6 +282,24 @@ class StereoModelMixin:
         self._reset_view(redraw=False)
         self._refresh_all()
 
+    def _clear_model(self, push_undo=True):
+        """Empty the display: no nodes, no members, no supports, no loads,
+        no results.
+
+        Routed through _load_mesh with an EMPTY mesh rather than zeroing the
+        fields here, so clearing resets exactly the same state a regenerate
+        does. A second reset path is how the two drift apart -- one of them
+        forgets the panels, or the rod loads, or the freed column supports,
+        and the bug only shows up two actions later.
+
+        Undoable like any other model change, which is why it does not ask
+        for confirmation: the cost of a mis-click is one press of the undo
+        button, and this is meant to be a frequent way to start.
+        """
+        self._load_mesh({'nodes': [], 'members': [], 'support_candidates': [],
+                         'load_nodes': {}},
+                        push_undo=push_undo, undo_label='clear')
+
     # ── Shape mode: build from the surfaces and lattice in the panel ───────
     def _shape_surfaces(self):
         """(top, bottom_or_None) compiled from the panel's own fields."""
@@ -300,8 +318,10 @@ class StereoModelMixin:
             self.shape_summit_note.config(text=str(exc))
             return
         try:
-            span = abs(float(self.shape_p1.get()) - float(self.shape_p0.get())) or 1.0
-            cx, cy = float(self.shape_pole_x.get()), float(self.shape_pole_y.get())
+            span = abs(self._shape_num(self.shape_p1, 'x to')
+                       - self._shape_num(self.shape_p0, 'x from')) or 1.0
+            cx = self._shape_num(self.shape_pole_x, 'pole x')
+            cy = self._shape_num(self.shape_pole_y, 'pole y')
         except (tk.TclError, ValueError):
             self.shape_summit_note.config(text='Enter a numeric range and pole first.')
             return
@@ -333,14 +353,18 @@ class StereoModelMixin:
         self.shape_status.config(text='')
         try:
             top, bottom = self._shape_surfaces()
-            p_range = (float(self.shape_p0.get()), float(self.shape_p1.get()))
-            q_range = (float(self.shape_q0.get()), float(self.shape_q1.get()))
-            pole = (float(self.shape_pole_x.get()), float(self.shape_pole_y.get()))
+            p_range = (self._shape_num(self.shape_p0, 'x from'),
+                       self._shape_num(self.shape_p1, 'x to'))
+            q_range = (self._shape_num(self.shape_q0, 'y from'),
+                       self._shape_num(self.shape_q1, 'y to'))
+            pole = (self._shape_num(self.shape_pole_x, 'pole x'),
+                    self._shape_num(self.shape_pole_y, 'pole y'))
             mesh = sg.custom_surface_lattice(
                 top, bottom, coord=self.shape_coord.get(),
                 lattice=self.shape_lattice.get(), p_range=p_range, q_range=q_range,
                 n1=int(self.shape_n1.get()), n2=int(self.shape_n2.get()),
-                depth=float(self.shape_depth.get()), pole=pole)
+                depth=float(self.shape_depth.get()), pole=pole,
+                pattern=self.shape_pattern.get())
             # The plan rule runs AFTER the lattice, not instead of it: the
             # generators lay out a rectangle because two ranges cannot
             # describe anything else, and the cut is what turns that
@@ -743,6 +767,17 @@ class StereoModelMixin:
 
     # ── analysis ─────────────────────────────────────────────────────────────
     def _analyze(self):
+        if not self.nodes:
+            # Without this the boundary-condition check answers first and
+            # says the structure is free to move as a rigid body, which is
+            # true of nothing at all but is not what went wrong.
+            self.results = None
+            self.member_checks = None
+            self.err = 'Nothing is built yet.'
+            messagebox.showinfo('Analyze', 'There is nothing to analyze yet. '
+                                           'Build a grid from Generate, or a '
+                                           'surface from Shape.')
+            return
         loads = self._all_loads()
         res, err = sm.analyze(self.nodes, self.members, loads,
                               self._active_supports(), panels=self.panels,

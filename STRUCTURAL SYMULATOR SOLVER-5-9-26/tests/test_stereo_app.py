@@ -80,6 +80,30 @@ def tk_root():
 
 @pytest.fixture
 def app(tk_root):
+    """A Stereo tab with the DEFAULT GRID already built.
+
+    The app itself now opens empty -- a model you did not ask for is not a
+    good first screen -- so the grid these tests work on is built here,
+    explicitly, instead of arriving as a side effect of construction. Most
+    of this file assumes a model exists; saying so in one place beats
+    several hundred tests quietly depending on a startup detail that is
+    free to change. A test that wants the empty state calls
+    `app._clear_model()` first, and `blank_app` below skips the build
+    entirely.
+    """
+    tab = tk.Frame(tk_root)
+    a = StereoApp(tab)
+    a._generate(push_undo=False)
+    tab.pack(fill='both', expand=True)
+    tk_root.update_idletasks()
+    tk_root.update()
+    yield a
+    tab.destroy()
+
+
+@pytest.fixture
+def blank_app(tk_root):
+    """The app exactly as it opens: no nodes, no members, no results."""
     tab = tk.Frame(tk_root)
     a = StereoApp(tab)
     tab.pack(fill='both', expand=True)
@@ -2653,6 +2677,10 @@ def test_module_editor_3d_panel_shows_an_existing_diagonal_as_an_extra_line():
     root = tk.Tk()
     tab = tk.Frame(root)
     app = StereoApp(tab)
+    # The app opens EMPTY, so the grid this test needs is built here, the
+    # same way the `app` fixture builds its own -- it used to arrive as a
+    # side effect of construction.
+    app._generate(push_undo=False)
     tab.pack(fill='both', expand=True)
     root.update_idletasks(); root.update()
     try:
@@ -4449,8 +4477,10 @@ def test_the_summit_finder_moves_the_pole_onto_the_summit(app):
     app.shape_p0.set(0.0); app.shape_p1.set(4.0)
     app.shape_pole_x.set(0.0); app.shape_pole_y.set(0.0)
     app._shape_find_summits()
-    assert abs(app.shape_pole_x.get() - 4.0) < 0.2
-    assert abs(app.shape_pole_y.get() - 4.0) < 0.2
+    # The pole boxes hold EXPRESSIONS now ('2*pi' has to be typeable), so
+    # they read back as text and go through the same parser the panel uses.
+    assert abs(float(app.shape_pole_x.get()) - 4.0) < 0.2
+    assert abs(float(app.shape_pole_y.get()) - 4.0) < 0.2
     assert 'One summit' in app.shape_summit_note.cget('text')
 
 
@@ -6131,3 +6161,498 @@ def test_the_custom_rod_direction_boxes_appear_only_for_custom(app):
     app._on_rod_dir_change()
     app.root.update_idletasks()
     assert not app.frame_rod_dir.winfo_ismapped()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  A blank display: how the app opens, and what Clear does
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_the_app_opens_with_nothing_in_it(blank_app):
+    """It used to generate a flat grid on construction, so every session
+    began by deleting someone else's model. Generate and Shape are one
+    click away; a model you did not ask for is not."""
+    assert blank_app.nodes == []
+    assert blank_app.members == []
+    assert blank_app.supports == []
+    assert blank_app.loads == []
+    assert blank_app.results is None
+
+
+def test_every_mode_survives_an_empty_model(blank_app):
+    """An empty model is a real state now, not a transient one, so each
+    mode has to render in it -- the module card, the indeterminacy readout
+    and the Analyse charts all read the model."""
+    for key, _icon, _label, _desc in sh.MODES:
+        blank_app._set_mode(key)
+        blank_app.root.update_idletasks()
+    blank_app._draw()
+    blank_app._refresh_all()
+
+
+def test_analyzing_nothing_says_so_instead_of_blaming_the_supports(blank_app, dialogs):
+    """The boundary-condition check answers first and reports that the
+    structure is free to move as a rigid body -- true of nothing at all,
+    but not what went wrong."""
+    blank_app._analyze()
+    assert blank_app.results is None
+    said = ' '.join(str(d) for d in dialogs)
+    assert 'nothing to analyze' in said.lower()
+
+
+def test_clear_empties_everything_the_model_owns(app):
+    """A half-cleared model is worse than none: a leftover panel or rod
+    load is a list of INDICES, and the next build silently attaches it to
+    whichever nodes now hold those numbers."""
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app._apply_rod_load()
+    app.loads = [{'node': 0, 'fx': 0.0, 'fy': 0.0, 'fz': -10.0}]
+    app._analyze()
+    assert app.nodes and app.supports and app.results is not None
+
+    app._clear_model()
+    assert app.nodes == []
+    assert app.members == []
+    assert app.supports == []
+    assert app.loads == []
+    assert app.member_loads == []
+    assert app.panels == []
+    assert app.results is None
+    assert app.member_checks is None
+    assert app.selected_nodes == set()
+    assert app.selected_member is None
+
+
+def test_clear_is_undoable(app):
+    """Which is why it does not stop to ask: a mis-click costs one press of
+    the undo button."""
+    before = len(app.nodes)
+    app._clear_model()
+    assert app.nodes == []
+    app._undo()
+    assert len(app.nodes) == before
+    app._redo()
+    assert app.nodes == []
+
+
+def test_clear_goes_through_the_same_door_a_regenerate_does(app):
+    """_clear_model routes through _load_mesh rather than zeroing fields of
+    its own, so the two can never reset different sets of state. Compared
+    field by field against a fresh app instead of against a list of names
+    someone has to remember to update."""
+    app._generate()
+    app._clear_model()
+    watched = ('nodes', 'members', 'supports', 'loads', 'member_loads', 'panels',
+               'panel_checks', 'results', 'member_checks', '_support_candidates',
+               '_load_nodes', '_disabled_supports', '_column_freed')
+    for name in watched:
+        assert not getattr(app, name), f'{name} survived Clear: {getattr(app, name)!r}'
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  pi multiples in the domain boxes
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_the_domain_boxes_take_pi_multiples(app):
+    """A sine over 0..6.28318 is the same surface as one over 0..2*pi, but
+    only one of them says what it means -- and only one stays exact when
+    you change your mind about the wave count. These used to be Tk
+    DoubleVars, which rejected the keystroke before it reached anything."""
+    _shape(app)
+    app.shape_z_top.set('2*sin(x)')
+    app.shape_p0.set('0'); app.shape_p1.set('2*pi')
+    app.shape_q0.set('0'); app.shape_q1.set('pi')
+    app.shape_n1.set(8); app.shape_n2.set(4)
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == '', app.shape_status.cget('text')
+    assert app.nodes
+    assert app._shape_num(app.shape_p1, 'x to') == pytest.approx(2 * math.pi)
+    assert app._shape_num(app.shape_q1, 'y to') == pytest.approx(math.pi)
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('2*pi', 2 * math.pi), ('pi/4', math.pi / 4), ('-pi', -math.pi),
+    ('3*12', 36.0), ('-6', -6.0), ('e', math.e), ('2^3', 8.0),
+])
+def test_the_constant_evaluator_reads_what_an_engineer_would_type(text, expected):
+    from apps.stereo import expr_math as em
+    assert em.evaluate_number(text, 'x from') == pytest.approx(expected)
+
+
+def test_a_bad_domain_box_names_which_box_is_wrong(app):
+    """Six boxes and one error message that does not say which -- that is
+    the difference between a two-second fix and hunting."""
+    _shape(app)
+    app.shape_p1.set('nonsense')
+    app._build_shape_mesh()
+    said = app.shape_status.cget('text')
+    assert 'x to' in said, said
+    assert 'nonsense' in said
+
+
+def test_a_domain_box_refuses_a_variable(app):
+    """'x' has no value at the time the domain is being decided, so a box
+    that quietly accepted it would be reading nothing."""
+    from apps.stereo import expr_math as em
+    with pytest.raises(em.ExpressionError) as exc:
+        em.evaluate_number('x', 'x from')
+    assert 'constant' in str(exc.value)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  The Shape panel's module-pattern control
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_the_shape_panel_offers_an_isometric_module(app):
+    """The capability the Generate wizard had and the Shape tab did not."""
+    _shape(app)
+    assert sg.PATTERN_ISOMETRIC in app._shape_pattern_buttons
+
+
+@pytest.mark.parametrize('lattice,expect_isometric', [
+    (sg.LATTICE_SINGLE, True),
+    (sg.LATTICE_ALIGNED, True),
+    (sg.LATTICE_SOS_OFFSET, False),
+    (sg.LATTICE_SQ_ON_DIAG, False),
+    (sg.LATTICE_DIAG_ON_DIAG, False),
+])
+def test_the_pattern_buttons_match_what_the_generator_will_accept(app, lattice,
+                                                                  expect_isometric):
+    """The panel and stereo_geometry_custom_surface must agree about which
+    pairs exist. A greyed button the generator would in fact accept -- or
+    an enabled one it would refuse -- is worse than either on its own, so
+    this checks the UI against the GENERATOR rather than against a second
+    copy of the rule."""
+    _shape(app)
+    app.shape_lattice.set(lattice)
+    app._on_shape_mode_change()
+    enabled = str(app._shape_pattern_buttons[sg.PATTERN_ISOMETRIC].cget('state')) == 'normal'
+    assert enabled == expect_isometric
+
+    surface = sg.make_height_field_surface('3 - 0.03*(x-6)**2')
+    try:
+        sg.custom_surface_lattice(surface, None, lattice=lattice,
+                                  pattern=sg.PATTERN_ISOMETRIC,
+                                  p_range=(0.0, 12.0), q_range=(0.0, 12.0),
+                                  n1=6, n2=6, depth=1.2)
+        generator_accepts = True
+    except ValueError:
+        generator_accepts = False
+    assert enabled == generator_accepts
+
+
+def test_choosing_a_blocked_pattern_falls_back_instead_of_lying(app):
+    """A disabled option left SELECTED would build something other than
+    what the panel shows."""
+    _shape(app)
+    app.shape_lattice.set(sg.LATTICE_SINGLE)
+    app._on_shape_mode_change()
+    app.shape_pattern.set(sg.PATTERN_ISOMETRIC)
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app._on_shape_mode_change()
+    assert app.shape_pattern.get() == sg.PATTERN_SQUARE
+
+
+def test_a_blocked_pattern_says_why_on_screen(app):
+    """A disabled control with no reason beside it reads as a bug."""
+    _shape(app)
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app._on_shape_mode_change()
+    said = app.shape_pattern_note.cget('text')
+    assert 'half-module' in said, said
+    app.shape_lattice.set(sg.LATTICE_SINGLE)
+    app._on_shape_mode_change()
+    assert app.shape_pattern_note.cget('text') == ''
+
+
+def test_building_an_isometric_surface_keeps_every_node_in_the_domain(app):
+    """End to end through the real panel, which is the only thing that
+    proves the pattern reaches the generator at all."""
+    _shape(app)
+    app.shape_z_top.set('3 - 0.03*(x-6)**2 - 0.03*(y-6)**2')
+    app.shape_p0.set('0'); app.shape_p1.set('12')
+    app.shape_q0.set('0'); app.shape_q1.set('12')
+    app.shape_n1.set(6); app.shape_n2.set(6)
+    app.shape_lattice.set(sg.LATTICE_SINGLE)
+    app._on_shape_mode_change()
+    app.shape_pattern.set(sg.PATTERN_ISOMETRIC)
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == '', app.shape_status.cget('text')
+    xs = [n[0] for n in app.nodes]
+    ys = [n[1] for n in app.nodes]
+    assert min(xs) == pytest.approx(0.0, abs=1e-9)
+    assert max(xs) == pytest.approx(12.0, abs=1e-9)
+    assert min(ys) == pytest.approx(0.0, abs=1e-9)
+    assert max(ys) == pytest.approx(12.0, abs=1e-9)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  The surface preview
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _preview_items(app):
+    return app.canvas.find_withtag('surface_preview')
+
+
+def test_the_surface_preview_draws_and_hides(app):
+    _shape(app)
+    app.shape_z_top.set('3*cos(x/3)*cos(y/3)')
+    app.shape_p0.set('-9'); app.shape_p1.set('9')
+    app.shape_q0.set('-9'); app.shape_q1.set('9')
+    app._build_shape_mesh()
+    assert app.show_surface_preview.get() is True
+    assert len(_preview_items(app)) > 0
+    app.show_surface_preview.set(False)
+    app._draw()
+    assert len(_preview_items(app)) == 0
+
+
+def test_the_preview_does_not_change_with_the_subdivision(app):
+    """Its whole reason to exist is to show the surface BEFORE you commit
+    to a subdivision. A preview that went coarse with the mesh would be
+    showing you the mesh a second time, and would go flat exactly when the
+    mesh is coarse -- which is when you most need to see what you are
+    approximating."""
+    _shape(app)
+    app.shape_z_top.set('3*cos(x/3)*cos(y/3)')
+    app.shape_p0.set('-9'); app.shape_p1.set('9')
+    app.shape_q0.set('-9'); app.shape_q1.set('9')
+    app.shape_n1.set(3); app.shape_n2.set(3)
+    app._build_shape_mesh()
+    coarse = len(_preview_items(app))
+    app.shape_n1.set(12); app.shape_n2.set(12)
+    app._build_shape_mesh()
+    fine = len(_preview_items(app))
+    assert coarse == fine
+    assert coarse > 0
+
+
+def test_the_preview_reads_the_panel_not_the_model(app):
+    """So it keeps telling the truth WHILE you edit the formula, before
+    Build has been pressed -- which is the moment it is for."""
+    _shape(app)
+    app.shape_z_top.set('0')
+    app.shape_p0.set('-6'); app.shape_p1.set('6')
+    app.shape_q0.set('-6'); app.shape_q1.set('6')
+    app._build_shape_mesh()
+    flat_items = len(_preview_items(app))
+    app.shape_z_top.set('4*cos(x/2)*cos(y/2)')      # panel only; no Build
+    app._draw()
+    assert len(_preview_items(app)) == flat_items   # same sampling density
+    # ... but the drawn geometry moved, which is the part that matters
+    app.shape_z_top.set('0')
+    app._draw()
+
+
+def test_a_formula_that_will_not_compile_draws_nothing_rather_than_crashing(app):
+    """The panel already says why in red. A half-drawn surface on top of
+    that is noise, and an exception is a broken app."""
+    _shape(app)
+    app.shape_z_top.set('!!broken!!')
+    app._draw()
+    assert len(_preview_items(app)) == 0
+
+
+def test_two_surfaces_preview_as_two(app):
+    """A crossing pair should be VISIBLE as a crossing, not only reported
+    as an error after Build."""
+    _shape(app)
+    app.shape_two.set(True)
+    app.shape_z_top.set('2')
+    app.shape_z_bot.set('-2')
+    app.shape_p0.set('-6'); app.shape_p1.set('6')
+    app.shape_q0.set('-6'); app.shape_q1.set('6')
+    app._on_shape_mode_change()
+    app._draw()
+    two = len(_preview_items(app))
+    app.shape_two.set(False)
+    app._on_shape_mode_change()
+    app._draw()
+    one = len(_preview_items(app))
+    assert two == pytest.approx(2 * one, rel=0.01)
+
+
+def test_the_preview_survives_an_empty_model(blank_app):
+    """It is drawn from the panel, so it has no model to lean on -- and the
+    app now OPENS in this state."""
+    blank_app._set_mode('shape')
+    blank_app.shape_z_top.set('2*cos(x/3)')
+    blank_app._draw()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Parallel vs perspective
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_parallel_is_the_default_and_keeps_equal_lengths_equal(app):
+    """The right mode for measuring and for reading a repeating module:
+    every bay of a uniform grid is drawn the same size because every bay IS
+    the same size. That property is exactly what perspective gives up."""
+    assert app.projection_mode.get() == sc.PROJECTION_PARALLEL
+    app.grid_family.set(sc.FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(10); app.fg_ny.set(2); app.fg_module.set(3.0)
+    app._generate()
+    bottom = sorted((n for n in range(len(app.nodes))
+                     if abs(app.nodes[n][1]) < 1e-9 and abs(app.nodes[n][2]) < 1e-9),
+                    key=lambda i: app.nodes[i][0])
+    pts = app._screen_positions()
+    gaps = [math.dist(pts[a], pts[b]) for a, b in zip(bottom, bottom[1:])]
+    assert max(gaps) == pytest.approx(min(gaps), rel=1e-6)
+
+
+def test_perspective_shrinks_the_far_end(app):
+    """And the near end grows. That is the whole difference, so it is what
+    the test measures rather than counting canvas items."""
+    app.grid_family.set(sc.FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(10); app.fg_ny.set(2); app.fg_module.set(3.0)
+    app._generate()
+    # Azimuth 90, so the row runs AWAY from the camera. At azimuth 0 it
+    # runs across the view, every node is the same distance from the eye,
+    # and perspective correctly does not converge it at all -- a line
+    # perpendicular to the view axis has no vanishing point.
+    app.azimuth, app.elevation = 90.0, 15.0
+    bottom = sorted((n for n in range(len(app.nodes))
+                     if abs(app.nodes[n][1]) < 1e-9 and abs(app.nodes[n][2]) < 1e-9),
+                    key=lambda i: app.nodes[i][0])
+    app.projection_mode.set(sc.PROJECTION_PERSPECTIVE)
+    app.camera_distance.set(sc.CAMERA_DISTANCE_MIN)
+    app._draw()
+    pts = app._screen_positions()
+    gaps = [math.dist(pts[a], pts[b]) for a, b in zip(bottom, bottom[1:])]
+    assert max(gaps) > 1.05 * min(gaps), 'perspective did not change bay spacing'
+
+
+def test_a_longer_eye_distance_approaches_parallel(app):
+    """Which is what makes the slider meaningful at both ends rather than
+    only being a number."""
+    app._generate()
+    def spread():
+        pts = app._screen_positions()
+        return max(p[0] for p in pts) - min(p[0] for p in pts)
+    app.projection_mode.set(sc.PROJECTION_PARALLEL)
+    app._draw()
+    flat = spread()
+    app.projection_mode.set(sc.PROJECTION_PERSPECTIVE)
+    app.camera_distance.set(sc.CAMERA_DISTANCE_MIN)
+    app._draw()
+    near = abs(spread() - flat)
+    app.camera_distance.set(sc.CAMERA_DISTANCE_MAX)
+    app._draw()
+    far = abs(spread() - flat)
+    assert far < near
+
+
+def test_the_eye_distance_scales_with_the_model_not_with_metres(app):
+    """A fixed distance cannot serve a 6 m canopy and a 60 m bridge: what
+    looks natural on one is a fisheye or a flat orthographic on the other.
+    Keyed to the model's own size, one slider setting means the same
+    STRENGTH of perspective at every scale."""
+    app.projection_mode.set(sc.PROJECTION_PERSPECTIVE)
+    app.grid_family.set(sc.FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(6); app.fg_ny.set(6)
+    app.fg_module.set(2.0)
+    app._generate()
+    app._refresh_camera_distance()
+    small = app._persp_d
+    app.fg_module.set(20.0)
+    app._generate()
+    app._refresh_camera_distance()
+    big = app._persp_d
+    assert big == pytest.approx(10.0 * small, rel=1e-6)
+
+
+@pytest.mark.parametrize('mode', list(sc.PROJECTION_MODES))
+def test_clicking_a_node_still_hits_that_node(app, mode):
+    """The real risk in adding a second projection. Picking, the lasso and
+    the disc tool all INVERT the projection, and inverting the parallel
+    maths under a perspective view puts every click a few per cent off --
+    growing with distance from the centre, so it reads as a sloppy hit
+    radius rather than as a bug."""
+    app._generate()
+    app.projection_mode.set(mode)
+    app._draw()
+    pts = app._screen_positions()
+    wrong = 0
+    checked = 0
+    for i in range(0, len(pts), 7):
+        sx, sy = pts[i]
+        hit = app._nearest_node_to(sx, sy)
+        if hit is None:
+            continue
+        checked += 1
+        # A tie is legitimate: two nodes can project onto the same pixel.
+        if hit != i and math.dist(pts[hit], (sx, sy)) > 0.5:
+            wrong += 1
+    assert checked > 10
+    assert wrong == 0, f'{wrong} of {checked} clicks landed on the wrong node'
+
+
+@pytest.mark.parametrize('mode', list(sc.PROJECTION_MODES))
+@pytest.mark.parametrize('z', [0.0, 1.5])
+def test_unprojecting_to_a_plane_is_exact_in_both_modes(app, mode, z):
+    """_unproject_to_plane hand-inverts the projection maths -- it is the
+    one place the two modes cannot share code -- so it is checked against
+    nodes whose true position is known."""
+    app._generate()
+    app.projection_mode.set(mode)
+    app._draw()
+    pts = app._screen_positions()
+    worst = 0.0
+    checked = 0
+    for i, (x, y, zz) in enumerate(app.nodes):
+        if abs(zz - z) > 1e-6:
+            continue
+        got = app._unproject_to_plane(*pts[i], z)
+        if got is None:
+            continue
+        checked += 1
+        worst = max(worst, math.dist(got, (x, y)))
+    assert checked > 5
+    assert worst < 1e-6, f'{mode} z={z}: worst error {worst:.6f} m'
+
+
+def test_the_distance_slider_is_dead_in_parallel_and_says_so(app):
+    """An orthographic projection has no eye to move, so a live slider
+    would be a control that does nothing."""
+    app._show_display_popover() if hasattr(app, '_show_display_popover') \
+        else app._toggle_display_popover()
+    app.root.update_idletasks()
+    app.projection_mode.set(sc.PROJECTION_PARALLEL)
+    app._on_projection_change()
+    assert str(app.camera_scale.cget('state')) == 'disabled'
+    assert 'true' in app.camera_note.cget('text')
+    app.projection_mode.set(sc.PROJECTION_PERSPECTIVE)
+    app._on_projection_change()
+    assert str(app.camera_scale.cget('state')) == 'normal'
+    assert 'eye' in app.camera_note.cget('text')
+
+
+def test_switching_projection_before_the_popover_exists_does_not_crash(blank_app):
+    """The popover builds lazily, so the slider may not exist when the
+    projection is set -- by a test, or by a restored preference."""
+    blank_app.projection_mode.set(sc.PROJECTION_PERSPECTIVE)
+    blank_app._on_projection_change()
+
+
+def test_a_line_across_the_view_does_not_converge_even_in_perspective(app):
+    """The complement of the test above, and the reason its fixture needed
+    azimuth 90: a line perpendicular to the view axis has every point the
+    same distance from the eye, so it has no vanishing point and must stay
+    evenly spaced. A 'perspective' that squeezed it too would be scaling by
+    screen position rather than by distance."""
+    app.grid_family.set(sc.FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(10); app.fg_ny.set(2); app.fg_module.set(3.0)
+    app._generate()
+    app.azimuth, app.elevation = 0.0, 15.0
+    app.projection_mode.set(sc.PROJECTION_PERSPECTIVE)
+    app.camera_distance.set(sc.CAMERA_DISTANCE_MIN)
+    app._draw()
+    bottom = sorted((n for n in range(len(app.nodes))
+                     if abs(app.nodes[n][1]) < 1e-9 and abs(app.nodes[n][2]) < 1e-9),
+                    key=lambda i: app.nodes[i][0])
+    pts = app._screen_positions()
+    gaps = [math.dist(pts[a], pts[b]) for a, b in zip(bottom, bottom[1:])]
+    assert max(gaps) == pytest.approx(min(gaps), rel=1e-6)

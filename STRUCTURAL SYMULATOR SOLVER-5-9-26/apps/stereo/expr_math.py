@@ -202,3 +202,43 @@ def compile_expression(expr, var_names):
             raise ExpressionError(f'expression is undefined at {args}: {exc}')
 
     return fn
+
+
+def evaluate_number(expr, what='value'):
+    """A CONSTANT expression as a float: '2*pi', 'pi/4', '3*12', '-6'.
+
+    The domain boxes used to be plain Tk DoubleVars, which meant Tk itself
+    rejected every keystroke that was not already a number -- you could not
+    even type '2*pi', let alone use it. That is a real limitation for the
+    trigonometric surfaces this tab exists to build: a sine sampled over
+    0..6.28318 is the same surface as one sampled over 0..2*pi, but only
+    one of them says what it means, and only one of them stays exact when
+    you change your mind about the wave count.
+
+    Compiled through the same whitelist every other expression here uses
+    (so `pi` and `e` are already in scope and nothing else is), with NO
+    variables declared -- which is exactly what makes it a constant: a box
+    that quietly accepted 'x' would be reading a variable that has no value
+    at the time the domain is being decided.
+
+    Raises ExpressionError naming the field, so the panel can say which box
+    is wrong rather than just that something is.
+    """
+    text = (expr or '').strip() if isinstance(expr, str) else expr
+    if isinstance(text, (int, float)):
+        return float(text)
+    if not text:
+        raise ExpressionError(f'{what} is empty')
+    try:
+        return float(compile_expression(text, ())())
+    except ExpressionError as exc:
+        msg = str(exc)
+        if 'unknown name' in msg:
+            # The generic message ends '(expected one of )' here, because
+            # NO variables are declared -- true, and unhelpful. Say what is
+            # actually allowed instead.
+            name = msg.split("'")[1] if "'" in msg else 'that'
+            raise ExpressionError(f"{what}: '{name}' is not a number. This box "
+                                  f'takes a constant -- digits, pi, e and the '
+                                  f'operators between them.')
+        raise ExpressionError(f'{what}: {msg}')

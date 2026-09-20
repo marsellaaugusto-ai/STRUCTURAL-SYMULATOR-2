@@ -2874,3 +2874,150 @@ def test_the_billow_shell_stands_on_its_four_edge_midpoint_lows_alone():
     assert err is None, err
     worst = max(abs(c) for nr in res['node_res'] for c in (nr['ux'], nr['uy'], nr['uz']))
     assert worst < 200.0, f'{worst:.0f} mm under self weight alone'
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Isometric module on a Cartesian domain
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _flat_surface():
+    return sg.make_height_field_surface('0')
+
+
+def _dome_surface():
+    return sg.make_height_field_surface('3 - 0.03*(x-6)**2 - 0.03*(y-6)**2')
+
+
+def test_the_isometric_lattice_stays_inside_the_domain_it_was_given():
+    """The whole point of the rewrite. _domain_lattice's oblique-basis
+    isometric SHEARS: on a 12 m domain divided six ways it runs 7 m past
+    the right edge and leaves a matching hole on the left, putting 19 of
+    its 56 nodes outside the rectangle that was asked for. The staggered
+    form keeps every node in."""
+    mesh = sg.isometric_lattice(_flat_surface(), p_range=(0.0, 12.0),
+                                q_range=(0.0, 12.0), n1=6)
+    xs = [n[0] for n in mesh['nodes']]
+    ys = [n[1] for n in mesh['nodes']]
+    assert min(xs) == pytest.approx(0.0, abs=1e-9)
+    assert max(xs) == pytest.approx(12.0, abs=1e-9)
+    assert min(ys) == pytest.approx(0.0, abs=1e-9)
+    assert max(ys) == pytest.approx(12.0, abs=1e-9)
+
+
+def test_the_old_oblique_isometric_really_did_leave_the_domain():
+    """Kept as the reason the staggered form exists. _domain_lattice is
+    still right for a lattice allowed to BE a parallelogram (a polar sweep,
+    say); it is wrong for a plan that has to stay a rectangle."""
+    from apps.stereo.stereo_geometry_custom_surface import _domain_lattice
+    grid, _n1, _n2, _wrap = _domain_lattice('cartesian', 'isometric',
+                                            (0.0, 12.0), (0.0, 12.0), 6, 6)
+    ps = [p for p, _q in grid.values()]
+    assert max(ps) > 12.0 + 1.0, 'the oblique basis is expected to overshoot'
+    outside = sum(1 for p, q in grid.values()
+                  if not (-1e-9 <= p <= 12.0 + 1e-9 and -1e-9 <= q <= 12.0 + 1e-9))
+    assert outside > 0
+
+
+def test_every_isometric_row_starts_and_ends_on_the_domain_edge():
+    """What makes both side boundaries straight lines -- which is what lets
+    a plan-shape rule, a support line or an edge beam follow them."""
+    rows, q_values = sg.staggered_rows(0.0, 12.0, 0.0, 9.0, 6)
+    assert len(rows) == len(q_values)
+    for row in rows:
+        assert row[0] == pytest.approx(0.0, abs=1e-12)
+        assert row[-1] == pytest.approx(12.0, abs=1e-12)
+    # odd rows carry the half-cell offset INSIDE the row
+    assert len(rows[0]) == 7          # n1 + 1
+    assert len(rows[1]) == 8          # n1 + 2: both edges plus the staggered run
+
+
+def test_the_isometric_triangles_are_equilateral_away_from_the_edges():
+    """Not a claim about every member: the two boundary columns carry a
+    half-width cell by construction (that is the documented price of a
+    straight edge). Everything else should be within a few percent."""
+    mesh = sg.isometric_lattice(_flat_surface(), p_range=(0.0, 12.0),
+                                q_range=(0.0, 12.0), n1=6)
+    cell = 12.0 / 6
+    lengths = []
+    for m in mesh['members']:
+        a, b = mesh['nodes'][m['a']], mesh['nodes'][m['b']]
+        lengths.append(math.dist(a, b))
+    near = [L for L in lengths if abs(L - cell) < 0.02 * cell]
+    assert len(near) > 0.7 * len(lengths), \
+        f'only {len(near)} of {len(lengths)} members are within 2% of the cell'
+
+
+def test_the_isometric_tributary_areas_sum_to_the_domain_exactly():
+    mesh = sg.isometric_lattice(_flat_surface(), p_range=(0.0, 12.0),
+                                q_range=(0.0, 9.0), n1=6)
+    assert sum(mesh['load_nodes'].values()) == pytest.approx(12.0 * 9.0, rel=1e-9)
+
+
+@pytest.mark.parametrize('double', [False, True])
+def test_an_isometric_lattice_actually_analyzes(double):
+    """A single layer needs NO web system here: the triangular module is
+    already fully braced in its own surface, which is the practical reason
+    to reach for isometric at all."""
+    mesh = sg.isometric_lattice(_dome_surface(), p_range=(0.0, 12.0),
+                                q_range=(0.0, 12.0), n1=6, depth=1.2, double=double)
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+    assert err is None, err
+    worst = max(abs(c) for nr in res['node_res'] for c in (nr['ux'], nr['uy'], nr['uz']))
+    assert worst < 200.0
+
+
+def test_an_isometric_double_layer_is_braced_against_racking():
+    """Posts alone leave the two layers free to slide sideways relative to
+    each other -- every post is parallel to every other one. The diagonal
+    webs are what stop it, so they have to be there."""
+    mesh = sg.isometric_lattice(_dome_surface(), p_range=(0.0, 12.0),
+                                q_range=(0.0, 12.0), n1=6, depth=1.2, double=True)
+    roles = {m.get('role') for m in mesh['members']}
+    assert 'web' in roles
+    assert 'web_diag' in roles
+
+
+@pytest.mark.parametrize('lattice', [sg.LATTICE_SOS_OFFSET, sg.LATTICE_SQ_ON_DIAG,
+                                     sg.LATTICE_DIAG_ON_DIAG])
+def test_an_offset_lattice_refuses_an_isometric_module_with_the_reason(lattice):
+    """Refused, not approximated. An offset lattice has to offset INTO a
+    half-module, and a triangular grid has no such thing -- the centre of a
+    triangle is not a lattice point of the triangle below it."""
+    with pytest.raises(ValueError) as exc:
+        sg.custom_surface_lattice(_dome_surface(), None, lattice=lattice,
+                                  pattern=sg.PATTERN_ISOMETRIC,
+                                  p_range=(0.0, 12.0), q_range=(0.0, 12.0), n1=6, n2=6)
+    assert 'half-module' in str(exc.value)
+
+
+@pytest.mark.parametrize('lattice,pattern', [
+    (sg.LATTICE_SINGLE, sg.PATTERN_SQUARE),
+    (sg.LATTICE_SINGLE, sg.PATTERN_DIAGONAL),
+    (sg.LATTICE_SINGLE, sg.PATTERN_ISOMETRIC),
+    (sg.LATTICE_ALIGNED, sg.PATTERN_SQUARE),
+    (sg.LATTICE_ALIGNED, sg.PATTERN_DIAGONAL),
+    (sg.LATTICE_ALIGNED, sg.PATTERN_ISOMETRIC),
+    (sg.LATTICE_SOS_OFFSET, sg.PATTERN_SQUARE),
+    (sg.LATTICE_SQ_ON_DIAG, sg.PATTERN_SQUARE),
+    (sg.LATTICE_DIAG_ON_DIAG, sg.PATTERN_SQUARE),
+])
+def test_every_buildable_lattice_and_pattern_pair_solves(lattice, pattern):
+    mesh = sg.custom_surface_lattice(_dome_surface(), None, lattice=lattice,
+                                     pattern=pattern, p_range=(0.0, 12.0),
+                                     q_range=(0.0, 12.0), n1=6, n2=6, depth=1.2)
+    xs = [n[0] for n in mesh['nodes']]
+    ys = [n[1] for n in mesh['nodes']]
+    assert min(xs) >= -1e-9 and max(xs) <= 12.0 + 1e-9
+    assert min(ys) >= -1e-9 and max(ys) <= 12.0 + 1e-9
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    _res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+    assert err is None, f'{lattice} x {pattern}: {err}'

@@ -160,7 +160,12 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
 
         self._build_ui()
         self.init_units(repaint=self._on_units_changed)
-        self._generate(push_undo=False)
+        # The app opens EMPTY. It used to generate a flat grid here, which
+        # meant every session started by deleting someone else's model
+        # before building your own -- and made "what am I looking at?" the
+        # first question rather than the last. Generate and Shape are one
+        # click away; a model you did not ask for is not.
+        self._clear_model(push_undo=False)
 
     @property
     def selected_node(self):

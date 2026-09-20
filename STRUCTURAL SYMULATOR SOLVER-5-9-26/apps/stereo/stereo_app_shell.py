@@ -139,6 +139,13 @@ class StereoShellMixin:
                   fg=STATUS_OK, relief='raised', bd=1, padx=10, pady=3,
                   command=self._analyze).pack(side='left', padx=(6, 2))
 
+        # Clear sits with Undo, not with Generate: it is the same KIND of
+        # verb (it changes the model and is undoable), and putting it beside
+        # the undo button is what makes it obvious that a mis-click costs
+        # one keystroke rather than a rebuild.
+        tk.Button(tb, text='Clear', font=('Helvetica', 9), relief='raised', bd=1,
+                  padx=9, pady=3, command=self._clear_model).pack(side='left', padx=(10, 2))
+
         tk.Button(tb, text='⟲', font=('Helvetica', 11), relief='raised', bd=1,
                   padx=7, pady=1, command=self._undo).pack(side='left', padx=(8, 1))
         tk.Button(tb, text='⟳', font=('Helvetica', 11), relief='raised', bd=1,

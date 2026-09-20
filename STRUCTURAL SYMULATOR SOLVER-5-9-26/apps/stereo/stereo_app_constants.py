@@ -140,6 +140,35 @@ FILL_DENSITY_DEFAULT = 'Light'
 # needs enough pieces to read as a curve rather than as a two-tone rod --
 # more than the linear joint-to-joint blend does, and a floor rather than a
 # fixed count so a dense model's coarser gradient never flattens it away.
+# The GeoGebra-style preview of the surface the lattice is cut from. Its
+# own fixed density, deliberately NOT the mesh subdivision: the point is to
+# see the surface BEFORE choosing a subdivision, and a preview that went
+# coarse with the mesh would go flat exactly when you most need it.
+# Parallel keeps equal lengths equal on screen; perspective divides by
+# distance. Parallel is the default because it is the right one for
+# measuring and for reading a repeating module.
+PROJECTION_PARALLEL = 'parallel'
+PROJECTION_PERSPECTIVE = 'perspective'
+PROJECTION_MODES = (PROJECTION_PARALLEL, PROJECTION_PERSPECTIVE)
+# Eye distance as a multiple of the model's bounding radius, times ten so
+# the slider can be an integer. 4.0 radii is a normal-looking lens; below
+# about 1.5 it goes fisheye, above about 12 it is indistinguishable from
+# parallel, which is why those are the ends.
+CAMERA_DISTANCE_DEFAULT = 40
+CAMERA_DISTANCE_MIN = 15
+CAMERA_DISTANCE_MAX = 120
+# How close to the eye a point may get before the divide is clamped.
+# Without it, anything the camera has moved past is hurled to infinity or
+# flipped through the origin.
+PERSPECTIVE_MIN_DENOM = 1e-3
+
+SURFACE_PREVIEW_STEPS = 26
+SURFACE_PREVIEW_STIPPLE = 'gray50'
+SURFACE_PREVIEW_LINE = '#1a3b5c'
+# Two tints so a two-surface pair reads as two surfaces. Each runs low to
+# high across the surface's own z range.
+SURFACE_PREVIEW_TINTS = (('#2f6fb0', '#c85a3a'), ('#3f8f6f', '#9a6fc0'))
+
 ROD_FIELD_SEGMENTS = 10
 GRADIENT_SEGMENTS = 8
 GRADIENT_SEGMENTS_DENSE = 4

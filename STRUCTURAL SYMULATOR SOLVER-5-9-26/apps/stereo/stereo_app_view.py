@@ -19,6 +19,7 @@ from apps.stereo import stereo_math as sm
 from apps.stereo.stereo_app_canvas_geom import _point_segment_distance
 from apps.stereo.stereo_app_constants import (
     DOF_LABELS, LASSO_DRAG_THRESHOLD_PX, MEMBER_SEL_HIT_PX,
+    PROJECTION_PERSPECTIVE, PERSPECTIVE_MIN_DENOM,
 )
 
 
@@ -301,19 +302,87 @@ class StereoViewMixin:
         self._draw()
 
     def _project(self, x, y, z):
-        """Rotating orthographic projection: azimuth about the global Z
-        axis, then elevation as a tilt about the resulting horizontal axis.
-        Returns (screen_x_world_units, screen_y_world_units, depth) --
-        depth (bigger = farther from the viewer) is used only for simple
-        draw-order and node-size hinting, not true hidden-line removal."""
+        """Rotating projection: azimuth about the global Z axis, then
+        elevation as a tilt about the resulting horizontal axis.
+
+        Returns (screen_x_world_units, screen_y_world_units, depth), where
+        depth (bigger = farther from the viewer) drives draw order and
+        node-size hinting, not true hidden-line removal.
+
+        PARALLEL (orthographic) is the default and was for a long time the
+        only mode. It keeps equal lengths equal on screen wherever they
+        sit, which is what you want for measuring and for reading a
+        repeating module -- every bay of a grid is drawn the same size
+        because every bay IS the same size.
+
+        PERSPECTIVE divides by distance, so the far end shrinks and
+        parallel chords converge. That is how the eye and a camera see, and
+        it is the honest answer to "how will this actually look" on a long
+        span -- but it makes two equal members different lengths on screen,
+        so it is the wrong mode to measure in. One line of maths, two
+        completely different questions answered.
+        """
         az = math.radians(self.azimuth)
         el = math.radians(self.elevation)
         xr = x * math.cos(az) - y * math.sin(az)
         yr = x * math.sin(az) + y * math.cos(az)
         zr = z
-        y2 = yr * math.cos(el) - zr * math.sin(el)
-        depth = yr * math.sin(el) + zr * math.cos(el)
-        return xr, -depth, y2   # (screen_x, screen_y, depth-for-sorting)
+        y2 = yr * math.cos(el) - zr * math.sin(el)          # toward the viewer
+        drop = yr * math.sin(el) + zr * math.cos(el)        # screen vertical
+        if self.projection_mode.get() == PROJECTION_PERSPECTIVE:
+            d = self._persp_d
+            denom = d + y2
+            if denom < PERSPECTIVE_MIN_DENOM:
+                # Behind, or level with, the eye. Clamping rather than
+                # dividing keeps the point on screen instead of hurling it
+                # to infinity or flipping it through the origin, which is
+                # what an unguarded divide does to anything the camera has
+                # moved past.
+                denom = PERSPECTIVE_MIN_DENOM
+            scale = d / denom
+            return xr * scale, -drop * scale, y2
+        return xr, -drop, y2   # (screen_x, screen_y, depth-for-sorting)
+
+    def _on_projection_change(self):
+        """Grey the distance slider in parallel mode, where it means
+        nothing -- an orthographic projection has no eye to move."""
+        perspective = self.projection_mode.get() == PROJECTION_PERSPECTIVE
+        # The popover builds itself lazily the first time it is opened, so
+        # these two may not exist yet -- and the projection can be set
+        # before then, by a test or by a restored preference.
+        scale = getattr(self, 'camera_scale', None)
+        if scale is not None:
+            scale.config(state='normal' if perspective else 'disabled')
+        note = getattr(self, 'camera_note', None)
+        if note is not None:
+            note.config(text=(f'eye {self.camera_distance.get() / 10.0:.1f}x the model'
+                              if perspective else 'no eye position: sizes are true'))
+        self._draw()
+
+    def _refresh_camera_distance(self):
+        """Set the eye distance for perspective, as a MULTIPLE of the
+        model's own size rather than a fixed number of metres.
+
+        A fixed distance cannot serve both a 6 m canopy and a 60 m bridge:
+        whatever looks natural on one is either a fisheye or a flat
+        orthographic on the other. Keyed to the model's bounding radius,
+        one slider setting means the same STRENGTH of perspective at every
+        scale, which is what the setting is actually for.
+
+        Recomputed rather than cached: it is one O(n) pass over the nodes,
+        and the three call sites (_draw, _screen_points, _unproject_to_plane)
+        already make one. A cache would have to be invalidated by every
+        node move -- the module editor, a column, a rebuilt mesh -- and a
+        stale camera silently mis-places every click.
+        """
+        if not self.nodes:
+            self._persp_d = 1.0
+            return
+        xs = [n[0] for n in self.nodes]
+        ys = [n[1] for n in self.nodes]
+        zs = [n[2] for n in self.nodes]
+        radius = max((max(xs) - min(xs)), (max(ys) - min(ys)), (max(zs) - min(zs))) / 2.0
+        self._persp_d = max(1e-3, radius * self.camera_distance.get() / 10.0)
 
     PX_PER_M = 20.0
 
@@ -358,6 +427,7 @@ class StereoViewMixin:
         with "Show deformed" on: that overlay is an ADDITIONAL green copy
         drawn in parallel, not a replacement, so interaction always targets
         the real structure."""
+        self._refresh_camera_distance()
         proj = [self._project(x, y, z) for x, y, z in self.nodes]
         xs = [p[0] for p in proj]; ys = [p[1] for p in proj]
         cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
@@ -385,6 +455,7 @@ class StereoViewMixin:
         el = math.radians(self.elevation)
         if abs(math.sin(el)) < 1e-6:
             return None
+        self._refresh_camera_distance()
         proj = [self._project(x, y, zz) for x, y, zz in self.nodes]
         if not proj:
             return None
@@ -394,9 +465,34 @@ class StereoViewMixin:
         wx, wy = self.zc.s2w(sx, sy)
         px = wx / self.PX_PER_M + cx
         py = wy / self.PX_PER_M + cy
-        xr = px
-        yr = (-py - z * math.cos(el)) / math.sin(el)
         az = math.radians(self.azimuth)
+        if self.projection_mode.get() == PROJECTION_PERSPECTIVE:
+            # Perspective scales BOTH screen axes by d/(d + y2), and y2
+            # itself depends on yr -- so screen y cannot be inverted one
+            # axis at a time the way the parallel case can. Substituting
+            # the scale into py and solving the resulting linear equation
+            # for yr:
+            #
+            #   py = -(yr*sin el + z*cos el) * d / (d + yr*cos el - z*sin el)
+            #   =>  yr = (py*z*sin el - d*z*cos el - py*d)
+            #            / (py*cos el + d*sin el)
+            #
+            # Inverting the PARALLEL maths here instead would put every
+            # click a few per cent off, growing with distance from the
+            # centre -- the kind of wrong that looks like a sloppy hit
+            # radius rather than a bug.
+            d = self._persp_d
+            denom = py * math.cos(el) + d * math.sin(el)
+            if abs(denom) < 1e-9:
+                return None
+            yr = (py * z * math.sin(el) - d * z * math.cos(el) - py * d) / denom
+            scale_denom = d + yr * math.cos(el) - z * math.sin(el)
+            if abs(scale_denom) < PERSPECTIVE_MIN_DENOM:
+                return None
+            xr = px * scale_denom / d
+        else:
+            xr = px
+            yr = (-py - z * math.cos(el)) / math.sin(el)
         x = xr * math.cos(az) + yr * math.sin(az)
         y = -xr * math.sin(az) + yr * math.cos(az)
         return x, y

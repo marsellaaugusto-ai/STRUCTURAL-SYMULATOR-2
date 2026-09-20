@@ -58,9 +58,9 @@
 <circle cx="108.0" cy="136.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
 <text x="119.00" y="139.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Bending moment  m₁ / m₂</text>
 <circle cx="108.0" cy="152.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
-<text x="119.00" y="155.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Von Mises, top fibre</text>
+<text x="119.00" y="155.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Wood–Armer design moments</text>
 <circle cx="108.0" cy="168.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
-<text x="119.00" y="171.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Von Mises, bottom fibre</text>
+<text x="119.00" y="171.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Required steel  As, cm²/m</text>
 <circle cx="108.0" cy="184.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
 <text x="119.00" y="187.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Utilisation (code check)</text>
 <circle cx="108.0" cy="200.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>

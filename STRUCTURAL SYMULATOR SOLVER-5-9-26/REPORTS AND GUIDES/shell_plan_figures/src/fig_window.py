@@ -68,8 +68,8 @@ o.append(U.line(PX + 12, TOP + 32, PX + PANW - 12, TOP + 32, SOFT, 1))
 gy = TOP + 44
 o += U.group(PX + 12, gy, PANW - 24, 158, 'Colour the shell by')
 o.append(S.text(PX + 232, gy + 11, '?  guide', 9.6, BLUE, weight='700', family='sans'))
-items = [('Membrane force  N₁ / N₂', True), ('Bending moment  m₁ / m₂', False),
-         ('Von Mises, top fibre', False), ('Von Mises, bottom fibre', False),
+items = [('Membrane force  N\u2081 / N\u2082', True), ('Bending moment  m\u2081 / m\u2082', False),
+         ('Wood\u2013Armer design moments', False), ('Required steel  As, cm\u00b2/m', False),
          ('Utilisation (code check)', False), ('Thickness  t', False),
          ('Deflection', False), ('Principal directions', False)]
 for k, (s, on) in enumerate(items):

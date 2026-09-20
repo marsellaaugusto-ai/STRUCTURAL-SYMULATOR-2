@@ -20,6 +20,7 @@
     --ok-wash:#e8f2ec;
     --ask:#7b2fa8;           /* a question that needs your answer */
     --ask-wash:#f3ecf8;
+    --stop:#b3271e;          /* a verdict of: this goes */
 
     --measure:35rem;
     --plate-max:1140px;
@@ -33,6 +34,7 @@
       --warn:#e08a54; --warn-wash:#2a2018;
       --ok:#74b892; --ok-wash:#18241e;
       --ask:#bb84e0; --ask-wash:#221a2b;
+      --stop:#e8776b;
     }
   }
   :root[data-theme="dark"]{
@@ -42,6 +44,7 @@
     --warn:#e08a54; --warn-wash:#2a2018;
     --ok:#74b892; --ok-wash:#18241e;
     --ask:#bb84e0; --ask-wash:#221a2b;
+    --stop:#e8776b;
   }
 
   *{box-sizing:border-box}
@@ -103,6 +106,9 @@
   td{padding:7px 12px 7px 0;border-bottom:1px solid var(--rule-soft);vertical-align:top;
      color:var(--ink-2)}
   td:first-child{color:var(--ink);font-weight:600;white-space:nowrap}
+  td.keep{color:var(--ok);font-weight:700;white-space:nowrap}
+  td.kill{color:var(--stop);font-weight:700;white-space:nowrap}
+  td.back{color:var(--warn);font-weight:700;white-space:nowrap}
 
   .note{border-left:3px solid var(--rule);padding:2px 0 2px 16px;margin:18px 0;
         max-width:var(--measure)}
@@ -143,89 +149,158 @@
 <div class="wrap">
 
 <header class="mast">
-  <div class="eyebrow">Plan · not yet built · nothing has been changed</div>
+  <div class="eyebrow">Plan · revised 2026-09-20 · nothing in the app has been changed</div>
   <h1>Rebuilding the Shell tab</h1>
   <p class="standfirst">What I would change, why, and what it would look like — written before a
   line of it exists, so that if I have misunderstood you, it costs a read rather than a week.</p>
   <div class="byline">
     <span>2026-09-20</span><span>branch <code>claude/shell-simulator-overhaul-rogb8k</code></span>
-    <span>9 questions at the end</span>
+    <span>rev. 2 — rewritten against the earlier sessions</span>
   </div>
 </header>
 
 <section>
-  <h2><span class="num">0</span>Before anything else: I cannot find the old Shell app</h2>
-  <p>This is the first thing you need to know, because it decides how the rest is done.
-  There is no shell simulator in this repository. I looked in every place one could be:</p>
+  <h2><span class="num">0</span>Where the Shell app actually is</h2>
+  <p>The first draft of this plan said flatly that there is no shell simulator anywhere. That was
+  true of <i>this repository</i> and wrong about the project. Here is the corrected picture.</p>
+  <h4>What I found</h4>
   <ul>
-    <li>every file on <code>main</code>, on <code>claude/stereo-ui-rebuild</code>, on
-      <code>claude/stereo-structure-calculator-lqgosu</code>, and on this branch;</li>
-    <li>every file that ever existed in the history, including deleted ones;</li>
-    <li>the three zips at the repository root, and both delivery zips on the Stereo branch.</li>
+    <li>A Claude Code session titled <b>“Shell structural calculator”</b> ran on
+      <b>14–15 September</b>. It has <b>no git repository attached</b> — it ran against a folder on
+      your own computer. That is why none of its work is in this repo, and why no branch, no zip
+      and no deleted file in the history contains it. The session is currently unreachable
+      (“computer unreachable”, logged 15 September), so I cannot reach into it either.</li>
+    <li>The <b>Structural Solver Reading List</b> of 18 September — one of the pages those
+      sessions published — names the project's tabs in its footer as
+      <span class="path">Truss · Beam · Arch · Cable · Cable Web · Perforated Beam · Stereo
+      Structure · Shell</span>. Eight. The <code>main.py</code> in this repository wires up
+      <b>seven</b>.</li>
+    <li>A third session, <b>“App documentation review”</b> (12 September), ended by asking you
+      whether to <i>“sync the repo to the zip's state”</i> — and never got an answer. So the
+      repository has been behind your working folder since at least that date.</li>
   </ul>
-  <p>The tabs that exist are Truss, Beam, Arch, Cable, Cable Web, Perforated Beam and Stereo.
-  Cable Web is a cable net, not a shell — it has no thickness, no section cuts and no colour list,
-  so it is not the app you are describing either.</p>
   <div class="note warn">
-    <h4>What I need from you</h4>
-    <p>Send me the old Shell app — a zip, a folder, or a paste of the main file is enough.
-    I want it not because the plan below depends on it, but because your solver already
-    encodes decisions I would otherwise have to guess at: what the automatic thickening rule
-    actually is, what material and code it checks against, what the section cut currently
-    computes. Rebuilding those from scratch would quietly change your numbers, and a
-    simulator whose answers move for no stated reason is worse than one with an awkward
-    section list.</p>
+    <h4>So the Shell tab is not new, and this is not a new tab</h4>
+    <p>It exists, it is the eighth tab of the same program, and your working folder is the copy
+    of record. This repository is a snapshot that predates it. That changes the job from “build a
+    Shell tab” to <b>“rebuild the interface of an existing Shell tab, and bring the working folder
+    into the repository so the two stop diverging.”</b></p>
   </div>
-  <p>Everything below is written so that it holds either way. If the old app arrives, I port
-  its solver and its thickening rule unchanged and spend the whole effort on the interface.
-  If it does not, I build the solver too, and §10 says exactly what it would be — but then
-  I need your answers to questions 4, 5 and 6 before I can start, because I would be choosing
-  physics on your behalf.</p>
+  <h4>What I could and could not read</h4>
+  <p>I have no way to read your Claude conversations — there is no tool for it in this session,
+  and none of the six published pages is called <span class="path">CLAUDE CARPETA DE TRABAJO</span>.
+  What I could reach, and have read, is what those conversations <i>published</i>:</p>
+  <ul>
+    <li><b>Structural Solver Reading List</b> (18 Sep) — thirty-four open-source projects sorted by
+      which tab they would improve. Its “Shell (RC) tab” section is the single most informative
+      thing I have about your shell app, and §1 below is built from it.</li>
+    <li><b>Rebuilding the Stereo Interface</b> (19 Sep) — the plan you said worked. This document
+      now follows its shape: the ambiguity settled first, then the faults, then the proposal, then
+      a full inventory with a verdict per feature, then phases, then questions.</li>
+    <li><b>Laying a Grid on a Surface</b>, <b>Stereo Feature Index</b>, <b>Stereo Voronoi
+      Assessment</b> — all Stereo, all already reflected in the repository's own guides.</li>
+  </ul>
+  <p>If there is anything else in that folder I should be working from — notes, a spec, an earlier
+  plan for the Shell tab — paste it or send the file, and I will fold it in the same way.</p>
 </section>
 
 <section>
-  <h2><span class="num">1</span>What you asked for, in my words</h2>
-  <p>If any row of this table is not what you meant, stop reading there and tell me — the
-  rest of the plan is built on it.</p>
+  <h2><span class="num">1</span>What I know about your Shell tab without having seen it</h2>
+  <p>Every line of this table comes from the reading list, which was written while the Shell tab
+  was in front of whoever wrote it. It is strong evidence, but it is second-hand: it is a
+  description of the code, not the code. Each row says how I would confirm it in one minute once
+  the folder arrives.</p>
+  <div class="tbl"><table>
+    <tr><th>What it says</th><th>The words it says it in</th><th>Confirm by</th></tr>
+    <tr><td>It is a <b>reinforced-concrete</b> shell tab</td>
+        <td>the section is headed “Shell (RC) tab”, and it opens with a program that “designs
+        reinforced-concrete shell reinforcement”</td>
+        <td>the material constants in the solver</td></tr>
+    <tr><td>Its element is <b>MITC4</b></td>
+        <td>“OpenSees … whose shell element is called <code>ShellMITC4</code> — <i>the same
+        formulation the Shell tab uses</i>”</td>
+        <td>the element routine's name</td></tr>
+    <tr><td>Its plan <b>must be a rectangle</b></td>
+        <td>“the mesher that would let the Shell tab handle a plan that is not a rectangle”, and of
+        Gmsh: “this is what breaks the rectangular-plan limit — circles, polygons and holes”</td>
+        <td>the mesh generator's signature</td></tr>
+    <tr><td>It has a code-check layer in <code>shell_codes.py</code>, kept apart from the solver</td>
+        <td>“shows a code-check layer kept apart from the solver — the same idea as
+        <code>shell_codes.py</code>, for steel”</td>
+        <td>the file is either there or it is not</td></tr>
+    <tr><td>It has <b>edge beams</b>, with a preliminary check</td>
+        <td>“would turn the Shell tab's <i>preliminary edge-beam check</i> into a real N–M design”</td>
+        <td>the edge-beam function</td></tr>
+    <tr><td>It has <b>no form-finding</b></td>
+        <td>“the piece the Shell tab does not have — finding the shape instead of checking it”</td>
+        <td>—</td></tr>
+    <tr><td>Hypars are a case it is used on</td>
+        <td>“the best second opinion available on a hypar”</td>
+        <td>its examples</td></tr>
+    <tr><td>It shares <code>units.py</code> and the app's conventions</td>
+        <td>it is listed as one of the eight tabs of the same program</td>
+        <td>its imports</td></tr>
+  </table></div>
+  <h4>Four things this changes in the plan</h4>
+  <ol>
+    <li><b>The colour analysis is a reinforced-concrete list, not a steel one.</b> Von Mises on a
+    fibre is the wrong headline for an RC shell. What you design from is Wood–Armer design moments
+    and required steel per metre, top and bottom, in each direction — so those are the modes that
+    get rows, and §8 is rewritten around them.</li>
+    <li><b>The rectangular-plan limit is the biggest single gain available</b>, and §7 now treats
+    it as the point of bringing the wizard over rather than as a side effect.</li>
+    <li><b>Edge beams already exist.</b> The first draft said the plan would not include them.
+    Wrong: they are there, and the work is to draw them, cut them in section, and later upgrade
+    their check — not to invent them.</li>
+    <li><b>The element question is already answered.</b> MITC4 is what you have and what I would
+    have chosen; the only open part is whether triangles are needed too, which depends on the
+    meshing decision in §7.</li>
+  </ol>
+</section>
+
+<section>
+  <h2><span class="num">2</span>What you asked for, in my words</h2>
+  <p>If any row of this table is not what you meant, stop reading there and tell me — the rest of
+  the plan is built on it.</p>
   <div class="tbl"><table>
     <tr><th>You said</th><th>I understood</th></tr>
     <tr><td>An interface like the Stereo calculator</td>
-        <td>The same window: a mode rail down the left, exactly one mode's panel on screen,
-        a canvas that gets ~79% of the width, cards floating on the canvas, a status bar that
-        always says what the last solve found. Alt+1…9 to jump between modes.</td></tr>
+        <td>The same window: a mode rail down the left, exactly one mode's panel on screen, a
+        canvas that gets about three quarters of the width, cards floating on the canvas, a status
+        bar that always says what the last solve found. Alt+1…9 to jump between modes.</td></tr>
     <tr><td>Design other types of structures</td>
-        <td>Not one shell shape but a family: dome, barrel vault, hypar, cone, groin vault,
-        folded plate, flat slab — plus any surface you can write as <code>z = f(x, y)</code>
-        or parametrically, cut to any plan shape.</td></tr>
+        <td>Not one shell shape but a family: dome, barrel vault, hypar, cone, groin vault, folded
+        plate, flat slab — plus any surface you can write as <code>z = f(x, y)</code> or
+        parametrically, cut to any plan shape rather than to a rectangle.</td></tr>
     <tr><td>Select the corners of the elements to place supports</td>
-        <td>Every corner of every element is a pickable node. Click one, shift-click to add,
-        drag a box, or click an edge to take the whole line. Then any of the six freedoms,
-        individually or by preset.</td></tr>
+        <td>Every corner of every element is a pickable node. Click one, shift-click to add, drag a
+        box, or click an edge to take the whole line. Then any of the six freedoms, individually or
+        by preset.</td></tr>
     <tr><td>Show the thickness in the 3D model</td>
-        <td>The shell is drawn as the solid it is — top face, soffit and edge band — at its
-        real thickness, varying element by element.</td></tr>
+        <td>The shell is drawn as the solid it is — top face, soffit and edge band — at its real
+        thickness, varying element by element.</td></tr>
     <tr><td>Show it in the sections too</td>
-        <td>A cut is drawn at true scale with the thickness as the drawing itself, dimensioned
-        at every station, with the zones automatic thickening acted on marked.</td></tr>
+        <td>A cut is drawn at true scale with the thickness as the drawing itself, dimensioned at
+        every station, with the zones automatic thickening acted on marked.</td></tr>
     <tr><td>The Stereo surface wizard would be useful here</td>
-        <td>It comes across whole: the expression parser, the maths keypad, the domain
-        (Cartesian and polar), the plan-shape rule, the summit finder, the crossing check.</td></tr>
+        <td>It comes across whole: the expression parser, the maths keypad, the domain (Cartesian
+        and polar), the plan-shape rule, the summit finder, the crossing check.</td></tr>
     <tr><td>I don't understand parts of the colour analysis</td>
-        <td>Every colour mode gets a one-line description in the panel and a “what am I
-        looking at?” card with a diagram, plus a guide page for the tab.</td></tr>
+        <td>Every colour mode gets a one-line description in the panel and a “what am I looking
+        at?” card with a diagram, plus a guide page for the tab.</td></tr>
     <tr><td>The list is hidden in the top toolbar — move it</td>
-        <td>The list becomes the Analyse panel: all modes visible at once, as radio rows, with
-        the legend on the canvas printing real numbers beside the ramp.</td></tr>
+        <td>The list becomes the Analyse panel: all modes visible at once, as radio rows, with the
+        legend on the canvas printing real numbers beside the ramp.</td></tr>
     <tr><td>The section cut list and display are uncomfortable</td>
-        <td>Sections get their own mode: a real list with visibility, colour, position,
-        thickness range and utilisation per cut, and a drawing that is a slice of the analysis.</td></tr>
+        <td>Sections get their own mode: a real list with visibility, colour, position, thickness
+        range and utilisation per cut, and a drawing that is a slice of the analysis.</td></tr>
   </table></div>
 </section>
 
 <section>
-  <h2><span class="num">2</span>The window</h2>
-  <p>This is the whole proposal in one picture. It is the Stereo layout, with the modes a
-  shell needs rather than the ones a space frame needs.</p>
+  <h2><span class="num">3</span>The window</h2>
+  <p>This is the whole proposal in one picture. It is the Stereo layout — the one you said worked —
+  with the modes a shell needs rather than the ones a space frame needs.</p>
   <figure>
     <div class="plate"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 648" width="100%" role="img">
 <rect width="1080" height="648" fill="#ffffff"/>
@@ -287,9 +362,9 @@
 <circle cx="108.0" cy="136.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
 <text x="119.00" y="139.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Bending moment  m₁ / m₂</text>
 <circle cx="108.0" cy="152.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
-<text x="119.00" y="155.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Von Mises, top fibre</text>
+<text x="119.00" y="155.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Wood–Armer design moments</text>
 <circle cx="108.0" cy="168.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
-<text x="119.00" y="171.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Von Mises, bottom fibre</text>
+<text x="119.00" y="171.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Required steel  As, cm²/m</text>
 <circle cx="108.0" cy="184.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
 <text x="119.00" y="187.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Utilisation (code check)</text>
 <circle cx="108.0" cy="200.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
@@ -808,9 +883,9 @@
     <figcaption><b>The proposed Shell tab.</b> Mode rail at 76 px, one context panel at 300 px,
     everything else is canvas. Nothing in the toolbar is display <i>state</i> — Generate, Analyze,
     undo/redo, Display, Export and the Load % slider are verbs that apply in any mode. The four
-    cards (legend, view cube, selection, section preview) float on the canvas and cost the model
-    no layout width. The status bar carries the thickness range, because in this tab that is a
-    headline number.</figcaption>
+    cards (legend, view cube, selection, section preview) float on the canvas and cost the model no
+    layout width. The status bar carries the thickness range and the material, because in this tab
+    those are headline numbers.</figcaption>
   </figure>
   <div class="tbl"><table>
     <tr><th>#</th><th>Mode</th><th>The question it answers</th></tr>
@@ -819,22 +894,32 @@
     <tr><td>3</td><td>Mesh</td><td>How fine, quads or triangles, and where to refine</td></tr>
     <tr><td>4</td><td>Support</td><td>Which element corners are held, and in which freedoms</td></tr>
     <tr><td>5</td><td>Load</td><td>Self-weight, pressure, snow or wind law, point loads</td></tr>
-    <tr><td>6</td><td>Thickness</td><td>Base t, the automatic thickening rule, its limits, its result</td></tr>
+    <tr><td>6</td><td>Thickness</td><td>Base t, the material, the thickening rule, its limits, its result</td></tr>
     <tr><td>7</td><td>Sections</td><td>The cuts, and how they are drawn</td></tr>
     <tr><td>8</td><td>Analyse</td><td>What to colour by, how to draw it, and what the solve found</td></tr>
     <tr><td>9</td><td>Results</td><td>Reactions, the element table, the click-to-inspect readout</td></tr>
   </table></div>
-  <p><b>Thickness is a mode of its own</b> — in Stereo that slot is “Section” (meaning steel
-  sections). Here the equivalent question is what the slab is made of and how thick it is,
-  and since automatic thickening is a process with settings and a result, it deserves the room.</p>
+  <p><b>Thickness is a mode of its own</b> — in Stereo that slot is “Section”, meaning steel
+  sections. Here the equivalent question is what the slab is made of and how thick it is, and since
+  automatic thickening is a process with settings and a result, it deserves the room. Edge beams
+  live there too, since an edge beam is a thickening you have named.</p>
+  <div class="note">
+    <h4>The same caveat as the Stereo plan</h4>
+    <p>This is Tkinter. A mode rail, cards over a canvas and a status bar are all comfortably
+    within it, and the figures above are buildable as drawn. What Tk will not give you is
+    animation, drop shadows, genuinely rounded widget corners or real transparency — the figures
+    are drawn in SVG, so their corners are a little softer than the real thing will be. If what
+    you want is a modern web-app look, that is a different conversation and a different
+    toolkit.</p>
+  </div>
 </section>
 
 <section>
-  <h2><span class="num">3</span>Thickness, drawn as thickness</h2>
+  <h2><span class="num">4</span>Thickness, drawn as thickness</h2>
   <p>Today the model is a mid-surface: a sheet with no edge. That is a perfectly sound way to
-  <i>solve</i> a shell — the finite elements really do live on the mid-surface — but it is a
-  bad way to <i>look</i> at one, because the single number that tells you whether the design is
-  reasonable is nowhere in the picture.</p>
+  <i>solve</i> a shell — MITC4 elements really do live on the mid-surface — but it is a bad way to
+  <i>look</i> at one, because the single number that tells you whether the design is reasonable is
+  nowhere in the picture.</p>
   <figure>
     <div class="plate"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 366" width="100%" role="img">
 <rect width="1080" height="366" fill="#ffffff"/>
@@ -1135,27 +1220,27 @@
 <text x="891.00" y="338.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#8c4a26" text-anchor="middle" font-weight="400" >the thickening, finally legible.</text>
 </svg></div>
     <figcaption><b>The same 6 × 6 m shell on four corner supports, three ways.</b> A is what you
-    have. B is the same shell drawn as a solid: two offset faces and a band around every free
-    edge. C is with automatic thickening on, the faces tinted by t. Under each, the free edge cut
-    and magnified ×5 — which is the only honest way to show 150 mm on a 6 m span, and is the
-    reason §4's section drawings matter as much as this picture does.</figcaption>
+    have. B is the same shell drawn as a solid: two offset faces and a band around every free edge.
+    C is with automatic thickening on, the faces tinted by t. Under each, the free edge cut and
+    magnified ×5 — which is the only honest way to show 150 mm on a 6 m span, and is the reason
+    §5's section drawings matter as much as this picture does.</figcaption>
   </figure>
   <p>Mechanically it is simple: each element carries its own <code>t</code>, each node a surface
   normal, and the drawing offsets by <code>±t/2</code> along that normal. Which gives:</p>
   <ul>
-    <li><b>Faces doubled, plus an edge band.</b> A 32 × 32 mesh goes from 1 024 polygons to
-    2 048 plus 128 edge quads. Tk has no z-buffer, so these are depth-sorted like everything
-    else in the app; back faces are culled, so the real cost is nearer ×1.2 than ×2.</li>
+    <li><b>Faces doubled, plus an edge band.</b> A 32 × 32 mesh goes from 1 024 polygons to 2 048
+    plus 128 edge quads. Tk has no z-buffer, so these are depth-sorted like everything else in the
+    app; back faces are culled, so the real cost is nearer ×1.2 than ×2.</li>
     <li><b>A “draw at true t / exaggerate ×N” switch.</b> At true scale a thin shell reads as a
-    sheet again, which is correct and unhelpful. The exaggeration factor is printed on the
-    canvas whenever it is not 1, so a screenshot can never lie about it.</li>
-    <li><b>A cutaway.</b> Half the soffit hidden, so you can see under the shell without
-    orbiting beneath it.</li>
+    sheet again, which is correct and unhelpful. The exaggeration factor is printed on the canvas
+    whenever it is not 1, so a screenshot can never lie about it.</li>
+    <li><b>A cutaway</b>, with half the soffit hidden, so you can see under the shell without
+    orbiting beneath it — and the edge beams read as the solids they are.</li>
   </ul>
 </section>
 
 <section>
-  <h2><span class="num">4</span>Sections: a list you can live with</h2>
+  <h2><span class="num">5</span>Sections: a list you can live with</h2>
   <p>You said the section list and display are uncomfortable and that they do not show the
   thickness. Here is what I would replace them with.</p>
   <figure>
@@ -1763,30 +1848,33 @@
     the 3D plane, its row in the list and its drawing. The row carries what you would otherwise
     have to open the cut to learn: where it is, the thickness range along it, and the worst
     utilisation on it. The drawing is at true scale, dimensioned at every station, with the
-    thickened zones banded in rust — and the cut face carries the same colour the model does, so
-    a section is a slice of the analysis rather than a separate drawing that has to be
-    reconciled with it.</figcaption>
+    thickened zones banded in rust — and the cut face carries the same colour the model does, so a
+    section is a slice of the analysis rather than a separate drawing that has to be reconciled
+    with it.</figcaption>
   </figure>
   <h4>What changes, concretely</h4>
   <ul>
     <li><b>The cuts persist.</b> They are part of the model, saved with it, exported with it.</li>
-    <li><b>Three ways to make one:</b> along X, along Y, or by clicking two points on the shell
-    for an arbitrary line — including corner to corner, which on a square plan is the cut that
-    actually explains a corner-supported shell.</li>
+    <li><b>Three ways to make one:</b> along X, along Y, or by clicking two points on the shell for
+    an arbitrary line — including corner to corner, which on a square plan is the cut that actually
+    explains a corner-supported shell.</li>
     <li><b>Live.</b> Drag the plane in the 3D view and the drawing follows.</li>
     <li><b>The thickness is the drawing.</b> Not a number in a corner: the profile is the real
-    profile, top fibre and soffit, at true scale.</li>
+    profile, top fibre and soffit, at true scale — and where the cut crosses an edge beam, the edge
+    beam is in the profile.</li>
     <li><b>Where thickening acted is marked</b>, with the multiplier it applied.</li>
-    <li><b>Export:</b> the cut as a DXF polyline pair, or as a table of station / t / N / m /
-    utilisation. Say which you want and I will do that one first.</li>
+    <li><b>Export</b> — three candidates, and your own reading list already ranks them: a table of
+    station / t / N / m / As, a DXF polyline pair for CAD, and <code>.vtu</code> via PyVista, which
+    that list calls “the cheapest large win” because it opens the whole model in ParaView. Question
+    9 asks which you want first.</li>
   </ul>
-  <p>One detail worth flagging, visible in the figure: the worst utilisation on that cut is not
-  at the thickest point nor at the thinnest, but just where the thickening runs out. That is the
-  kind of thing a section is for, and the kind of thing the current drawing cannot show.</p>
+  <p>One detail worth flagging, visible in the figure: the worst utilisation on that cut is not at
+  the thickest point nor at the thinnest, but just where the thickening runs out. That is the kind
+  of thing a section is for, and the kind of thing the current drawing cannot show.</p>
 </section>
 
 <section>
-  <h2><span class="num">5</span>Supports on the corners of the elements</h2>
+  <h2><span class="num">6</span>Supports on the corners of the elements</h2>
   <p>A corner of an element <i>is</i> a node of the mesh — the same point the solver assembles
   stiffness at. So clicking one is not an approximation of a support; it is the support, exactly
   where you put it.</p>
@@ -1909,30 +1997,28 @@
 </svg></div>
     <figcaption><b>Picking, and what you can do once you have picked.</b> Every corner is a small
     square; hovering one names it and says what it currently carries. Click, shift-click, drag a
-    box, or click an edge to take the whole line at once. The panel then applies a preset or the
-    six freedoms one by one — and it says how many freedoms the current element type actually
-    has, because restraining a rotation that the element does not carry is a silent no-op, and
-    that is exactly the kind of thing that makes a model behave inexplicably.</figcaption>
+    box, or click an edge to take the whole line at once. The panel then applies a preset or the six
+    freedoms one by one — and it says how many freedoms the current element type actually has,
+    because restraining a rotation the element does not carry is a silent no-op, and that is exactly
+    the kind of thing that makes a model behave inexplicably.</figcaption>
   </figure>
   <ul>
-    <li><b>Presets:</b> free, pinned, fully fixed, roller in X or Y, and an elastic (spring)
-    support with a stiffness — the realistic boundary for a shell sitting on a ring beam.</li>
-    <li><b>Quick actions:</b> the four plan corners, the whole boundary, the lowest ring — the
-    three support sets a shell almost always wants.</li>
-    <li><b>A support sandbox</b>, as in Stereo: switch one support off and re-solve without
-    editing the model, to see what it was carrying.</li>
-    <li><b>Before the solve</b>, the same boundary check Stereo runs: a floating node, a missing
-    load path or insufficient restraint is reported as a sentence, not as a singular matrix.</li>
+    <li><b>Presets:</b> free, pinned, fully fixed, roller in X or Y, and an elastic (spring) support
+    with a stiffness — the realistic boundary for a shell sitting on a ring beam.</li>
+    <li><b>Quick actions:</b> the four plan corners, the whole boundary, the lowest ring — the three
+    support sets a shell almost always wants.</li>
+    <li><b>A support sandbox</b>, as in Stereo: switch one support off and re-solve without editing
+    the model, to see what it was carrying.</li>
+    <li><b>Before the solve</b>, the same boundary check Stereo runs: a floating node, a missing load
+    path or insufficient restraint is reported as a sentence, not as a singular matrix.</li>
   </ul>
 </section>
 
 <section>
-  <h2><span class="num">6</span>The surface wizard, brought over</h2>
-  <p>This is the cheapest large win in the whole plan, because the hard part is already written
-  and tested on the Stereo branch. <code>expr_math.py</code> (an AST whitelist, no <code>eval</code>),
-  the domain handling, the plan-shape mask, the summit finder and the crossing check are all
-  surface mathematics — none of them know or care whether what gets laid on the surface is a
-  lattice of rods or a mesh of shell elements.</p>
+  <h2><span class="num">7</span>The wizard, and the end of the rectangular plan</h2>
+  <p>This is where the largest gain is, and your own reading list says so: the Shell tab's plan has
+  to be a rectangle today. Everything a real shell does at its boundary — a round plan, an octagon,
+  a courtyard, a skylight — is currently out of reach.</p>
   <figure>
     <div class="plate"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 452" width="100%" role="img">
 <rect width="1080" height="452" fill="#ffffff"/>
@@ -2705,30 +2791,48 @@
 <text x="856.00" y="432.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >from Stereo unchanged.</text>
 </svg></div>
     <figcaption><b>One panel, five shells.</b> What changes from Stereo's version: the lattice
-    question disappears — a shell has no two layers to register against each other — and is
-    replaced by mesh density and element type. Everything else is the same panel you already
-    know, including the maths keypad and the <code>keep where</code> plan rule. The round plan
-    is cut element-by-element, so its edge is module-granular; that overshoot is the framing
-    around the opening, exactly as in Stereo.</figcaption>
+    question disappears — a shell has no two layers to register against each other — and is replaced
+    by mesh density and element type. Everything else is the same panel you already know, including
+    the maths keypad and the <code>keep where</code> plan rule. The round plan here is cut
+    element-by-element, so its edge is stepped: that is route A below, and the step is exactly what
+    route B would remove.</figcaption>
   </figure>
-  <p>Alongside it, <b>Build</b> mode keeps the ready-made families for when you do not want to
-  write a formula: dome, barrel vault, hypar, cone, groin vault, elliptic dome, paraboloid dish,
+  <h4>Two routes to a non-rectangular plan, and they are not the same job</h4>
+  <div class="tbl"><table>
+    <tr><th></th><th>A · the Stereo plan mask</th><th>B · Gmsh</th></tr>
+    <tr><td>What it does</td><td>keeps or drops whole elements of the structured mesh by a boolean
+      rule over the plan (<code>hypot(x,y) &lt; 6</code>, <code>not (x&gt;6 and y&gt;6)</code>)</td>
+      <td>meshes any outline directly, with holes, curved boundaries honoured exactly and local
+      refinement</td></tr>
+    <tr><td>Cost</td><td>near zero — written, tested and in this branch already</td>
+      <td>a real integration: a new dependency, an unstructured triangle mesh, and the DKT element
+      to go with it</td></tr>
+    <tr><td>The catch</td><td>the edge is stepped, by up to one element</td>
+      <td>Gmsh is GPL. Calling it as a separate program is the clean way; linking its library into
+      the app is the part to be careful about — your reading list flags exactly this</td></tr>
+    <tr><td>My recommendation</td><td><b>Do A now.</b> It arrives with the wizard and removes the
+      limit the same afternoon.</td><td><b>Keep B as an option</b>, behind a checkbox, once A is in
+      and the rest of the tab is stable.</td></tr>
+  </table></div>
+  <p>Alongside the wizard, <b>Build</b> mode keeps the ready-made families for when you do not want
+  to write a formula: dome, barrel vault, hypar, cone, groin vault, elliptic dome, paraboloid dish,
   folded plate and flat slab, each with its own dimensions and a sensible default support set.</p>
 </section>
 <section>
-  <h2><span class="num">7</span>The colour analysis, and a guide to it</h2>
-  <p>Two separate problems here, and they have different fixes. The first is that the list is
-  hidden: eight quantities behind one closed combobox in the top bar. The second is that even
-  once it is open, nothing anywhere says what any of them means — and for a shell that matters
-  much more than for a truss, because a truss rod has one number (axial force) while a shell
-  element has membrane forces, bending moments, transverse shears, stresses on two different
-  faces, and a utilisation that combines them.</p>
+  <h2><span class="num">8</span>The colour analysis, and a guide to it</h2>
+  <p>Two separate problems, with different fixes. The first is that the list is hidden: every
+  quantity behind one closed combobox in the top bar. The second is that even once it is open,
+  nothing says what any of them means — and for a reinforced-concrete shell that matters far more
+  than for a truss, because a truss rod has one number while a shell element has membrane forces,
+  bending moments, transverse shears, Wood–Armer design moments and a reinforcement demand on
+  four faces.</p>
   <figure>
-    <div class="plate"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 622" width="100%" role="img">
-<rect width="1080" height="622" fill="#ffffff"/>
-<rect x="0.0" y="0.0" width="1080.0" height="622.0" rx="0.0" fill="#ffffff"/>
+    <div class="plate"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 640" width="100%" role="img">
+<rect width="1080" height="640" fill="#ffffff"/>
+<rect x="0.0" y="0.0" width="1080.0" height="640.0" rx="0.0" fill="#ffffff"/>
 <text x="24.00" y="30.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="700" >TODAY</text>
 <text x="24.00" y="48.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="11.0" fill="#4c565f" text-anchor="start" font-weight="400" >the list lives in the top bar, closed</text>
+<text x="24.00" y="240.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >drawn from the pattern the other tabs use — I have not seen your Shell toolbar</text>
 <rect x="24.0" y="62.0" width="470.0" height="40.0" rx="2.0" fill="#e9edf1" stroke="#b9c2ca" stroke-width="1.00"/>
 <rect x="34.0" y="71.0" width="66.0" height="22.0" rx="2.0" fill="#e7ebef" stroke="#aab4bd" stroke-width="1.00"/>
 <text x="67.00" y="85.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#1e2429" text-anchor="middle" font-weight="600" >Generate</text>
@@ -2739,28 +2843,28 @@
 <rect x="200.0" y="71.0" width="22.0" height="22.0" rx="2.0" fill="#e7ebef" stroke="#aab4bd" stroke-width="1.00"/>
 <text x="211.00" y="85.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#1e2429" text-anchor="middle" font-weight="600" >↷</text>
 <rect x="234.0" y="71.0" width="96.0" height="22.0" rx="2.0" fill="#ffffff" stroke="#8c979f" stroke-width="1.00"/>
-<text x="240.00" y="86.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Axial force</text>
+<text x="240.00" y="86.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Membrane N</text>
 <text x="320.00" y="86.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >▾</text>
 <rect x="338.0" y="71.0" width="60.0" height="22.0" rx="2.0" fill="#ffffff" stroke="#8c979f" stroke-width="1.00"/>
 <text x="344.00" y="86.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Peak ▾</text>
 <rect x="234.0" y="95.0" width="96.0" height="132.0" rx="1.0" fill="#ffffff" stroke="#8c979f" stroke-width="1.00"/>
 <rect x="235.0" y="96.0" width="94.0" height="21.0" rx="0.0" fill="#cfe0f0"/>
-<text x="242.00" y="111.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Axial force</text>
-<text x="242.00" y="132.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Utilization</text>
-<text x="242.00" y="153.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Node moment</text>
-<text x="242.00" y="174.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Deformation</text>
-<text x="242.00" y="195.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Thickness</text>
+<text x="242.00" y="111.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Membrane N</text>
+<text x="242.00" y="132.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Moment m</text>
+<text x="242.00" y="153.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Wood-Armer</text>
+<text x="242.00" y="174.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Utilization</text>
+<text x="242.00" y="195.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Deflection</text>
 <text x="242.00" y="216.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >None</text>
 <line x1="206.0" y1="150.0" x2="282.0" y2="155.0" stroke="#c0561f" stroke-width="1.00" stroke-linecap="butt"/>
 <circle cx="282.0" cy="155.0" r="2.2" fill="#c0561f"/>
-<text x="40.00" y="146.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#c0561f" text-anchor="start" font-weight="400" >eight quantities behind one 96 px box,</text>
+<text x="40.00" y="146.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#c0561f" text-anchor="start" font-weight="400" >every quantity behind one 96 px box,</text>
 <text x="40.00" y="160.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#c0561f" text-anchor="start" font-weight="400" >shut by default, and not one word</text>
 <text x="40.00" y="174.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#c0561f" text-anchor="start" font-weight="400" >anywhere about what they mean.</text>
 <line x1="24.0" y1="250.0" x2="494.0" y2="250.0" stroke="#e2e7ec" stroke-width="1.00" stroke-linecap="butt"/>
 <text x="586.00" y="30.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="700" >PROPOSED</text>
 <text x="586.00" y="48.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="11.0" fill="#4c565f" text-anchor="start" font-weight="400" >the list is the panel, and every row can explain itself</text>
-<rect x="586.0" y="62.0" width="462.0" height="188.0" rx="3.0" fill="#eef1f4" stroke="#ccd3da" stroke-width="1.00"/>
-<rect x="598.0" y="81.0" width="438.0" height="157.0" rx="2.0" fill="#ffffff" stroke="#ccd3da" stroke-width="1.00" fill-opacity="0.55"/>
+<rect x="586.0" y="62.0" width="462.0" height="210.0" rx="3.0" fill="#eef1f4" stroke="#ccd3da" stroke-width="1.00"/>
+<rect x="598.0" y="81.0" width="438.0" height="179.0" rx="2.0" fill="#ffffff" stroke="#ccd3da" stroke-width="1.00" fill-opacity="0.55"/>
 <rect x="606.0" y="74.0" width="120.1" height="14.0" rx="0.0" fill="#eef1f4"/>
 <text x="610.00" y="85.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="700" >Colour the shell by</text>
 <rect x="606.0" y="93.0" width="418.0" height="22.0" rx="2.0" fill="#dce9f6" stroke="#1a6bbd" stroke-width="1.00"/>
@@ -2777,112 +2881,125 @@
 <text x="1018.00" y="132.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1a6bbd" text-anchor="start" font-weight="700" >?</text>
 <circle cx="620.0" cy="152.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
 <text x="631.00" y="155.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" ></text>
-<text x="634.00" y="156.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Von Mises, top / bottom fibre</text>
-<text x="818.00" y="156.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >combined stress on one face</text>
+<text x="634.00" y="156.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Wood–Armer design moments</text>
+<text x="818.00" y="156.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >what the reinforcement is sized from</text>
 <text x="1018.00" y="156.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1a6bbd" text-anchor="start" font-weight="700" >?</text>
 <circle cx="620.0" cy="176.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
 <text x="631.00" y="179.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" ></text>
-<text x="634.00" y="180.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Utilisation (code check)</text>
-<text x="818.00" y="180.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >demand ÷ capacity — red is always 1.0</text>
+<text x="634.00" y="180.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Required steel  As, cm²/m</text>
+<text x="818.00" y="180.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >top and bottom, each direction</text>
 <text x="1018.00" y="180.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1a6bbd" text-anchor="start" font-weight="700" >?</text>
 <circle cx="620.0" cy="200.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
 <text x="631.00" y="203.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" ></text>
-<text x="634.00" y="204.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Thickness  t</text>
-<text x="818.00" y="204.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >what the thickening decided</text>
+<text x="634.00" y="204.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Utilisation (code check)</text>
+<text x="818.00" y="204.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >demand ÷ capacity; red is 1.0</text>
 <text x="1018.00" y="204.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1a6bbd" text-anchor="start" font-weight="700" >?</text>
 <circle cx="620.0" cy="224.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
 <text x="631.00" y="227.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" ></text>
-<text x="634.00" y="228.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Deflection</text>
-<text x="818.00" y="228.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >how far each point moved</text>
+<text x="634.00" y="228.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Thickness  t</text>
+<text x="818.00" y="228.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >what the thickening decided</text>
 <text x="1018.00" y="228.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1a6bbd" text-anchor="start" font-weight="700" >?</text>
-<line x1="1022.0" y1="252.0" x2="1022.0" y2="106.0" stroke="#c0561f" stroke-width="1.00" stroke-linecap="butt"/>
+<circle cx="620.0" cy="248.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
+<text x="631.00" y="251.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" ></text>
+<text x="634.00" y="252.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Deflection</text>
+<text x="818.00" y="252.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >how far each point moved</text>
+<text x="1018.00" y="252.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1a6bbd" text-anchor="start" font-weight="700" >?</text>
+<line x1="1022.0" y1="274.0" x2="1022.0" y2="106.0" stroke="#c0561f" stroke-width="1.00" stroke-linecap="butt"/>
 <circle cx="1022.0" cy="106.0" r="2.2" fill="#c0561f"/>
-<text x="736.00" y="268.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#c0561f" text-anchor="start" font-weight="400" >one line under every row; a ? on every row opens the card below</text>
-<line x1="24.0" y1="266.0" x2="1056.0" y2="266.0" stroke="#e2e7ec" stroke-width="1.00" stroke-linecap="butt"/>
-<rect x="24.0" y="288.0" width="1032.0" height="306.0" rx="3.0" fill="#f7f9fb" stroke="#ccd3da" stroke-width="1.00"/>
-<text x="44.00" y="314.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="12.0" fill="#1e2429" text-anchor="start" font-weight="700" >WHAT AM I LOOKING AT?  ·  Membrane force N₁ / N₂</text>
-<text x="44.00" y="334.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >opened from the ? on the row, or from the legend on the canvas. Same text in the tab’s guide page.</text>
-<polygon points="146.74,415.30 235.21,434.58 173.26,476.48 84.79,457.21" fill="#c3ced8" stroke="#7d8a95" stroke-width="0.70" stroke-linejoin="round"/>
-<polygon points="146.74,407.41 235.21,426.69 235.21,434.58 146.74,415.30" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<polygon points="84.79,449.31 146.74,407.41 146.74,415.30 84.79,457.21" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<polygon points="146.74,407.41 235.21,426.69 173.26,468.59 84.79,449.31" fill="#dfe7ee" stroke="#7d8a95" stroke-width="0.90" stroke-linejoin="round"/>
-<polygon points="235.21,426.69 173.26,468.59 173.26,476.48 235.21,434.58" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<polygon points="173.26,468.59 84.79,449.31 84.79,457.21 173.26,476.48" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<line x1="268.0" y1="498.5" x2="218.0" y2="470.5" stroke="#33528c" stroke-width="1.80" stroke-linecap="round"/>
-<polygon points="218.0,470.5 224.0,471.0 221.6,475.3" fill="#33528c"/>
-<line x1="52.0" y1="377.5" x2="102.0" y2="405.5" stroke="#33528c" stroke-width="1.80" stroke-linecap="round"/>
-<polygon points="102.0,405.5 96.0,405.0 98.4,400.7" fill="#33528c"/>
-<line x1="107.8" y1="474.0" x2="62.8" y2="505.0" stroke="#a8432e" stroke-width="1.80" stroke-linecap="round"/>
-<polygon points="62.8,505.0 65.9,499.8 68.7,503.9" fill="#a8432e"/>
-<line x1="212.2" y1="402.0" x2="257.2" y2="371.0" stroke="#a8432e" stroke-width="1.80" stroke-linecap="round"/>
-<polygon points="257.2,371.0 254.1,376.2 251.3,372.1" fill="#a8432e"/>
-<text x="160.00" y="546.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#4c565f" text-anchor="middle" font-weight="400" >N₁ compression (blue) · N₂ tension (red)</text>
-<text x="160.00" y="368.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#77838d" text-anchor="middle" font-weight="400" >in the plane of the shell</text>
-<polygon points="354.74,415.30 443.21,434.58 381.26,476.48 292.79,457.21" fill="#c3ced8" stroke="#7d8a95" stroke-width="0.70" stroke-linejoin="round"/>
-<polygon points="354.74,407.41 443.21,426.69 443.21,434.58 354.74,415.30" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<polygon points="292.79,449.31 354.74,407.41 354.74,415.30 292.79,457.21" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<polygon points="354.74,407.41 443.21,426.69 381.26,468.59 292.79,449.31" fill="#dfe7ee" stroke="#7d8a95" stroke-width="0.90" stroke-linejoin="round"/>
-<polygon points="443.21,426.69 381.26,468.59 381.26,476.48 443.21,434.58" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<polygon points="381.26,468.59 292.79,449.31 292.79,457.21 381.26,476.48" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<path d="M310.0 472.0 a 30 30 0 0 0 18.0 -58.0" fill="none" stroke="#7b2fa8" stroke-width="1.8"/>
-<line x1="328.0" y1="414.0" x2="334.0" y2="408.0" stroke="#7b2fa8" stroke-width="1.80" stroke-linecap="round"/>
-<polygon points="334.0,408.0 332.0,413.1 328.9,410.0" fill="#7b2fa8"/>
-<path d="M426.0 404.0 a 30 30 0 0 1 -18.0 58.0" fill="none" stroke="#7b2fa8" stroke-width="1.8"/>
-<line x1="408.0" y1="462.0" x2="402.0" y2="468.0" stroke="#7b2fa8" stroke-width="1.80" stroke-linecap="round"/>
-<polygon points="402.0,468.0 404.0,462.9 407.1,466.0" fill="#7b2fa8"/>
-<text x="368.00" y="546.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#4c565f" text-anchor="middle" font-weight="400" >m₁ / m₂ bend the slab across its own thickness</text>
-<text x="368.00" y="368.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#77838d" text-anchor="middle" font-weight="400" >out of the plane of the shell</text>
-<text x="520.00" y="372.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" >N₁ and N₂ are the two principal MEMBRANE forces: force per metre of width, in the</text>
-<text x="520.00" y="387.40" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" >plane of the shell. They are what a shell carries load with. Blue is compression,</text>
-<text x="520.00" y="402.80" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" >red is tension, and the pale middle of the ramp is a patch carrying almost nothing.</text>
-<text x="520.00" y="418.20" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" ></text>
-<text x="520.00" y="433.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Read it like this. A well-shaped shell is mostly one colour — compression — with</text>
-<text x="520.00" y="449.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >tension only near free edges and openings. A red patch in the middle of a dome is</text>
-<text x="520.00" y="464.40" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >the shape fighting the load, and it is usually cheaper to change the shape than to</text>
-<text x="520.00" y="479.80" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >thicken the slab. Bending m₁ / m₂ tells the other half of that story: a shell in pure</text>
-<text x="520.00" y="495.20" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >membrane action has almost none, so wherever m is large the shell is acting as a</text>
-<text x="520.00" y="510.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >plate, and that is exactly where automatic thickening will add material.</text>
-<text x="520.00" y="526.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" ></text>
-<text x="520.00" y="541.40" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >Units follow the tab: kN/m here, kNm/m for moments, MPa for stress.</text>
-<text x="520.00" y="556.80" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >The scale is this model’s own peak unless you pin it — so two models are not</text>
-<text x="520.00" y="572.20" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >comparable by colour alone, and the legend always prints the numbers.</text>
+<text x="736.00" y="290.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#c0561f" text-anchor="start" font-weight="400" >one line under every row; a ? on every row opens the card below</text>
+<line x1="24.0" y1="280.0" x2="1056.0" y2="280.0" stroke="#e2e7ec" stroke-width="1.00" stroke-linecap="butt"/>
+<rect x="24.0" y="302.0" width="1032.0" height="306.0" rx="3.0" fill="#f7f9fb" stroke="#ccd3da" stroke-width="1.00"/>
+<text x="44.00" y="328.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="12.0" fill="#1e2429" text-anchor="start" font-weight="700" >WHAT AM I LOOKING AT?  ·  Membrane force N₁ / N₂</text>
+<text x="44.00" y="348.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >opened from the ? on the row, or from the legend on the canvas. Same text in the tab’s guide page.</text>
+<polygon points="146.74,429.30 235.21,448.58 173.26,490.48 84.79,471.21" fill="#c3ced8" stroke="#7d8a95" stroke-width="0.70" stroke-linejoin="round"/>
+<polygon points="146.74,421.41 235.21,440.69 235.21,448.58 146.74,429.30" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<polygon points="84.79,463.31 146.74,421.41 146.74,429.30 84.79,471.21" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<polygon points="146.74,421.41 235.21,440.69 173.26,482.59 84.79,463.31" fill="#dfe7ee" stroke="#7d8a95" stroke-width="0.90" stroke-linejoin="round"/>
+<polygon points="235.21,440.69 173.26,482.59 173.26,490.48 235.21,448.58" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<polygon points="173.26,482.59 84.79,463.31 84.79,471.21 173.26,490.48" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<line x1="268.0" y1="512.5" x2="218.0" y2="484.5" stroke="#33528c" stroke-width="1.80" stroke-linecap="round"/>
+<polygon points="218.0,484.5 224.0,485.0 221.6,489.3" fill="#33528c"/>
+<line x1="52.0" y1="391.5" x2="102.0" y2="419.5" stroke="#33528c" stroke-width="1.80" stroke-linecap="round"/>
+<polygon points="102.0,419.5 96.0,419.0 98.4,414.7" fill="#33528c"/>
+<line x1="107.8" y1="488.0" x2="62.8" y2="519.0" stroke="#a8432e" stroke-width="1.80" stroke-linecap="round"/>
+<polygon points="62.8,519.0 65.9,513.8 68.7,517.9" fill="#a8432e"/>
+<line x1="212.2" y1="416.0" x2="257.2" y2="385.0" stroke="#a8432e" stroke-width="1.80" stroke-linecap="round"/>
+<polygon points="257.2,385.0 254.1,390.2 251.3,386.1" fill="#a8432e"/>
+<text x="160.00" y="560.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#4c565f" text-anchor="middle" font-weight="400" >N₁ compression (blue) · N₂ tension (red)</text>
+<text x="160.00" y="382.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#77838d" text-anchor="middle" font-weight="400" >in the plane of the shell</text>
+<polygon points="354.74,429.30 443.21,448.58 381.26,490.48 292.79,471.21" fill="#c3ced8" stroke="#7d8a95" stroke-width="0.70" stroke-linejoin="round"/>
+<polygon points="354.74,421.41 443.21,440.69 443.21,448.58 354.74,429.30" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<polygon points="292.79,463.31 354.74,421.41 354.74,429.30 292.79,471.21" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<polygon points="354.74,421.41 443.21,440.69 381.26,482.59 292.79,463.31" fill="#dfe7ee" stroke="#7d8a95" stroke-width="0.90" stroke-linejoin="round"/>
+<polygon points="443.21,440.69 381.26,482.59 381.26,490.48 443.21,448.58" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<polygon points="381.26,482.59 292.79,463.31 292.79,471.21 381.26,490.48" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<path d="M310.0 486.0 a 30 30 0 0 0 18.0 -58.0" fill="none" stroke="#7b2fa8" stroke-width="1.8"/>
+<line x1="328.0" y1="428.0" x2="334.0" y2="422.0" stroke="#7b2fa8" stroke-width="1.80" stroke-linecap="round"/>
+<polygon points="334.0,422.0 332.0,427.1 328.9,424.0" fill="#7b2fa8"/>
+<path d="M426.0 418.0 a 30 30 0 0 1 -18.0 58.0" fill="none" stroke="#7b2fa8" stroke-width="1.8"/>
+<line x1="408.0" y1="476.0" x2="402.0" y2="482.0" stroke="#7b2fa8" stroke-width="1.80" stroke-linecap="round"/>
+<polygon points="402.0,482.0 404.0,476.9 407.1,480.0" fill="#7b2fa8"/>
+<text x="368.00" y="560.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#4c565f" text-anchor="middle" font-weight="400" >m₁ / m₂ bend the slab across its own thickness</text>
+<text x="368.00" y="382.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#77838d" text-anchor="middle" font-weight="400" >out of the plane of the shell</text>
+<text x="520.00" y="386.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" >N₁ and N₂ are the two principal MEMBRANE forces: force per metre of width, in the</text>
+<text x="520.00" y="401.40" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" >plane of the shell. They are what a shell carries load with. Blue is compression,</text>
+<text x="520.00" y="416.80" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" >red is tension, and the pale middle of the ramp is a patch carrying almost nothing.</text>
+<text x="520.00" y="432.20" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" ></text>
+<text x="520.00" y="447.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Read it like this. A well-shaped shell is mostly one colour — compression — with</text>
+<text x="520.00" y="463.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >tension only near free edges and openings. A red patch in the middle of a dome is</text>
+<text x="520.00" y="478.40" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >the shape fighting the load, and it is usually cheaper to change the shape than to</text>
+<text x="520.00" y="493.80" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >thicken the slab. Bending m₁ / m₂ tells the other half of that story: a shell in pure</text>
+<text x="520.00" y="509.20" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >membrane action has almost none, so wherever m is large the shell is acting as a</text>
+<text x="520.00" y="524.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >plate, and that is exactly where automatic thickening will add material.</text>
+<text x="520.00" y="540.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" ></text>
+<text x="520.00" y="555.40" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >Units follow the tab: kN/m here, kNm/m for moments, MPa for stress.</text>
+<text x="520.00" y="570.80" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >The scale is this model’s own peak unless you pin it — so two models are not</text>
+<text x="520.00" y="586.20" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >comparable by colour alone, and the legend always prints the numbers.</text>
 </svg></div>
-    <figcaption><b>Left: today.</b> <b>Right: the list as the panel</b>, every mode visible, each
-    with a one-line description of what it is, and a <code>?</code> that opens the card below.
-    <b>Bottom: the card.</b> A diagram of the quantity on a real patch of shell, what the colours
-    mean, how to read the picture, what the units are, and — the part that is usually missing —
-    what the scale is anchored to, so you know that two models are not comparable by colour alone.</figcaption>
+    <figcaption><b>Left: the pattern today</b> — drawn from how the other tabs do it, since I have
+    not seen your Shell toolbar; correct me if it is worse or better than this. <b>Right: the list
+    as the panel</b>, every mode visible, each with a one-line description, and a <code>?</code>
+    that opens the card below. <b>Bottom: the card.</b> A diagram of the quantity on a real patch of
+    shell, what the colours mean, how to read the picture, the units, and — the part usually missing
+    — what the scale is anchored to, so you know two models are not comparable by colour
+    alone.</figcaption>
   </figure>
-  <h4>The eight modes, and the sentence each one gets</h4>
+  <h4>The modes, and the sentence each one gets</h4>
   <div class="tbl"><table>
     <tr><th>Colour by</th><th>Is</th><th>Read it as</th></tr>
     <tr><td>Membrane force N₁ / N₂</td><td>force per metre in the plane of the shell</td>
         <td>what a shell carries load with; mostly one colour is a well-shaped shell</td></tr>
     <tr><td>Bending moment m₁ / m₂</td><td>moment per metre across the thickness</td>
         <td>where the shape failed to work as a shell and it is acting as a plate</td></tr>
+    <tr><td><b>Wood–Armer design moments</b></td><td>m<sub>x</sub>*, m<sub>y</sub>* top and bottom —
+        the twisting moment folded into the bending ones</td>
+        <td>the numbers reinforcement is actually sized from; not the same map as m₁ / m₂, and the
+        difference is the whole reason the rule exists</td></tr>
+    <tr><td><b>Required steel A<sub>s</sub></b></td><td>cm²/m, top and bottom, in each direction</td>
+        <td>the drawing output — where the bars go and how many; four maps, switchable</td></tr>
     <tr><td>Transverse shear q₁ / q₂</td><td>out-of-plane shear per metre</td>
-        <td>near supports and ribs; the check a thin shell rarely fails and a thick one can</td></tr>
-    <tr><td>Von Mises, top / bottom fibre</td><td>combined stress on one face</td>
-        <td>which face governs — the answer is not the same over a support as at midspan</td></tr>
-    <tr><td>Principal directions</td><td>short ticks along N₁ and N₂</td>
-        <td>the force paths; where reinforcement or ribs want to run</td></tr>
+        <td>near supports and edge beams; the check a thin shell rarely fails and a thick one can</td></tr>
     <tr><td>Utilisation</td><td>demand ÷ capacity, code-defined</td>
         <td>absolute — red is always 1.0, so it is the one mode comparable between models</td></tr>
     <tr><td>Thickness t</td><td>what thickening decided</td>
         <td>the map to read next to the moment map; they should look related</td></tr>
     <tr><td>Deflection</td><td>displacement magnitude</td>
         <td>the serviceability answer, with span/N printed beside the peak</td></tr>
+    <tr><td>Principal directions</td><td>short ticks along N₁ and N₂</td>
+        <td>the force paths; where ribs and the main bars want to run</td></tr>
+    <tr><td>Von Mises, top / bottom fibre</td><td>combined stress on one face</td>
+        <td>only meaningful on the steel path; hidden when the material is concrete rather than
+        left on screen meaning nothing</td></tr>
   </table></div>
-  <p>The guide text lives in one place and is shown in three: the one-liner in the panel, the
-  card behind the <code>?</code>, and a full guide page in
-  <span class="path">REPORTS AND GUIDES/</span> in the same format as the Stereo surface guide.
-  One source, so they cannot drift apart.</p>
+  <p>The guide text lives in one place and is shown in three: the one-liner in the panel, the card
+  behind the <code>?</code>, and a full guide page in <span class="path">REPORTS AND GUIDES/</span>
+  in the same format as the Stereo surface guide. One source, so they cannot drift apart.</p>
   <h4>Three smaller things about the legend</h4>
   <ul>
     <li><b>It prints numbers</b>, at both ends and the middle, in your unit convention.</li>
     <li><b>It counts what it flattened.</b> Stereo's legend says “116 rods below 3% of the scale”;
-    here it would say how many elements are carrying almost nothing, which is the difference
-    between a pale model and a failed drawing.</li>
+    here it would say how many elements carry almost nothing, which is the difference between a pale
+    model and a failed drawing.</li>
     <li><b>The scale anchor is a control, not a secret:</b> this model's peak, its 95th percentile,
     or a number you pin — and when it is pinned, everything past the end of the ramp is hatched
     rather than clamped silently.</li>
@@ -2890,209 +3007,274 @@
 </section>
 
 <section>
-  <h2><span class="num">8</span>Under the hood: what the solver has to be</h2>
-  <p>This section only applies if the old app does not arrive. If it does, its solver is ported
-  as-is and this is moot. I am writing it out anyway so that you can see what I would be
-  choosing on your behalf, and object.</p>
-  <h4>The element</h4>
-  <p>A curved shell meshed into flat facets, each facet a <b>membrane + plate bending</b> element:
-  <b>MITC4</b> for quads and <b>DKT</b> for triangles. Both are the standard robust choices —
-  MITC4 does not lock in shear as the shell gets thin, DKT is the reference thin-plate triangle —
-  and between them any mesh the wizard can produce is covered. Six degrees of freedom per node
-  (three translations, three rotations, the drilling one stabilised), which is what makes
-  “restrain θx here” a meaningful instruction rather than a no-op.</p>
-  <h4>What it produces, per element</h4>
-  <p>N₁₁, N₂₂, N₁₂ · m₁₁, m₂₂, m₁₂ · q₁, q₃ · principal values and their directions · stresses
-  on the top and bottom fibre · von Mises on each face. Per node: three displacements, three
-  rotations, and reactions at every restrained freedom. Every colour mode in §7 is a projection
-  of that list — none of them needs a separate solve.</p>
+  <h2><span class="num">9</span>The solver: what stays, and what I would add</h2>
+  <p>On the evidence of §1 the engine is already the right one, so this section is much shorter
+  than it was in the first draft. <b>MITC4 is what you have and what I would have chosen</b> — it
+  does not lock in shear as the shell gets thin, and it is the same element OpenSees ships, which
+  means a second opinion is a <code>pip install</code> away.</p>
+  <h4>Kept, untouched</h4>
+  <ul>
+    <li>The element, the assembly and the solve.</li>
+    <li><code>shell_codes.py</code> — the code-check layer, already separate from the solver, which
+    is the correct architecture and the reason a second material can be added without touching the
+    physics.</li>
+    <li>Your automatic-thickening rule. §10 is about making it legible, not about changing it.</li>
+    <li>The edge beams and their preliminary check.</li>
+  </ul>
+  <h4>Added</h4>
+  <ul>
+    <li><b>DKT triangles</b> — only if the meshing question in §7 goes to Gmsh. A structured quad
+    mesh needs no triangle.</li>
+    <li><b>A steel path</b> beside the RC one, since you asked for both switchable: the same
+    element, a different <code>shell_codes</code> entry point, and von Mises on the fibres becomes
+    a meaningful colour mode instead of a hidden one.</li>
+    <li><b>The boundary check</b> Stereo runs before every solve, so an under-restrained model gets
+    a sentence instead of a singular matrix.</li>
+  </ul>
   <h4>Size and speed, honestly</h4>
-  <p>A 32 × 32 quad mesh is 1 089 nodes × 6 = 6 534 unknowns. Dense, that matrix is 340 MB and
-  the solve is minutes; sparse, it is a few MB and well under a second. SciPy is already a hard
+  <p>A 32 × 32 quad mesh is 1 089 nodes × 6 = 6 534 unknowns. Dense, that matrix is 340 MB and the
+  solve is minutes; sparse, it is a few MB and well under a second. SciPy is already a hard
   dependency of this project (<span class="path">requirements.txt</span> says so, for Cable Web),
-  so the assembly is sparse from the start. A 64 × 64 mesh — 25 350 unknowns — still solves in a
-  second or two. Above that the Tk canvas, not the solver, is the limit, so the Mesh panel
-  states the element count before you press Generate and warns past a threshold.</p>
-  <div class="note ask">
-    <h4>This is question 5</h4>
-    <p>What material and code should the check be against? The rest of the app is steel to
-    CIRSOC 301. A concrete shell needs a completely different check (cracked section, minimum
-    reinforcement, and the thickening rule would be about reinforcement ratios, not about
-    stress). I can do either, but not both at once, and the choice changes the Thickness mode
-    substantially.</p>
-  </div>
+  so the assembly should be sparse — if your current one is dense, that alone is the difference
+  between a 32 × 32 mesh and a 96 × 96 one. Above that the Tk canvas, not the solver, becomes the
+  limit, so the Mesh panel states the element count before you press Generate and warns past a
+  threshold.</p>
 </section>
 
 <section>
-  <h2><span class="num">9</span>Automatic thickening, made inspectable</h2>
+  <h2><span class="num">10</span>Automatic thickening, made inspectable</h2>
   <p>Right now, as you put it, you cannot see where the thickening is happening. The fix is not
-  only to draw it — §3 and §4 do that — but to make the process itself something you can read
-  and argue with. What I would build:</p>
+  only to draw it — §4 and §5 do that — but to make the process itself something you can read and
+  argue with. Your rule stays; what changes is that it explains itself:</p>
   <ul>
-    <li><b>The rule is stated in the panel</b>, in one sentence, with its criterion named:
-    thicken where utilisation exceeds a target, or where a moment exceeds a value, or to hold a
-    stress on the governing fibre.</li>
-    <li><b>Its limits are yours:</b> minimum t, maximum t, the step it is allowed to move in
-    (a shell built in 25 mm increments is buildable; one built in 3.7 mm increments is not),
-    and a smoothing radius, because a thickness map that jumps element to element is a drawing
-    nobody can pour.</li>
-    <li><b>It iterates and reports:</b> pass 1 raised 84 elements, pass 2 raised 11, pass 3 none
-    — converged. A run that does not converge says so instead of stopping quietly at a limit.</li>
-    <li><b>It leaves a map behind</b>, which is what lets §4's section drawings band the zones it
+    <li><b>The rule is stated in the panel</b>, in one sentence, with its criterion named — and for
+    a concrete shell the honest criterion is usually not stress but reinforcement: thicken when the
+    steel the Wood–Armer moments demand will not fit, or when the section is over its limit.</li>
+    <li><b>Its limits are yours:</b> minimum t, maximum t, the step it is allowed to move in (a
+    shell built in 25 mm increments is buildable; one built in 3.7 mm increments is not), and a
+    smoothing radius, because a thickness map that jumps element to element is a drawing nobody can
+    pour.</li>
+    <li><b>It iterates and reports:</b> pass 1 raised 84 elements, pass 2 raised 11, pass 3 none —
+    converged. A run that does not converge says so instead of stopping quietly at a limit.</li>
+    <li><b>It leaves a map behind</b>, which is what lets §5's section drawings band the zones it
     acted on and print the multiplier it applied there.</li>
     <li><b>It can be turned off and compared:</b> hold the before and after, and show the pair —
-    weight, peak deflection, governing utilisation, and where the governing element moved to.</li>
+    concrete volume, steel tonnage, peak deflection, governing utilisation, and where the governing
+    element moved to.</li>
   </ul>
   <div class="note warn">
-    <p>If your existing rule is different from any of this, yours wins — send it and I will keep
-    it exactly, and spend the work on making it legible instead. A thickening rule is a design
-    decision, not an implementation detail, and I would rather not invent one for you.</p>
+    <p>If your existing rule differs from any of this, yours wins. A thickening rule is a design
+    decision, not an implementation detail, and I would rather read yours than invent one.</p>
   </div>
 </section>
 
 <section>
-  <h2><span class="num">10</span>How I would build it</h2>
-  <p>Six stages. Each one ends with the app running and its tests passing, so you can stop me
-  at any boundary and still have something that works. Tests go in
-  <span class="path">tests/</span> beside the 54 files already there and run in the same pytest
+  <h2><span class="num">11</span>Every feature, and what happens to it</h2>
+  <p>The Stereo plan had a table like this and you said that plan worked, so here is the same thing
+  for the Shell tab. It is <b>provisional</b> — built on §1 rather than on the code — and the first
+  thing I would do with the folder is correct it and show you the corrected version before touching
+  anything.</p>
+  <div class="tbl"><table>
+    <tr><th>Feature</th><th>Verdict</th><th>Why</th></tr>
+    <tr><td>MITC4 element, assembly, solve</td><td class="keep">Keep</td>
+        <td>The right element. Ported unchanged; only the sparse-assembly question in §9 is worth
+        checking.</td></tr>
+    <tr><td><code>shell_codes.py</code> (RC checks)</td><td class="keep">Keep</td>
+        <td>Already separate from the solver, which is what makes adding steel cheap.</td></tr>
+    <tr><td>Automatic thickening rule</td><td class="keep">Keep, make legible</td>
+        <td>Your design decision. §10 draws it and reports it; it does not change it.</td></tr>
+    <tr><td>Edge beams, preliminary check</td><td class="keep">Keep, then upgrade</td>
+        <td>Drawn as solids and cut in section now; <code>concreteproperties</code> turns the check
+        into a real N–M design later, if you want it (question 10).</td></tr>
+    <tr><td>Rectangular plan only</td><td class="back">Replace</td>
+        <td>The plan-shape rule from Stereo, route A in §7. The single biggest gain in the
+        plan.</td></tr>
+    <tr><td>Colour list in the top toolbar</td><td class="kill">Rewrite</td>
+        <td>Becomes the Analyse panel, with a description per row and a guide card.</td></tr>
+    <tr><td>Section cut list and drawing</td><td class="kill">Rewrite</td>
+        <td>Becomes the Sections mode: persistent cuts, true-scale drawing, thickness dimensioned.</td></tr>
+    <tr><td>3D view without thickness</td><td class="kill">Rewrite</td>
+        <td>Drawn as the solid it is, with a cutaway and an exaggeration switch.</td></tr>
+    <tr><td>Supports</td><td class="kill">Rewrite</td>
+        <td>Picking on element corners, six freedoms, presets, quick actions, sandbox.</td></tr>
+    <tr><td>The window as a whole</td><td class="kill">Rewrite</td>
+        <td>The Stereo shell: mode rail, one context panel, canvas cards, status bar.</td></tr>
+    <tr><td>Units</td><td class="keep">Keep</td>
+        <td><code>units.py</code> is app-wide and orthogonal to all of this.</td></tr>
+    <tr><td>Excel import / export</td><td class="keep">Keep</td>
+        <td>As in every other tab.</td></tr>
+    <tr><td><code>.vtu</code> export (PyVista)</td><td class="back">Add</td>
+        <td>Your own reading list calls it the cheapest large win: the model opens in ParaView, and
+        other engineers accept the format.</td></tr>
+    <tr><td>Form finding</td><td class="kill">Not now</td>
+        <td>Named as absent in the reading list, and it is a project of its own — Kratos and
+        <code>compas_tno</code> are the routes when you want it.</td></tr>
+    <tr><td>Gmsh meshing</td><td class="back">Optional, later</td>
+        <td>Route B in §7. True outlines and openings, at the cost of a GPL dependency and an
+        unstructured mesh.</td></tr>
+  </table></div>
+</section>
+
+<section>
+  <h2><span class="num">12</span>How I would build it</h2>
+  <p>Seven stages now, because §0 added one at the front. Each ends with the app running and its
+  tests passing, so you can stop me at any boundary and still have something that works. Tests go
+  in <span class="path">tests/</span> beside the 54 files already there and run in the same pytest
   suite.</p>
 
+  <div class="stage"><span class="tag">Stage 0</span><div>
+    <p><b>Bring the working folder into the repository.</b> The Shell tab and anything else that
+    has drifted, as one commit with a manifest of what changed, then the whole suite run. This has
+    been an open item since 12 September and everything else depends on it.</p>
+    <p class="sub">Risk: low, but it is the stage where surprises surface. I would show you the
+    inventory diff before committing.</p>
+  </div></div>
+
   <div class="stage"><span class="tag">Stage 1</span><div>
-    <p><b>The skeleton and the solver.</b> <code>apps/shell/</code>, a new tab in
-    <code>main.py</code>, the mesh data model, the element, the assembly, the boundary check.
-    Verified against cases with known answers: a simply supported square plate under uniform
-    load (Timoshenko), a clamped circular plate, a cylindrical barrel vault, and a patch test
-    the element must pass exactly.</p>
-    <p class="sub">No UI yet beyond a Generate and an Analyze. The numbers have to be right first.</p>
+    <p><b>Read the solver and correct §1 and §11.</b> Confirm the element, the thickening rule, the
+    edge-beam check and the mesh generator; add verification cases with known answers — a simply
+    supported square plate (Timoshenko), a clamped circular plate, a cylindrical barrel vault, and
+    a patch test the element must pass exactly.</p>
+    <p class="sub">No UI work. If the engine disagrees with §1, you see the corrected table before
+    I build anything on it.</p>
   </div></div>
 
   <div class="stage"><span class="tag">Stage 2</span><div>
     <p><b>The window.</b> Mode rail, one context panel, canvas, status bar, view cube, cards,
-    Alt+1…9, focus rings — the Stereo shell, adapted. Build mode with the ready-made families.</p>
-    <p class="sub">This is the stage where it starts to feel like the Stereo tab.</p>
+    Alt+1…9, focus rings — the Stereo shell, adapted. Existing panels move into their modes with no
+    behaviour change.</p>
+    <p class="sub">The biggest diff, the least new logic — exactly as in the Stereo rebuild.</p>
   </div></div>
 
   <div class="stage"><span class="tag">Stage 3</span><div>
     <p><b>Thickness in 3D, and supports on the corners.</b> The solid drawing, the exaggeration
-    switch, the cutaway; picking, presets, the six freedoms, the quick actions, the sandbox.</p>
+    switch, the cutaway, the edge beams as solids; picking, presets, the six freedoms, the quick
+    actions, the sandbox.</p>
     <p class="sub">The two things you asked for that change the picture most.</p>
   </div></div>
 
   <div class="stage"><span class="tag">Stage 4</span><div>
-    <p><b>Sections.</b> The mode, the persistent cut list, the live plane, the true-scale
-    drawing, the stations, the thickening bands, export.</p>
+    <p><b>Sections.</b> The mode, the persistent cut list, the live plane, the true-scale drawing,
+    the stations, the thickening bands, the first export format.</p>
   </div></div>
 
   <div class="stage"><span class="tag">Stage 5</span><div>
-    <p><b>Shape mode and the wizard.</b> Ported from the Stereo branch: expression parser,
-    keypad, domains, plan-shape rule, summit finder, crossing check.</p>
-    <p class="sub">Cheap, because it is mostly a move — but it depends on the Stereo branch
-    being merged first, or on me copying the modules across. See question 8.</p>
+    <p><b>Shape mode, the wizard, and the end of the rectangular plan.</b> Ported from this branch:
+    expression parser, keypad, domains, plan-shape rule, summit finder, crossing check.</p>
+    <p class="sub">Cheap, because it is mostly a move — the branch already carries it.</p>
   </div></div>
 
   <div class="stage"><span class="tag">Stage 6</span><div>
-    <p><b>Colour, the guide, thickening, reports.</b> The docked list, the <code>?</code> cards,
-    the guide page, the thickening panel and its convergence report, the element table, Excel
-    export, and the worked examples.</p>
+    <p><b>Colour, the guide, thickening, reports.</b> The docked list, the <code>?</code> cards, the
+    guide page, the Wood–Armer and reinforcement maps, the thickening panel and its convergence
+    report, the element table, and the worked examples.</p>
   </div></div>
 </section>
 
 <section>
-  <h2><span class="num">11</span>What this plan does not include</h2>
+  <h2><span class="num">13</span>What this plan does not include</h2>
   <p>Stated plainly so that nothing is assumed:</p>
   <ul>
     <li><b>Linear, small-deflection only.</b> No geometric non-linearity. This matters more for
-    shells than for frames: a thin shell's real failure mode is often snap-through buckling, and
-    a linear solve will not see it. I would print a warning when the peak deflection passes a
-    fraction of the thickness, which is the point where the linear answer stops meaning much.</li>
+    shells than for frames: a thin shell's real failure mode is often snap-through buckling, and a
+    linear solve will not see it. I would print a warning when the peak deflection passes a fraction
+    of the thickness, which is the point where the linear answer stops meaning much. OpenSees is the
+    route to more, and it is already on your reading list.</li>
     <li><b>No form-finding.</b> The shape is yours to specify; the app will not find the funicular
-    surface for a load case. Say the word and it becomes its own project — it is a good one.</li>
-    <li><b>No buckling capacity</b> beyond whatever member-style check the code gives.</li>
+    surface for a load case. It is a good project and a separate one.</li>
+    <li><b>No cracked-section or long-term behaviour</b> — no creep, no shrinkage, no crack widths.
+    The check stays a strength check.</li>
     <li><b>One load case at a time</b>, as in every other tab.</li>
     <li><b>No dynamic, thermal or staged-construction analysis.</b></li>
-    <li><b>No ribs or edge beams as separate elements</b> in the first pass — a stiffened edge is
-    modelled by thickening it. If you want real beam elements along the shell edges, that is
-    worth doing, and it is question 9.</li>
   </ul>
+  <p>What it <i>does</i> now include, and the first draft did not: edge beams — because they are
+  already in your app and the first draft was wrong to say otherwise.</p>
 </section>
 
 <section>
-  <h2><span class="num">12</span>Questions, and what has been answered</h2>
-  <p>Four of these came back straight away, on 2026-09-20. They are marked
-  <b style="color:var(--ok)">answered</b> below, and the plan above already assumes them. The rest
-  still carry the default I would use if you say nothing.</p>
+  <h2><span class="num">14</span>Questions</h2>
+  <p>Four were answered on 2026-09-20 and are marked <b style="color:var(--ok)">answered</b>; two of
+  those have since been overtaken by what §1 turned up, and say so. The rest carry the default I
+  would use if you say nothing.</p>
 
   <div class="qs">
     <div class="q"><span class="num">1</span><div class="qbody">
-      <p><b>Where is the old Shell app?</b></p>
-      <div class="note ok"><p><b>Answered: a zip is coming.</b> So the shell solver and the
-      automatic-thickening rule get <i>ported</i>, not reinvented, and your numbers do not move.
-      Until it arrives I can build the window, the mesh and the drawing, but not the physics —
-      so this is the one thing still blocking the start of Stage 1.</p></div>
+      <p><b>Send the working folder.</b> The Shell app, and ideally the whole folder, since §0
+      suggests more than the Shell tab has drifted.</p>
+      <div class="note ok"><p><b>Answered: a zip is coming.</b> It remains the one thing blocking
+      Stage 0, and every stage after it.</p></div>
     </div></div>
 
     <div class="q"><span class="num">2</span><div class="qbody">
-      <p><b>A new tab, or a replacement?</b> Does Shell sit alongside the existing seven tabs as
-      an eighth, or does it replace something?</p>
-      <p class="default">Unless you say otherwise: <b>a new eighth tab</b>, nothing else touched.</p>
+      <p><b>Should the repository be synced to the working folder first?</b> This was asked on
+      12 September and never answered. I think yes, as Stage 0 — otherwise every Shell commit here
+      is written against a copy of the app that is not the one you run.</p>
+      <p class="default">Unless you say otherwise: <b>yes, sync first</b>, with an inventory of what
+      changed shown to you before it is committed.</p>
     </div></div>
 
     <div class="q"><span class="num">3</span><div class="qbody">
       <p><b>Which shell families matter most?</b></p>
       <div class="note ok"><p><b>Answered: the dome and the spherical cap first</b> — including the
       elliptic dome and the paraboloid dish, which are the same generator with different radii.
-      They get the worked examples and the verification cases; barrel vault, hypar and folded
-      plate follow in that order unless you move them.</p></div>
+      Barrel vault, hypar and folded plate follow in that order.</p></div>
     </div></div>
 
     <div class="q"><span class="num">4</span><div class="qbody">
-      <p><b>Thin shell, thick plate, or both?</b> It decides the element — and it is probably
-      answered by the old app's solver when it arrives.</p>
-      <p class="default">Unless you say otherwise: <b>MITC4 + DKT</b>, which covers both.</p>
+      <p><b>Thin shell, thick plate, or both?</b></p>
+      <div class="note ok"><p><b>Answered by the evidence, not by guesswork:</b> your tab already
+      uses MITC4, which handles both. DKT triangles are only needed if question 7 goes to Gmsh.</p></div>
     </div></div>
 
     <div class="q"><span class="num">5</span><div class="qbody">
       <p><b>Concrete or steel?</b></p>
-      <div class="note ok"><p><b>Answered: both, switchable.</b> A material selector in the
-      Thickness mode, with two independent check paths and two verification sets. That lands one
-      stage later than a single material would, and it makes the thickening rule material-aware:
-      steel thickens against stress on the governing fibre, concrete against a cracked-section
-      check and minimum reinforcement.</p>
-      <p><b>One thing still missing:</b> <i>which</i> concrete code — CIRSOC 201, EHE, ACI 318 or
-      Eurocode 2? Unless you say otherwise I will use <b>CIRSOC 201</b>, to sit beside the
-      CIRSOC 301 steel path the rest of the app already uses.</p></div>
+      <div class="note ok"><p><b>Answered: both, switchable</b> — and §1 sharpens what that means.
+      Reinforced concrete is what you <i>have</i>; steel is the <i>addition</i>. So the work is a
+      second entry point in <code>shell_codes.py</code> and a material selector, not two new check
+      paths.</p>
+      <p><b>Still missing:</b> which concrete code is already implemented — CIRSOC 201, EHE,
+      ACI 318 or Eurocode 2? The zip answers this, but if you know it offhand it saves a round.</p></div>
     </div></div>
 
     <div class="q"><span class="num">6</span><div class="qbody">
       <p><b>What is your automatic thickening rule?</b> The criterion, the limits, the step.</p>
-      <p class="default">Expected to be answered by the zip. If it is not legible in the code I
-      will ask again rather than guess.</p>
+      <p class="default">Expected to be answered by the zip. If it is not legible in the code I will
+      ask again rather than guess.</p>
     </div></div>
 
     <div class="q"><span class="num">7</span><div class="qbody">
-      <p><b>How do you get sections out?</b> DXF for CAD, or a table of numbers per station?</p>
-      <p class="default">Unless you say otherwise: <b>the table first</b>, DXF after.</p>
+      <p><b>The plan shape: route A or route B?</b> The Stereo mask, free and stepped — or Gmsh,
+      exact and GPL. See the table in §7.</p>
+      <p class="default">Unless you say otherwise: <b>A now, B kept as an option</b>.</p>
     </div></div>
 
     <div class="q"><span class="num">8</span><div class="qbody">
       <p><b>Which branch should the Shell work start from?</b></p>
       <div class="note ok"><p><b>Answered, and already done:</b> this branch now sits on top of
       <code>claude/stereo-ui-rebuild</code>, so there is exactly one copy of
-      <code>expr_math.py</code>, the maths keypad, the domain handling and the plan-shape mask.
-      Shell and Stereo merge to <code>main</code> together.</p></div>
+      <code>expr_math.py</code>, the maths keypad, the domain handling and the plan-shape mask.</p></div>
     </div></div>
 
     <div class="q"><span class="num">9</span><div class="qbody">
-      <p><b>Do you need edge beams and ribs as real elements?</b> Beam elements welded to the
-      shell edge, rather than a thickened strip.</p>
-      <p class="default">Unless you say otherwise: <b>no</b> — thickened strips only, in the first pass.</p>
+      <p><b>How do you get results out?</b> A table per station, DXF for CAD, or <code>.vtu</code>
+      for ParaView — which your own reading list ranks first of the three changes worth making.</p>
+      <p class="default">Unless you say otherwise: <b>the table first</b>, then <code>.vtu</code>,
+      then DXF.</p>
+    </div></div>
+
+    <div class="q"><span class="num">10</span><div class="qbody">
+      <p><b>The edge beams: draw them now, design them later?</b> Or bring in
+      <code>concreteproperties</code> and make the edge-beam check a real N–M design in the same
+      round?</p>
+      <p class="default">Unless you say otherwise: <b>draw now, design later</b> — it is a
+      dependency and a test round of its own.</p>
     </div></div>
   </div>
 
   <hr class="soft">
-  <p>Nothing in the app has been changed. This page and its six figures are the only output of
-  this round — they are the thing to argue with. Tell me where I have it wrong and I will redraw
-  the relevant picture before writing any code.</p>
+  <p>Nothing in the app has been changed. This page and its six figures are the only output of this
+  round — they are the thing to argue with. Tell me where I have it wrong and I will redraw the
+  relevant picture before writing any code.</p>
 </section>
 
 </div>

@@ -2,32 +2,33 @@ import math, sv3d as S, ui as U
 
 INK, INK2, MUT, RULE, SOFT = U.INK, U.INK2, U.MUT, U.RULE, U.SOFT
 BLUE, RUST = U.BLUE, U.RUST
-W, H = 1080, 622
+W, H = 1080, 640
 o = [U.rect(0, 0, W, H, '#ffffff', None)]
 
 # ══ left: how it reads today ═══════════════════════════════════════════════
 o.append(S.text(24, 30, 'TODAY', 10, MUT, weight='700', family='sans'))
 o.append(S.text(24, 48, 'the list lives in the top bar, closed', 11, INK2, family='sans'))
+o.append(S.text(24, 240, 'drawn from the pattern the other tabs use \u2014 I have not seen your Shell toolbar', 9.4, MUT, family='sans'))
 o.append(U.rect(24, 62, 470, 40, '#e9edf1', '#b9c2ca', 1, 2))
 x = 34
 for lab, w in [('Generate', 66), ('Analyze', 60), ('↶', 22), ('↷', 22)]:
     o += U.button(x, 71, w, 22, lab, False, 9.6)
     x += w + 6
 o.append(U.rect(x + 6, 71, 96, 22, '#ffffff', '#8c979f', 1, 2))
-o.append(S.text(x + 12, 86, 'Axial force', 9.6, INK))
+o.append(S.text(x + 12, 86, 'Membrane N', 9.6, INK))
 o.append(S.text(x + 92, 86, '▾', 9.6, INK))
 o.append(U.rect(x + 110, 71, 60, 22, '#ffffff', '#8c979f', 1, 2))
 o.append(S.text(x + 116, 86, 'Peak ▾', 9.6, INK))
 # the dropdown, open
 dx, dy = x + 6, 95
 o.append(U.rect(dx, dy, 96, 132, '#ffffff', '#8c979f', 1, 1))
-for k, s in enumerate(['Axial force', 'Utilization', 'Node moment', 'Deformation',
-                       'Thickness', 'None']):
+for k, s in enumerate(['Membrane N', 'Moment m', 'Wood-Armer', 'Utilization',
+                       'Deflection', 'None']):
     if k == 0:
         o.append(U.rect(dx + 1, dy + 1 + k * 21, 94, 21, '#cfe0f0', None))
     o.append(S.text(dx + 8, dy + 16 + k * 21, s, 9.6, INK))
 o += U.leader(206, 150, dx + 48, dy + 60)
-o.append(S.text(40, 146, 'eight quantities behind one 96 px box,', 10, RUST, family='sans'))
+o.append(S.text(40, 146, 'every quantity behind one 96 px box,', 10, RUST, family='sans'))
 o.append(S.text(40, 160, 'shut by default, and not one word', 10, RUST, family='sans'))
 o.append(S.text(40, 174, 'anywhere about what they mean.', 10, RUST, family='sans'))
 o.append(U.line(24, 250, 494, 250, SOFT, 1))
@@ -36,12 +37,13 @@ o.append(U.line(24, 250, 494, 250, SOFT, 1))
 o.append(S.text(586, 30, 'PROPOSED', 10, MUT, weight='700', family='sans'))
 o.append(S.text(586, 48, 'the list is the panel, and every row can explain itself', 11, INK2, family='sans'))
 PX, PY, PW = 586, 62, 462
-o += U.panel(PX, PY, PW, 188, None)
-o += U.group(PX + 12, PY + 12, PW - 24, 164, 'Colour the shell by')
-rows = [('Membrane force  N₁ / N₂', 'force per metre, in the shell plane', True),
-        ('Bending moment  m₁ / m₂', 'the bending the shape could not avoid', False),
-        ('Von Mises, top / bottom fibre', 'combined stress on one face', False),
-        ('Utilisation (code check)', 'demand ÷ capacity — red is always 1.0', False),
+o += U.panel(PX, PY, PW, 210, None)
+o += U.group(PX + 12, PY + 12, PW - 24, 186, 'Colour the shell by')
+rows = [('Membrane force  N\u2081 / N\u2082', 'force per metre, in the shell plane', True),
+        ('Bending moment  m\u2081 / m\u2082', 'the bending the shape could not avoid', False),
+        ('Wood\u2013Armer design moments', 'what the reinforcement is sized from', False),
+        ('Required steel  As, cm\u00b2/m', 'top and bottom, each direction', False),
+        ('Utilisation (code check)', 'demand \u00f7 capacity; red is 1.0', False),
         ('Thickness  t', 'what the thickening decided', False),
         ('Deflection', 'how far each point moved', False)]
 for k, (s, sub, on) in enumerate(rows):
@@ -52,11 +54,11 @@ for k, (s, sub, on) in enumerate(rows):
     o.append(S.text(PX + 48, ry + 4, s, 10, INK, weight='700' if on else '400', family='sans'))
     o.append(S.text(PX + 232, ry + 4, sub, 9.2, MUT, family='sans'))
     o.append(S.text(PX + PW - 30, ry + 4, '?', 10.5, BLUE, weight='700', family='sans'))
-o += U.leader(PX + PW - 26, PY + 190, PX + PW - 26, PY + 44)
-o.append(S.text(PX + 150, PY + 206, 'one line under every row; a ? on every row opens the card below', 10, RUST, family='sans'))
+o += U.leader(PX + PW - 26, PY + 212, PX + PW - 26, PY + 44)
+o.append(S.text(PX + 150, PY + 228, 'one line under every row; a ? on every row opens the card below', 10, RUST, family='sans'))
 
 # ══ the guide card ═════════════════════════════════════════════════════════
-GY = 288
+GY = 302
 o.append(U.line(24, GY - 22, W - 24, GY - 22, SOFT, 1))
 o.append(U.rect(24, GY, W - 48, 306, '#f7f9fb', RULE, 1, 3))
 o.append(S.text(44, GY + 26, 'WHAT AM I LOOKING AT?  ·  Membrane force N₁ / N₂', 12, INK,

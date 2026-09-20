@@ -1,8 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 622" width="100%" role="img">
-<rect width="1080" height="622" fill="#ffffff"/>
-<rect x="0.0" y="0.0" width="1080.0" height="622.0" rx="0.0" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 640" width="100%" role="img">
+<rect width="1080" height="640" fill="#ffffff"/>
+<rect x="0.0" y="0.0" width="1080.0" height="640.0" rx="0.0" fill="#ffffff"/>
 <text x="24.00" y="30.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="700" >TODAY</text>
 <text x="24.00" y="48.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="11.0" fill="#4c565f" text-anchor="start" font-weight="400" >the list lives in the top bar, closed</text>
+<text x="24.00" y="240.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >drawn from the pattern the other tabs use — I have not seen your Shell toolbar</text>
 <rect x="24.0" y="62.0" width="470.0" height="40.0" rx="2.0" fill="#e9edf1" stroke="#b9c2ca" stroke-width="1.00"/>
 <rect x="34.0" y="71.0" width="66.0" height="22.0" rx="2.0" fill="#e7ebef" stroke="#aab4bd" stroke-width="1.00"/>
 <text x="67.00" y="85.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#1e2429" text-anchor="middle" font-weight="600" >Generate</text>
@@ -13,28 +14,28 @@
 <rect x="200.0" y="71.0" width="22.0" height="22.0" rx="2.0" fill="#e7ebef" stroke="#aab4bd" stroke-width="1.00"/>
 <text x="211.00" y="85.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#1e2429" text-anchor="middle" font-weight="600" >↷</text>
 <rect x="234.0" y="71.0" width="96.0" height="22.0" rx="2.0" fill="#ffffff" stroke="#8c979f" stroke-width="1.00"/>
-<text x="240.00" y="86.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Axial force</text>
+<text x="240.00" y="86.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Membrane N</text>
 <text x="320.00" y="86.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >▾</text>
 <rect x="338.0" y="71.0" width="60.0" height="22.0" rx="2.0" fill="#ffffff" stroke="#8c979f" stroke-width="1.00"/>
 <text x="344.00" y="86.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Peak ▾</text>
 <rect x="234.0" y="95.0" width="96.0" height="132.0" rx="1.0" fill="#ffffff" stroke="#8c979f" stroke-width="1.00"/>
 <rect x="235.0" y="96.0" width="94.0" height="21.0" rx="0.0" fill="#cfe0f0"/>
-<text x="242.00" y="111.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Axial force</text>
-<text x="242.00" y="132.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Utilization</text>
-<text x="242.00" y="153.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Node moment</text>
-<text x="242.00" y="174.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Deformation</text>
-<text x="242.00" y="195.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Thickness</text>
+<text x="242.00" y="111.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Membrane N</text>
+<text x="242.00" y="132.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Moment m</text>
+<text x="242.00" y="153.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Wood-Armer</text>
+<text x="242.00" y="174.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Utilization</text>
+<text x="242.00" y="195.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >Deflection</text>
 <text x="242.00" y="216.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >None</text>
 <line x1="206.0" y1="150.0" x2="282.0" y2="155.0" stroke="#c0561f" stroke-width="1.00" stroke-linecap="butt"/>
 <circle cx="282.0" cy="155.0" r="2.2" fill="#c0561f"/>
-<text x="40.00" y="146.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#c0561f" text-anchor="start" font-weight="400" >eight quantities behind one 96 px box,</text>
+<text x="40.00" y="146.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#c0561f" text-anchor="start" font-weight="400" >every quantity behind one 96 px box,</text>
 <text x="40.00" y="160.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#c0561f" text-anchor="start" font-weight="400" >shut by default, and not one word</text>
 <text x="40.00" y="174.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#c0561f" text-anchor="start" font-weight="400" >anywhere about what they mean.</text>
 <line x1="24.0" y1="250.0" x2="494.0" y2="250.0" stroke="#e2e7ec" stroke-width="1.00" stroke-linecap="butt"/>
 <text x="586.00" y="30.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="700" >PROPOSED</text>
 <text x="586.00" y="48.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="11.0" fill="#4c565f" text-anchor="start" font-weight="400" >the list is the panel, and every row can explain itself</text>
-<rect x="586.0" y="62.0" width="462.0" height="188.0" rx="3.0" fill="#eef1f4" stroke="#ccd3da" stroke-width="1.00"/>
-<rect x="598.0" y="81.0" width="438.0" height="157.0" rx="2.0" fill="#ffffff" stroke="#ccd3da" stroke-width="1.00" fill-opacity="0.55"/>
+<rect x="586.0" y="62.0" width="462.0" height="210.0" rx="3.0" fill="#eef1f4" stroke="#ccd3da" stroke-width="1.00"/>
+<rect x="598.0" y="81.0" width="438.0" height="179.0" rx="2.0" fill="#ffffff" stroke="#ccd3da" stroke-width="1.00" fill-opacity="0.55"/>
 <rect x="606.0" y="74.0" width="120.1" height="14.0" rx="0.0" fill="#eef1f4"/>
 <text x="610.00" y="85.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="700" >Colour the shell by</text>
 <rect x="606.0" y="93.0" width="418.0" height="22.0" rx="2.0" fill="#dce9f6" stroke="#1a6bbd" stroke-width="1.00"/>
@@ -51,73 +52,78 @@
 <text x="1018.00" y="132.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1a6bbd" text-anchor="start" font-weight="700" >?</text>
 <circle cx="620.0" cy="152.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
 <text x="631.00" y="155.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" ></text>
-<text x="634.00" y="156.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Von Mises, top / bottom fibre</text>
-<text x="818.00" y="156.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >combined stress on one face</text>
+<text x="634.00" y="156.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Wood–Armer design moments</text>
+<text x="818.00" y="156.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >what the reinforcement is sized from</text>
 <text x="1018.00" y="156.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1a6bbd" text-anchor="start" font-weight="700" >?</text>
 <circle cx="620.0" cy="176.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
 <text x="631.00" y="179.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" ></text>
-<text x="634.00" y="180.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Utilisation (code check)</text>
-<text x="818.00" y="180.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >demand ÷ capacity — red is always 1.0</text>
+<text x="634.00" y="180.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Required steel  As, cm²/m</text>
+<text x="818.00" y="180.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >top and bottom, each direction</text>
 <text x="1018.00" y="180.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1a6bbd" text-anchor="start" font-weight="700" >?</text>
 <circle cx="620.0" cy="200.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
 <text x="631.00" y="203.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" ></text>
-<text x="634.00" y="204.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Thickness  t</text>
-<text x="818.00" y="204.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >what the thickening decided</text>
+<text x="634.00" y="204.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Utilisation (code check)</text>
+<text x="818.00" y="204.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >demand ÷ capacity; red is 1.0</text>
 <text x="1018.00" y="204.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1a6bbd" text-anchor="start" font-weight="700" >?</text>
 <circle cx="620.0" cy="224.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
 <text x="631.00" y="227.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" ></text>
-<text x="634.00" y="228.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Deflection</text>
-<text x="818.00" y="228.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >how far each point moved</text>
+<text x="634.00" y="228.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Thickness  t</text>
+<text x="818.00" y="228.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >what the thickening decided</text>
 <text x="1018.00" y="228.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1a6bbd" text-anchor="start" font-weight="700" >?</text>
-<line x1="1022.0" y1="252.0" x2="1022.0" y2="106.0" stroke="#c0561f" stroke-width="1.00" stroke-linecap="butt"/>
+<circle cx="620.0" cy="248.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
+<text x="631.00" y="251.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" ></text>
+<text x="634.00" y="252.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Deflection</text>
+<text x="818.00" y="252.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >how far each point moved</text>
+<text x="1018.00" y="252.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1a6bbd" text-anchor="start" font-weight="700" >?</text>
+<line x1="1022.0" y1="274.0" x2="1022.0" y2="106.0" stroke="#c0561f" stroke-width="1.00" stroke-linecap="butt"/>
 <circle cx="1022.0" cy="106.0" r="2.2" fill="#c0561f"/>
-<text x="736.00" y="268.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#c0561f" text-anchor="start" font-weight="400" >one line under every row; a ? on every row opens the card below</text>
-<line x1="24.0" y1="266.0" x2="1056.0" y2="266.0" stroke="#e2e7ec" stroke-width="1.00" stroke-linecap="butt"/>
-<rect x="24.0" y="288.0" width="1032.0" height="306.0" rx="3.0" fill="#f7f9fb" stroke="#ccd3da" stroke-width="1.00"/>
-<text x="44.00" y="314.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="12.0" fill="#1e2429" text-anchor="start" font-weight="700" >WHAT AM I LOOKING AT?  ·  Membrane force N₁ / N₂</text>
-<text x="44.00" y="334.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >opened from the ? on the row, or from the legend on the canvas. Same text in the tab’s guide page.</text>
-<polygon points="146.74,415.30 235.21,434.58 173.26,476.48 84.79,457.21" fill="#c3ced8" stroke="#7d8a95" stroke-width="0.70" stroke-linejoin="round"/>
-<polygon points="146.74,407.41 235.21,426.69 235.21,434.58 146.74,415.30" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<polygon points="84.79,449.31 146.74,407.41 146.74,415.30 84.79,457.21" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<polygon points="146.74,407.41 235.21,426.69 173.26,468.59 84.79,449.31" fill="#dfe7ee" stroke="#7d8a95" stroke-width="0.90" stroke-linejoin="round"/>
-<polygon points="235.21,426.69 173.26,468.59 173.26,476.48 235.21,434.58" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<polygon points="173.26,468.59 84.79,449.31 84.79,457.21 173.26,476.48" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<line x1="268.0" y1="498.5" x2="218.0" y2="470.5" stroke="#33528c" stroke-width="1.80" stroke-linecap="round"/>
-<polygon points="218.0,470.5 224.0,471.0 221.6,475.3" fill="#33528c"/>
-<line x1="52.0" y1="377.5" x2="102.0" y2="405.5" stroke="#33528c" stroke-width="1.80" stroke-linecap="round"/>
-<polygon points="102.0,405.5 96.0,405.0 98.4,400.7" fill="#33528c"/>
-<line x1="107.8" y1="474.0" x2="62.8" y2="505.0" stroke="#a8432e" stroke-width="1.80" stroke-linecap="round"/>
-<polygon points="62.8,505.0 65.9,499.8 68.7,503.9" fill="#a8432e"/>
-<line x1="212.2" y1="402.0" x2="257.2" y2="371.0" stroke="#a8432e" stroke-width="1.80" stroke-linecap="round"/>
-<polygon points="257.2,371.0 254.1,376.2 251.3,372.1" fill="#a8432e"/>
-<text x="160.00" y="546.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#4c565f" text-anchor="middle" font-weight="400" >N₁ compression (blue) · N₂ tension (red)</text>
-<text x="160.00" y="368.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#77838d" text-anchor="middle" font-weight="400" >in the plane of the shell</text>
-<polygon points="354.74,415.30 443.21,434.58 381.26,476.48 292.79,457.21" fill="#c3ced8" stroke="#7d8a95" stroke-width="0.70" stroke-linejoin="round"/>
-<polygon points="354.74,407.41 443.21,426.69 443.21,434.58 354.74,415.30" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<polygon points="292.79,449.31 354.74,407.41 354.74,415.30 292.79,457.21" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<polygon points="354.74,407.41 443.21,426.69 381.26,468.59 292.79,449.31" fill="#dfe7ee" stroke="#7d8a95" stroke-width="0.90" stroke-linejoin="round"/>
-<polygon points="443.21,426.69 381.26,468.59 381.26,476.48 443.21,434.58" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<polygon points="381.26,468.59 292.79,449.31 292.79,457.21 381.26,476.48" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
-<path d="M310.0 472.0 a 30 30 0 0 0 18.0 -58.0" fill="none" stroke="#7b2fa8" stroke-width="1.8"/>
-<line x1="328.0" y1="414.0" x2="334.0" y2="408.0" stroke="#7b2fa8" stroke-width="1.80" stroke-linecap="round"/>
-<polygon points="334.0,408.0 332.0,413.1 328.9,410.0" fill="#7b2fa8"/>
-<path d="M426.0 404.0 a 30 30 0 0 1 -18.0 58.0" fill="none" stroke="#7b2fa8" stroke-width="1.8"/>
-<line x1="408.0" y1="462.0" x2="402.0" y2="468.0" stroke="#7b2fa8" stroke-width="1.80" stroke-linecap="round"/>
-<polygon points="402.0,468.0 404.0,462.9 407.1,466.0" fill="#7b2fa8"/>
-<text x="368.00" y="546.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#4c565f" text-anchor="middle" font-weight="400" >m₁ / m₂ bend the slab across its own thickness</text>
-<text x="368.00" y="368.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#77838d" text-anchor="middle" font-weight="400" >out of the plane of the shell</text>
-<text x="520.00" y="372.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" >N₁ and N₂ are the two principal MEMBRANE forces: force per metre of width, in the</text>
-<text x="520.00" y="387.40" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" >plane of the shell. They are what a shell carries load with. Blue is compression,</text>
-<text x="520.00" y="402.80" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" >red is tension, and the pale middle of the ramp is a patch carrying almost nothing.</text>
-<text x="520.00" y="418.20" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" ></text>
-<text x="520.00" y="433.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Read it like this. A well-shaped shell is mostly one colour — compression — with</text>
-<text x="520.00" y="449.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >tension only near free edges and openings. A red patch in the middle of a dome is</text>
-<text x="520.00" y="464.40" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >the shape fighting the load, and it is usually cheaper to change the shape than to</text>
-<text x="520.00" y="479.80" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >thicken the slab. Bending m₁ / m₂ tells the other half of that story: a shell in pure</text>
-<text x="520.00" y="495.20" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >membrane action has almost none, so wherever m is large the shell is acting as a</text>
-<text x="520.00" y="510.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >plate, and that is exactly where automatic thickening will add material.</text>
-<text x="520.00" y="526.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" ></text>
-<text x="520.00" y="541.40" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >Units follow the tab: kN/m here, kNm/m for moments, MPa for stress.</text>
-<text x="520.00" y="556.80" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >The scale is this model’s own peak unless you pin it — so two models are not</text>
-<text x="520.00" y="572.20" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >comparable by colour alone, and the legend always prints the numbers.</text>
+<text x="736.00" y="290.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#c0561f" text-anchor="start" font-weight="400" >one line under every row; a ? on every row opens the card below</text>
+<line x1="24.0" y1="280.0" x2="1056.0" y2="280.0" stroke="#e2e7ec" stroke-width="1.00" stroke-linecap="butt"/>
+<rect x="24.0" y="302.0" width="1032.0" height="306.0" rx="3.0" fill="#f7f9fb" stroke="#ccd3da" stroke-width="1.00"/>
+<text x="44.00" y="328.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="12.0" fill="#1e2429" text-anchor="start" font-weight="700" >WHAT AM I LOOKING AT?  ·  Membrane force N₁ / N₂</text>
+<text x="44.00" y="348.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >opened from the ? on the row, or from the legend on the canvas. Same text in the tab’s guide page.</text>
+<polygon points="146.74,429.30 235.21,448.58 173.26,490.48 84.79,471.21" fill="#c3ced8" stroke="#7d8a95" stroke-width="0.70" stroke-linejoin="round"/>
+<polygon points="146.74,421.41 235.21,440.69 235.21,448.58 146.74,429.30" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<polygon points="84.79,463.31 146.74,421.41 146.74,429.30 84.79,471.21" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<polygon points="146.74,421.41 235.21,440.69 173.26,482.59 84.79,463.31" fill="#dfe7ee" stroke="#7d8a95" stroke-width="0.90" stroke-linejoin="round"/>
+<polygon points="235.21,440.69 173.26,482.59 173.26,490.48 235.21,448.58" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<polygon points="173.26,482.59 84.79,463.31 84.79,471.21 173.26,490.48" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<line x1="268.0" y1="512.5" x2="218.0" y2="484.5" stroke="#33528c" stroke-width="1.80" stroke-linecap="round"/>
+<polygon points="218.0,484.5 224.0,485.0 221.6,489.3" fill="#33528c"/>
+<line x1="52.0" y1="391.5" x2="102.0" y2="419.5" stroke="#33528c" stroke-width="1.80" stroke-linecap="round"/>
+<polygon points="102.0,419.5 96.0,419.0 98.4,414.7" fill="#33528c"/>
+<line x1="107.8" y1="488.0" x2="62.8" y2="519.0" stroke="#a8432e" stroke-width="1.80" stroke-linecap="round"/>
+<polygon points="62.8,519.0 65.9,513.8 68.7,517.9" fill="#a8432e"/>
+<line x1="212.2" y1="416.0" x2="257.2" y2="385.0" stroke="#a8432e" stroke-width="1.80" stroke-linecap="round"/>
+<polygon points="257.2,385.0 254.1,390.2 251.3,386.1" fill="#a8432e"/>
+<text x="160.00" y="560.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#4c565f" text-anchor="middle" font-weight="400" >N₁ compression (blue) · N₂ tension (red)</text>
+<text x="160.00" y="382.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#77838d" text-anchor="middle" font-weight="400" >in the plane of the shell</text>
+<polygon points="354.74,429.30 443.21,448.58 381.26,490.48 292.79,471.21" fill="#c3ced8" stroke="#7d8a95" stroke-width="0.70" stroke-linejoin="round"/>
+<polygon points="354.74,421.41 443.21,440.69 443.21,448.58 354.74,429.30" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<polygon points="292.79,463.31 354.74,421.41 354.74,429.30 292.79,471.21" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<polygon points="354.74,421.41 443.21,440.69 381.26,482.59 292.79,463.31" fill="#dfe7ee" stroke="#7d8a95" stroke-width="0.90" stroke-linejoin="round"/>
+<polygon points="443.21,440.69 381.26,482.59 381.26,490.48 443.21,448.58" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<polygon points="381.26,482.59 292.79,463.31 292.79,471.21 381.26,490.48" fill="#93a1ad" stroke="#5d6a74" stroke-width="0.60" stroke-linejoin="round"/>
+<path d="M310.0 486.0 a 30 30 0 0 0 18.0 -58.0" fill="none" stroke="#7b2fa8" stroke-width="1.8"/>
+<line x1="328.0" y1="428.0" x2="334.0" y2="422.0" stroke="#7b2fa8" stroke-width="1.80" stroke-linecap="round"/>
+<polygon points="334.0,422.0 332.0,427.1 328.9,424.0" fill="#7b2fa8"/>
+<path d="M426.0 418.0 a 30 30 0 0 1 -18.0 58.0" fill="none" stroke="#7b2fa8" stroke-width="1.8"/>
+<line x1="408.0" y1="476.0" x2="402.0" y2="482.0" stroke="#7b2fa8" stroke-width="1.80" stroke-linecap="round"/>
+<polygon points="402.0,482.0 404.0,476.9 407.1,480.0" fill="#7b2fa8"/>
+<text x="368.00" y="560.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#4c565f" text-anchor="middle" font-weight="400" >m₁ / m₂ bend the slab across its own thickness</text>
+<text x="368.00" y="382.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#77838d" text-anchor="middle" font-weight="400" >out of the plane of the shell</text>
+<text x="520.00" y="386.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" >N₁ and N₂ are the two principal MEMBRANE forces: force per metre of width, in the</text>
+<text x="520.00" y="401.40" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" >plane of the shell. They are what a shell carries load with. Blue is compression,</text>
+<text x="520.00" y="416.80" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" >red is tension, and the pale middle of the ramp is a patch carrying almost nothing.</text>
+<text x="520.00" y="432.20" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" ></text>
+<text x="520.00" y="447.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >Read it like this. A well-shaped shell is mostly one colour — compression — with</text>
+<text x="520.00" y="463.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >tension only near free edges and openings. A red patch in the middle of a dome is</text>
+<text x="520.00" y="478.40" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >the shape fighting the load, and it is usually cheaper to change the shape than to</text>
+<text x="520.00" y="493.80" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >thicken the slab. Bending m₁ / m₂ tells the other half of that story: a shell in pure</text>
+<text x="520.00" y="509.20" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >membrane action has almost none, so wherever m is large the shell is acting as a</text>
+<text x="520.00" y="524.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="400" >plate, and that is exactly where automatic thickening will add material.</text>
+<text x="520.00" y="540.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#4c565f" text-anchor="start" font-weight="400" ></text>
+<text x="520.00" y="555.40" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >Units follow the tab: kN/m here, kNm/m for moments, MPa for stress.</text>
+<text x="520.00" y="570.80" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >The scale is this model’s own peak unless you pin it — so two models are not</text>
+<text x="520.00" y="586.20" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="400" >comparable by colour alone, and the legend always prints the numbers.</text>
 </svg>

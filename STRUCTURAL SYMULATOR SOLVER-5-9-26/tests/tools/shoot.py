@@ -125,11 +125,22 @@ def _run(args, w, h):
     app = _one_tab(root, args.tab)
     pump(25)
     if args.generate:
-        app._generate(push_undo=False)
+        # the tabs disagree about the name, because they were written years
+        # apart; try each rather than make the caller remember which.
+        for name, kw in (('_generate', {'push_undo': False}),
+                         ('_rebuild_geometry', {})):
+            fn = getattr(app, name, None)
+            if fn is not None:
+                fn(**kw)
+                break
         pump(20)
         shot('generated')
     if args.analyze:
-        app._analyze()
+        fn = getattr(app, '_analyze', None) or getattr(app, 'analyze')
+        ok = fn()
+        if ok is False:
+            print('analyze refused:', getattr(app, 'error', '(no reason given)'),
+                  flush=True)
         pump(25)
         shot('analyzed')
     for key in [m.strip() for m in args.modes.split(',') if m.strip()]:
@@ -162,6 +173,8 @@ def _one_tab(root, name):
         'perforated_beam': ('apps.perforated_beam.perforated_beam_app',
                             'PerforatedBeamApp', True),
         'stereo': ('apps.stereo.stereo_app', 'StereoApp', False),
+        'shell': ('apps.shell.shell_app', 'ShellApp', True),
+        'shell_(rc)': ('apps.shell.shell_app', 'ShellApp', True),
     }
     if key not in table:
         sys.exit('shoot.py: unknown tab %r. One of: %s'

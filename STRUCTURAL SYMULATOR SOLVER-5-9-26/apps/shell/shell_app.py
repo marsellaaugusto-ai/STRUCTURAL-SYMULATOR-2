@@ -1090,20 +1090,36 @@ class ShellApp(UnitsMixin, tk.Frame):
         dev = zs - chord
         return span, float(dev[np.argmax(np.abs(dev))])
 
-    def strip_load(self):
-        """Service load per square metre of PLAN, from the loads that were
-        actually applied rather than from the load panel: the total vertical
-        force the solver saw, divided by the plan area. Anything else --
-        re-reading the load formulas, adding self weight by hand -- would be
-        a second implementation of the loading that could disagree with the
-        first one."""
+    def strip_load(self, elems=None):
+        """Service load per square metre of PLAN carried BY THE SHELL, over
+        the given elements (all of them when none are named).
+
+        Taken from the element load vectors the solver assembled, not by
+        re-reading the load panel: a second implementation of the loading
+        could disagree with the first and there would be no way to tell
+        which was right.
+
+        Two things it deliberately leaves out, because the hand method does
+        too. The weight of the edge beams and columns is carried by the
+        beams and columns, not by the parabolas -- on a 9 x 9 m module with
+        25 x 50 beams that is 1.3 kN/m2 of plan, half again on top of the
+        roof load, and putting it into q L^2/8f would overstate the thrust
+        by that much. And the load is taken over the strip's OWN elements,
+        so a shell that is loaded unevenly gives the band the load the band
+        actually has.
+        """
         res = self.res
-        if res is None:
+        if res is None or 'Fe_cases' not in res.fem:
             return None
         fac = res.factors_vector(res.service)
-        fz = sum(fac[j] * res.equilibrium[j]['applied'][2] for j in range(len(res.cases)))
-        area = float(np.abs(sm._plan_area(res.fem['mesh']['X'], res.fem['mesh']['elems'])).sum())
-        return abs(fz) / area if area > 0 else None
+        Fe = np.tensordot(fac, res.fem['Fe_cases'], axes=1)        # (ne, 24)
+        fz = -Fe[:, 2::6].sum(axis=1)                              # down = +
+        mesh = res.fem['mesh']
+        A = np.abs(sm._plan_area(mesh['X'], mesh['elems']))
+        if elems is not None and len(elems):
+            fz, A = fz[elems], A[elems]
+        tot = float(A.sum())
+        return float(fz.sum()) / tot if tot > 0 else None
 
     def design_strip(self):
         """Both answers for the current strip, or None if it cannot be had."""
@@ -1129,8 +1145,8 @@ class ShellApp(UnitsMixin, tk.Frame):
             share = 0.5
         out = {'p1': p1, 'p2': p2, 'w': w, 'span': span, 'rise': rise,
                'kind': 'compression (arch)' if rise > 0 else 'tension (cable)',
-               'dir': d, 'elems': np.nonzero(inside)[0], 'q': self.strip_load(),
-               'share': share}
+               'dir': d, 'elems': np.nonzero(inside)[0], 'share': share}
+        out['q'] = self.strip_load(out['elems'] if len(out['elems']) else None)
         if out['q']:
             # q' , not q. On a doubly ruled surface the two families of
             # parabolas each carry a share of the load -- half and half on a
@@ -1149,7 +1165,43 @@ class ShellApp(UnitsMixin, tk.Frame):
             out['N'] = float(np.mean(Ns))
             out['N_lo'], out['N_hi'] = float(np.min(Ns)), float(np.max(Ns))
             out['t'] = float(np.mean(g['t'][inside]))
+        out['q_all'] = self.strip_load_all()
+        if out.get('q') and out['q_all']:
+            # the beams and columns are not per-element, so the only honest
+            # way to put them on a strip is to smear them over the plan --
+            # which is why this is offered as the OTHER answer rather than
+            # folded into the first one.
+            out['H_all'] = out['H'] * out['q_all'] / self.strip_load()
+        if out.get('H_all') and 'N' in out and out['H_all'] > 0:
+            # What share of the load this family is REALLY taking, read off
+            # the model: |N| = share * q L^2 / 8f solved for share. The two
+            # families' shares should come to about one between them, and on
+            # the hypar preset they come to 1.05 -- which is the check that
+            # the whole comparison is being done consistently.
+            out['share_found'] = abs(out['N']) * share / out['H_all']
         return out
+
+    def strip_load_all(self):
+        """Every vertical load in the model per square metre of plan,
+        the beams' and columns' own weight included.\n
+        The shell-only figure is the one the hand method uses, and it is
+        what `strip_load` returns. But the edge beams hang off the shell:
+        their weight is applied at shell nodes and has to travel through the
+        membrane to the supports, so it really is in the parabolas. On the
+        hypar preset the difference is 1.07 kN/m2 of plan, a quarter again,
+        and it is the difference between the model reading 11% over the hand
+        value and 11% under it. Neither number is wrong; they answer
+        different questions, so the strip reports both.
+        """
+        res = self.res
+        if res is None:
+            return None
+        fac = res.factors_vector(res.service)
+        fz = sum(fac[j] * res.equilibrium[j]['applied'][2]
+                 for j in range(len(res.cases)))
+        mesh = res.fem['mesh']
+        area = float(np.abs(sm._plan_area(mesh['X'], mesh['elems'])).sum())
+        return abs(fz) / area if area > 0 else None
 
     def strip_report(self):
         """The two answers, in lines narrow enough for the panel.
@@ -1175,10 +1227,14 @@ class ShellApp(UnitsMixin, tk.Frame):
             return '\n'.join(L)
         # q comes back in N/m^2 and H in N/m: SI in, SI out, and the
         # formatter does the unit system.
-        L.append('  load q   %8.3f kN/m²  service' % (st['q'] / 1000.0))
+        L.append("  load q   %8.3f kN/m²  shell's own" % (st['q'] / 1000.0))
         L.append("  q' %.3g q %8.3f kN/m²" % (st['share'], st['q_strip'] / 1000.0))
         L.append("  ── by hand: H = q' L²/8f ──")
         L.append('  H        %8s %s' % (self._fmt_q(q, st['H']), ql))
+        if st.get('H_all') and st['H_all'] > st['H'] * 1.02:
+            L.append('  with the beams and columns hung on it,')
+            L.append('  q = %.3f kN/m² and H = %s %s'
+                     % (st['q_all'] / 1000.0, self._fmt_q(q, st['H_all']), ql))
         try:
             sadm = float(self.v_strip_sadm.get())
         except ValueError:
@@ -1200,6 +1256,17 @@ class ShellApp(UnitsMixin, tk.Frame):
         if abs(st['H']) > 1e-9:
             rel = (abs(st['N']) - abs(st['H'])) / abs(st['H']) * 100.0
             L.append('  %+.0f%% against your hand value' % rel)
+            lo, hi = sorted((st['H'], st.get('H_all') or st['H']))
+            if lo * 0.95 <= abs(st['N']) <= hi * 1.05 and hi > lo * 1.02:
+                L.append('  between the two load assumptions')
+            else:
+                L.append('  ' + ('membrane assumption holds here' if abs(rel) <= 15
+                                 else 'fair agreement' if abs(rel) <= 35
+                                 else 'far apart'))
+        if st.get('share_found'):
+            L.append('  the model puts %.2f of the load on this'
+                     % st['share_found'])
+            L.append('  family; you assumed %.2f' % st['share'])
         sign_ok = (st['N'] > 0) == (st['rise'] < 0)
         word = 'tension' if st['N'] > 0 else 'compression'
         L.append('  sense    ' + ('agrees — ' + word if sign_ok

@@ -121,17 +121,34 @@ def test_a_wider_strip_collects_more(ran):
 
 # ── the hand calculation ───────────────────────────────────────────────────
 
-def test_the_load_is_the_one_the_solver_actually_saw(ran):
-    """Taken from the equilibrium of the assembled model, not by re-reading
-    the load panel: a second implementation of the loading could disagree
-    with the first and there would be no way to tell which was right."""
+def test_the_load_is_the_one_the_solver_actually_assembled(ran):
+    """Taken from the element load vectors, not by re-reading the load
+    panel: a second implementation of the loading could disagree with the
+    first and there would be no way to tell which was right."""
     q = ran.strip_load()
     fac = ran.res.factors_vector(ran.res.service)
-    fz = sum(fac[j] * ran.res.equilibrium[j]['applied'][2]
-             for j in range(len(ran.res.cases)))
+    Fe = np.tensordot(fac, ran.res.fem['Fe_cases'], axes=1)
+    fz = -Fe[:, 2::6].sum()
     area = float(np.abs(sm._plan_area(ran.geom['X'], ran.geom['elems'])).sum())
-    assert q == pytest.approx(abs(fz) / area)
+    assert q == pytest.approx(fz / area)
     assert q > 0
+
+
+def test_the_load_leaves_out_what_the_beams_carry(ran):
+    """The edge beams' own weight is carried by the beams. On this preset it
+    is a sizeable fraction of the total vertical force, and feeding it into
+    q L²/8f would overstate the thrust by that much."""
+    fac = ran.res.factors_vector(ran.res.service)
+    total = abs(sum(fac[j] * ran.res.equilibrium[j]['applied'][2]
+                    for j in range(len(ran.res.cases))))
+    area = float(np.abs(sm._plan_area(ran.geom['X'], ran.geom['elems'])).sum())
+    assert ran.strip_load() < 0.95 * total / area
+
+
+def test_the_load_is_taken_over_the_strips_own_elements(ran):
+    ran.strip_on_parabola('tension')
+    st = ran.design_strip()
+    assert st['q'] == pytest.approx(ran.strip_load(st['elems']))
 
 
 def test_the_family_carries_half_the_load_by_default(ran):
@@ -169,11 +186,39 @@ def test_the_whole_load_on_one_family_doubles_it(ran):
 
 # ── the two answers together ───────────────────────────────────────────────
 
-def test_the_model_agrees_with_the_hand_value_within_a_quarter(ran):
+def test_both_load_assumptions_are_reported(ran):
+    """The shell's own load is the hand method's q. But the edge beams hang
+    off the shell and their weight has to travel through the membrane, so
+    the other answer is worth having; neither is wrong."""
+    ran.strip_on_parabola('tension')
+    st = ran.design_strip()
+    assert st['q_all'] > st['q']
+    assert st['H_all'] == pytest.approx(st['H'] * st['q_all'] / ran.strip_load())
+    txt = ran.strip_report()
+    assert 'beams and columns hung on it' in txt
+
+
+def test_the_strip_reads_back_the_share_the_model_really_used(ran):
+    """|N| = share q L²/8f solved for share. Assuming half and half is the
+    hand method's one free choice, and this is the model answering it."""
+    ran.strip_on_parabola('tension')
+    st = ran.design_strip()
+    assert st['share_found'] == pytest.approx(abs(st['N']) * st['share'] / st['H_all'])
+    txt = ran.strip_report()
+    assert 'the model puts' in txt and 'you assumed' in txt
+
+
+def test_the_two_families_share_the_whole_load_between_them(ran):
+    """The check that the comparison is being done consistently: whatever
+    each family's share turns out to be, the two must come to about one.
+    On this preset they are 0.45 and 0.60 -- so the hand method's half and
+    half is a little generous to the cable and mean to the arch."""
+    found = {}
     for which in ('tension', 'compression'):
         ran.strip_on_parabola(which)
-        st = ran.design_strip()
-        assert abs(abs(st['N']) - st['H']) < 0.25 * st['H'], which
+        found[which] = ran.design_strip()['share_found']
+    assert 0.9 < found['tension'] + found['compression'] < 1.2
+    assert found['compression'] > found['tension']
 
 
 def test_the_two_families_come_out_opposite_in_sign(ran):

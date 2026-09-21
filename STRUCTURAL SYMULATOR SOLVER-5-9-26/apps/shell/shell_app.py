@@ -40,6 +40,26 @@ from apps.shell import shell_fe as fe
 BG = '#f5f5f3'
 TB = '#ebebea'
 PANEL_W = 360
+# Blended against the canvas white rather than stippled: a Tk polygon has
+# no alpha, and a stipple pattern at this density reads as a texture on the
+# surface instead of as a surface that is not there.
+def _runs(mask):
+    """(first, last) index pairs of each contiguous True run."""
+    out = []
+    start = None
+    for i, on in enumerate(mask):
+        if on and start is None:
+            start = i
+        elif not on and start is not None:
+            out.append((start, i - 1))
+            start = None
+    if start is not None:
+        out.append((start, len(mask) - 1))
+    return out
+
+
+GHOST_FILL = '#e6eaee'
+GHOST_LINE = '#d2d8de'
 RAIL_W = 74
 
 # The tab used to put four notebook pages and every display control on
@@ -67,7 +87,12 @@ EDGE_PRESET_ROWS = (
      ('disc', 'hypot(x, y) - min(a, b)/2'),
      ('ring', 'max(hypot(x, y) - min(a, b)/2, min(a, b)/4 - hypot(x, y))')),
     (('sector 90°', 'max(hypot(x, y) - min(a, b)/2, -x, -y)'),
-     ('under a hyperbola', 'max(x y - a b/25, -x, -y)'),
+     ('under a hyperbola', 'max(x y - a b/25, -x, -y)')),
+    # The quadrant between the two asymptotes of z = k x y, which is where
+    # both of them are z = 0. It is the piece the TP 2 drawings call the
+    # "sector bajo paraboloide", and it is named here in those words because
+    # that is what it is called on the drawing it comes off.
+    (('sector bajo paraboloide', 'max(-x, -y)'),
      ('clear', '')),
 )
 
@@ -428,6 +453,8 @@ class ShellApp(UnitsMixin, tk.Frame):
         self.v_pick_block = tk.DoubleVar(value=sm.DEFAULT_BLOCK)
         self.hover_node = None
         self.v_rulings = tk.BooleanVar(value=False)
+        self.v_ghost = tk.BooleanVar(value=False)
+        self._ghost_cache = (None, None)
         self.designs = []
         self.sweep_rows = []
         self.status = tk.StringVar(value='')
@@ -600,6 +627,8 @@ class ShellApp(UnitsMixin, tk.Frame):
                 self._pw.add(want, stretch='never', minsize=80, height=170)
         except tk.TclError:
             pass
+        if key == 'sections':
+            self._refresh_strip()
         if drawing:
             self._draw_bottom()
         self._draw()
@@ -819,7 +848,8 @@ class ShellApp(UnitsMixin, tk.Frame):
                           ('solid — show the thickness', self.v_solid),
                           ('deformed', self.v_deformed),
                           ('principal directions', self.v_principal),
-                          ('straight generators (ruled surfaces)', self.v_rulings)):
+                          ('straight generators (ruled surfaces)', self.v_rulings),
+                          ('show the surface it was cut from', self.v_ghost)):
             tk.Checkbutton(p, text=text, variable=var, bg=BG, font=('Helvetica', 9),
                            command=self._draw).pack(anchor='w', padx=16)
         row = tk.Frame(p, bg=BG)
@@ -895,7 +925,9 @@ class ShellApp(UnitsMixin, tk.Frame):
         ys.config(command=self.cut_list.yview)
         ys.pack(side='right', fill='y')
         self.cut_list.pack(side='left', fill='x', expand=True)
-        self.cut_list.bind('<<ListboxSelect>>', lambda _e: (self._draw(), self._draw_section()))
+        self.cut_list.bind('<<ListboxSelect>>',
+                           lambda _e: (self._draw(), self._draw_section(),
+                                       self._refresh_cut_note()))
 
         row = tk.Frame(p, bg=BG)
         row.pack(fill='x', padx=8, pady=(6, 0))
@@ -923,6 +955,296 @@ class ShellApp(UnitsMixin, tk.Frame):
         self.cut_note = tk.Label(p, text='', bg=BG, fg='#555', wraplength=PANEL_W - 30,
                                  justify='left', font=('Helvetica', 8))
         self.cut_note.pack(anchor='w', padx=8, pady=(8, 8))
+        self._build_strip(p)
+
+    # ── the design strip ──────────────────────────────────────────────────
+    #  A shell is designed by hand on a strip: take a metre-wide band along
+    #  a generating parabola, call it an arch or a cable of span L and rise
+    #  f, and the thrust is H = q L^2 / (8 f). Every hand calculation of a
+    #  hypar in the literature and on the drawing board is that line.
+    #
+    #  The tab can compute the same strip from the finite element result --
+    #  the membrane force resolved along the strip's own direction -- and
+    #  print the two side by side. That is worth more than either alone: the
+    #  hand value is the one that gets defended in a jury, and the model is
+    #  the one that knows about bending, the edge and the supports. When
+    #  they agree the hand method is justified for this shell; when they
+    #  part company the difference says where the membrane assumption ran
+    #  out.
+    def _build_strip(self, p):
+        tk.Label(p, text='Design strip (franja)', bg=BG,
+                 font=('Helvetica', 10, 'bold')).pack(anchor='w', padx=8, pady=(8, 2))
+        tk.Label(p, text='A band across the shell, treated as an arch or a cable of span L '
+                         'and rise f. H = q L² / 8f by hand, against the membrane force the '
+                         'model found along the same band.',
+                 bg=BG, fg='#555', wraplength=PANEL_W - 30, justify='left',
+                 font=('Helvetica', 8)).pack(anchor='w', padx=8, pady=(0, 4))
+        grid = tk.Frame(p, bg=BG)
+        grid.pack(fill='x', padx=8)
+        self.v_strip = {}
+        for i, (key, lab, default) in enumerate((('x1', 'from x', '-a/2'), ('y1', 'y', '-b/2'),
+                                                 ('x2', 'to x', 'a/2'), ('y2', 'y', 'b/2'))):
+            tk.Label(grid, text=lab, bg=BG, font=('Helvetica', 9)).grid(row=i // 2, column=2 * (i % 2),
+                                                                       sticky='w')
+            v = tk.StringVar(value=default)
+            e = tk.Entry(grid, textvariable=v, width=9, font=('Consolas', 9))
+            e.grid(row=i // 2, column=2 * (i % 2) + 1, padx=2, pady=1)
+            e.bind('<Return>', lambda _ev: self._refresh_strip())
+            e.bind('<FocusOut>', lambda _ev: self._refresh_strip())
+            self.v_strip[key] = v
+        row = tk.Frame(p, bg=BG)
+        row.pack(fill='x', padx=8, pady=(3, 0))
+        tk.Label(row, text='width', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        self.v_strip_w = tk.StringVar(value='1.0')
+        e = tk.Entry(row, textvariable=self.v_strip_w, width=6, font=('Consolas', 9))
+        e.pack(side='left', padx=3)
+        e.bind('<Return>', lambda _ev: self._refresh_strip())
+        tk.Label(row, text='m   working stress', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        self.v_strip_sadm = tk.StringVar(value='120')
+        e = tk.Entry(row, textvariable=self.v_strip_sadm, width=5, font=('Consolas', 9))
+        e.pack(side='left', padx=3)
+        e.bind('<Return>', lambda _ev: self._refresh_strip())
+        tk.Label(row, text='MPa', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        row = tk.Frame(p, bg=BG)
+        row.pack(fill='x', padx=8, pady=(3, 0))
+        tk.Label(row, text='this family carries', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        self.v_strip_share = tk.StringVar(value='0.5')
+        e = tk.Entry(row, textvariable=self.v_strip_share, width=5, font=('Consolas', 9))
+        e.pack(side='left', padx=3)
+        e.bind('<Return>', lambda _ev: self._refresh_strip())
+        tk.Label(row, text='of q', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        tk.Label(p, text='Half, on a hypar: the two families of parabolas share the load, '
+                         'which is the q/2 written on every hand calculation of one. A barrel '
+                         'vault spans one way only — put 1 there.',
+                 bg=BG, fg='#555', wraplength=PANEL_W - 30, justify='left',
+                 font=('Helvetica', 8)).pack(anchor='w', padx=8)
+        row = tk.Frame(p, bg=BG)
+        row.pack(fill='x', padx=8, pady=(4, 0))
+        tk.Button(row, text='the tension parabola', font=('Helvetica', 8),
+                  command=lambda: self.strip_on_parabola('tension')).pack(side='left')
+        tk.Button(row, text='the compression parabola', font=('Helvetica', 8),
+                  command=lambda: self.strip_on_parabola('compression')).pack(side='left', padx=3)
+        self.v_strip_show = tk.BooleanVar(value=True)
+        tk.Checkbutton(p, text='draw the strip on the model', variable=self.v_strip_show,
+                       bg=BG, font=('Helvetica', 9),
+                       command=self._draw).pack(anchor='w', padx=16, pady=(2, 0))
+        self.strip_out = tk.Label(p, text='', bg='#ffffff', fg='#222', anchor='w',
+                                  justify='left', font=('Consolas', 8),
+                                  highlightbackground='#c9d2da', highlightthickness=1)
+        self.strip_out.pack(fill='x', padx=8, pady=(4, 10))
+
+    def strip_ends(self):
+        """The strip's two plan endpoints and its width, in metres."""
+        try:
+            vals = [self.model.ws.scalar(self.v_strip[k].get())
+                    for k in ('x1', 'y1', 'x2', 'y2')]
+            w = float(self.model.ws.scalar(self.v_strip_w.get()))
+        except (formula.FormulaError, ValueError) as exc:
+            raise sm.ModelError(f'Design strip: {exc}') from None
+        if w <= 0:
+            raise sm.ModelError('The strip width must be positive.')
+        return (vals[0], vals[1]), (vals[2], vals[3]), w
+
+    def strip_on_parabola(self, which):
+        """Put the strip on one of the two generating parabolas.
+
+        Which diagonal is the arch and which is the cable is decided by
+        SAMPLING, not by assuming z = k x y: the rise of the mid-point above
+        the chord is negative on the arch and positive on the valley, and
+        that test works on any surface the tab can mesh.
+        """
+        g = self.geom
+        if g is None:
+            return
+        x0, x1, y0, y1 = g['plan']
+        diagonals = {'a': ((x0, y0), (x1, y1)), 'b': ((x0, y1), (x1, y0))}
+        best = {}
+        for key, (p1, p2) in diagonals.items():
+            try:
+                best[key] = self._chord_rise(p1, p2)[1]
+            except sm.ModelError:
+                return
+        # rise > 0 = the mid-surface sits ABOVE the chord = an arch = compression
+        arch = max(best, key=lambda k: best[k])
+        cable = min(best, key=lambda k: best[k])
+        p1, p2 = diagonals[arch if which == 'compression' else cable]
+        for k, v in zip(('x1', 'y1', 'x2', 'y2'), (p1[0], p1[1], p2[0], p2[1])):
+            self.v_strip[k].set('%.4g' % v)
+        self._refresh_strip()
+        self._draw()
+
+    def _chord_rise(self, p1, p2, n=101):
+        """(span, signed rise) of the surface between two plan points: the
+        chord length, and the largest departure of the surface from the
+        straight line joining its ends, positive upwards."""
+        f = self.model.surface_fn()
+        t = np.linspace(0.0, 1.0, n)
+        xs = p1[0] + t * (p2[0] - p1[0])
+        ys = p1[1] + t * (p2[1] - p1[1])
+        try:
+            zs = np.asarray(f(xs, ys), float) * np.ones(n)
+        except formula.FormulaError as exc:
+            raise sm.ModelError(f'Surface: {exc}') from None
+        span = float(np.hypot(p2[0] - p1[0], p2[1] - p1[1]))
+        chord = zs[0] + t * (zs[-1] - zs[0])
+        dev = zs - chord
+        return span, float(dev[np.argmax(np.abs(dev))])
+
+    def strip_load(self):
+        """Service load per square metre of PLAN, from the loads that were
+        actually applied rather than from the load panel: the total vertical
+        force the solver saw, divided by the plan area. Anything else --
+        re-reading the load formulas, adding self weight by hand -- would be
+        a second implementation of the loading that could disagree with the
+        first one."""
+        res = self.res
+        if res is None:
+            return None
+        fac = res.factors_vector(res.service)
+        fz = sum(fac[j] * res.equilibrium[j]['applied'][2] for j in range(len(res.cases)))
+        area = float(np.abs(sm._plan_area(res.fem['mesh']['X'], res.fem['mesh']['elems'])).sum())
+        return abs(fz) / area if area > 0 else None
+
+    def design_strip(self):
+        """Both answers for the current strip, or None if it cannot be had."""
+        g = self.geom
+        if g is None:
+            return None
+        p1, p2, w = self.strip_ends()
+        span, rise = self._chord_rise(p1, p2)
+        if span <= 0:
+            raise sm.ModelError('The strip has no length: the two ends are the same point.')
+        if abs(rise) < 1e-9:
+            raise sm.ModelError('The strip is flat between those ends, so there is no arch '
+                                'and no cable: H = q L² / 8f would divide by zero.')
+        d = np.array([p2[0] - p1[0], p2[1] - p1[1]]) / span
+        cen = g['centroids']
+        rel = cen[:, :2] - np.array(p1)
+        along = rel @ d
+        across = rel @ np.array([-d[1], d[0]])
+        inside = (np.abs(across) <= w / 2) & (along >= 0) & (along <= span)
+        try:
+            share = float(self.v_strip_share.get())
+        except (ValueError, AttributeError):
+            share = 0.5
+        out = {'p1': p1, 'p2': p2, 'w': w, 'span': span, 'rise': rise,
+               'kind': 'compression (arch)' if rise > 0 else 'tension (cable)',
+               'dir': d, 'elems': np.nonzero(inside)[0], 'q': self.strip_load(),
+               'share': share}
+        if out['q']:
+            # q' , not q. On a doubly ruled surface the two families of
+            # parabolas each carry a share of the load -- half and half on a
+            # hypar -- and it is the halved load that goes into H = q L^2/8f.
+            # Feeding the whole load to one family doubles the answer, which
+            # is the commonest arithmetic mistake in a hand check of a hypar.
+            out['q_strip'] = share * out['q']
+            out['H'] = out['q_strip'] * span ** 2 / (8.0 * abs(rise))
+        if self.res is not None and len(out['elems']):
+            kind, obj = self._selection()
+            if kind in ('env_max', 'env_min'):
+                kind, obj = 'combo', self.res.service
+            F = self._forces_for(kind, obj)
+            c, sn = d[0], d[1]
+            Ns = (F['Nx'] * c * c + F['Ny'] * sn * sn + 2.0 * F['Nxy'] * c * sn)[inside]
+            out['N'] = float(np.mean(Ns))
+            out['N_lo'], out['N_hi'] = float(np.min(Ns)), float(np.max(Ns))
+            out['t'] = float(np.mean(g['t'][inside]))
+        return out
+
+    def strip_report(self):
+        """The two answers, in lines narrow enough for the panel.
+
+        The panel is 360 px of Consolas 8, which is about 46 characters. A
+        line longer than that is simply cut off at the edge with nothing to
+        say it was -- so the numbers are stacked rather than run on, even
+        where one line would have read better.
+        """
+        try:
+            st = self.design_strip()
+        except sm.ModelError as exc:
+            return str(exc)
+        if st is None:
+            return 'Draw a surface first.'
+        q, ql = 'line_load', units.label('line_load')
+        L = ['strip %.2f m wide · %s' % (st['w'], st['kind']),
+             '  span L   %8.2f m' % st['span'],
+             '  rise f   %8.3f m    f/L %.3f'
+             % (abs(st['rise']), abs(st['rise']) / st['span'])]
+        if st.get('q') is None:
+            L.append('  analyse to get the load and the forces')
+            return '\n'.join(L)
+        # q comes back in N/m^2 and H in N/m: SI in, SI out, and the
+        # formatter does the unit system.
+        L.append('  load q   %8.3f kN/m²  service' % (st['q'] / 1000.0))
+        L.append("  q' %.3g q %8.3f kN/m²" % (st['share'], st['q_strip'] / 1000.0))
+        L.append("  ── by hand: H = q' L²/8f ──")
+        L.append('  H        %8s %s' % (self._fmt_q(q, st['H']), ql))
+        try:
+            sadm = float(self.v_strip_sadm.get())
+        except ValueError:
+            sadm = 120.0
+        if st.get('t'):
+            L.append('  H/t      %8.2f MPa    t = %.1f cm'
+                     % (st['H'] / st['t'] / 1e6, st['t'] * 100))
+        if sadm > 0:
+            L.append('  As = H/σ %8.2f cm²/m  σ = %g MPa'
+                     % (st['H'] / (sadm * 100.0), sadm))
+        if 'N' not in st:
+            L.append('  ── no element falls in this strip ──')
+            return '\n'.join(L)
+        L.append('  ── the model, same strip ──')
+        L.append('  N along  %8s %s' % (self._fmt_q(q, st['N']), ql))
+        L.append('  range    %8s … %s over %d el.'
+                 % (self._fmt_q(q, st['N_lo']), self._fmt_q(q, st['N_hi']),
+                    len(st['elems'])))
+        if abs(st['H']) > 1e-9:
+            rel = (abs(st['N']) - abs(st['H'])) / abs(st['H']) * 100.0
+            L.append('  %+.0f%% against your hand value' % rel)
+        sign_ok = (st['N'] > 0) == (st['rise'] < 0)
+        word = 'tension' if st['N'] > 0 else 'compression'
+        L.append('  sense    ' + ('agrees — ' + word if sign_ok
+                                  else 'DISAGREES — model says ' + word))
+        return '\n'.join(L)
+
+    def _refresh_strip(self):
+        if hasattr(self, 'strip_out'):
+            self.strip_out.config(text=self.strip_report())
+
+    def _draw_strip(self):
+        """The band on the model: its centre line and its two edges, laid on
+        the surface rather than on the plan, so it is visibly ON the shell
+        and not floating over it."""
+        if not (getattr(self, 'v_strip_show', None) and self.v_strip_show.get()):
+            return
+        if self.geom is None or self.mode != 'sections':
+            return
+        try:
+            p1, p2, w = self.strip_ends()
+        except sm.ModelError:
+            return
+        span = float(np.hypot(p2[0] - p1[0], p2[1] - p1[1]))
+        if span <= 0:
+            return
+        d = np.array([p2[0] - p1[0], p2[1] - p1[1]]) / span
+        nrm = np.array([-d[1], d[0]])
+        f = self.model.surface_fn()
+        t = np.linspace(0.0, 1.0, 61)
+        cv = self.zc.canvas
+        for off, colour, width, dash in ((0.0, '#c02020', 2, (6, 4)),
+                                         (+w / 2, '#c02020', 1, ()),
+                                         (-w / 2, '#c02020', 1, ())):
+            xs = p1[0] + t * (p2[0] - p1[0]) + off * nrm[0]
+            ys = p1[1] + t * (p2[1] - p1[1]) + off * nrm[1]
+            try:
+                zs = np.asarray(f(xs, ys), float) * np.ones(len(t))
+            except formula.FormulaError:
+                return
+            sx, sy = self.cam.project(np.stack([xs, ys, zs], axis=1))
+            pts = np.stack([sx, sy], axis=1)
+            if not np.isfinite(pts).all() or np.abs(pts).max() > 30000:
+                continue
+            cv.create_line(*pts.ravel(), fill=colour, width=width,
+                           dash=dash or None, tags=('strip',))
 
     def add_cut(self, axis):
         try:
@@ -935,6 +1257,7 @@ class ShellApp(UnitsMixin, tk.Frame):
         self._refresh_cuts()
         self.cut_list.selection_clear(0, 'end')
         self.cut_list.selection_set(len(self.cuts) - 1)
+        self._refresh_cut_note()
         self._draw()
         self._draw_section()
 
@@ -944,6 +1267,7 @@ class ShellApp(UnitsMixin, tk.Frame):
             return
         self.cuts.pop(sel[0])
         self._refresh_cuts()
+        self._refresh_cut_note()
         self._draw()
         self._draw_section()
 
@@ -962,6 +1286,52 @@ class ShellApp(UnitsMixin, tk.Frame):
                 t_txt = '  t %.4g-%.4g' % (lo, hi)
             self.cut_list.insert('end', 'S%d  %s = %-7.4g%s' % (n, c['axis'], c['pos'], t_txt))
             self.cut_list.itemconfig(n - 1, foreground=c['colour'])
+        self._refresh_cut_note()
+
+    def cut_elements(self, cut):
+        """The elements the selected cut passes through."""
+        pr = self._cut_profile(cut, exaggerate=False)
+        if pr is None:
+            return np.zeros(0, int)
+        el = np.asarray(pr.get('elems', ()), int)
+        return el[el >= 0]
+
+    def _refresh_cut_note(self):
+        """Name the elements under the selected cut.
+
+        A cut is how you look at one line across the shell; the question it
+        raises immediately is which element on that line is the one in
+        trouble, and until now the answer was to click along the line by
+        hand until the report said something alarming.
+        """
+        if not hasattr(self, 'cut_note'):
+            return
+        cut = self._selected_cut()
+        if cut is None:
+            self.cut_note.config(text='')
+            return
+        el = self.cut_elements(cut)
+        if not len(el):
+            self.cut_note.config(text='Nothing under this cut: it misses the shell.')
+            return
+        txt = 'Under this cut: %d elements.' % len(el)
+        if self.des is not None and self.res is not None:
+            w = int(el[np.argmax(self.des.util_max[el])])
+            c = self.geom['centroids'][w]
+            txt += ('\nworst here: el %d at x %.2f y %.2f — utilisation %.2f, %s'
+                    % (w, c[0], c[1], self.des.util_max[w],
+                       sd.CHECK_LABELS[self.des.governing[w]]))
+            kind, obj = self._selection()
+            if kind in ('env_max', 'env_min'):
+                kind, obj = 'combo', self.res.service
+            F = self._forces_for(kind, obj)
+            ql = units.label('line_load')
+            hi = int(el[np.argmax(F['N1'][el])])
+            lo = int(el[np.argmin(F['N2'][el])])
+            txt += ('\nmost tension el %d %s %s · most compression el %d %s %s'
+                    % (hi, self._fmt_q('line_load', F['N1'][hi]), ql,
+                       lo, self._fmt_q('line_load', F['N2'][lo]), ql))
+        self.cut_note.config(text=txt)
 
     def _selected_cut(self):
         sel = self.cut_list.curselection() if hasattr(self, 'cut_list') else ()
@@ -976,7 +1346,7 @@ class ShellApp(UnitsMixin, tk.Frame):
         idx = ssd.strip_index(g['xs'], g['ys'], cut['axis'], cut['pos'])
         k = float(self.v_exag.get() or 1.0) if exaggerate else 1.0
         return ssd.section_profile(g['X'], g['elems'], g['t'], g['ids'],
-                                   cut['axis'], idx, k)
+                                   cut['axis'], idx, k, kept=g.get('kept'))
 
     def _draw_section(self):
         """The selected cut, drawn as the slab at true scale.
@@ -1017,24 +1387,39 @@ class ShellApp(UnitsMixin, tk.Frame):
         def P(sv, zv):
             return x0 + np.asarray(sv) * sc, y0 - np.asarray(zv) * sc
 
-        # the cut face, span by span, in the model's own colour when asked
+        # the cut face, span by span, in the model's own colour when asked.
+        # A span with no element behind it is a hole the plan rule made, and
+        # it is left out -- of the face AND of the three lines, which are
+        # therefore drawn in runs rather than as one polyline. A line run
+        # straight across a hole would draw shell that is not there.
+        here = np.asarray(pr['elems'], int)
+        live = here >= 0
         vals = None
         if self.v_cut_field.get():
             v, scale, _q = self.field_values()
             if v is not None and scale != 'categorical':
-                cols, _lo, _hi = view3d.colours_for(np.asarray(v)[pr['elems']], scale)
+                safe = np.where(live, here, 0)
+                cols, _lo, _hi = view3d.colours_for(np.asarray(v)[safe], scale)
                 vals = cols
         xt, yt = P(pr['s_top'], pr['z_top'])
         xb, yb = P(pr['s_bot'], pr['z_bot'])
-        for i in range(len(pr['elems'])):
+        for i in range(len(here)):
+            if not live[i]:
+                continue
             poly = [xt[i], yt[i], xt[i + 1], yt[i + 1],
                     xb[i + 1], yb[i + 1], xb[i], yb[i]]
             col = vals[i] if vals is not None else '#c6d3de'
             cv.create_polygon(*poly, fill=col, outline=col)
-        cv.create_line(*np.stack([xt, yt], 1).ravel(), fill='#2c3740', width=2)
-        cv.create_line(*np.stack([xb, yb], 1).ravel(), fill='#2c3740', width=2)
         xm, ym = P(pr['s'], pr['z'])
-        cv.create_line(*np.stack([xm, ym], 1).ravel(), fill='#54606a', width=1, dash=(5, 4))
+        for a_, b_ in _runs(live):
+            # spans a_..b_ sit between stations a_..b_+1, so the slice has to
+            # reach one past the last span or a one-span run draws nothing
+            sl = slice(a_, b_ + 2)
+            for xx, yy, colour, width, dash in ((xt, yt, '#2c3740', 2, None),
+                                                (xb, yb, '#2c3740', 2, None),
+                                                (xm, ym, '#54606a', 1, (5, 4))):
+                cv.create_line(*np.stack([xx[sl], yy[sl]], 1).ravel(),
+                               fill=colour, width=width, dash=dash)
 
         # where the automatic layer or a zone raised the shell above its
         # own formula: the band is the answer to "where is it thickening"
@@ -1042,7 +1427,7 @@ class ShellApp(UnitsMixin, tk.Frame):
         if base is not None:
             raised = pr['t'] > base + 1e-6
             for i in range(len(pr['elems'])):
-                if raised[i] and raised[i + 1]:
+                if live[i] and raised[i] and raised[i + 1]:
                     cv.create_line(xt[i], m - 10, xt[i + 1], m - 10, fill='#c0561f', width=6)
             if raised.any():
                 cv.create_text(x0 + (s_all.min() + 0.02 * span_s) * sc, m - 20, anchor='w',
@@ -1076,7 +1461,8 @@ class ShellApp(UnitsMixin, tk.Frame):
         """
         g = self.geom
         try:
-            cen = g['X'][g['elems'][pr['elems']]].mean(axis=1)
+            here = np.asarray(pr['elems'], int)
+            cen = g['X'][g['elems'][np.where(here >= 0, here, 0)]].mean(axis=1)
             base_el = self.model.element_thickness(cen[:, 0], cen[:, 1], with_auto=False)
         except Exception:
             return None
@@ -2566,12 +2952,14 @@ class ShellApp(UnitsMixin, tk.Frame):
             self.status.set('Analysis refused: ' + str(exc)[:160])
             self._refresh_select_values()
             self._refresh_governing()
+            self._refresh_strip()
             self._write_info()
             self._draw()
             return False
         self.geom = self.res.fem['mesh']
         self._refresh_select_values()
         self._refresh_governing()
+        self._refresh_strip()
         n_need = int(self.des.needs_thicker.sum() + self.des.cannot.sum())
         self._refresh_cuts()
         self._draw_section()
@@ -2776,6 +3164,7 @@ class ShellApp(UnitsMixin, tk.Frame):
                 return view3d.shade(col, 0.68)
             return col
 
+        ghosted = self._draw_ghost(lim) if self.v_ghost.get() else False
         if self.v_solid.get():
             self._draw_solid(X, el, g['t'], face_colour, outline, lim)
         else:
@@ -2789,6 +3178,7 @@ class ShellApp(UnitsMixin, tk.Frame):
                                   width=1, tags=('face', f'e{e}'))
         self._draw_structure(X, sx, sy)
         self._draw_cuts(X, sx, sy)
+        self._draw_strip()
         self._draw_pickable_corners(X, sx, sy)
         if self.v_rulings.get():
             self._draw_rulings(X)
@@ -2813,6 +3203,72 @@ class ShellApp(UnitsMixin, tk.Frame):
             cv.create_text(10, (cv.winfo_height() - 22) if cv.winfo_height() > 40 else 486,
                            anchor='sw', text=note,
                            fill='#999' if k == 1.0 else BAD_C, font=('Helvetica', 8))
+        if ghosted:
+            cv.create_text(10, (cv.winfo_height() - 36) if cv.winfo_height() > 54 else 472,
+                           anchor='sw',
+                           text='pale grey: the surface this was cut from — reference only, '
+                                'not analysed and not built',
+                           fill=BAD_C, font=('Helvetica', 8))
+
+    def parent_mesh(self):
+        """The surface WITHOUT the cut: the hypar your sector came off.
+
+        Meshed from the same definitions with both rules removed, and cached
+        on everything that could change it, because this is a reference
+        drawing and remeshing it on every orbit frame would make the orbit
+        stutter for a picture nobody is measuring.
+        """
+        d = self.model.data
+        if not (str(d.get('edge_rule', '') or '').strip()
+                or str(d.get('plan_rule', '') or '').strip()):
+            return None
+        key = (tuple(d.get('lines', ())), d['surface'], d['thickness'],
+               repr(d['plan']), repr(d['mesh']))
+        if self._ghost_cache[0] == key:
+            return self._ghost_cache[1]
+        saved = (d.get('edge_rule'), d.get('plan_rule'))
+        d['edge_rule'] = ''
+        d['plan_rule'] = ''
+        try:
+            g = self.model.mesh()
+        except (sm.ModelError, formula.FormulaError):
+            g = None
+        finally:
+            d['edge_rule'], d['plan_rule'] = saved
+        self._ghost_cache = (key, g)
+        return g
+
+    def _draw_ghost(self, lim):
+        """Paint the uncut surface behind the shell.
+
+        A Tk canvas polygon has no alpha channel, so there is no real
+        transparency here: the faces are painted in a colour already blended
+        against the canvas white, which looks far better than the stipple
+        pattern that is the only other option, at the cost of not showing
+        what is behind them.
+
+        Every ghost face is painted before every real one rather than
+        depth-sorted with them, so the structure is never hidden by its own
+        reference drawing. That is a deliberate lie about which is in front,
+        and it is why the canvas says in red what is structure and what is
+        not.
+        """
+        gp = self.parent_mesh()
+        if gp is None:
+            return False
+        cv = self.zc.canvas
+        Xp = gp['X']
+        sx, sy = self.cam.project(Xp)
+        el = gp['elems']
+        depth = self.cam.depth(Xp[el].mean(axis=1))
+        for e in np.argsort(depth):
+            idx = el[e]
+            pts = np.stack([sx[idx], sy[idx]], axis=1)
+            if np.abs(pts).max() > lim:
+                continue
+            cv.create_polygon(*pts.ravel(), fill=GHOST_FILL, outline=GHOST_LINE,
+                              width=1, tags=('ghost',))
+        return True
 
     def _draw_solid(self, X, el, t, face_colour, outline, lim):
         """Paint the shell as the slab it is: a top, a soffit and a band

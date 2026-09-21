@@ -240,7 +240,8 @@ def solid_volume(X, elems, t_elem):
 # along the cut. The tab could already plot a RESULT along a line; this is
 # the other half, the one that makes automatic thickening legible.
 
-def section_profile(X, elems, t_elem, ids, axis, index, exaggeration=1.0):
+def section_profile(X, elems, t_elem, ids, axis, index, exaggeration=1.0,
+                    kept=None):
     """The slab's profile along one strip of elements.
 
     `ids` is the (ny+1, nx+1) grid of node numbers the mesh was built from.
@@ -267,7 +268,12 @@ def section_profile(X, elems, t_elem, ids, axis, index, exaggeration=1.0):
                  is most interesting.
         't'      the thickness at each station
         'elems'  (n-1,) the element behind each span, so the cut face can be
-                 coloured by the same field the model is
+                 coloured by the same field the model is. -1 where the plan
+                 was cut away and there is no element behind the span --
+                 without `kept` these would be the GRID positions, which
+                 stopped being element numbers the moment a rule removed
+                 any element, and the cut face would be coloured by whatever
+                 element happened to land on that index.
     """
     X = np.asarray(X, float)
     el = np.asarray(elems, int)
@@ -294,6 +300,11 @@ def section_profile(X, elems, t_elem, ids, axis, index, exaggeration=1.0):
     half = (0.5 * k * t)[:, None]
     top = mid + nrm * half
     bot = mid - nrm * half
+    if kept is not None:
+        lookup = np.full((ids.shape[0] - 1) * (ids.shape[1] - 1), -1, int)
+        k_ = np.asarray(kept, int)
+        lookup[k_] = np.arange(len(k_))
+        strip = lookup[strip]
     return {'s': mid[:, coord], 'z': mid[:, 2],
             's_top': top[:, coord], 'z_top': top[:, 2],
             's_bot': bot[:, coord], 'z_bot': bot[:, 2],

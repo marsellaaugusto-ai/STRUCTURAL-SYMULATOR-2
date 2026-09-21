@@ -353,3 +353,56 @@ def test_a_ruling_really_lies_in_the_surface():
     for d in R[n0]:
         q = p + 0.5 * d
         assert abs(q[2] - k * q[0] * q[1]) < 2e-2
+
+
+# ── the cut face after the plan has been cut ───────────────────────────────
+
+def test_a_section_maps_its_spans_to_real_element_numbers():
+    """Without `kept`, 'elems' is the GRID position, which stopped being an
+    element number the moment a rule removed any element -- and the cut face
+    was then coloured by whatever element happened to land on that index."""
+    import numpy as np
+    from apps.shell import shell_model as sm
+    from apps.shell import shell_solid as ss
+    m = sm.ShellModel.preset('Hypar saddle on four edge beams')
+    m.data['plan_rule'] = 'hypot(x, y) < 4'
+    g = m.mesh()
+    idx = ss.strip_index(g['xs'], g['ys'], 'x', 0.0)
+    pr = ss.section_profile(g['X'], g['elems'], g['t'], g['ids'], 'x', idx,
+                            kept=g['kept'])
+    el = np.asarray(pr['elems'], int)
+    assert el.max() < len(g['elems'])
+    live = el[el >= 0]
+    assert len(live)
+    # every span that claims an element really is on the cut line
+    cen = g['centroids'][live]
+    assert np.abs(cen[:, 0] - np.median(cen[:, 0])).max() < g['h_el']
+
+
+def test_a_section_that_crosses_a_hole_reports_the_hole():
+    import numpy as np
+    from apps.shell import shell_model as sm
+    from apps.shell import shell_solid as ss
+    m = sm.ShellModel.preset('Hypar saddle on four edge beams')
+    m.data['plan_rule'] = 'hypot(x, y) > 3'          # a hole in the middle
+    g = m.mesh()
+    idx = ss.strip_index(g['xs'], g['ys'], 'x', 0.0)
+    pr = ss.section_profile(g['X'], g['elems'], g['t'], g['ids'], 'x', idx,
+                            kept=g['kept'])
+    el = np.asarray(pr['elems'], int)
+    assert (el < 0).any() and (el >= 0).any()
+
+
+def test_without_kept_the_numbers_are_grid_positions():
+    """Kept for the callers that have no cut: the old behaviour is still
+    what comes back when nothing was removed, and then the two agree."""
+    import numpy as np
+    from apps.shell import shell_model as sm
+    from apps.shell import shell_solid as ss
+    m = sm.ShellModel.preset('Hypar saddle on four edge beams')
+    g = m.mesh()
+    idx = ss.strip_index(g['xs'], g['ys'], 'x', 1.0)
+    a = ss.section_profile(g['X'], g['elems'], g['t'], g['ids'], 'x', idx)
+    b = ss.section_profile(g['X'], g['elems'], g['t'], g['ids'], 'x', idx,
+                           kept=np.arange(len(g['elems'])))
+    assert np.array_equal(a['elems'], b['elems'])

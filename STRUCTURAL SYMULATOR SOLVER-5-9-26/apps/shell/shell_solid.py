@@ -419,3 +419,42 @@ def ruling_directions(X, ids, tol=1e-3):
         dirv = np.where(ok[..., None], dirv, np.nan)
         out[ids.ravel(), k, :] = dirv.reshape(-1, 3)
     return out
+
+
+def boundary_loops(elems):
+    """The free boundary as ordered node loops, outer ring and every hole.
+
+    `boundary_edges` gives the free edges in no particular order, which is
+    enough to draw a rim but not enough to lay a beam: a beam needs to know
+    which node follows which. Each edge is kept in its parent element's
+    winding order, so following `b` to the next edge that starts there walks
+    one loop consistently, and a plan with a hole simply yields more than one.
+
+    Returns a list of node lists, each closed (first node repeated at the
+    end). A node where four elements meet corner-to-corner belongs to two
+    loops at once; the walk takes whichever edge is still unused, so such a
+    figure-of-eight comes back as two loops rather than one self-crossing
+    one.
+    """
+    edges = [(a, b) for a, b, _e in boundary_edges(elems)]
+    nxt = {}
+    for a, b in edges:
+        nxt.setdefault(a, []).append(b)
+    loops = []
+    used = set()
+    for a0, b0 in edges:
+        if (a0, b0) in used:
+            continue
+        loop = [a0]
+        a, b = a0, b0
+        while True:
+            used.add((a, b))
+            loop.append(b)
+            if b == a0:
+                break
+            cand = [c for c in nxt.get(b, []) if (b, c) not in used]
+            if not cand:
+                break                      # an open chain: keep what we have
+            a, b = b, cand[0]
+        loops.append(loop)
+    return loops

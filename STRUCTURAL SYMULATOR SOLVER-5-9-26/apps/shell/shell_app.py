@@ -58,6 +58,19 @@ MODES = (
 # One line per colour map, shown under the list. Not every map needs one --
 # "Deflection" explains itself -- so this is the ones where the name alone
 # leaves a real question: what is it per, which face, and against what.
+# The named contours. Each is one signed expression: negative inside, zero
+# on the boundary. `max` of two regions is their intersection and `min` is
+# their union, which is how a sector is built from a disc and two
+# half-planes without needing a second box or a special case in the model.
+EDGE_PRESET_ROWS = (
+    (('ellipse', '(2x/a)^2 + (2y/b)^2 - 1'),
+     ('disc', 'hypot(x, y) - min(a, b)/2'),
+     ('ring', 'max(hypot(x, y) - min(a, b)/2, min(a, b)/4 - hypot(x, y))')),
+    (('sector 90°', 'max(hypot(x, y) - min(a, b)/2, -x, -y)'),
+     ('under a hyperbola', 'max(x y - a b/25, -x, -y)'),
+     ('clear', '')),
+)
+
 FIELD_HELP = {
     'Surface (shaded)': 'No result at all: the shape itself, lit so the curvature reads. '
                         'Useful while you are still dragging sliders.',
@@ -1558,11 +1571,61 @@ class ShellApp(UnitsMixin, tk.Frame):
         tk.Label(p, text='(metres — formulas in the definitions are always in metres)',
                  bg=BG, fg='#888', font=('Helvetica', 8), anchor='w').pack(fill='x')
         # Two ranges can only describe a rectangle, and almost no real shell
-        # has a rectangular plan. A rule over the plan cuts that rectangle
-        # into one -- and it is the tab's own open item 5, "non-rectangular
-        # plans (a domain rule, as Stereo has)".
-        tk.Label(p, text='keep where', bg=BG, font=('Helvetica', 9),
-                 anchor='w').pack(fill='x', pady=(6, 0))
+        # has a rectangular plan. Two boxes cut that rectangle into one, and
+        # they are not the same kind of thing.
+        #
+        # `edge where` takes a SIGNED expression: negative inside, zero ON
+        # the boundary, positive outside. Because the boundary is a curve,
+        # the mesh can be fitted to it, the edge beam can be laid along it
+        # at its true length and the supports can sit on it. That is the
+        # difference between a shape and a shape you can build.
+        #
+        # `keep where` takes a yes/no condition. It can say things a single
+        # smooth g cannot -- an L, a union of holes -- but it leaves the
+        # staircase, because there is no curve anywhere in it to fit to.
+        tk.Label(p, text='edge where  (0 on the boundary, negative inside)',
+                 bg=BG, font=('Helvetica', 9), anchor='w').pack(fill='x', pady=(6, 0))
+        self.v_edge_rule = tk.StringVar(value=str(self.model.data.get('edge_rule', '') or ''))
+        e = tk.Entry(p, textvariable=self.v_edge_rule, font=('Consolas', 9))
+        e.pack(fill='x')
+        e.bind('<Return>', lambda _ev: self._set_edge_rule())
+        e.bind('<FocusOut>', lambda _ev: self._set_edge_rule())
+        for line in EDGE_PRESET_ROWS:
+            row = tk.Frame(p, bg=BG)
+            row.pack(fill='x', pady=1)
+            for text, rule in line:
+                tk.Button(row, text=text, font=('Helvetica', 8),
+                          command=lambda r=rule: (self.v_edge_rule.set(r),
+                                                  self._set_edge_rule())).pack(side='left', padx=(0, 3))
+        # The band shortcut. "y between two curves" is how you write the
+        # region under a parabola or between two of them, and it is how the
+        # request was phrased; it is turned into one g so everything
+        # downstream sees a single contour and nothing needs a second path.
+        band = tk.Frame(p, bg=BG)
+        band.pack(fill='x', pady=(3, 0))
+        tk.Label(band, text='or y from', bg=BG, font=('Helvetica', 8)).pack(side='left')
+        self.v_band_lo = tk.StringVar()
+        self.v_band_hi = tk.StringVar()
+        for var in (self.v_band_lo, self.v_band_hi):
+            en = tk.Entry(band, textvariable=var, width=9, font=('Consolas', 8))
+            en.pack(side='left', padx=2)
+            en.bind('<Return>', lambda _ev: self._set_band())
+            if var is self.v_band_lo:
+                tk.Label(band, text='to', bg=BG, font=('Helvetica', 8)).pack(side='left')
+        tk.Button(band, text='use', font=('Helvetica', 8),
+                  command=self._set_band).pack(side='left', padx=(4, 0))
+        fit = tk.Frame(p, bg=BG)
+        fit.pack(fill='x', pady=(3, 0))
+        self.v_fit_edge = tk.BooleanVar(value=bool(self.model.data.get('fit_edge', True)))
+        tk.Checkbutton(fit, text='fit the mesh to the edge', variable=self.v_fit_edge,
+                       bg=BG, font=('Helvetica', 8), command=self._set_fit_edge,
+                       anchor='w').pack(side='left')
+        self.edge_rule_note = tk.Label(p, text='', bg=BG, fg='#666',
+                                       font=('Helvetica', 8), anchor='w',
+                                       wraplength=PANEL_W - 30, justify='left')
+        self.edge_rule_note.pack(fill='x')
+        tk.Label(p, text='keep where  (a yes/no condition; leaves a staircase)',
+                 bg=BG, font=('Helvetica', 9), anchor='w').pack(fill='x', pady=(6, 0))
         self.v_plan_rule = tk.StringVar(value=str(self.model.data.get('plan_rule', '') or ''))
         e = tk.Entry(p, textvariable=self.v_plan_rule, font=('Consolas', 9))
         e.pack(fill='x')
@@ -1714,6 +1777,81 @@ class ShellApp(UnitsMixin, tk.Frame):
         if name and self.model.data.get(key) != name:
             self.model.data[key] = name
             self._model_changed()
+
+    def _set_edge_rule(self):
+        val = self.v_edge_rule.get().strip()
+        if val == str(self.model.data.get('edge_rule', '') or ''):
+            return
+        had = bool(str(self.model.data.get('edge_rule', '') or '').strip())
+        self.model.data['edge_rule'] = val
+        self._model_changed()
+        self._refresh_geometry_quietly()
+        self._refresh_edge_rule_note()
+        self._refresh_plan_rule_note()
+        if val and not had:
+            # An edge beam belongs on the edge. Once there is a cut, the
+            # rectangle is no longer the edge, and a beam left on it holds
+            # the shell at a handful of tangent points. `edges` follows the
+            # cut by itself (see _line_nodes); this just says so, because a
+            # beam that silently moved is worse than one that announced it.
+            self.status.set('The edge beams and the corner supports now follow the cut. '
+                            'Use the beam line "rectangle" to put one back on the plan box.')
+        self._draw()
+
+    def _set_band(self):
+        """y between two curves -> one signed g. The region is y >= lo and
+        y <= hi, so g = max(lo - y, y - hi): positive where either fails."""
+        lo = self.v_band_lo.get().strip()
+        hi = self.v_band_hi.get().strip()
+        if not (lo and hi):
+            self.status.set('Give both curves, for example -a/8 and a/8, or '
+                            '-(x/2)^2 and (x/2)^2.')
+            return
+        self.v_edge_rule.set(f'max(({lo}) - y, y - ({hi}))')
+        self._set_edge_rule()
+
+    def _set_fit_edge(self):
+        self.model.data['fit_edge'] = bool(self.v_fit_edge.get())
+        self._model_changed()
+        self._refresh_geometry_quietly()
+        self._refresh_edge_rule_note()
+        self._draw()
+
+    def _refresh_edge_rule_note(self):
+        """Say what the cut actually produced, in the numbers that decide
+        whether it is usable: how much of the plan is left, how long the
+        boundary is, and how many nodes were moved onto it. The perimeter is
+        the one to watch -- an unfitted staircase reports a boundary far
+        longer than the shape has, and that is the length an edge beam would
+        be built to."""
+        if not hasattr(self, 'edge_rule_note'):
+            return
+        g = self.geom
+        if g is None or not g.get('has_edge_rule'):
+            self.edge_rule_note.config(text='', fg='#666')
+            return
+        try:
+            from . import shell_solid as solid
+            X = g['X']
+            per = 0.0
+            for loop in solid.boundary_loops(g['elems']):
+                P = X[np.asarray(loop, int), :2]
+                per += float(np.hypot(*(P[1:] - P[:-1]).T).sum())
+            area = float(np.abs(sm._plan_area(X, g['elems'])).sum())
+        except Exception:
+            self.edge_rule_note.config(text='', fg='#666')
+            return
+        whole = g['nx'] * g['ny']
+        nfit = int(g.get('fitted', np.zeros(0, bool)).sum())
+        txt = ('Cut: %d of %d elements kept · %.2f m² of plan · boundary %.2f m'
+               % (len(g['elems']), whole, area, per))
+        if nfit:
+            txt += ' · %d nodes moved onto the curve' % nfit
+            colour = '#666'
+        else:
+            txt += ' — NOT fitted, so this boundary is a staircase and its length is too long'
+            colour = '#a33'
+        self.edge_rule_note.config(text=txt, fg=colour)
 
     def _set_plan_rule(self):
         val = self.v_plan_rule.get().strip()
@@ -2135,6 +2273,10 @@ class ShellApp(UnitsMixin, tk.Frame):
         self.v_thick.set(d['thickness'])
         for k, v in self.plan_vars.items():
             v.set(d['plan'][k])
+        self.v_edge_rule.set(str(d.get('edge_rule', '') or ''))
+        self.v_fit_edge.set(bool(d.get('fit_edge', True)))
+        self.v_band_lo.set('')
+        self.v_band_hi.set('')
         self.v_selfw.set(bool(d.get('self_weight', True)))
         self.v_selfw_case.set(d.get('self_weight_case', 'D'))
         self.selfw_box.config(values=[c['name'] for c in d['cases']])
@@ -2202,6 +2344,7 @@ class ShellApp(UnitsMixin, tk.Frame):
             self.error = ''
             self.mesh_note.config(text=f'  {g["nx"]} × {g["ny"]} = {len(g["elems"])} elements')
             self._refresh_plan_rule_note()
+            self._refresh_edge_rule_note()
         except (sm.ModelError, formula.FormulaError) as exc:
             self.error = str(exc)
             self.status.set(f'Cannot draw the surface: {exc}')

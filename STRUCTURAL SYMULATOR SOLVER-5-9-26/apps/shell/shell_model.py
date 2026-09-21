@@ -86,6 +86,19 @@ EDGE_NAMES = ('x0', 'x1', 'y0', 'y1')
 RIGID_SECTION = fe.rect_section(1.0, 1.0)
 
 
+def _plan_area(X, elems):
+    """Signed plan area of every quadrilateral, by the shoelace formula.
+
+    Signed on purpose: a node dragged past its neighbour flips the sign, and
+    a flipped element is the failure the boundary fit has to catch. Testing
+    the area rather than the shape also catches the sliver that has not
+    flipped yet but has nearly no area left to integrate over.
+    """
+    P = np.asarray(X)[np.asarray(elems, int)][:, :, :2]
+    x, y = P[:, :, 0], P[:, :, 1]
+    return 0.5 * (x * np.roll(y, -1, axis=1) - np.roll(x, -1, axis=1) * y).sum(axis=1)
+
+
 class ModelError(ValueError):
     """Something in the model definition prevents analysis; the message says
     what and where, in terms the user entered."""
@@ -98,6 +111,7 @@ def _base(**over):
     m = {
         'lines': [], 'sliders': {},
         'surface': 'z', 'thickness': 't',
+        'edge_rule': '', 'plan_rule': '', 'fit_edge': True, 'snap_frac': 0.55,
         'plan': {'x0': '-a/2', 'x1': 'a/2', 'y0': '-b/2', 'y1': 'b/2'},
         'mesh': {'nx': 24, 'ny': 24, 'size': 0.5},
         'material': {'fc': 30.0, 'fy': 420.0, 'Ec': 0.0, 'nu': 0.2, 'gamma': 25.0},
@@ -283,6 +297,22 @@ class ShellModel:
         cen = X[elems].mean(axis=1)
         h_el = float(np.hypot(xs[1] - xs[0], ys[1] - ys[0]))
         keep = None
+        ok = np.ones(len(cen), bool)
+        # Two ways to cut the rectangle, and they are not the same kind of
+        # thing. `edge_rule` is a SIGNED expression: it is negative inside,
+        # zero ON the boundary and positive outside, so the boundary is a
+        # curve the mesh can be fitted to and a beam can be laid on.
+        # `plan_rule` is a yes/no condition: it can say things a single
+        # smooth g cannot (an L, a union of holes) but it leaves a
+        # staircase, because there is no curve anywhere in it. Both may be
+        # given; an element has to pass both.
+        g_fn = self.edge_rule_fn()
+        if g_fn is not None:
+            try:
+                gc = np.asarray(g_fn(cen[:, 0], cen[:, 1]), float) * np.ones(len(cen))
+            except formula.FormulaError as exc:
+                raise ModelError(f'Edge rule: {exc}') from None
+            ok &= gc < 0.0
         rule = self.plan_rule_fn()
         if rule is not None:
             # Judged at the element's CENTRE, so an element is in or out as a
@@ -290,14 +320,18 @@ class ShellModel:
             # line by at most one element, and that overshoot is the framing
             # around the opening rather than a ragged edge.
             try:
-                ok = np.asarray(rule(cen[:, 0], cen[:, 1]), bool) & np.ones(len(cen), bool)
+                ok &= np.asarray(rule(cen[:, 0], cen[:, 1]), bool) & np.ones(len(cen), bool)
             except formula.FormulaError as exc:
                 raise ModelError(f'Plan rule: {exc}') from None
+        if g_fn is not None or rule is not None:
             if not ok.any():
                 raise ModelError('The plan rule keeps no elements at all.')
             keep = np.nonzero(ok)[0]
             elems = elems[keep]
-            cen = cen[keep]
+        fitted = np.zeros(len(X), bool)
+        if g_fn is not None and self.data.get('fit_edge', True):
+            fitted = self._fit_boundary(X, elems, g_fn, h_el, (x0, x1, y0, y1))
+        cen = X[elems].mean(axis=1)
         t = self.element_thickness(cen[:, 0], cen[:, 1], h_el=h_el)
         # Nodes no element uses any more. They keep their numbers -- ids, the
         # edges, the section strips and every support name are written against
@@ -308,7 +342,88 @@ class ShellModel:
         used[elems.ravel()] = True
         return {'X': X, 'elems': elems, 'ids': ids, 'xs': xs, 'ys': ys,
                 'nx': nx, 'ny': ny, 'plan': (x0, x1, y0, y1), 't': t,
-                'centroids': cen, 'h_el': h_el, 'kept': keep, 'used': used}
+                'centroids': cen, 'h_el': h_el, 'kept': keep, 'used': used,
+                'fitted': fitted, 'cut': keep is not None,
+                'has_edge_rule': g_fn is not None}
+
+    def _fit_boundary(self, X, elems, g_fn, h_el, plan):
+        """Pull the boundary nodes of the kept set onto the curve g = 0.
+
+        Without this the cut is a staircase, and a staircase does not just
+        look wrong: its perimeter never converges. The taxicab boundary of a
+        circle is 8r however fine the mesh gets, against 2*pi*r -- 27% long,
+        forever -- so an edge beam laid on it would be 27% too long and too
+        heavy. Moving the nodes instead gives one boundary that the drawing,
+        the area, the perimeter, the beam and the supports all share.
+
+        X is modified in place and the mask of moved nodes is returned.
+        Three things are refused, each because it would trade a cosmetic
+        problem for a real one:
+          * a move longer than `snap_frac` of an element -- a node dragged
+            that far crosses its neighbours and leaves a sliver;
+          * a move that leaves the plan rectangle -- the surface is only
+            defined over it, and there the boundary IS the rectangle edge;
+          * a move that turns an element inside out or shrinks it below a
+            fifth of its area. Those nodes are put back, and it is done
+            again until every element is sound, so a pathological g costs
+            accuracy at the edge and never a broken mesh.
+        """
+        from . import shell_solid as solid
+        x0, x1, y0, y1 = plan
+        bn = np.unique(np.asarray([[a, b] for a, b, _e in
+                                   solid.boundary_edges(elems)], int).ravel()) \
+            if len(elems) else np.zeros(0, int)
+        if not len(bn):
+            return np.zeros(len(X), bool)
+        frac = float(self.data.get('snap_frac', 0.55) or 0.55)
+        tol = frac * h_el
+        P = X[bn, :2].copy()
+        step = max(h_el * 1e-4, 1e-9)
+        for _ in range(12):
+            g = np.asarray(g_fn(P[:, 0], P[:, 1]), float) * np.ones(len(P))
+            gx = (np.asarray(g_fn(P[:, 0] + step, P[:, 1]), float)
+                  - np.asarray(g_fn(P[:, 0] - step, P[:, 1]), float)) / (2 * step)
+            gy = (np.asarray(g_fn(P[:, 0], P[:, 1] + step), float)
+                  - np.asarray(g_fn(P[:, 0], P[:, 1] - step), float)) / (2 * step)
+            n2 = gx * gx + gy * gy
+            n2 = np.where(n2 > 1e-30, n2, np.inf)          # flat g: no move
+            P[:, 0] -= g * gx / n2
+            P[:, 1] -= g * gy / n2
+        P[:, 0] = np.clip(P[:, 0], x0, x1)
+        P[:, 1] = np.clip(P[:, 1], y0, y1)
+        d = np.hypot(P[:, 0] - X[bn, 0], P[:, 1] - X[bn, 1])
+        move = np.isfinite(d) & (d <= tol) & (d > 1e-12)
+        if not move.any():
+            return np.zeros(len(X), bool)
+        orig = X[bn].copy()
+        moved = np.zeros(len(X), bool)
+        idx = bn[move]
+        X[idx, 0] = P[move, 0]
+        X[idx, 1] = P[move, 1]
+        moved[idx] = True
+        surf = self.surface_fn()
+        base = _plan_area(X, elems)
+        ref = h_el * h_el * 0.2
+        for _ in range(6):
+            bad = base <= ref
+            if not bad.any():
+                break
+            revert = np.unique(elems[bad].ravel())
+            revert = revert[moved[revert]]
+            if not len(revert):
+                break
+            back = {int(n): i for i, n in enumerate(bn)}
+            for n in revert:
+                X[n, :2] = orig[back[int(n)], :2]
+                moved[n] = False
+            base = _plan_area(X, elems)
+        idx = np.nonzero(moved)[0]
+        if len(idx):
+            try:
+                X[idx, 2] = np.asarray(surf(X[idx, 0], X[idx, 1]), float)
+            except formula.FormulaError as exc:
+                raise ModelError(f'Surface: {exc}') from None
+        return moved
 
     def element_thickness(self, xc, yc, with_auto=True, h_el=None):
         """Thickness at element centres: the t(x, y) definition, raised by any
@@ -391,6 +506,34 @@ class ShellModel:
                                             dict(ws._ns_funcs), ws._autocall)
         except formula.FormulaError as exc:
             raise ModelError(f'Plan rule "{expr}": {exc}') from None
+
+    def edge_rule_fn(self):
+        """The signed `edge where` expression g(x, y), or None.
+
+        Negative inside, zero on the boundary, positive outside. Compiled
+        exactly like the plan rule, so it may use x, y and every number and
+        function defined in the workspace:
+
+            (2x/a)^2 + (2y/b)^2 - 1        an ellipse inscribed in the plan
+            hypot(x, y) - r                a disc
+            max(hypot(x,y) - r1, r0 - hypot(x,y))   a ring
+            x y - c                        under one branch of a hyperbola
+
+        `max` of two expressions is the intersection of the two regions and
+        `min` is their union, which is how the presets build a sector out of
+        a disc and two half-planes without needing a second box.
+        """
+        expr = str(self.data.get('edge_rule', '') or '').strip()
+        if not expr:
+            return None
+        ws = self.ws
+        names = dict(ws._ns_values)
+        names.update(self.load_names())
+        try:
+            return formula.compile_function(expr, formula.COORDS, names,
+                                            dict(ws._ns_funcs), ws._autocall)
+        except formula.FormulaError as exc:
+            raise ModelError(f'Edge rule "{expr}": {exc}') from None
 
     # -- the finite-element model ------------------------------------------
     def build(self):
@@ -554,13 +697,43 @@ class ShellModel:
                 'cap_eff': 2.0 * float(ext), 'head_nodes': nodes,
                 'head_elems': elems.tolist()}
 
+    def _cut_loops(self, m):
+        """The free boundary of the kept elements, as ordered node chains.
+
+        With no rule this is the four sides of the rectangle, walked as one
+        ring; with a rule it is the cut, and every hole in it.
+        """
+        from . import shell_solid as solid
+        loops = solid.boundary_loops(m['elems'])
+        loops.sort(key=len, reverse=True)
+        return [(f'cut {i + 1}' if i else 'cut', list(l)) for i, l in enumerate(loops)]
+
+    def _cut_nodes(self, m):
+        out = []
+        for _n, chain in self._cut_loops(m):
+            out.extend(chain)
+        return sorted(set(out))
+
     def _line_nodes(self, spec, m):
-        """Node chains for a beam line spec: an edge name, 'edges', or
-        'x=<formula>' / 'y=<formula>' snapped to the nearest grid line."""
+        """Node chains for a beam line spec: an edge name, 'edges', 'cut',
+        'rectangle', or 'x=<formula>' / 'y=<formula>' snapped to the nearest
+        grid line.
+
+        'edges' means the FREE BOUNDARY, which is what an edge beam is for.
+        On an uncut plan that is the four sides, named as before. Once a rule
+        cuts the plan it is the cut instead -- laying the edge beam on the
+        rectangle there would leave it attached to the shell at a handful of
+        nodes and carrying the roof by bending, which is not the structure
+        anybody drew. 'rectangle' still asks for the four sides explicitly.
+        """
         ids = m['ids']
         spec = str(spec).strip()
         out = []
-        if spec == 'edges':
+        if spec == 'cut':
+            return self._cut_loops(m)
+        if spec in ('edges', 'rectangle'):
+            if spec == 'edges' and m.get('cut'):
+                return self._cut_loops(m)
             for e in EDGE_NAMES:
                 out.extend(self._line_nodes(e, m))
             return out
@@ -586,16 +759,28 @@ class ShellModel:
                 j = int(np.argmin(np.abs(m['ys'] - v)))
                 return [(f'y={m["ys"][j]:.3g}', list(ids[j, :]))]
         raise ModelError(f'Unknown beam line "{spec}". Use x0, x1, y0, y1, '
-                         'edges, x=<value> or y=<value>.')
+                         'edges, cut, rectangle, x=<value> or y=<value>.')
 
     def _support_nodes(self, spec, m):
         ids, X = m['ids'], m['X']
         corners = [ids[0, 0], ids[0, -1], ids[-1, -1], ids[-1, 0]]
+        if m.get('cut'):
+            # The grid's four corners may have been cut away, and a support
+            # on a node no element uses holds nothing. Each one moves to the
+            # nearest node ON the cut instead, which is where the corner of
+            # the shape now is -- the ellipse's 45-degree points, the two
+            # sharp ends of a lens, the tip of a sector.
+            edge = np.asarray(self._cut_nodes(m), int)
+            if len(edge):
+                corners = [int(edge[np.argmin((X[edge, 0] - X[c, 0]) ** 2
+                                              + (X[edge, 1] - X[c, 1]) ** 2)])
+                           for c in corners]
         at = spec.get('at', 'corners')
         which = spec.get('which', 'all')
+        if at == 'cut':
+            return self._cut_nodes(m)
         if at == 'corners':
-            names = {'x0y0': ids[0, 0], 'x1y0': ids[0, -1], 'x1y1': ids[-1, -1],
-                     'x0y1': ids[-1, 0]}
+            names = dict(zip(('x0y0', 'x1y0', 'x1y1', 'x0y1'), corners))
             if which in (None, '', 'all'):
                 return corners
             return [names[w.strip()] for w in str(which).split(',')]
@@ -606,6 +791,8 @@ class ShellModel:
         if at == 'edge':
             return self._line_nodes(which, m)[0][1]
         if at == 'edges':
+            if m.get('cut'):
+                return self._cut_nodes(m)
             s = set()
             for e in EDGE_NAMES:
                 s.update(self._line_nodes(e, m)[0][1])

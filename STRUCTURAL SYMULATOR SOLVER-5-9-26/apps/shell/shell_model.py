@@ -363,10 +363,19 @@ class ShellModel:
             that far crosses its neighbours and leaves a sliver;
           * a move that leaves the plan rectangle -- the surface is only
             defined over it, and there the boundary IS the rectangle edge;
-          * a move that turns an element inside out or shrinks it below a
-            fifth of its area. Those nodes are put back, and it is done
-            again until every element is sound, so a pathological g costs
-            accuracy at the edge and never a broken mesh.
+          * a move that turns an element inside out, or shrinks it below a
+            tenth of the area it had. Those nodes are put back, and it is
+            done again until every element is sound, so a pathological g
+            costs accuracy at the edge and never a broken mesh.
+
+        The shrink test is against each element's OWN area before the move,
+        not against a fixed fraction of the grid square. An element whose
+        centre is barely inside the curve has three of its four nodes
+        outside it and is SUPPOSED to lose most of its area; judged against
+        the grid square it looks like a sliver, gets reverted, and the
+        boundary keeps a step exactly where the curve is steepest. On the
+        verification dome that one difference was 24 nodes left behind and
+        a perimeter 4.6% long.
         """
         from . import shell_solid as solid
         x0, x1, y0, y1 = plan
@@ -402,8 +411,10 @@ class ShellModel:
         X[idx, 1] = P[move, 1]
         moved[idx] = True
         surf = self.surface_fn()
+        Xorig = X.copy()
+        Xorig[idx, :2] = orig[move, :2]
+        ref = 0.10 * np.abs(_plan_area(Xorig, elems))
         base = _plan_area(X, elems)
-        ref = h_el * h_el * 0.2
         for _ in range(6):
             bad = base <= ref
             if not bad.any():

@@ -1908,7 +1908,11 @@ class ShellApp(UnitsMixin, tk.Frame):
         x0, x1, y0, y1 = g['plan']
         span = max(x1 - x0, y1 - y0)
         out = {'elements': len(g['elems']), 't_min': float(t.min()), 't_max': float(t.max()),
-               'span': span, 'concrete': ssd.solid_volume(g['X'], g['elems'], t)}
+               'span': span, 'concrete': ssd.solid_volume(g['X'], g['elems'], t),
+               # the same L/t the status line prints, on the MEAN thickness:
+               # a shell that is thickened only at its supports is not made
+               # stubby by that, and taking t_min would say it was
+               'slenderness': span / max(float(t.mean()), 1e-9)}
         n1, _s, _q = self.field_values('Principal N1 (tension)')
         if n1 is not None:
             n1 = np.asarray(n1, float)
@@ -1958,6 +1962,7 @@ class ShellApp(UnitsMixin, tk.Frame):
 
     DESIGN_COLS = (
         ('label', 'design', ''), ('t', 't', 'section_length'),
+        ('slenderness', 'L/t', ''),
         ('tension_pa', '\u03c3t max', 'stress'), ('span_over', '\u0394 as span/', ''),
         ('tension_area', 'in tension', ''), ('steel_kg', 'steel', ''),
         ('concrete', 'concrete', ''), ('util', 'util', ''))
@@ -1974,6 +1979,7 @@ class ShellApp(UnitsMixin, tk.Frame):
         q = 'section_length'
         return (m['label'],
                 '%.4g\u2013%.4g' % (units.from_si(q, m['t_min']), units.from_si(q, m['t_max'])),
+                '%.0f' % m['slenderness'],
                 '%.3g' % units.from_si('stress', m.get('tension_pa', float('nan'))),
                 ('%.0f' % m['span_over']) if np.isfinite(m['span_over']) else '\u2014',
                 '%.0f%%' % (100 * m.get('tension_area', float('nan'))),
@@ -2819,7 +2825,8 @@ class ShellApp(UnitsMixin, tk.Frame):
         self.design_tree = ttk.Treeview(p, columns=cols, show='headings', height=5)
         for key, label, q in self.DESIGN_COLS:
             self.design_tree.heading(key, text=label + (('  ' + units.label(q)) if q else ''))
-            self.design_tree.column(key, width=68 if key != 'label' else 86, stretch=True)
+            self.design_tree.column(key, width=44 if key == 'slenderness' else
+                                    (86 if key == 'label' else 62), stretch=True)
         self.design_tree.pack(fill='x', padx=8, pady=(4, 2))
         row = tk.Frame(p, bg=BG)
         row.pack(fill='x', padx=8)

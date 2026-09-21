@@ -607,7 +607,185 @@ class ShellApp(UnitsMixin, tk.Frame):
     # ══════════════════════════════════════════════════════════════════════
     #  Analyse: the list that used to be a combobox in the corner
     # ══════════════════════════════════════════════════════════════════════
+    # ── what decides the design ───────────────────────────────────────────
+    #  Three numbers already fall out of every run and none of them reached
+    #  the eye: the most tensioned element, the most compressed one, and the
+    #  one at highest utilisation -- the element that actually sets the
+    #  thickness and the steel. They went into the report text at the bottom
+    #  of the window, which is the last place anyone looks.
+    #
+    #  Each row carries TWO answers, and that is the part worth keeping.
+    #  A support is a stress singularity: on almost any shell the worst
+    #  element anywhere is the corner one, every time, whatever the shape
+    #  does. A card that only ever says "the corner" teaches nothing, so
+    #  each row also reports the worst element clear of the support blocks,
+    #  which is the one the SHAPE is responsible for.
+    GOV_ROWS = (
+        ('tension', 'most tension', '#b4322a', 'Principal N1 (tension)'),
+        ('compression', 'most compression', '#1f5c8b', 'Principal N2 (compression)'),
+        ('governing', 'governs the design', '#946808', 'Utilisation (worst check)'),
+    )
+
+    def _build_governing_card(self, p):
+        card = tk.Frame(p, bg='#ffffff', highlightbackground='#c9d2da',
+                        highlightthickness=1)
+        card.pack(fill='x', padx=8, pady=(8, 4))
+        tk.Label(card, text='WHAT DECIDES THIS DESIGN', bg='#ffffff', fg='#333',
+                 font=('Helvetica', 8, 'bold'), anchor='w').pack(fill='x', padx=8, pady=(6, 2))
+        self.gov_rows = {}
+        for key, label, colour, _field in self.GOV_ROWS:
+            row = tk.Frame(card, bg='#ffffff', cursor='hand2')
+            row.pack(fill='x', padx=8, pady=(0, 5))
+            bar = tk.Frame(row, bg=colour, width=3)
+            bar.pack(side='left', fill='y')
+            body = tk.Frame(row, bg='#ffffff')
+            body.pack(side='left', fill='x', expand=True, padx=(6, 0))
+            lab = tk.Label(body, text=label.upper(), bg='#ffffff', fg=colour,
+                           font=('Helvetica', 7, 'bold'), anchor='w')
+            lab.pack(fill='x')
+            val = tk.Label(body, text='—', bg='#ffffff', fg='#111',
+                           font=('Consolas', 10, 'bold'), anchor='w')
+            val.pack(fill='x')
+            sub = tk.Label(body, text='analyse to fill this in', bg='#ffffff', fg='#666',
+                           font=('Helvetica', 8), anchor='w', justify='left',
+                           wraplength=PANEL_W - 60)
+            sub.pack(fill='x')
+            self.gov_rows[key] = {'row': row, 'value': val, 'sub': sub, 'elem': None}
+            for w in (row, body, lab, val, sub, bar):
+                w.bind('<Button-1>', lambda _e, k=key: self.show_governing(k))
+        self.gov_note = tk.Label(card, text='', bg='#ffffff', fg='#888',
+                                 font=('Helvetica', 7), anchor='w',
+                                 wraplength=PANEL_W - 40, justify='left')
+        self.gov_note.pack(fill='x', padx=8, pady=(0, 6))
+
+    def head_zone(self):
+        """Elements inside a support block or column head, or close enough to
+        one that what they report is the support and not the shell.
+
+        `in_head` alone is far too tight -- on the hypar preset it is four
+        elements out of 576, while the element that actually governs sits
+        1.06 m away and is governed by the punching check, which is a
+        statement about the block. The zone is therefore the head plus two
+        element rows, which is where a point-support singularity does its
+        damage and how far a peak has to be smoothed before it means
+        anything about the surface.
+        """
+        res = self.res
+        g = self.geom
+        if res is None or g is None:
+            return np.zeros(len(g['elems']) if g is not None else 0, bool)
+        near = np.asarray(res.fem.get('in_head'), bool).copy()
+        cen = g['centroids']
+        for hd in res.fem.get('heads', []):
+            hx, hy = hd['xy']
+            r = 0.5 * max(float(hd.get('cap', 0.0)), float(hd.get('cap_eff', 0.0))) \
+                + 2.0 * float(g['h_el'])
+            near |= np.hypot(cen[:, 0] - hx, cen[:, 1] - hy) <= r
+        return near
+
+    def governing_rows(self):
+        """One dict per card row: the worst element anywhere, and the worst
+        clear of the supports. Returns {} when there is nothing to report."""
+        res, des = self.res, self.des
+        if res is None or des is None or self.geom is None:
+            return {}
+        N1 = None
+        for cb in res.combos:
+            F = res.combo_forces(cb)
+            a, b, _ = sm.principal(F['Nx'], F['Ny'], F['Nxy'])
+            if N1 is None:
+                N1, N2 = a.copy(), b.copy()
+                who1 = np.zeros(len(a), int)
+                who2 = np.zeros(len(a), int)
+            else:
+                hit = a > N1
+                who1[hit] = res.combos.index(cb)
+                N1 = np.maximum(N1, a)
+                hit = b < N2
+                who2[hit] = res.combos.index(cb)
+                N2 = np.minimum(N2, b)
+        if N1 is None:
+            return {}
+        away = ~self.head_zone()
+        out = {}
+        for key, vals, sense in (('tension', N1, 1), ('compression', N2, -1),
+                                 ('governing', des.util_max, 1)):
+            pick = (lambda v: int(np.argmax(v))) if sense > 0 else (lambda v: int(np.argmin(v)))
+            e = pick(vals)
+            e_away = pick(np.where(away, vals, -np.inf * sense)) if away.any() else None
+            out[key] = {'elem': e, 'value': float(vals[e]),
+                        'elem_away': e_away,
+                        'value_away': float(vals[e_away]) if e_away is not None else None,
+                        'combo': (res.combos[who1[e]].name if key == 'tension' else
+                                  res.combos[who2[e]].name if key == 'compression' else
+                                  sd.CHECK_LABELS[des.governing[e]])}
+        return out
+
+    def _refresh_governing(self):
+        if not hasattr(self, 'gov_rows'):
+            return
+        rows = self.governing_rows()
+        g = self.geom
+        for key, label, _c, _f in self.GOV_ROWS:
+            box = self.gov_rows[key]
+            r = rows.get(key)
+            if r is None:
+                box['elem'] = None
+                box['value'].config(text='—')
+                box['sub'].config(text='analyse to fill this in')
+                continue
+            box['elem'] = r['elem']
+            c = g['centroids'][r['elem']]
+            if key == 'governing':
+                box['value'].config(text='utilisation %.2f' % r['value'])
+            else:
+                q = 'line_load'
+                box['value'].config(text='%s %s' % (self._fmt_q(q, r['value']),
+                                                    units.label(q)))
+            sub = 'el %d  at x %.2f  y %.2f\n%s' % (r['elem'], c[0], c[1], r['combo'])
+            if r['elem_away'] is not None and r['elem_away'] != r['elem']:
+                ca = g['centroids'][r['elem_away']]
+                av = ('utilisation %.2f' % r['value_away']) if key == 'governing' \
+                    else self._fmt_q('line_load', r['value_away'])
+                sub += '\nclear of the supports: %s at x %.2f  y %.2f' % (av, ca[0], ca[1])
+            box['sub'].config(text=sub)
+        self.gov_note.config(text='Click a row: the model turns to that element, colours '
+                                  'itself by it and cuts a section through it.'
+                             if rows else '')
+
+    def show_governing(self, key):
+        """Click a row. Selecting the element is not enough on its own: the
+        useful act is to be looking at the right field, at the right place,
+        with a section through it -- which is three manual steps otherwise."""
+        box = self.gov_rows.get(key) if hasattr(self, 'gov_rows') else None
+        if not box or box['elem'] is None or self.geom is None:
+            return
+        e = box['elem']
+        field = dict((k, f) for k, _l, _c, f in self.GOV_ROWS)[key]
+        if field in FIELDS:
+            self.v_field.set(field)
+        self.sel = e
+        self.set_mode('analyse')
+        self.cut_through(e)
+        self._draw()
+        self._write_info()
+
+    def cut_through(self, elem):
+        """A section along x through the given element, reusing an identical
+        cut rather than stacking a new one on every click."""
+        g = self.geom
+        if g is None or elem is None or elem >= len(g['centroids']):
+            return
+        pos = float(g['centroids'][elem][1])
+        for c in self.cuts:
+            if c['axis'] == 'y' and abs(c['pos'] - pos) < 1e-9:
+                return
+        self.cuts.append({'axis': 'y', 'pos': pos,
+                          'colour': self.CUT_COLOURS[len(self.cuts) % len(self.CUT_COLOURS)]})
+        self._refresh_cuts()
+
     def _build_analyse(self, p):
+        self._build_governing_card(p)
         tk.Label(p, text='Colour the shell by', bg=BG,
                  font=('Helvetica', 10, 'bold')).pack(anchor='w', padx=8, pady=(8, 2))
         wrap = tk.Frame(p, bg=BG)
@@ -2387,11 +2565,13 @@ class ShellApp(UnitsMixin, tk.Frame):
             self.error = str(exc)
             self.status.set('Analysis refused: ' + str(exc)[:160])
             self._refresh_select_values()
+            self._refresh_governing()
             self._write_info()
             self._draw()
             return False
         self.geom = self.res.fem['mesh']
         self._refresh_select_values()
+        self._refresh_governing()
         n_need = int(self.des.needs_thicker.sum() + self.des.cannot.sum())
         self._refresh_cuts()
         self._draw_section()

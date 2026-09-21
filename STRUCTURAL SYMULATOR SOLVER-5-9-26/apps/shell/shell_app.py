@@ -415,6 +415,8 @@ class ShellApp(UnitsMixin, tk.Frame):
         self.v_pick_block = tk.DoubleVar(value=sm.DEFAULT_BLOCK)
         self.hover_node = None
         self.v_rulings = tk.BooleanVar(value=False)
+        self.designs = []
+        self.sweep_rows = []
         self.status = tk.StringVar(value='')
 
         self._build_ui()
@@ -528,7 +530,7 @@ class ShellApp(UnitsMixin, tk.Frame):
         self.sec_canvas = tk.Canvas(sec, bg='white', highlightthickness=1,
                                     highlightbackground='#ccc')
         self.sec_canvas.pack(fill='both', expand=True)
-        self.sec_canvas.bind('<Configure>', lambda _e: self._draw_section())
+        self.sec_canvas.bind('<Configure>', lambda _e: self._draw_bottom())
 
         sb = tk.Frame(self, bg=TB)
         sb.pack(fill='x', side='bottom')
@@ -539,6 +541,7 @@ class ShellApp(UnitsMixin, tk.Frame):
         self._build_supports(self.pages['supports'])
         self._build_loads(self.pages['loads'])
         self._build_design(self.pages['design'])
+        self._build_compare(self.pages['design'])
         self._build_sections(self.pages['sections'])
         self._build_analyse(self.pages['analyse'])
         self.set_mode('definitions')
@@ -570,8 +573,9 @@ class ShellApp(UnitsMixin, tk.Frame):
             stripe.configure(bg=RAIL_STRIPE if on else RAIL_BG)
             t_.configure(font=('Helvetica', 8, 'bold' if on else 'normal'))
         # the bottom pane answers the mode's own question
-        want = self._sec_pane if key == 'sections' else self._info_pane
-        other = self._info_pane if key == 'sections' else self._sec_pane
+        drawing = key in ('sections', 'design')
+        want = self._sec_pane if drawing else self._info_pane
+        other = self._info_pane if drawing else self._sec_pane
         # panes() hands back Tcl path names, which are not the widgets; compare
         # as strings or the forget below silently never fires and both panes
         # stay on screen sharing one slot
@@ -583,8 +587,8 @@ class ShellApp(UnitsMixin, tk.Frame):
                 self._pw.add(want, stretch='never', minsize=80, height=170)
         except tk.TclError:
             pass
-        if key == 'sections':
-            self._draw_section()
+        if drawing:
+            self._draw_bottom()
         self._draw()
 
     # ══════════════════════════════════════════════════════════════════════
@@ -1236,6 +1240,216 @@ class ShellApp(UnitsMixin, tk.Frame):
         body.configure(state='disabled')
         return win
 
+    # ══════════════════════════════════════════════════════════════════════
+    #  Comparing designs
+    # ══════════════════════════════════════════════════════════════════════
+    # Thickening, the edge beam and the concrete class are three levers on
+    # the same shell, and the tab could move all three and remember none of
+    # the answers. These are the numbers the published optimisation studies
+    # compare -- peak tension, deflection, reinforcement -- plus the two a
+    # concrete shell is actually bought with, volume and tonnage.
+    STEEL_DENSITY = 7850.0          # kg/m3
+
+    def design_metrics(self):
+        """Everything worth comparing about the design on screen, in SI.
+
+        Returns None before an analysis: every one of these is a result,
+        and a table row of dashes would only invite reading it as zeros.
+        """
+        g = self.geom
+        if g is None or self.res is None or self.des is None:
+            return None
+        t = np.asarray(g['t'], float)
+        area = ssd.element_areas(g['X'], g['elems'])
+        x0, x1, y0, y1 = g['plan']
+        span = max(x1 - x0, y1 - y0)
+        out = {'elements': len(g['elems']), 't_min': float(t.min()), 't_max': float(t.max()),
+               'span': span, 'concrete': ssd.solid_volume(g['X'], g['elems'], t)}
+        n1, _s, _q = self.field_values('Principal N1 (tension)')
+        if n1 is not None:
+            n1 = np.asarray(n1, float)
+            # N is a force per metre; over a thickness t that is a stress, and
+            # a stress is what you compare with the concrete's own strength
+            out['tension_pa'] = float(np.nanmax(n1 / np.maximum(t, 1e-9)))
+            hot = n1 > 0
+            out['tension_area'] = float(area[hot].sum() / max(area.sum(), 1e-12))
+        steel = 0.0
+        # both layouts: two meshes leave the central pair NaN and one central
+        # mesh leaves the four face maps NaN, so summing all six with nansum
+        # is right for either without asking which the design chose
+        for name in ('Steel x, top', 'Steel y, top', 'Steel x, bottom', 'Steel y, bottom',
+                     'Steel x, central mesh', 'Steel y, central mesh'):
+            v, _s, _q = self.field_values(name)
+            if v is not None:
+                # As is an area per metre of width; over an element of area A
+                # the bars in one direction occupy As * A of volume
+                steel += float(np.nansum(np.asarray(v, float) * area))
+        out['steel_kg'] = steel * self.STEEL_DENSITY
+        d = self._peak_deflection()
+        out['deflection'] = d
+        out['span_over'] = (span / d) if d > 0 else float('inf')
+        try:
+            u, _s, _q = self.field_values('Utilisation (structural checks)')
+            out['util'] = float(np.nanmax(u)) if u is not None else float('nan')
+        except Exception:
+            out['util'] = float('nan')
+        return out
+
+    def keep_design(self, label=None):
+        """Snapshot the numbers on screen so the next one can be compared."""
+        m = self.design_metrics()
+        if m is None:
+            self.status.set('Analyse first — there is nothing to keep yet.')
+            return None
+        m['label'] = label or ('design %d' % (len(self.designs) + 1))
+        self.designs.append(m)
+        self._refresh_designs()
+        self.status.set('Kept as "%s". Change something and keep another to compare.'
+                        % m['label'])
+        return m
+
+    def clear_designs(self):
+        self.designs = []
+        self._refresh_designs()
+
+    DESIGN_COLS = (
+        ('label', 'design', ''), ('t', 't', 'section_length'),
+        ('tension_pa', '\u03c3t max', 'stress'), ('span_over', '\u0394 as span/', ''),
+        ('tension_area', 'in tension', ''), ('steel_kg', 'steel', ''),
+        ('concrete', 'concrete', ''), ('util', 'util', ''))
+
+    def _refresh_designs(self):
+        if not hasattr(self, 'design_tree'):
+            return
+        tv = self.design_tree
+        tv.delete(*tv.get_children())
+        for i, m in enumerate(self.designs):
+            tv.insert('', 'end', iid=str(i), values=self._design_row(m))
+
+    def _design_row(self, m):
+        q = 'section_length'
+        return (m['label'],
+                '%.4g\u2013%.4g' % (units.from_si(q, m['t_min']), units.from_si(q, m['t_max'])),
+                '%.3g' % units.from_si('stress', m.get('tension_pa', float('nan'))),
+                ('%.0f' % m['span_over']) if np.isfinite(m['span_over']) else '\u2014',
+                '%.0f%%' % (100 * m.get('tension_area', float('nan'))),
+                '%.0f kg' % m['steel_kg'],
+                '%.3g m\u00b3' % m['concrete'],
+                '%.2f' % m['util'])
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Sweeping one number
+    # ══════════════════════════════════════════════════════════════════════
+    def sweep(self, name, lo, hi, steps=5, keep=True):
+        """Solve across a range of one defined number and collect the metrics.
+
+        The published shape studies are exactly this: hold everything, move
+        the rise, tabulate stress, deflection and reinforcement. Every
+        number in the definitions list already has a slider, so the only
+        parts missing were the loop and somewhere to put the answers.
+
+        The original value is restored even if a step fails, because a sweep
+        that leaves the model at 7.5 m when it started at 7 m has quietly
+        edited the design.
+        """
+        ws = self.model.ws
+        if name not in ws.numbers():
+            self.status.set('"%s" is not one of the numbers you have defined.' % name)
+            return []
+        original = ws.numbers()[name]
+        steps = max(2, int(steps))
+        rows = []
+        try:
+            for k in range(steps):
+                v = lo + (hi - lo) * k / (steps - 1)
+                self.move_slider(name, v)
+                if not self.analyze():
+                    self.status.set('Sweep stopped at %s = %.4g: %s' % (name, v, self.error))
+                    break
+                m = self.design_metrics()
+                if m is None:
+                    break
+                m['label'] = '%s = %.4g' % (name, v)
+                m['sweep_value'] = v
+                rows.append(m)
+        finally:
+            self.move_slider(name, original)
+            self.analyze()
+        if keep:
+            self.designs.extend(rows)
+            self._refresh_designs()
+        self.sweep_rows = rows
+        self._draw_sweep()
+        self.status.set('Swept %s from %.4g to %.4g in %d steps.' % (name, lo, hi, len(rows)))
+        return rows
+
+    def _draw_bottom(self):
+        """Whichever answer the open mode wants in the shared bottom pane.
+
+        One entry point because the pane also redraws on <Configure>, and a
+        resize that quietly swapped a sweep back to a section would look
+        like the sweep had failed.
+        """
+        if self.mode == 'design':
+            self._draw_sweep()
+        else:
+            self._draw_section()
+
+    def _draw_sweep(self):
+        """The sweep, as four curves against the number that moved.
+
+        Each on its own scale, normalised, because they are in different
+        units and the question is which way they GO -- the published study
+        reports 23%, 34% and 20% for one 30% change of rise, and those are
+        directions and magnitudes, not values.
+        """
+        cv = getattr(self, 'sec_canvas', None)
+        if cv is None:
+            return
+        cv.delete('all')
+        rows = self.sweep_rows
+        W = max(cv.winfo_width(), 420)
+        H = max(cv.winfo_height(), 120)
+        if len(rows) < 2:
+            cv.create_text(14, 14, anchor='nw', fill='#999', font=('Helvetica', 9),
+                           text='No sweep yet. Pick one of your numbers, give it a range, '
+                                'and the tab solves across it.')
+            return
+        series = (('peak tension', 'tension_pa', '#c0561f'),
+                  ('deflection', 'deflection', '#1a6bbd'),
+                  ('steel', 'steel_kg', '#7b2fa8'),
+                  ('concrete', 'concrete', '#2f6f4a'))
+        xs = [r['sweep_value'] for r in rows]
+        m, mr = 46, 120
+        x0, x1 = min(xs), max(xs)
+        px = lambda v: m + (v - x0) / max(x1 - x0, 1e-12) * (W - m - mr)   # noqa: E731
+        top, bot = 26, H - 34
+        cv.create_line(m, bot, W - mr, bot, fill='#ccd3da')
+        for k, (label, key, col) in enumerate(series):
+            ys = [float(r.get(key, float('nan'))) for r in rows]
+            lo, hi = min(ys), max(ys)
+            rng = hi - lo
+            def py(v, lo=lo, rng=rng):
+                return bot - (0.08 + 0.84 * ((v - lo) / rng if rng > 1e-30 else 0.5)) * (bot - top)
+            pts = []
+            for v, y in zip(xs, ys):
+                pts += [px(v), py(y)]
+            cv.create_line(*pts, fill=col, width=2, smooth=False)
+            for v, y in zip(xs, ys):
+                cv.create_oval(px(v) - 2.5, py(y) - 2.5, px(v) + 2.5, py(y) + 2.5,
+                               fill='#ffffff', outline=col, width=1.5)
+            change = '' if abs(ys[0]) < 1e-30 else ('  %+.0f%%' % (100 * (ys[-1] - ys[0]) / abs(ys[0])))
+            cv.create_text(W - mr + 8, py(ys[-1]), anchor='w', fill=col,
+                           font=('Helvetica', 8), text=label + change)
+        for v in xs:
+            cv.create_line(px(v), bot, px(v), bot + 4, fill='#98a3ac')
+            cv.create_text(px(v), bot + 7, anchor='n', fill='#666', font=('Helvetica', 8),
+                           text='%.4g' % v)
+        cv.create_text(12, 10, anchor='nw', fill=INK if 'INK' in globals() else '#1e2429',
+                       font=('Helvetica', 9, 'bold'),
+                       text='%s  \u00b7  each curve on its own scale; the label says how far it moved'
+                            % rows[0]['label'].split('=')[0].strip())
+
     # -- numeric fields whose model value is kept in SI -------------------------
     def _si_entry(self, parent, label, q, get_si, set_si, width=9, note=''):
         """A labelled entry showing a model value in the current units; the
@@ -1823,6 +2037,69 @@ class ShellApp(UnitsMixin, tk.Frame):
             help='where: a condition in x, y (e.g. abs(x) > a/2 - 1). The shell is at least '
                  'this thick wherever it holds.')
         self.rl_zones.pack(fill='x')
+
+    def _build_compare(self, p):
+        tk.Label(p, text='Compare designs', bg=BG,
+                 font=('Helvetica', 10, 'bold')).pack(anchor='w', padx=8, pady=(12, 2))
+        tk.Label(p, text='Thickening, the edge beam and the concrete class are three levers on '
+                         'the same shell. Keep a design after each solve and the answers sit '
+                         'side by side instead of in your memory.',
+                 bg=BG, fg='#555', wraplength=PANEL_W - 30, justify='left',
+                 font=('Helvetica', 8)).pack(anchor='w', padx=8)
+        cols = [c[0] for c in self.DESIGN_COLS]
+        self.design_tree = ttk.Treeview(p, columns=cols, show='headings', height=5)
+        for key, label, q in self.DESIGN_COLS:
+            self.design_tree.heading(key, text=label + (('  ' + units.label(q)) if q else ''))
+            self.design_tree.column(key, width=68 if key != 'label' else 86, stretch=True)
+        self.design_tree.pack(fill='x', padx=8, pady=(4, 2))
+        row = tk.Frame(p, bg=BG)
+        row.pack(fill='x', padx=8)
+        tk.Button(row, text='keep this design', font=('Helvetica', 9),
+                  command=lambda: self.keep_design()).pack(side='left')
+        tk.Button(row, text='clear', font=('Helvetica', 9), fg='#a33',
+                  command=self.clear_designs).pack(side='left', padx=4)
+
+        tk.Label(p, text='Sweep one number', bg=BG,
+                 font=('Helvetica', 10, 'bold')).pack(anchor='w', padx=8, pady=(12, 2))
+        tk.Label(p, text='Hold everything else and move one of your own numbers across a range. '
+                         'Raising a dome\u2019s rise 30% has been measured to cut peak tension 23%, '
+                         'deflection 34% and reinforcement 20% \u2014 no amount of thickening would '
+                         'have said so.',
+                 bg=BG, fg='#555', wraplength=PANEL_W - 30, justify='left',
+                 font=('Helvetica', 8)).pack(anchor='w', padx=8)
+        row = tk.Frame(p, bg=BG)
+        row.pack(fill='x', padx=8, pady=(4, 0))
+        self.v_sweep_name = tk.StringVar()
+        self.sweep_box = ttk.Combobox(row, textvariable=self.v_sweep_name, state='readonly',
+                                      width=6)
+        self.sweep_box.pack(side='left')
+        for lab, var, default in (('from', 'v_sweep_lo', '1'), ('to', 'v_sweep_hi', '4'),
+                                  ('steps', 'v_sweep_n', '5')):
+            tk.Label(row, text=lab, bg=BG, font=('Helvetica', 9)).pack(side='left', padx=(6, 1))
+            setattr(self, var, tk.StringVar(value=default))
+            tk.Entry(row, textvariable=getattr(self, var), width=4).pack(side='left')
+        tk.Button(p, text='run the sweep', font=('Helvetica', 9),
+                  command=self._run_sweep).pack(anchor='w', padx=8, pady=4)
+        self._refresh_sweep_names()
+
+    def _refresh_sweep_names(self):
+        if not hasattr(self, 'sweep_box'):
+            return
+        names = sorted(self.model.ws.numbers())
+        self.sweep_box.config(values=names)
+        if names and self.v_sweep_name.get() not in names:
+            self.v_sweep_name.set(names[0])
+
+    def _run_sweep(self):
+        try:
+            lo = float(self.v_sweep_lo.get())
+            hi = float(self.v_sweep_hi.get())
+            n = int(float(self.v_sweep_n.get()))
+        except ValueError:
+            self.status.set('The sweep range and step count have to be numbers.')
+            return
+        self.set_mode('design')
+        self.sweep(self.v_sweep_name.get(), lo, hi, n)
 
     def _set_code(self):
         name = self.v_code.get()

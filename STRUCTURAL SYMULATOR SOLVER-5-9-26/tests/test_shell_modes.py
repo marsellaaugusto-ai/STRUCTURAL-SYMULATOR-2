@@ -81,14 +81,14 @@ def test_alt_digits_reach_every_mode(app):
         assert '<Alt-Key-%d>' % n in bound
 
 
-def test_the_readout_and_the_section_share_one_slot(app):
-    """Sections is the only mode that answers with a drawing, so it takes the
-    bottom pane -- and gives it back."""
+def test_the_readout_and_the_drawing_share_one_slot(app):
+    """Sections and Design are the two modes that answer with a drawing, so
+    they take the bottom pane -- and give it back."""
     app.set_mode('sections')
     app.update()
     panes = [str(w) for w in app._pw.panes()]
     assert str(app._sec_pane) in panes and str(app._info_pane) not in panes
-    app.set_mode('design')
+    app.set_mode('loads')
     app.update()
     panes = [str(w) for w in app._pw.panes()]
     assert str(app._info_pane) in panes and str(app._sec_pane) not in panes
@@ -552,3 +552,87 @@ def test_the_guide_says_which_scales_are_comparable_between_models(app):
     text = win.winfo_children()[1].get('1.0', 'end')
     assert 'red is 1.0 in every model' in text
     win.destroy()
+
+
+# ── comparing designs, and sweeping one number ─────────────────────────────
+
+def test_there_is_nothing_to_compare_before_a_solve(app):
+    assert app.design_metrics() is None
+    assert app.keep_design() is None
+    assert 'Analyse first' in app.status.get()
+
+
+def test_a_kept_design_carries_the_numbers_the_studies_compare(app):
+    assert app.analyze(), app.error
+    m = app.keep_design('as built')
+    for key in ('tension_pa', 'deflection', 'span_over', 'steel_kg', 'concrete',
+                'tension_area', 'util', 't_min', 't_max'):
+        assert key in m, key
+    assert m['concrete'] > 0
+    assert m['steel_kg'] > 0, 'the steel maps were not counted'
+    assert app.design_tree.get_children()
+
+
+def test_the_steel_is_counted_whichever_mesh_layout_the_design_chose(app):
+    """One central mesh leaves the four face maps NaN and two meshes leave
+    the central pair NaN; either way there is steel in the shell."""
+    assert app.analyze(), app.error
+    m = app.design_metrics()
+    assert np.isfinite(m['steel_kg']) and m['steel_kg'] > 0
+
+
+def test_keeping_two_designs_puts_them_side_by_side(app):
+    assert app.analyze(), app.error
+    app.keep_design('thin')
+    app.add_definition('t2 = 0.18')
+    app._set_role('thickness', 't2')
+    assert app.analyze(), app.error
+    app.keep_design('thick')
+    assert len(app.designs) == 2
+    assert app.designs[1]['concrete'] > app.designs[0]['concrete']
+    assert len(app.design_tree.get_children()) == 2
+    app.clear_designs()
+    assert app.designs == [] and not app.design_tree.get_children()
+
+
+def test_a_sweep_moves_one_number_and_puts_it_back(app):
+    assert app.analyze(), app.error
+    before = app.model.ws.numbers()['f']
+    rows = app.sweep('f', 2.0, 4.0, 3)
+    assert len(rows) == 3
+    assert app.model.ws.numbers()['f'] == pytest.approx(before), \
+        'a sweep that leaves the model somewhere else has edited the design'
+
+
+def test_a_higher_rise_carries_the_load_better(app):
+    """The published shape study in one button: hold everything, move the
+    rise, and the tension, the deflection and the steel all come down."""
+    assert app.analyze(), app.error
+    rows = app.sweep('f', 2.0, 4.0, 3)
+    assert rows[-1]['tension_pa'] < rows[0]['tension_pa']
+    assert rows[-1]['span_over'] > rows[0]['span_over']
+    assert rows[-1]['steel_kg'] < rows[0]['steel_kg']
+
+
+def test_sweeping_a_name_that_is_not_a_number_is_refused(app):
+    assert app.analyze(), app.error
+    assert app.sweep('z', 1.0, 2.0, 3) == []
+    assert 'not one of the numbers' in app.status.get()
+
+
+def test_the_sweep_is_drawn_with_how_far_each_curve_moved(app):
+    assert app.analyze(), app.error
+    app.sweep('f', 2.0, 4.0, 3)
+    app.set_mode('design')
+    app.update()
+    texts = ' '.join(app.sec_canvas.itemcget(i, 'text') for i in app.sec_canvas.find_all()
+                     if app.sec_canvas.type(i) == 'text')
+    assert 'peak tension' in texts and '%' in texts
+
+
+def test_the_design_pane_says_so_before_any_sweep(app):
+    app.set_mode('design')
+    app.update()
+    texts = ' '.join(app.sec_canvas.itemcget(i, 'text') for i in app.sec_canvas.find_all()
+                     if app.sec_canvas.type(i) == 'text')
+    assert 'No sweep yet' in texts

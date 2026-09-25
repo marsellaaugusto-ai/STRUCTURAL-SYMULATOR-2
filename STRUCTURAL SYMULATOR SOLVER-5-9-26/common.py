@@ -952,6 +952,7 @@ class ScrollPanel(tk.Frame):
     #: keeps its full content width; above it, the panel yields to the
     #: drawing canvas and the horizontal scrollbar covers the difference.
     MAX_WINDOW_SHARE = 0.45
+    MAX_GROW = 1.3
 
     def __init__(self, master, width=PANEL_W, bg='#f0f0ee', **kw):
         super().__init__(master, width=width, bg=bg, **kw)
@@ -1010,19 +1011,15 @@ class ScrollPanel(tk.Frame):
             pass
 
     def _sync(self, _event=None):
-        # Packing/unpacking the horizontal scrollbar changes the canvas size,
-        # which fires <Configure>, which re-enters here. Guard it.
         if self._syncing:
             return
         self._syncing = True
         try:
             req_w = max(self.interior.winfo_reqwidth(), 1)
+            req_h = max(self.interior.winfo_reqheight(), 1)
             view_w = max(self.canvas.winfo_width(), 1)
-            # Stretch the interior to fill the panel when it is narrower than
-            # the view (so fill='x' children still span the panel), but never
-            # squeeze it below its natural width -- that is what clipped the
-            # wrapped help text and the slider rows before.
-            self.canvas.itemconfigure(self._win, width=max(req_w, view_w))
+            win_w = max(req_w, view_w)
+            self.canvas.itemconfigure(self._win, width=win_w)
             need_h = req_w > view_w + 1
             if need_h and not self._hsb_shown:
                 self.hsb.grid(row=1, column=0, sticky='ew')
@@ -1030,13 +1027,25 @@ class ScrollPanel(tk.Frame):
             elif not need_h and self._hsb_shown:
                 self.hsb.grid_remove()
                 self._hsb_shown = False
-            bbox = self.canvas.bbox('all')
-            if bbox:
-                self.canvas.configure(scrollregion=bbox)
+            self.canvas.configure(scrollregion=(0, 0, win_w, req_h))
         except Exception:
             pass
         finally:
             self._syncing = False
+
+    def _on_toplevel_resize(self, _event=None):
+        try:
+            win_w = self.winfo_toplevel().winfo_width()
+            if win_w < 2:
+                return
+            share = max(120, int(win_w * self.MAX_WINDOW_SHARE))
+            w = min(int(self.base_width * self.MAX_GROW), share)
+            if int(self.cget('width')) != w:
+                self.configure(width=w)
+                self.canvas.configure(width=w)
+                self._sync()
+        except Exception:
+            pass
 
     # -- sizing ---------------------------------------------------------------
     def fit_to_content(self, max_width=None):
@@ -1059,6 +1068,11 @@ class ScrollPanel(tk.Frame):
             self.configure(width=w)
             self.canvas.configure(width=w)
             self._sync()
+            try:
+                self.winfo_toplevel().bind(
+                    '<Configure>', self._on_toplevel_resize, add='+')
+            except Exception:
+                pass
             return w
         except Exception:
             return self.base_width

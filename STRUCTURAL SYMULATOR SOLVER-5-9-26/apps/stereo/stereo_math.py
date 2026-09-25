@@ -70,7 +70,10 @@ translation-only supports reduces exactly to a classic 3-DOF/node space
 truss.
 """
 import math
+import warnings
 import numpy as np
+from scipy.sparse import coo_matrix
+from scipy.sparse.linalg import spsolve
 
 from common import _beam_gauss_solve
 
@@ -254,33 +257,75 @@ def analyze(nodes, members, loads, supports):
             idx += [None, None, None]
         dof_of[i] = tuple(idx)
 
-    K = np.zeros((ndof, ndof))
-    for m in members:
+    coo_rows = []
+    coo_cols = []
+    coo_vals = []
+
+    pin_members = []
+    rigid_members = []
+    member_geom = [None] * len(members)
+    for mi, m in enumerate(members):
         dx, dy, dz, L = member_vector(nodes, m)
+        member_geom[mi] = (dx, dy, dz, L)
         if L < 1e-9:
             continue
-        lx, ly, lz = dx / L, dy / L, dz / L
-        a_dof, b_dof = dof_of[m['a']], dof_of[m['b']]
-
         if m.get('conn', 'pin') != 'rigid':
-            k = _pin_stiffness(m['E'], m['A'], L)
-            dirn = np.array([lx, ly, lz])
-            ke33 = k * np.outer(dirn, dirn)
-            idx = [a_dof[0], a_dof[1], a_dof[2], b_dof[0], b_dof[1], b_dof[2]]
-            ke = np.block([[ke33, -ke33], [-ke33, ke33]])
-            for i in range(6):
-                for j in range(6):
-                    K[idx[i], idx[j]] += ke[i, j]
+            pin_members.append(mi)
         else:
-            local_x, local_y, local_z = _local_axes(dx, dy, dz, L)
-            kloc = _rigid_local_stiffness(m['E'], m['A'], m.get('I', 0.0),
-                                           m.get('J', m.get('I', 0.0)), L)
-            T = _rotation_12(local_x, local_y, local_z)
-            kgl = T.T @ kloc @ T
-            idx = list(a_dof) + list(b_dof)
-            for i in range(12):
-                for j in range(12):
-                    K[idx[i], idx[j]] += kgl[i, j]
+            rigid_members.append(mi)
+
+    if pin_members:
+        n_pin = len(pin_members)
+        EA_over_L = np.empty(n_pin)
+        dirs = np.empty((n_pin, 3))
+        pin_idx = np.empty((n_pin, 6), dtype=np.intp)
+        for pi, mi in enumerate(pin_members):
+            m = members[mi]
+            dx, dy, dz, L = member_geom[mi]
+            EA_over_L[pi] = (m['E'] * 1e9) * (m['A'] * 1e-4) / L
+            dirs[pi] = (dx / L, dy / L, dz / L)
+            a_dof, b_dof = dof_of[m['a']], dof_of[m['b']]
+            pin_idx[pi] = (a_dof[0], a_dof[1], a_dof[2],
+                           b_dof[0], b_dof[1], b_dof[2])
+        ke33_batch = EA_over_L[:, None, None] * (dirs[:, :, None] * dirs[:, None, :])
+        ke_batch = np.empty((n_pin, 6, 6))
+        ke_batch[:, :3, :3] = ke33_batch
+        ke_batch[:, :3, 3:] = -ke33_batch
+        ke_batch[:, 3:, :3] = -ke33_batch
+        ke_batch[:, 3:, 3:] = ke33_batch
+        row_idx = pin_idx[:, :, None].repeat(6, axis=2)
+        col_idx = pin_idx[:, None, :].repeat(6, axis=1)
+        coo_rows.append(row_idx.ravel())
+        coo_cols.append(col_idx.ravel())
+        coo_vals.append(ke_batch.ravel())
+
+    for mi in rigid_members:
+        m = members[mi]
+        dx, dy, dz, L = member_geom[mi]
+        local_x, local_y, local_z = _local_axes(dx, dy, dz, L)
+        kloc = _rigid_local_stiffness(m['E'], m['A'], m.get('I', 0.0),
+                                       m.get('J', m.get('I', 0.0)), L)
+        T = _rotation_12(local_x, local_y, local_z)
+        kgl = T.T @ kloc @ T
+        a_dof, b_dof = dof_of[m['a']], dof_of[m['b']]
+        idx = np.array(list(a_dof) + list(b_dof), dtype=np.intp)
+        ri = idx[:, None].repeat(12, axis=1)
+        ci = idx[None, :].repeat(12, axis=0)
+        coo_rows.append(ri.ravel())
+        coo_cols.append(ci.ravel())
+        coo_vals.append(kgl.ravel())
+
+    if coo_rows:
+        all_rows = np.concatenate(coo_rows)
+        all_cols = np.concatenate(coo_cols)
+        all_vals = np.concatenate(coo_vals)
+    else:
+        all_rows = np.array([], dtype=np.intp)
+        all_cols = np.array([], dtype=np.intp)
+        all_vals = np.array([], dtype=float)
+
+    K_sparse = coo_matrix((all_vals, (all_rows, all_cols)),
+                           shape=(ndof, ndof)).tocsc()
 
     F = np.zeros(ndof)
     for ld in loads:
@@ -300,29 +345,41 @@ def analyze(nodes, members, loads, supports):
         for k, d in enumerate(DOF_NAMES):
             if r[d]:
                 if idx[k] is None:
-                    # a rotational restraint at a node with no rotational
-                    # DOF allocated cannot happen: needs_rot was set for
-                    # exactly this case above.
                     raise AssertionError('internal: rotational DOF missing '
                                           'for a restrained rotation')
                 constrained.add(idx[k])
 
-    free = [i for i in range(ndof) if i not in constrained]
+    free = sorted(i for i in range(ndof) if i not in constrained)
     if not free:
         return None, 'All degrees of freedom are constrained -- nothing can move.'
 
-    Kf = K[np.ix_(free, free)]
-    Ff = F[free]
-    U_free = gauss_solve(Kf, Ff)
-    if U_free is None:
+    free_arr = np.array(free, dtype=np.intp)
+    Kf = K_sparse[np.ix_(free_arr, free_arr)]
+    Ff = F[free_arr]
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=Warning)
+            U_free = spsolve(Kf.tocsc(), Ff)
+    except Exception:
+        return None, ('Singular stiffness matrix -- the structure (or some part '
+                       'of it) is a mechanism, or a node is floating with no '
+                       'load path to a support. Check for missing members or '
+                       'missing boundary conditions.')
+    if not np.all(np.isfinite(U_free)):
+        return None, ('Singular stiffness matrix -- the structure (or some part '
+                       'of it) is a mechanism, or a node is floating with no '
+                       'load path to a support. Check for missing members or '
+                       'missing boundary conditions.')
+    coords = np.array(nodes, dtype=float)
+    span = max((coords.max(axis=0) - coords.min(axis=0)).max(), 1.0)
+    if np.max(np.abs(U_free)) > span * 1e4:
         return None, ('Singular stiffness matrix -- the structure (or some part '
                        'of it) is a mechanism, or a node is floating with no '
                        'load path to a support. Check for missing members or '
                        'missing boundary conditions.')
 
     U = np.zeros(ndof)
-    for li, gi in enumerate(free):
-        U[gi] = U_free[li]
+    U[free_arr] = U_free
 
     node_res = []
     for i in range(N):
@@ -335,26 +392,28 @@ def analyze(nodes, members, loads, supports):
         })
 
     member_res = []
-    for m in members:
-        dx, dy, dz, L = member_vector(nodes, m)
+    if pin_members:
+        U_pin_a = U[pin_idx[:, :3]]
+        U_pin_b = U[pin_idx[:, 3:]]
+        elong = np.sum((U_pin_b - U_pin_a) * dirs, axis=1)
+        N_forces = EA_over_L * elong / 1e3
+    pin_result_idx = 0
+    for mi, m in enumerate(members):
+        dx, dy, dz, L = member_geom[mi]
         if L < 1e-9:
             member_res.append({'N': 0.0, 'conn': m.get('conn', 'pin'), 'length_m': 0.0})
             continue
-        lx, ly, lz = dx / L, dy / L, dz / L
-        a_dof, b_dof = dof_of[m['a']], dof_of[m['b']]
 
         if m.get('conn', 'pin') != 'rigid':
-            ua = np.array([U[a_dof[0]], U[a_dof[1]], U[a_dof[2]]])
-            ub = np.array([U[b_dof[0]], U[b_dof[1]], U[b_dof[2]]])
-            dirn = np.array([lx, ly, lz])
-            elong = float(np.dot(ub - ua, dirn))
-            N_force = (m['E'] * 1e9) * (m['A'] * 1e-4) / L * elong
-            member_res.append({'N': N_force / 1e3, 'conn': 'pin', 'length_m': L})
+            member_res.append({'N': float(N_forces[pin_result_idx]),
+                               'conn': 'pin', 'length_m': L})
+            pin_result_idx += 1
         else:
             local_x, local_y, local_z = _local_axes(dx, dy, dz, L)
             kloc = _rigid_local_stiffness(m['E'], m['A'], m.get('I', 0.0),
                                            m.get('J', m.get('I', 0.0)), L)
             T = _rotation_12(local_x, local_y, local_z)
+            a_dof, b_dof = dof_of[m['a']], dof_of[m['b']]
             idx = list(a_dof) + list(b_dof)
             dgl = np.array([U[i] for i in idx])
             dloc = T @ dgl
@@ -367,7 +426,7 @@ def analyze(nodes, members, loads, supports):
             })
 
     reactions = {}
-    Ku = K @ U
+    Ku = K_sparse @ U
     for sp in supports:
         r = support_restraints(sp)
         if not any(r.values()):
@@ -379,7 +438,7 @@ def analyze(nodes, members, loads, supports):
         for k, d in enumerate(DOF_NAMES):
             if r[d] and idx[k] is not None:
                 resid = Ku[idx[k]] - F[idx[k]]
-                rxn[labels[k]] += resid / 1e3   # N -> kN, N*m -> kN*m
+                rxn[labels[k]] += resid / 1e3
 
     return {'node_res': node_res, 'member_res': member_res, 'reactions': reactions}, None
 

@@ -39,6 +39,7 @@ from apps.stereo.stereo_app_constants import (
     LOAD_PATH_NEAR_ZERO_FRAC, LOAD_PATH_ARROW_HALF_PX,
     LOAD_PATH_ANIM_TICKS, STRESS_WIDTH_MIN, STRESS_WIDTH_MAX,
     GRADIENT_SEGMENTS, GRADIENT_SEGMENTS_DENSE, GRADIENT_DENSE_MEMBERS,
+    GRADIENT_DISABLE_MEMBERS, LABEL_DISABLE_NODES, LOAD_PATH_DISABLE_MEMBERS,
     MOMENT_ZERO_COLOR, MOMENT_NODE_OUTLINE, MOMENT_BACKDROP_COLOR,
     MOMENT_NODE_RADIUS_PX,
     SCALE_P95, FORCE_SCALE_PERCENTILE, CLIP_MARK_COLOR, CLIP_MARK_DASH,
@@ -349,7 +350,9 @@ class StereoRenderMixin:
                                 # deformed_only skips that block entirely
         if by_force:
             max_abs_N = self._force_anchor()
-        load_path_on = self.load_path_anim.get() and self.results is not None
+        n_members = len(self.members)
+        load_path_on = (self.load_path_anim.get() and self.results is not None
+                        and n_members <= LOAD_PATH_DISABLE_MEMBERS)
         hide_zero_force = self.hide_zero_force.get() and self.results is not None
         max_abs_N_lp = max_abs_N
         if (load_path_on or hide_zero_force) and not by_force:
@@ -380,7 +383,8 @@ class StereoRenderMixin:
         # displacement) the end values are genuine nodal results; for force
         # and utilization they are averaged onto the joints -- see
         # _nodal_average on what that averaging does and does not claim.
-        gradient = self.smooth_gradient.get() and self.results is not None
+        gradient = (self.smooth_gradient.get() and self.results is not None
+                    and n_members <= GRADIENT_DISABLE_MEMBERS)
         grad_values = grad_color_fn = None
         if gradient and not deformed_only:
             n_nodes = len(self.nodes)
@@ -638,7 +642,8 @@ class StereoRenderMixin:
                 self._draw_voronoi_faces(c, proj, to_screen, frac, by_util, by_force,
                                          max_abs_N, by_moment, moment_by_node, max_abs_moment)
 
-            if self.show_node_labels.get():
+            n_nodes = len(self.nodes)
+            if self.show_node_labels.get() and n_nodes <= LABEL_DISABLE_NODES:
                 labels = []
                 for i, (px, py, _) in enumerate(proj):
                     sx, sy = to_screen(px, py)
@@ -646,7 +651,7 @@ class StereoRenderMixin:
                                                font=('Helvetica', 7), fill='#555'))
                 declutter_text(c, labels)
 
-            if self.show_member_labels.get():
+            if self.show_member_labels.get() and n_members <= LABEL_DISABLE_NODES:
                 mlabels = []
                 for i, m in enumerate(self.members):
                     ax, ay, _ = proj[m['a']]

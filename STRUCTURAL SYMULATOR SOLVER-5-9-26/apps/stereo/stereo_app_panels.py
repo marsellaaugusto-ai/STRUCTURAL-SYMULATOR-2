@@ -333,7 +333,7 @@ class StereoPanelsMixin(_ToolbarModes):
         canvas_frame.pack(side='left', fill='both', expand=True)
         self.zc = ZoomCanvas(canvas_frame, bg=CANVAS_BG, bd=1, relief='solid')
         self.zc.pack(fill='both', expand=True)
-        self.zc._on_zoom_changed = self._draw
+        self.zc._on_zoom_changed = self._draw_throttled
         self.canvas = self.zc.canvas
         self.canvas.configure(cursor='fleur')
         # The canvas is a 1x1 stub until Tk actually lays the window out,

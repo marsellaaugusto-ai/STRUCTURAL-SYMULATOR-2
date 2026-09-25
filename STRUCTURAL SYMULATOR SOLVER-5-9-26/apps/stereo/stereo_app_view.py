@@ -13,11 +13,13 @@ Drawing itself lives in stereo_app_render.py; this module never paints,
 it only decides where things are and what the user just clicked.
 """
 import math
+import time as _time
 
 from apps.stereo import stereo_math as sm
 from apps.stereo.stereo_app_canvas_geom import _point_segment_distance
 from apps.stereo.stereo_app_constants import (
     DOF_LABELS, LASSO_DRAG_THRESHOLD_PX, MEMBER_SEL_HIT_PX,
+    DRAW_THROTTLE_MS,
 )
 
 
@@ -30,6 +32,32 @@ class StereoViewMixin:
 
     def _mark_view_touched(self, _event=None):
         self._view_touched = True
+
+    _last_draw_t = 0.0
+    _draw_trailing_id = None
+
+    def _draw_throttled(self):
+        """Rate-limited _draw for continuous mouse-drag events (orbit, pan,
+        lasso). Caps redraws at ~30 fps so dense models stay responsive
+        during camera manipulation instead of queueing a redraw per
+        mouse-move pixel."""
+        now = _time.monotonic()
+        interval = DRAW_THROTTLE_MS / 1000.0
+        if now - self._last_draw_t >= interval:
+            self._last_draw_t = now
+            if self._draw_trailing_id is not None:
+                self.canvas.after_cancel(self._draw_trailing_id)
+                self._draw_trailing_id = None
+            self._draw()
+        else:
+            if self._draw_trailing_id is None:
+                remaining_ms = max(1, int((interval - (now - self._last_draw_t)) * 1000))
+                self._draw_trailing_id = self.canvas.after(remaining_ms, self._draw_trailing)
+
+    def _draw_trailing(self):
+        self._draw_trailing_id = None
+        self._last_draw_t = _time.monotonic()
+        self._draw()
 
     def _on_canvas_configure(self, event):
         if not self._view_touched and event.width > 10 and event.height > 10:
@@ -73,7 +101,7 @@ class StereoViewMixin:
         if self._orbit_dragged:
             self.azimuth = (az0 + dx * self.DEG_PER_PX) % 360.0
             self.elevation = max(-89.0, min(89.0, el0 - dy * self.DEG_PER_PX))
-            self._draw()
+            self._draw_throttled()
 
     def _on_orbit_release(self, event):
         self._orbit_start = None
@@ -96,7 +124,7 @@ class StereoViewMixin:
             self._lasso_dragging = True
         if self._lasso_dragging:
             self._lasso_cur = (event.x, event.y)
-            self._draw()
+            self._draw_throttled()
 
     def _on_canvas_release(self, event):
         self.canvas.focus_set()   # so a following Delete/Backspace reaches us

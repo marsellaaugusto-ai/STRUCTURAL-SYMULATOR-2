@@ -212,6 +212,8 @@ def import_excel_model(path):
     for r in node_rows:
         nodes[int(r['idx'])] = (float(r['x_m']), float(r['y_m']), float(r['z_m']))
 
+    _SECTION_DEFAULTS = {'E': 200.0, 'A': 20.0, 'I': 400.0, 'J': 400.0,
+                          'Fy': 235.0, 'Fu': 360.0, 'r_gyr': 4.0}
     members = []
     for r in read_table(find_section('[MEMBERS]')):
         m = {'a': int(r['a']), 'b': int(r['b']), 'conn': r.get('conn') or 'pin'}
@@ -221,6 +223,8 @@ def import_excel_model(path):
             v = r.get(key)
             if v is not None and v != '':
                 m[field] = float(v)
+        for field, default in _SECTION_DEFAULTS.items():
+            m.setdefault(field, default)
         k = r.get('K')
         m['K'] = float(k) if k not in (None, '') else 1.0
         role = r.get('role')

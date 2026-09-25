@@ -332,3 +332,138 @@ def summary_text(nodes, members, results, checks=None):
             lines.append(f'Governing member utilization: {worst:.2f}'
                          + (f'  ({n_over} member(s) over capacity)' if n_over else '  (all OK)'))
     return '\n'.join(lines)
+
+
+def _sphere_mesh(cx, cy, cz, r, n_lon=8, n_lat=6):
+    """Return (verts, faces) for a UV sphere centred at (cx,cy,cz)."""
+    import math
+    verts = []
+    verts.append((cx, cy, cz + r))
+    for i in range(1, n_lat):
+        phi = math.pi * i / n_lat
+        sp, cp = math.sin(phi), math.cos(phi)
+        for j in range(n_lon):
+            theta = 2.0 * math.pi * j / n_lon
+            verts.append((cx + r * sp * math.cos(theta),
+                          cy + r * sp * math.sin(theta),
+                          cz + r * cp))
+    verts.append((cx, cy, cz - r))
+
+    faces = []
+    for j in range(n_lon):
+        j2 = (j + 1) % n_lon
+        faces.append((0, 1 + j2, 1 + j))
+    for i in range(n_lat - 2):
+        base = 1 + i * n_lon
+        for j in range(n_lon):
+            j2 = (j + 1) % n_lon
+            a = base + j
+            b = base + j2
+            c = base + n_lon + j2
+            d = base + n_lon + j
+            faces.append((a, b, c))
+            faces.append((a, c, d))
+    bot = len(verts) - 1
+    base = 1 + (n_lat - 2) * n_lon
+    for j in range(n_lon):
+        j2 = (j + 1) % n_lon
+        faces.append((bot, base + j, base + j2))
+    return verts, faces
+
+
+def _cylinder_mesh(ax, ay, az, bx, by, bz, r, n_sides=8):
+    """Return (verts, faces) for a capped cylinder from A to B."""
+    import math
+    dx, dy, dz = bx - ax, by - ay, bz - az
+    length = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if length < 1e-12:
+        return [], []
+    ux, uy, uz = dx / length, dy / length, dz / length
+    if abs(uz) < 0.9:
+        px, py, pz = 0.0, 0.0, 1.0
+    else:
+        px, py, pz = 1.0, 0.0, 0.0
+    vx = uy * pz - uz * py
+    vy = uz * px - ux * pz
+    vz = ux * py - uy * px
+    vl = math.sqrt(vx * vx + vy * vy + vz * vz)
+    vx, vy, vz = vx / vl, vy / vl, vz / vl
+    wx = uy * vz - uz * vy
+    wy = uz * vx - ux * vz
+    wz = ux * vy - uy * vx
+
+    verts = []
+    for end_pt in ((ax, ay, az), (bx, by, bz)):
+        ex, ey, ez = end_pt
+        for j in range(n_sides):
+            theta = 2.0 * math.pi * j / n_sides
+            ct, st = math.cos(theta), math.sin(theta)
+            verts.append((ex + r * (ct * vx + st * wx),
+                          ey + r * (ct * vy + st * wy),
+                          ez + r * (ct * vz + st * wz)))
+
+    faces = []
+    for j in range(n_sides):
+        j2 = (j + 1) % n_sides
+        a, b = j, j2
+        c, d = n_sides + j2, n_sides + j
+        faces.append((a, b, c))
+        faces.append((a, c, d))
+    for j in range(2, n_sides):
+        faces.append((0, j - 1, j))
+    base = n_sides
+    for j in range(2, n_sides):
+        faces.append((base, base + j, base + j - 1))
+    return verts, faces
+
+
+def export_obj(nodes, members, path, node_radius=0.0, rod_radius=0.0):
+    """Export the model as a Wavefront OBJ file.
+
+    node_radius / rod_radius in metres:
+      - both 0  -> wireframe (vertices + line elements)
+      - > 0     -> solid mesh (spheres at nodes, cylinders for rods)
+    """
+    lines = ['# Stereo structure model']
+    wireframe = (node_radius <= 0.0 and rod_radius <= 0.0)
+
+    if wireframe:
+        for x, y, z in nodes:
+            lines.append(f'v {x:.6f} {y:.6f} {z:.6f}')
+        for m in members:
+            lines.append(f'l {m["a"] + 1} {m["b"] + 1}')
+    else:
+        v_offset = 0
+        if node_radius > 0:
+            lines.append('o nodes')
+            for x, y, z in nodes:
+                verts, faces = _sphere_mesh(x, y, z, node_radius)
+                for vx, vy, vz in verts:
+                    lines.append(f'v {vx:.6f} {vy:.6f} {vz:.6f}')
+                for f in faces:
+                    lines.append(
+                        f'f {f[0]+1+v_offset} {f[1]+1+v_offset} {f[2]+1+v_offset}')
+                v_offset += len(verts)
+
+        if rod_radius > 0:
+            lines.append('o rods')
+            for m in members:
+                ax, ay, az = nodes[m['a']]
+                bx, by, bz = nodes[m['b']]
+                verts, faces = _cylinder_mesh(ax, ay, az, bx, by, bz,
+                                             rod_radius)
+                for vx, vy, vz in verts:
+                    lines.append(f'v {vx:.6f} {vy:.6f} {vz:.6f}')
+                for f in faces:
+                    lines.append(
+                        f'f {f[0]+1+v_offset} {f[1]+1+v_offset} {f[2]+1+v_offset}')
+                v_offset += len(verts)
+        else:
+            for x, y, z in nodes:
+                lines.append(f'v {x:.6f} {y:.6f} {z:.6f}')
+            v_base = v_offset + 1
+            for m in members:
+                lines.append(f'l {m["a"]+v_base} {m["b"]+v_base}')
+
+    with open(path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')

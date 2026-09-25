@@ -304,6 +304,7 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Button(g, text='Member Report', command=self._show_member_report
                  ).pack(side='left', padx=2)
         tk.Button(g, text='Export Excel…', command=self._export_excel).pack(side='left', padx=2)
+        tk.Button(g, text='Export 3D…', command=self._export_3d_model).pack(side='left', padx=2)
         tk.Button(g, text='Import Excel…', command=self._import_excel).pack(side='left', padx=2)
 
         self.toolbar_flow.start()

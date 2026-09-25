@@ -192,6 +192,87 @@ class StereoReportsMixin:
             'SketchUp does not export loads or supports — '
             'add them in the panel before analyzing.')
 
+    # ── 3D export ─────────────────────────────────────────────────────────────
+    def _export_3d_model(self):
+        if not self.nodes or not self.members:
+            messagebox.showinfo('Export 3D', 'No model to export.')
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title('Export 3D Model')
+        win.geometry('380x310')
+        win.resizable(False, False)
+
+        tk.Label(win, text='Export 3D Model', font=('', 12, 'bold')).pack(pady=(12, 4))
+        tk.Label(win, text='Configure geometry for the exported file',
+                 fg='grey').pack()
+
+        frm = tk.Frame(win)
+        frm.pack(fill='x', padx=20, pady=(12, 0))
+
+        tk.Label(frm, text='Format:').grid(row=0, column=0, sticky='w', pady=4)
+        fmt_var = tk.StringVar(value='obj')
+        fmt_menu = ttk.Combobox(frm, textvariable=fmt_var,
+                                values=['obj', 'xlsx (SketchUp plugin)'],
+                                state='readonly', width=22)
+        fmt_menu.grid(row=0, column=1, sticky='w', padx=(8, 0), pady=4)
+
+        tk.Label(frm, text='Node radius (m):').grid(row=1, column=0, sticky='w', pady=4)
+        nr_var = tk.DoubleVar(value=0.0)
+        nr_scale = tk.Scale(frm, variable=nr_var, from_=0.0, to=0.5,
+                            resolution=0.005, orient='horizontal', length=180)
+        nr_scale.grid(row=1, column=1, sticky='w', padx=(8, 0), pady=4)
+
+        tk.Label(frm, text='Rod radius (m):').grid(row=2, column=0, sticky='w', pady=4)
+        rr_var = tk.DoubleVar(value=0.0)
+        rr_scale = tk.Scale(frm, variable=rr_var, from_=0.0, to=0.3,
+                            resolution=0.005, orient='horizontal', length=180)
+        rr_scale.grid(row=2, column=1, sticky='w', padx=(8, 0), pady=4)
+
+        hint = tk.Label(win, text='Radius = 0 → wireframe (lines only)',
+                        fg='grey', font=('', 9))
+        hint.pack(pady=(4, 0))
+
+        def do_export():
+            fmt = fmt_var.get()
+            n_r = nr_var.get()
+            r_r = rr_var.get()
+            if fmt == 'obj':
+                path = filedialog.asksaveasfilename(
+                    defaultextension='.obj',
+                    filetypes=[('Wavefront OBJ', '*.obj')],
+                    parent=win)
+                if not path:
+                    return
+                try:
+                    sr.export_obj(self.nodes, self.members, path,
+                                 node_radius=n_r, rod_radius=r_r)
+                except Exception as exc:
+                    messagebox.showerror('Export failed', str(exc), parent=win)
+                    return
+            else:
+                path = filedialog.asksaveasfilename(
+                    defaultextension='.xlsx',
+                    filetypes=[('Excel workbook', '*.xlsx')],
+                    parent=win)
+                if not path:
+                    return
+                try:
+                    meta = {'grid_family': self.grid_family.get(),
+                            'node_radius_m': n_r,
+                            'rod_radius_m': r_r}
+                    sr.export_excel(self.nodes, self.members, self.loads,
+                                   self.supports, self.results, path,
+                                   checks=self.member_checks, meta=meta)
+                except Exception as exc:
+                    messagebox.showerror('Export failed', str(exc), parent=win)
+                    return
+            win.destroy()
+            messagebox.showinfo('Export 3D', f'Saved to {path}')
+
+        tk.Button(win, text='Export', command=do_export,
+                  width=14).pack(pady=(12, 8))
+
     # ── units ────────────────────────────────────────────────────────────────
     def _on_units_changed(self):
         self._refresh_all()

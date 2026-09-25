@@ -13,7 +13,9 @@ module CoordinateCoordinatorTrussAppAMAC
   MY_DIR = File.dirname(main_file)
 
   require File.join(MY_DIR, 'xlsx_writer')
+  require File.join(MY_DIR, 'xlsx_reader')
   require File.join(MY_DIR, 'model_export')
+  require File.join(MY_DIR, 'model_import')
   require File.join(MY_DIR, 'pick_tool')
   require File.join(MY_DIR, 'intersections')
 
@@ -86,13 +88,26 @@ module CoordinateCoordinatorTrussAppAMAC
     auto_cmd.small_icon = File.join(MY_DIR, 'icons', 'autodetect_small.png')
     auto_cmd.large_icon = File.join(MY_DIR, 'icons', 'autodetect_large.png')
 
+    import_cmd = UI::Command.new('Import from Stereo…') do
+      import_from_stereo(Sketchup.active_model)
+    end
+    import_cmd.tooltip = 'Import from Stereo…'
+    import_cmd.status_bar_text =
+      'Open an XLSX exported by the Stereo tab and build 3D geometry ' \
+      '(wireframe or solid, depending on node/rod radius in [META]).'
+    import_cmd.small_icon = File.join(MY_DIR, 'icons', 'autodetect_small.png')
+    import_cmd.large_icon = File.join(MY_DIR, 'icons', 'autodetect_large.png')
+
     menu = UI.menu('Plugins').add_submenu('Coordinate coordinator truss app AMAC')
     menu.add_item(cmd)
     menu.add_item(auto_cmd)
+    menu.add_separator
+    menu.add_item(import_cmd)
 
     toolbar = UI::Toolbar.new('Coordinate coordinator truss app AMAC')
     toolbar.add_item(cmd)
     toolbar.add_item(auto_cmd)
+    toolbar.add_item(import_cmd)
     toolbar.show
 
     file_loaded(__FILE__)

@@ -100,6 +100,8 @@ class StereoPanelsMixin(_ToolbarModes):
                                       command=lambda b=builder, lbl=label: self._load_example(b, lbl))
         examples_btn['menu'] = examples_menu
         examples_btn.pack(side='left', padx=(2, 4))
+        tk.Button(g, text='Import SketchUp…', command=self._import_sketchup
+                 ).pack(side='left', padx=(2, 4))
         tk.Button(g, text='Undo', command=self._undo).pack(side='left', padx=(6, 1))
         tk.Button(g, text='Redo', command=self._redo).pack(side='left', padx=1)
         self.add_rod_mode = tk.BooleanVar(value=False)

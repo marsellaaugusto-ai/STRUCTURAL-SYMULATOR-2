@@ -162,6 +162,36 @@ class StereoReportsMixin:
         self.selected_member = None
         self._refresh_all()
 
+    def _import_sketchup(self):
+        path = filedialog.askopenfilename(
+            title='Import SketchUp model',
+            filetypes=[('SketchUp Excel export', '*.xlsx')])
+        if not path:
+            return
+        try:
+            nodes, members, loads, supports = sr.import_excel_model(path)
+        except Exception as exc:
+            messagebox.showerror('Import failed', str(exc))
+            return
+        self._push_undo('import sketchup')
+        self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
+        self._support_candidates = [s['node'] for s in supports]
+        self._load_nodes = {}
+        self.area_load_on.set(False)
+        self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
+        self.results = None
+        self.member_checks = None
+        self.selected_nodes = set()
+        self.selected_member = None
+        self._refresh_all()
+        self._reset_view()
+        n_n, n_m = len(nodes), len(members)
+        messagebox.showinfo(
+            'Import from SketchUp',
+            f'Imported {n_n} nodes and {n_m} members.\n\n'
+            'SketchUp does not export loads or supports — '
+            'add them in the panel before analyzing.')
+
     # ── units ────────────────────────────────────────────────────────────────
     def _on_units_changed(self):
         self._refresh_all()

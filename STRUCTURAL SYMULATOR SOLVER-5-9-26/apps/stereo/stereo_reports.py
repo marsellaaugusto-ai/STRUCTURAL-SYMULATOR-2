@@ -89,7 +89,8 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
                        c.get('util'), c.get('governing', ''), c.get('ok', ''),
                        c.get('note', '')])
 
-    _write_model_sheet(wb, nodes, members, loads, supports, meta)
+    _write_model_sheet(wb, nodes, members, loads, supports, meta,
+                       results=results, checks=checks)
 
     for name in wb.sheetnames:
         ws = wb[name]
@@ -99,7 +100,8 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     wb.save(path)
 
 
-def _write_model_sheet(wb, nodes, members, loads, supports, meta=None):
+def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
+                       results=None, checks=None):
     from openpyxl.styles import Font
     ws = wb.create_sheet('Model')
     ws.sheet_state = 'visible'
@@ -171,6 +173,44 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None):
         for col, v in enumerate(vals, 1):
             ws.cell(row=row, column=col, value=v)
         row += 1
+
+    if results is not None:
+        row += 1
+        ws.cell(row=row, column=1, value='[RESULTS_SUMMARY]'); row += 1
+        ws.cell(row=row, column=1, value='key')
+        ws.cell(row=row, column=2, value='value')
+        row += 1
+
+        max_disp = 0.0
+        for nr in results['node_res']:
+            d = (nr['ux'] ** 2 + nr['uy'] ** 2 + nr['uz'] ** 2) ** 0.5
+            max_disp = max(max_disp, d)
+
+        forces = [mr['N'] for mr in results['member_res']]
+        max_tension = max(forces) if forces else 0.0
+        max_compression = min(forces) if forces else 0.0
+        total_rz = sum(r.get('Fz', 0.0) for r in results['reactions'].values())
+
+        summary = [
+            ('max_displacement_mm', round(max_disp, 4)),
+            ('max_tension_kN', round(max_tension, 4)),
+            ('max_compression_kN', round(max_compression, 4)),
+            ('total_vertical_reaction_kN', round(total_rz, 4)),
+        ]
+
+        if checks is not None:
+            from apps.stereo.stereo_checks import worst_utilization
+            worst = worst_utilization(checks)
+            n_over = sum(1 for c in checks if c.get('checked') and c['util'] > 1.0)
+            n_checked = sum(1 for c in checks if c.get('checked'))
+            summary.append(('governing_utilization', round(worst, 4) if worst is not None else ''))
+            summary.append(('members_checked', n_checked))
+            summary.append(('members_over_capacity', n_over))
+
+        for key, val in summary:
+            ws.cell(row=row, column=1, value=key)
+            ws.cell(row=row, column=2, value=val)
+            row += 1
 
 
 def import_excel_model(path):

@@ -3,14 +3,223 @@ same shape as apps/truss/truss_reports.py: a human-readable summary plus a
 machine-parseable '[SECTION]' Model sheet that round-trips through
 `import_excel_model`.
 
-Scope note: unlike truss_reports.py this does not embed per-member PIL
-free-body-diagram images -- that renderer is 2D-specific (a member and its
-joint drawn in a flat local view) and a 3D equivalent was out of scope for
-this first version. The Model/Members/Results sheets carry everything
-needed to rebuild and re-check the structure; only the illustrated
-per-member images are the cut corner.
+Includes PIL-rendered free-body-diagram images for each member, projected
+from 3D to 2D using an isometric-style parallel projection.
 """
 from common import _ensure_openpyxl
+
+
+# ── PIL rendering helpers for 3D→2D free-body diagrams ───────────────────
+
+def _get_ttf_font(size):
+    try:
+        import matplotlib, os
+        from PIL import ImageFont
+        path = os.path.join(matplotlib.get_data_path(), 'fonts', 'ttf',
+                            'DejaVuSans.ttf')
+        return ImageFont.truetype(path, size)
+    except Exception:
+        from PIL import ImageFont
+        return ImageFont.load_default()
+
+
+def _pil_to_xlsx_buf(pil_img):
+    import io
+    buf = io.BytesIO()
+    pil_img.save(buf, format='PNG')
+    buf.seek(0)
+    return buf
+
+
+def _iso_project(px, py, pz, az_rad, el_rad):
+    """Parallel (isometric-style) projection of a 3D point to 2D screen coords.
+
+    az_rad: azimuth angle (rotation around vertical Y axis)
+    el_rad: elevation angle above horizontal
+    Returns (screen_x, screen_y).
+    """
+    import math
+    ca, sa = math.cos(az_rad), math.sin(az_rad)
+    ce, se = math.cos(el_rad), math.sin(el_rad)
+    sx = px * ca - pz * sa
+    sy = -(px * sa * se + py * ce + pz * ca * se)
+    return sx, sy
+
+
+def pil_draw_member_context_3d(nodes, members, member_idx, member_res=None,
+                               size=260):
+    """Render the full 3D structure with one member highlighted, projected
+    to 2D using a fixed isometric view.  Mirrors the 2D truss version
+    `pil_draw_rod_context` from apps/truss/truss_reports.py."""
+    import math
+    from PIL import Image, ImageDraw
+    img = Image.new('RGB', (size, size), (255, 255, 255))
+    d = ImageDraw.Draw(img)
+    if not nodes:
+        return img
+
+    az = math.radians(30)
+    el = math.radians(25)
+
+    pts_2d = [_iso_project(x, y, z, az, el) for x, y, z in nodes]
+    xs = [p[0] for p in pts_2d]
+    ys = [p[1] for p in pts_2d]
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+    spanx = (maxx - minx) or 1.0
+    spany = (maxy - miny) or 1.0
+    pad = 24
+    scale = min((size - 2 * pad) / spanx, (size - 2 * pad) / spany)
+    cx0 = (minx + maxx) / 2
+    cy0 = (miny + maxy) / 2
+
+    def tx(idx):
+        sx, sy = pts_2d[idx]
+        return (size / 2 + (sx - cx0) * scale,
+                size / 2 + (sy - cy0) * scale)
+
+    for i, m in enumerate(members):
+        if i == member_idx:
+            continue
+        p0, p1 = tx(m['a']), tx(m['b'])
+        d.line([p0, p1], fill=(200, 200, 200), width=2)
+
+    mem = members[member_idx]
+    p0, p1 = tx(mem['a']), tx(mem['b'])
+    color = (136, 136, 136)
+    if member_res:
+        f = member_res[member_idx].get('N', 0.0)
+        if f > 0.01:
+            color = (226, 75, 74)
+        elif f < -0.01:
+            color = (55, 138, 221)
+    d.line([p0, p1], fill=color, width=4)
+
+    font = _get_ttf_font(11)
+    for i, _ in enumerate(nodes):
+        x, y = tx(i)
+        if i in (mem['a'], mem['b']):
+            d.ellipse([x - 5, y - 5, x + 5, y + 5],
+                      fill=(239, 159, 39), outline=(51, 51, 51))
+            d.text((x, y - 16), str(i), fill=(51, 51, 51), font=font,
+                   anchor='mm')
+        else:
+            d.ellipse([x - 3, y - 3, x + 3, y + 3], fill=(153, 153, 153))
+    return img
+
+
+def pil_draw_node_fbd_3d(node_idx, nodes, members, member_res, loads,
+                         reactions, size=260):
+    """Render a free-body diagram at a node: axial force arrows from each
+    connected member, applied loads, and reactions — all projected from 3D
+    to 2D using the same isometric view as the context image."""
+    import math
+    from PIL import Image, ImageDraw
+    img = Image.new('RGB', (size, size), (255, 255, 255))
+    d = ImageDraw.Draw(img)
+    cx = cy = size / 2
+
+    d.line([(8, cy), (size - 8, cy)], fill=(238, 238, 238))
+    d.line([(cx, 8), (cx, size - 8)], fill=(238, 238, 238))
+
+    az = math.radians(30)
+    el = math.radians(25)
+
+    nx, ny, nz = nodes[node_idx]
+
+    vecs = []
+    for mi, m in enumerate(members):
+        if m['a'] != node_idx and m['b'] != node_idx:
+            continue
+        other = m['b'] if m['a'] == node_idx else m['a']
+        ox, oy, oz = nodes[other]
+        dx, dy, dz = ox - nx, oy - ny, oz - nz
+        L = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if L < 1e-12:
+            continue
+        N = member_res[mi].get('N', 0.0) if member_res else 0.0
+        fx3 = N * dx / L
+        fy3 = N * dy / L
+        fz3 = N * dz / L
+        sx, sy = _iso_project(fx3, fy3, fz3, az, el)
+        mag = abs(N)
+        kind = 'T' if N > 0.01 else ('C' if N < -0.01 else 'Z')
+        vecs.append({'sx': sx, 'sy': sy, 'mag': mag, 'kind': kind,
+                     'label': f'M{mi}\n{N:+.1f}kN'})
+
+    load = next((l for l in loads if l['node'] == node_idx), None)
+    if load:
+        lfx = load.get('fx', 0.0)
+        lfy = load.get('fy', 0.0)
+        lfz = load.get('fz', 0.0)
+        lmag = math.sqrt(lfx ** 2 + lfy ** 2 + lfz ** 2)
+        if lmag > 1e-6:
+            lsx, lsy = _iso_project(lfx, lfy, lfz, az, el)
+            vecs.append({'sx': lsx, 'sy': lsy, 'mag': lmag, 'kind': 'L',
+                         'label': f'Load\n{lmag:.1f}kN'})
+
+    rxn = reactions.get(node_idx) if reactions else None
+    if rxn:
+        rfx = rxn.get('Fx', 0.0)
+        rfy = rxn.get('Fy', 0.0)
+        rfz = rxn.get('Fz', 0.0)
+        rmag = math.sqrt(rfx ** 2 + rfy ** 2 + rfz ** 2)
+        if rmag > 1e-6:
+            rsx, rsy = _iso_project(rfx, rfy, rfz, az, el)
+            vecs.append({'sx': rsx, 'sy': rsy, 'mag': rmag, 'kind': 'R',
+                         'label': f'Rxn\n{rmag:.1f}kN'})
+
+    mags = [v['mag'] for v in vecs]
+    maxmag = max(mags) if mags else 1.0
+    if maxmag < 1e-9:
+        maxmag = 1.0
+    Rmax, Rmin = size * 0.34, size * 0.13
+    font = _get_ttf_font(10)
+
+    def arrow(sx2d, sy2d, mag2d, color, label, dashed=False):
+        screen_mag = math.hypot(sx2d, sy2d)
+        if screen_mag < 1e-6:
+            return
+        ux, uy = sx2d / screen_mag, sy2d / screen_mag
+        length = Rmin + (Rmax - Rmin) * (mag2d / maxmag)
+        ex, ey = cx + ux * length, cy + uy * length
+        if dashed:
+            n_dash = max(2, int(length / 6))
+            for k in range(n_dash):
+                if k % 2 == 0:
+                    x0 = cx + ux * length * k / n_dash
+                    y0 = cy + uy * length * k / n_dash
+                    x1 = cx + ux * length * (k + 1) / n_dash
+                    y1 = cy + uy * length * (k + 1) / n_dash
+                    d.line([(x0, y0), (x1, y1)], fill=color, width=2)
+        else:
+            d.line([(cx, cy), (ex, ey)], fill=color, width=2)
+        ang = math.atan2(-(ey - cy), ex - cx)
+        ah = 8
+        a1 = (ex - ah * math.cos(ang - 0.4), ey + ah * math.sin(ang - 0.4))
+        a2 = (ex - ah * math.cos(ang + 0.4), ey + ah * math.sin(ang + 0.4))
+        d.polygon([(ex, ey), a1, a2], fill=color)
+        lx = cx + ux * (length + 22)
+        ly = cy + uy * (length + 22)
+        d.multiline_text((lx, ly), label, fill=color, font=font,
+                         anchor='mm', align='center')
+
+    for v in vecs:
+        if v['kind'] == 'T':
+            color = (226, 75, 74)
+        elif v['kind'] == 'C':
+            color = (55, 138, 221)
+        elif v['kind'] == 'L':
+            color = (216, 90, 48)
+        elif v['kind'] == 'R':
+            color = (46, 204, 113)
+        else:
+            color = (136, 136, 136)
+        dashed = v['kind'] in ('L', 'R')
+        arrow(v['sx'], v['sy'], v['mag'], color, v['label'], dashed)
+
+    d.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], fill=(51, 51, 51))
+    return img
 
 
 def export_excel(nodes, members, loads, supports, results, path, checks=None,
@@ -232,6 +441,91 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
                 start_type='num', start_value=0, start_color='70AD47',
                 mid_type='num', mid_value=0.7, mid_color='FFC000',
                 end_type='num', end_value=1.0, end_color='C00000'))
+
+    # ── Member Calculations (picture-in-context + FBD at each end) ─────────
+    if results is not None:
+        try:
+            from openpyxl.drawing.image import Image as XLImage
+            ws_mc = wb.create_sheet('Member Calculations')
+            ws_mc.merge_cells('A1:N1')
+            t_mc = ws_mc['A1']
+            t_mc.value = ('STEREO STRUCTURE CALCULATOR — MEMBER CALCULATIONS '
+                          '(location + force vectors)')
+            t_mc.font = Font(name='Arial', bold=True, size=13, color='1F4E79')
+            t_mc.alignment = Alignment(horizontal='center', vertical='center')
+            t_mc.fill = PatternFill('solid', start_color='D6E4F0')
+            note_mc = ws_mc.cell(row=2, column=1,
+                value='Left: member location in the structure. '
+                      'Middle/Right: free-body diagram at each end node '
+                      '(every member, load and reaction converging there).')
+            ws_mc.merge_cells('A2:N2')
+            note_mc.font = Font(name='Arial', italic=True, size=9,
+                                color='555555')
+
+            IMG_PX = 230
+            ROWS_PER_BLOCK = 13
+            COLS_PER_IMG = 5
+            for c in range(1, 3 * COLS_PER_IMG + 3):
+                ws_mc.column_dimensions[get_column_letter(c)].width = 9
+
+            member_res = results['member_res']
+            reactions = results.get('reactions', {})
+
+            row0 = 4
+            for mi, mem in enumerate(members):
+                a, b = mem['a'], mem['b']
+                na, nb = nodes[a], nodes[b]
+                dx = nb[0] - na[0]
+                dy = nb[1] - na[1]
+                dz = nb[2] - na[2]
+                Lm = math.sqrt(dx * dx + dy * dy + dz * dz)
+                N = member_res[mi].get('N', 0.0)
+                kind = ('Tension' if N > 0.01
+                        else ('Compression' if N < -0.01 else 'Zero'))
+
+                hdr_row = row0
+                ws_mc.merge_cells(start_row=hdr_row, start_column=1,
+                                  end_row=hdr_row, end_column=14)
+                hc = ws_mc.cell(row=hdr_row, column=1,
+                    value=(f'Member {mi}  (Node {a} → Node {b})   '
+                           f'L={Lm:.3f} m   N={N:+.2f} kN   [{kind}]'))
+                hc.font = Font(name='Arial', bold=True, size=11,
+                               color='1F4E79')
+                hc.fill = PatternFill('solid', start_color='EFF4FA')
+
+                img_row = hdr_row + 1
+                ctx_img = pil_draw_member_context_3d(
+                    nodes, members, mi, member_res, size=IMG_PX)
+                fbd_a = pil_draw_node_fbd_3d(
+                    a, nodes, members, member_res, loads, reactions,
+                    size=IMG_PX)
+                fbd_b = pil_draw_node_fbd_3d(
+                    b, nodes, members, member_res, loads, reactions,
+                    size=IMG_PX)
+
+                ws_mc.cell(row=img_row, column=1,
+                           value='Location in structure').font = Font(
+                    size=9, italic=True, color='777777')
+                ws_mc.cell(row=img_row, column=1 + COLS_PER_IMG,
+                           value=f'End A — Node {a}').font = Font(
+                    size=9, italic=True, color='777777')
+                ws_mc.cell(row=img_row, column=1 + 2 * COLS_PER_IMG,
+                           value=f'End B — Node {b}').font = Font(
+                    size=9, italic=True, color='777777')
+
+                ws_mc.add_image(
+                    XLImage(_pil_to_xlsx_buf(ctx_img)),
+                    f'{get_column_letter(1)}{img_row + 1}')
+                ws_mc.add_image(
+                    XLImage(_pil_to_xlsx_buf(fbd_a)),
+                    f'{get_column_letter(1 + COLS_PER_IMG)}{img_row + 1}')
+                ws_mc.add_image(
+                    XLImage(_pil_to_xlsx_buf(fbd_b)),
+                    f'{get_column_letter(1 + 2 * COLS_PER_IMG)}{img_row + 1}')
+
+                row0 = hdr_row + ROWS_PER_BLOCK
+        except Exception:
+            pass
 
     # ── Model sheet (machine-parseable round-trip) ───────────────────────────
     _write_model_sheet(wb, nodes, members, loads, supports, meta,

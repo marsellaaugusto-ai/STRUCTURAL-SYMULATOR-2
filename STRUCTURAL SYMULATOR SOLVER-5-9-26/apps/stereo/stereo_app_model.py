@@ -521,4 +521,28 @@ class StereoModelMixin:
         else:
             self.results = res
             self.member_checks = sc.check_all_members(self.nodes, self.members, res['member_res'])
+            self._auto_deform_scale()
         self._refresh_all()
+
+    def _auto_deform_scale(self):
+        """Set the deformation scale so the max visual displacement is about
+        10% of the model's bounding-box diagonal — the same convention
+        SAP2000 / ETABS / Robot use to keep the deformed shape readable at
+        first glance, regardless of the model's real stiffness."""
+        if not self.results or not self.nodes:
+            return
+        import math
+        nr = self.results['node_res']
+        max_disp_mm = max(
+            (math.sqrt(r['ux']**2 + r['uy']**2 + r['uz']**2) for r in nr),
+            default=0.0)
+        if max_disp_mm < 1e-9:
+            return
+        xs = [n[0] for n in self.nodes]
+        ys = [n[1] for n in self.nodes]
+        zs = [n[2] for n in self.nodes]
+        span = max(max(xs) - min(xs), max(ys) - min(ys),
+                   max(zs) - min(zs), 1.0)
+        ideal = span * 0.10 / (max_disp_mm / 1000.0)
+        clamped = max(1, min(500, int(round(ideal))))
+        self.deform_scale.set(clamped)

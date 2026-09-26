@@ -93,6 +93,19 @@ def test_import_of_a_workbook_with_no_model_sheet_raises_clearly():
             sr.import_excel_model(path)
 
 
+def test_iso_project_uses_z_as_vertical_axis():
+    """_iso_project must treat Z as the vertical axis: a pure +Z vector
+    should project predominantly upward (negative screen-y)."""
+    import math
+    from apps.stereo.stereo_reports import _iso_project
+    az = math.radians(30)
+    el = math.radians(25)
+    _, sy_z = _iso_project(0, 0, 1, az, el)
+    _, sy_y = _iso_project(0, 1, 0, az, el)
+    assert sy_z < 0, "Z must project upward (negative screen-y)"
+    assert abs(sy_z) > abs(sy_y), "Z must be the dominant vertical axis"
+
+
 def test_summary_text_reports_before_and_after_analysis():
     nodes, members, loads, supports = _built_model()
     text_before = sr.summary_text(nodes, members, None)

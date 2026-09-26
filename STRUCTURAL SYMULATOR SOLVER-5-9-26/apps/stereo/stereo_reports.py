@@ -34,15 +34,15 @@ def _pil_to_xlsx_buf(pil_img):
 def _iso_project(px, py, pz, az_rad, el_rad):
     """Parallel (isometric-style) projection of a 3D point to 2D screen coords.
 
-    az_rad: azimuth angle (rotation around vertical Y axis)
+    az_rad: azimuth angle (rotation around vertical Z axis)
     el_rad: elevation angle above horizontal
-    Returns (screen_x, screen_y).
+    Returns (screen_x, screen_y) with Z pointing up.
     """
     import math
     ca, sa = math.cos(az_rad), math.sin(az_rad)
     ce, se = math.cos(el_rad), math.sin(el_rad)
-    sx = px * ca - pz * sa
-    sy = -(px * sa * se + py * ce + pz * ca * se)
+    sx = px * ca - py * sa
+    sy = -(px * sa * se + pz * ce + py * ca * se)
     return sx, sy
 
 

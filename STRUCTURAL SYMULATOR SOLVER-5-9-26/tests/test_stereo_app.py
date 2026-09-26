@@ -1049,6 +1049,28 @@ def test_deform_color_mode_toggles_between_spectrum_and_force(app):
     assert spectrum_colors != force_colors
 
 
+def test_auto_deform_scale_keeps_visual_displacement_under_model_span(app):
+    """_analyze auto-sets deform_scale so max visual deformation is about
+    10% of the model span, preventing the 'explosion' users see when a
+    fixed scale of 50 amplifies large displacements beyond the model size."""
+    app._analyze()
+    assert app.results is not None
+    nr = app.results['node_res']
+    max_disp_mm = max(
+        math.sqrt(r['ux']**2 + r['uy']**2 + r['uz']**2) for r in nr)
+    if max_disp_mm < 1e-9:
+        return   # no displacement, nothing to scale
+    xs = [n[0] for n in app.nodes]
+    ys = [n[1] for n in app.nodes]
+    zs = [n[2] for n in app.nodes]
+    span = max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs), 1.0)
+    scale = app.deform_scale.get()
+    visual = max_disp_mm / 1000.0 * scale
+    assert visual <= span * 0.20, (
+        f'scale {scale} gives visual {visual:.3f}m on span {span:.1f}m')
+    assert 1 <= scale <= 500
+
+
 def test_reference_shade_changes_the_reference_structure_s_colour(app):
     app._analyze()
     app.show_deformed.set(True)

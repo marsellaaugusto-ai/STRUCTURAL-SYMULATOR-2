@@ -47,7 +47,7 @@ def test_excel_round_trip_reproduces_the_model_exactly():
         path = os.path.join(d, 'stereo_model.xlsx')
         sr.export_excel(nodes, members, loads, supports, res, path, checks=checks,
                          meta={'typology': 'flat_grid'})
-        nodes2, members2, loads2, supports2 = sr.import_excel_model(path)
+        nodes2, members2, loads2, supports2, profiles2 = sr.import_excel_model(path)
 
     assert len(nodes2) == len(nodes)
     for (x, y, z), (x2, y2, z2) in zip(nodes, nodes2):
@@ -116,3 +116,50 @@ def test_summary_text_reports_before_and_after_analysis():
     text_after = sr.summary_text(nodes, members, res)
     assert 'Max nodal displacement' in text_after
     assert 'Max tension' in text_after
+
+
+# ── Profile round-trip ────────────────────────────────────────────────────
+
+def test_excel_round_trip_with_profiles():
+    """Named profiles export to a [PROFILES] section and come back intact."""
+    nodes, members, loads, supports = _built_model()
+    profiles = {
+        'IPE 300': {'E': 200.0, 'A': 51.88, 'I': 7999.0, 'J': 15.57,
+                    'Fy': 235.0, 'Fu': 360.0, 'r_gyr': 12.42, 'K': 1.0,
+                    'catalog': 'IPE 300', 'material': 'F24'},
+        'HEA 200': {'E': 200.0, 'A': 53.83, 'I': 3692.0, 'J': 21.0,
+                    'Fy': 345.0, 'Fu': 450.0, 'r_gyr': 8.28, 'K': 0.85},
+    }
+    for m in members[:len(members) // 2]:
+        m['profile'] = 'IPE 300'
+    for m in members[len(members) // 2:]:
+        m['profile'] = 'HEA 200'
+
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'profiles.xlsx')
+        sr.export_excel(nodes, members, loads, supports, None, path,
+                        profiles=profiles)
+        _, members2, _, _, profiles2 = sr.import_excel_model(path)
+
+    assert set(profiles2.keys()) == {'IPE 300', 'HEA 200'}
+    for pname in profiles:
+        for key in ('E', 'A', 'I', 'J', 'Fy', 'Fu', 'r_gyr', 'K'):
+            assert profiles2[pname][key] == pytest.approx(profiles[pname][key], rel=1e-6), \
+                f'{pname}.{key}'
+    assert profiles2['IPE 300'].get('catalog') == 'IPE 300'
+    assert profiles2['IPE 300'].get('material') == 'F24'
+
+    for m in members2[:len(members2) // 2]:
+        assert m.get('profile') == 'IPE 300'
+    for m in members2[len(members2) // 2:]:
+        assert m.get('profile') == 'HEA 200'
+
+
+def test_excel_round_trip_without_profiles_returns_empty_dict():
+    """A file exported without profiles still imports cleanly."""
+    nodes, members, loads, supports = _built_model()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'no_profiles.xlsx')
+        sr.export_excel(nodes, members, loads, supports, None, path)
+        _, _, _, _, profiles2 = sr.import_excel_model(path)
+    assert profiles2 == {}

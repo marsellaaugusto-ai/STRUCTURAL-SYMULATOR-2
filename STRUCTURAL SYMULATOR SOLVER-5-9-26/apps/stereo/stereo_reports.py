@@ -256,7 +256,7 @@ def pil_draw_node_fbd_3d(node_idx, nodes, members, member_res, loads,
 
 
 def export_excel(nodes, members, loads, supports, results, path, checks=None,
-                  meta=None, max_calc_members=None):
+                  meta=None, max_calc_members=None, profiles=None):
     """Write a workbook with Nodes, Members, Loads, Supports, Results (if
     `results` is not None), Member Checks (if `checks` is not None) and a
     machine-parseable Model sheet. `meta` is an optional dict of free-text
@@ -389,12 +389,12 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     # ── Members ──────────────────────────────────────────────────────────────
     ws = wb.create_sheet('Members')
     mem_hdrs = ['idx', 'a', 'b', 'conn', 'E_GPa', 'A_cm2', 'I_cm4', 'J_cm4',
-                'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role']
+                'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role', 'profile']
     styled_header(ws, mem_hdrs)
     for i, m in enumerate(members):
         ws.append([i, m['a'], m['b'], m.get('conn', 'pin'), m.get('E'), m.get('A'),
                    m.get('I'), m.get('J'), m.get('Fy'), m.get('Fu'), m.get('K', 1.0),
-                   m.get('r_gyr'), m.get('role', '')])
+                   m.get('r_gyr'), m.get('role', ''), m.get('profile', '')])
     style_data_range(ws, 2, 1 + len(members), len(mem_hdrs))
 
     # ── Loads ────────────────────────────────────────────────────────────────
@@ -575,7 +575,7 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
 
     # ── Model sheet (machine-parseable round-trip) ───────────────────────────
     _write_model_sheet(wb, nodes, members, loads, supports, meta,
-                       results=results, checks=checks)
+                       results=results, checks=checks, profiles=profiles)
 
     for name in wb.sheetnames:
         ws = wb[name]
@@ -586,7 +586,7 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
 
 
 def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
-                       results=None, checks=None):
+                       results=None, checks=None, profiles=None):
     from openpyxl.styles import Font
     ws = wb.create_sheet('Model')
     ws.sheet_state = 'visible'
@@ -617,13 +617,14 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
 
     ws.cell(row=row, column=1, value='[MEMBERS]'); row += 1
     for col, lbl in enumerate(['idx', 'a', 'b', 'conn', 'E_GPa', 'A_cm2', 'I_cm4',
-                                'J_cm4', 'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role'], 1):
+                                'J_cm4', 'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role',
+                                'profile'], 1):
         ws.cell(row=row, column=col, value=lbl)
     row += 1
     for i, m in enumerate(members):
         vals = [i, m['a'], m['b'], m.get('conn', 'pin'), m.get('E'), m.get('A'),
                 m.get('I'), m.get('J'), m.get('Fy'), m.get('Fu'), m.get('K', 1.0),
-                m.get('r_gyr'), m.get('role', '')]
+                m.get('r_gyr'), m.get('role', ''), m.get('profile', '')]
         for col, v in enumerate(vals, 1):
             ws.cell(row=row, column=col, value=v)
         row += 1
@@ -658,6 +659,24 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
         for col, v in enumerate(vals, 1):
             ws.cell(row=row, column=col, value=v)
         row += 1
+
+    if profiles:
+        row += 1
+        ws.cell(row=row, column=1, value='[PROFILES]'); row += 1
+        prof_hdrs = ['name', 'E_GPa', 'A_cm2', 'I_cm4', 'J_cm4',
+                     'Fy_MPa', 'Fu_MPa', 'r_gyr_cm', 'K', 'catalog', 'material']
+        for col, lbl in enumerate(prof_hdrs, 1):
+            ws.cell(row=row, column=col, value=lbl)
+        row += 1
+        for pname, pdata in sorted(profiles.items()):
+            vals = [pname, pdata.get('E', ''), pdata.get('A', ''),
+                    pdata.get('I', ''), pdata.get('J', ''),
+                    pdata.get('Fy', ''), pdata.get('Fu', ''),
+                    pdata.get('r_gyr', ''), pdata.get('K', ''),
+                    pdata.get('catalog', ''), pdata.get('material', '')]
+            for col, v in enumerate(vals, 1):
+                ws.cell(row=row, column=col, value=v)
+            row += 1
 
     if results is not None:
         row += 1
@@ -755,7 +774,33 @@ def import_excel_model(path):
         role = r.get('role')
         if role:
             m['role'] = str(role)
+        profile = r.get('profile')
+        if profile and str(profile).strip():
+            m['profile'] = str(profile).strip()
         members.append(m)
+
+    profiles = {}
+    prof_idx = find_section('[PROFILES]')
+    if prof_idx >= 0:
+        for pr in read_table(prof_idx):
+            pname = str(pr.get('name', '')).strip()
+            if not pname:
+                continue
+            pdata = {}
+            for key, field in (('E_GPa', 'E'), ('A_cm2', 'A'), ('I_cm4', 'I'),
+                                ('J_cm4', 'J'), ('Fy_MPa', 'Fy'), ('Fu_MPa', 'Fu'),
+                                ('r_gyr_cm', 'r_gyr')):
+                v = pr.get(key)
+                if v is not None and v != '':
+                    pdata[field] = float(v)
+            pk = pr.get('K')
+            if pk not in (None, ''):
+                pdata['K'] = float(pk)
+            for extra in ('catalog', 'material'):
+                v = pr.get(extra)
+                if v and str(v).strip():
+                    pdata[extra] = str(v).strip()
+            profiles[pname] = pdata
 
     loads = []
     for r in read_table(find_section('[LOADS]')):
@@ -782,7 +827,7 @@ def import_excel_model(path):
             sp['dofs'] = dofs
         supports.append(sp)
 
-    return nodes, members, loads, supports
+    return nodes, members, loads, supports, profiles
 
 
 def summary_text(nodes, members, results, checks=None):

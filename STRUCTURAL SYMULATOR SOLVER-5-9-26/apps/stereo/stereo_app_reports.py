@@ -135,7 +135,8 @@ class StereoReportsMixin:
         try:
             sr.export_excel(self.nodes, self.members, self.loads, self.supports,
                             self.results, path, checks=self.member_checks,
-                            meta={'grid_family': self.grid_family.get()})
+                            meta={'grid_family': self.grid_family.get()},
+                            profiles=self.profiles)
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return
@@ -146,12 +147,14 @@ class StereoReportsMixin:
         if not path:
             return
         try:
-            nodes, members, loads, supports = sr.import_excel_model(path)
+            nodes, members, loads, supports, profiles = sr.import_excel_model(path)
         except Exception as exc:
             messagebox.showerror('Import failed', str(exc))
             return
         self._push_undo('import excel')
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
+        if profiles:
+            self.profiles.update(profiles)
         self._support_candidates = [s['node'] for s in supports]
         self._load_nodes = {}   # an imported model has no known roof surface
         self.area_load_on.set(False)
@@ -161,6 +164,7 @@ class StereoReportsMixin:
         self.selected_nodes = set()
         self.selected_member = None
         self.selected_members = set()
+        self._refresh_profile_combo()
         self._refresh_all()
 
     def _import_sketchup(self):
@@ -170,12 +174,14 @@ class StereoReportsMixin:
         if not path:
             return
         try:
-            nodes, members, loads, supports = sr.import_excel_model(path)
+            nodes, members, loads, supports, profiles = sr.import_excel_model(path)
         except Exception as exc:
             messagebox.showerror('Import failed', str(exc))
             return
         self._push_undo('import sketchup')
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
+        if profiles:
+            self.profiles.update(profiles)
         self._support_candidates = [s['node'] for s in supports]
         self._load_nodes = {}
         self.area_load_on.set(False)
@@ -185,6 +191,7 @@ class StereoReportsMixin:
         self.selected_nodes = set()
         self.selected_member = None
         self.selected_members = set()
+        self._refresh_profile_combo()
         self._refresh_all()
         self._reset_view()
         n_n, n_m = len(nodes), len(members)
@@ -265,7 +272,8 @@ class StereoReportsMixin:
                             'rod_radius_m': r_r}
                     sr.export_excel(self.nodes, self.members, self.loads,
                                    self.supports, self.results, path,
-                                   checks=self.member_checks, meta=meta)
+                                   checks=self.member_checks, meta=meta,
+                                   profiles=self.profiles)
                 except Exception as exc:
                     messagebox.showerror('Export failed', str(exc), parent=win)
                     return
@@ -284,12 +292,14 @@ class StereoReportsMixin:
             messagebox.showerror('Example', 'example_stereo_model.xlsx not found.')
             return
         try:
-            nodes, members, loads, supports = sr.import_excel_model(example_path)
+            nodes, members, loads, supports, profiles = sr.import_excel_model(example_path)
         except Exception as exc:
             messagebox.showerror('Import failed', str(exc))
             return
         self._push_undo('open example')
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
+        if profiles:
+            self.profiles.update(profiles)
         self._support_candidates = [s['node'] for s in supports]
         self._load_nodes = {}
         self.area_load_on.set(False)
@@ -299,6 +309,7 @@ class StereoReportsMixin:
         self.selected_nodes = set()
         self.selected_member = None
         self.selected_members = set()
+        self._refresh_profile_combo()
         self._refresh_all()
         self._reset_view()
         messagebox.showinfo(

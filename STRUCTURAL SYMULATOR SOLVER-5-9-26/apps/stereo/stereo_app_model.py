@@ -219,19 +219,63 @@ class StereoModelMixin:
         web = dict(E=self.web_E.get(), A=self.web_A.get(), I=self.web_I.get(),
                   J=self.web_J.get(), Fy=self.web_Fy.get(), Fu=self.web_Fu.get(),
                   K=self.web_K.get(), r_gyr=self.web_r.get())
+        chord_profile = self.chord_profile_var.get() if hasattr(self, 'chord_profile_var') else ''
+        web_profile = self.web_profile_var.get() if hasattr(self, 'web_profile_var') else ''
         for m in members:
-            # A Vierendeel beam carries its load by BENDING its members, so
-            # its joints are not a preference -- pinned, it is a mechanism
-            # rather than a stiff frame, and the solver returns a singular
-            # matrix instead of a result. Members that say they need rigid
-            # joints keep them whatever this panel is set to.
             if not m.get('rigid_required'):
                 m['conn'] = conn
-            m.update(chord if m.get('role') in CHORD_ROLES else web)
+            is_chord = m.get('role') in CHORD_ROLES
+            m.update(chord if is_chord else web)
+            m['profile'] = chord_profile if is_chord else web_profile
         if redraw:
             self.results = None
             self.member_checks = None
             self._refresh_all()
+
+    # ── profile management ──────────────────────────────────────────────────
+
+    def _refresh_profile_combo(self):
+        names = sorted(self.profiles.keys())
+        if hasattr(self, 'profile_combo'):
+            self.profile_combo['values'] = names
+        if self.active_profile.get() not in names and names:
+            self.active_profile.set(names[0])
+
+    def _assign_profile_to_selection(self):
+        if not self.selected_members:
+            messagebox.showinfo('Profile',
+                'Select one or more members first, then assign a profile.')
+            return
+        name = self.active_profile.get()
+        prof = self.profiles.get(name)
+        if not prof:
+            messagebox.showwarning('Profile', f'Profile "{name}" not found.')
+            return
+        self._push_undo('assign profile')
+        for mi in self.selected_members:
+            if mi < len(self.members):
+                self.members[mi]['profile'] = name
+                for k in ('E', 'A', 'I', 'J', 'Fy', 'Fu', 'r_gyr', 'K'):
+                    if k in prof:
+                        self.members[mi][k] = prof[k]
+        self.results = None
+        self.member_checks = None
+        self._refresh_all()
+        self.status_var.set(f'Assigned profile "{name}" to {len(self.selected_members)} member(s).')
+
+    def _select_same_profile(self):
+        if len(self.selected_members) != 1:
+            messagebox.showinfo('Profile',
+                'Select exactly one member first, then use this to select all members '
+                'with the same profile.')
+            return
+        mi = next(iter(self.selected_members))
+        name = self.members[mi].get('profile', '')
+        self.selected_members = {i for i, m in enumerate(self.members)
+                                 if m.get('profile', '') == name}
+        self.selected_nodes = set()
+        self._refresh_all()
+        self.status_var.set(f'Selected {len(self.selected_members)} member(s) with profile "{name}".')
 
     # ── boundary conditions ──────────────────────────────────────────────────
     def _apply_quick_support_preset(self):

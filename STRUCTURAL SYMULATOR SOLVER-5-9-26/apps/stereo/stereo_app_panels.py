@@ -909,6 +909,26 @@ class StereoPanelsMixin(_ToolbarModes):
     def _build_section_panel(self, parent, prefix, title):
         box = tk.LabelFrame(parent, text=title, bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=4)
+
+        profile_var = tk.StringVar(value=f'Default {prefix}')
+        setattr(self, f'{prefix}_profile_var', profile_var)
+
+        prof_row = tk.Frame(box, bg=BG)
+        prof_row.pack(fill='x', padx=6, pady=(4, 2))
+        tk.Label(prof_row, text='Profile:', bg=BG, width=8, anchor='w',
+                 font=('Helvetica', 9)).pack(side='left')
+        combo = ttk.Combobox(prof_row, textvariable=profile_var, width=18,
+                             font=('Helvetica', 8), state='readonly')
+        combo.pack(side='left', padx=(0, 4))
+        setattr(self, f'_{prefix}_profile_combo', combo)
+        tk.Button(prof_row, text='Catalog...', font=('Helvetica', 8),
+                  command=lambda p=prefix: self._open_catalog_picker(p)
+                 ).pack(side='left')
+
+        self._refresh_section_profile_combo(prefix)
+        combo.bind('<<ComboboxSelected>>',
+                   lambda _e, p=prefix: self._on_section_profile_selected(p))
+
         setattr(self, f'{prefix}_A', tk.DoubleVar(value=20.0))
         setattr(self, f'{prefix}_r', tk.DoubleVar(value=4.0))
         setattr(self, f'{prefix}_E', tk.DoubleVar(value=200.0))
@@ -928,10 +948,13 @@ class StereoPanelsMixin(_ToolbarModes):
         self._labeled_entry(ij_frame, 'J (cm⁴):', getattr(self, f'{prefix}_J'))
         setattr(self, f'_{prefix}_ij_frame', ij_frame)
         if prefix == 'web':
-            # only need to trigger _apply_sections once for the pair; the
-            # chord panel's own button would just redo the same work.
-            tk.Button(box, text='Apply sections to all members',
-                     command=self._apply_sections).pack(padx=6, pady=(4, 6), anchor='w')
+            btn_row = tk.Frame(box, bg=BG)
+            btn_row.pack(fill='x', padx=6, pady=(4, 6))
+            tk.Button(btn_row, text='Apply sections to all members',
+                     command=self._apply_sections).pack(side='left')
+            tk.Button(btn_row, text='Profile Manager...',
+                     command=self._open_profile_manager,
+                     font=('Helvetica', 8)).pack(side='left', padx=(6, 0))
 
     def _on_connectivity_change(self):
         show = self.sec_conn.get() == 'rigid'
@@ -942,6 +965,251 @@ class StereoPanelsMixin(_ToolbarModes):
             else:
                 frame.pack_forget()
 
+    # ── profile helpers ─────────────────────────────────────────────────────
+
+    def _refresh_section_profile_combo(self, prefix):
+        combo = getattr(self, f'_{prefix}_profile_combo', None)
+        if combo is None:
+            return
+        names = sorted(self.profiles.keys())
+        combo['values'] = names
+        var = getattr(self, f'{prefix}_profile_var')
+        if var.get() not in names and names:
+            var.set(names[0])
+
+    def _on_section_profile_selected(self, prefix):
+        name = getattr(self, f'{prefix}_profile_var').get()
+        prof = self.profiles.get(name)
+        if not prof:
+            return
+        for attr, key in (('A', 'A'), ('r', 'r_gyr'), ('E', 'E'),
+                          ('Fy', 'Fy'), ('Fu', 'Fu'), ('K', 'K'),
+                          ('I', 'I'), ('J', 'J')):
+            var = getattr(self, f'{prefix}_{attr}', None)
+            if var is not None and key in prof:
+                var.set(prof[key])
+
+    def _open_catalog_picker(self, prefix):
+        from apps.stereo import stereo_profiles as sp
+        from tkinter import messagebox
+
+        win = tk.Toplevel(self.root)
+        win.title('Steel Profile Catalog')
+        win.geometry('520x560')
+        win.configure(bg='#f5f5f3')
+        tk.Label(win, text='CIRSOC / Standard Steel Profiles', bg='#f5f5f3',
+                 font=('Helvetica', 12, 'bold'), fg='#1a6bbd').pack(pady=(10, 4))
+
+        top = tk.Frame(win, bg='#f5f5f3')
+        top.pack(fill='x', padx=10, pady=4)
+
+        tk.Label(top, text='Group:', bg='#f5f5f3', font=('Helvetica', 9)).pack(side='left')
+        group_var = tk.StringVar(value=sp.group_names()[0])
+        group_combo = ttk.Combobox(top, textvariable=group_var,
+                                   values=sp.group_names(), state='readonly',
+                                   width=14, font=('Helvetica', 9))
+        group_combo.pack(side='left', padx=4)
+
+        tk.Label(top, text='Material:', bg='#f5f5f3', font=('Helvetica', 9)).pack(side='left', padx=(8, 0))
+        mat_names = list(sp.MATERIALS.keys())
+        mat_var = tk.StringVar(value=mat_names[0])
+        ttk.Combobox(top, textvariable=mat_var, values=mat_names,
+                     state='readonly', width=22, font=('Helvetica', 8)
+                    ).pack(side='left', padx=4)
+
+        listfr = tk.Frame(win, bg='#f5f5f3')
+        listfr.pack(fill='both', expand=True, padx=10, pady=4)
+        lb = tk.Listbox(listfr, font=('Courier', 9), height=16)
+        lb.pack(side='left', fill='both', expand=True)
+        sb = tk.Scrollbar(listfr, orient='vertical', command=lb.yview)
+        sb.pack(side='right', fill='y')
+        lb.configure(yscrollcommand=sb.set)
+
+        info_label = tk.Label(win, text='', bg='#f5f5f3', fg='#555',
+                              font=('Helvetica', 9), wraplength=480, justify='left')
+        info_label.pack(padx=10, pady=4)
+
+        def refresh_list(*_args):
+            lb.delete(0, 'end')
+            group = group_var.get()
+            for name in sp.profiles_in_group(group):
+                lb.insert('end', sp.profile_summary(name))
+
+        def on_select(_e=None):
+            sel = lb.curselection()
+            if not sel:
+                return
+            group = group_var.get()
+            names = sp.profiles_in_group(group)
+            if sel[0] < len(names):
+                sec = sp.CATALOG[names[sel[0]]]
+                a = sec.A_mm2 / 100.0
+                ix = sec.Ix_mm4 / 10_000.0
+                j = sec.J_mm4 / 10_000.0
+                r = sec.r_gyr_mm / 10.0
+                info_label.config(text=f'{sec.name}  |  A = {a:.2f} cm²  '
+                                       f'I = {ix:.1f} cm⁴  J = {j:.1f} cm⁴  '
+                                       f'r = {r:.2f} cm  |  {sec.shape}')
+
+        lb.bind('<<ListboxSelect>>', on_select)
+        group_combo.bind('<<ComboboxSelected>>', refresh_list)
+
+        def apply_selection():
+            sel = lb.curselection()
+            if not sel:
+                messagebox.showinfo('Catalog', 'Select a profile first.')
+                return
+            group = group_var.get()
+            names = sp.profiles_in_group(group)
+            if sel[0] >= len(names):
+                return
+            sec_name = names[sel[0]]
+            sec = sp.CATALOG[sec_name]
+            mat = sp.MATERIALS.get(mat_var.get())
+            props = sp.section_to_props(sec, mat)
+
+            profile_name = sec_name
+            self.profiles[profile_name] = {
+                'E': props.get('E', 200.0), 'A': props['A'],
+                'I': props['I'], 'J': props['J'],
+                'Fy': props.get('Fy', 235.0), 'Fu': props.get('Fu', 360.0),
+                'r_gyr': props['r_gyr'], 'K': 1.0,
+                'catalog': sec_name, 'material': mat_var.get(),
+            }
+
+            getattr(self, f'{prefix}_profile_var').set(profile_name)
+            self._refresh_section_profile_combo('chord')
+            self._refresh_section_profile_combo('web')
+            self._on_section_profile_selected(prefix)
+            win.destroy()
+
+        tk.Button(win, text='Apply to ' + prefix.title(), bg='#1a6bbd', fg='white',
+                  font=('Helvetica', 10, 'bold'), relief='flat',
+                  command=apply_selection).pack(pady=(4, 10))
+
+        refresh_list()
+
+    def _open_profile_manager(self):
+        from tkinter import messagebox
+
+        win = tk.Toplevel(self.root)
+        win.title('Profile Manager')
+        win.geometry('480x580')
+        win.configure(bg='#f5f5f3')
+        tk.Label(win, text='Profile Manager', bg='#f5f5f3',
+                 font=('Helvetica', 12, 'bold'), fg='#1a6bbd').pack(pady=(10, 4))
+        tk.Label(win, text='Named profiles group E/A/I/J/Fy/Fu/r/K properties.\n'
+                           'Editing a profile updates every member assigned to it.',
+                 bg='#f5f5f3', fg='#555', font=('Helvetica', 9),
+                 justify='center').pack(pady=(0, 8))
+
+        listfr = tk.Frame(win, bg='#f5f5f3')
+        listfr.pack(fill='both', expand=True, padx=10)
+        lb = tk.Listbox(listfr, font=('Helvetica', 9), height=10)
+        lb.pack(side='left', fill='both', expand=True)
+        sb = tk.Scrollbar(listfr, orient='vertical', command=lb.yview)
+        sb.pack(side='right', fill='y')
+        lb.configure(yscrollcommand=sb.set)
+
+        def refresh_list():
+            lb.delete(0, 'end')
+            for name in sorted(self.profiles.keys()):
+                p = self.profiles[name]
+                n_members = sum(1 for m in self.members if m.get('profile', '') == name)
+                lb.insert('end',
+                          f'{name}   (A={p["A"]:.1f}, I={p["I"]:.0f}, '
+                          f'{n_members} mbr)')
+        refresh_list()
+
+        editfr = tk.Frame(win, bg='#f5f5f3')
+        editfr.pack(fill='x', padx=10, pady=8)
+        fields = [
+            ('Name:', 'name', None, 16),
+            ('E (GPa):', 'E', 200.0, 10),
+            ('A (cm²):', 'A', 20.0, 10),
+            ('I (cm⁴):', 'I', 400.0, 10),
+            ('J (cm⁴):', 'J', 400.0, 10),
+            ('Fy (MPa):', 'Fy', 235.0, 10),
+            ('Fu (MPa):', 'Fu', 360.0, 10),
+            ('r (cm):', 'r_gyr', 4.0, 10),
+            ('K:', 'K', 1.0, 10),
+        ]
+        edit_vars = {}
+        for row_i, (label, key, default, w) in enumerate(fields):
+            tk.Label(editfr, text=label, bg='#f5f5f3',
+                     font=('Helvetica', 9)).grid(row=row_i, column=0, sticky='w')
+            if key == 'name':
+                v = tk.StringVar(value='New Profile')
+            else:
+                v = tk.DoubleVar(value=default)
+            tk.Entry(editfr, textvariable=v, width=w,
+                     font=('Helvetica', 9)).grid(row=row_i, column=1, padx=4)
+            edit_vars[key] = v
+
+        def on_select(_e=None):
+            sel = lb.curselection()
+            if not sel:
+                return
+            name = sorted(self.profiles.keys())[sel[0]]
+            edit_vars['name'].set(name)
+            p = self.profiles[name]
+            for key in ('E', 'A', 'I', 'J', 'Fy', 'Fu', 'r_gyr', 'K'):
+                if key in edit_vars and key in p:
+                    edit_vars[key].set(p[key])
+        lb.bind('<<ListboxSelect>>', on_select)
+
+        def save_profile():
+            name = edit_vars['name'].get().strip()
+            if not name:
+                messagebox.showwarning('Profile', 'Name cannot be empty.')
+                return
+            prof = {}
+            for key in ('E', 'A', 'I', 'J', 'Fy', 'Fu', 'r_gyr', 'K'):
+                prof[key] = edit_vars[key].get()
+            self.profiles[name] = prof
+            for m in self.members:
+                if m.get('profile', '') == name:
+                    for k, v in prof.items():
+                        m[k] = v
+            self._refresh_section_profile_combo('chord')
+            self._refresh_section_profile_combo('web')
+            refresh_list()
+            self.results = None
+            self.member_checks = None
+            self._refresh_all()
+            n = sum(1 for m in self.members if m.get('profile', '') == name)
+            self.status_var.set(f'Profile "{name}" saved ({n} member(s) updated).')
+
+        def delete_profile():
+            name = edit_vars['name'].get().strip()
+            if name.startswith('Default'):
+                messagebox.showwarning('Profile', 'Cannot delete default profiles.')
+                return
+            in_use = sum(1 for m in self.members if m.get('profile', '') == name)
+            if in_use and not messagebox.askyesno('Profile',
+                    f'{in_use} member(s) use "{name}". Unassign and delete?'):
+                return
+            for m in self.members:
+                if m.get('profile', '') == name:
+                    m['profile'] = ''
+            self.profiles.pop(name, None)
+            self._refresh_section_profile_combo('chord')
+            self._refresh_section_profile_combo('web')
+            refresh_list()
+            self.results = None
+            self.member_checks = None
+            self._refresh_all()
+
+        btnfr = tk.Frame(win, bg='#f5f5f3')
+        btnfr.pack(fill='x', padx=10, pady=4)
+        tk.Button(btnfr, text='Save profile', bg='#1a6bbd', fg='white',
+                  font=('Helvetica', 9, 'bold'), relief='flat',
+                  command=save_profile).pack(side='left', padx=2)
+        tk.Button(btnfr, text='Delete', relief='flat',
+                  font=('Helvetica', 9), command=delete_profile).pack(side='left', padx=2)
+        tk.Button(win, text='Close', relief='flat', bg='#1a6bbd', fg='white',
+                  font=('Helvetica', 10, 'bold'), command=win.destroy).pack(pady=(4, 10))
+
     def _build_selection_panel(self, parent):
         box = tk.LabelFrame(parent, text='Selected node', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=4)
@@ -951,6 +1219,18 @@ class StereoPanelsMixin(_ToolbarModes):
         self.sel_label.pack(anchor='w', padx=6, pady=4)
         tk.Button(box, text='Delete selection', command=self._on_delete_selection
                  ).pack(anchor='w', padx=6, pady=(0, 4))
+
+        prof_sel_fr = tk.Frame(box, bg=BG)
+        prof_sel_fr.pack(fill='x', padx=6, pady=(0, 4))
+        self.profile_combo = ttk.Combobox(prof_sel_fr, textvariable=self.active_profile,
+                                          width=16, font=('Helvetica', 8), state='readonly')
+        self.profile_combo.pack(side='left')
+        tk.Button(prof_sel_fr, text='Assign', font=('Helvetica', 8),
+                  command=self._assign_profile_to_selection).pack(side='left', padx=2)
+        tk.Button(prof_sel_fr, text='Select same', font=('Helvetica', 8),
+                  command=self._select_same_profile).pack(side='left', padx=2)
+        self._refresh_profile_combo()
+
         self._axis_extend_frame = tk.Frame(box, bg=BG)
         tk.Label(self._axis_extend_frame, text='Extend:', bg=BG,
                  font=('Helvetica', 9)).pack(side='left', padx=(6, 2))

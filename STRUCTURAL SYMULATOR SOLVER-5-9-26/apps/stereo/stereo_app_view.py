@@ -419,8 +419,9 @@ class StereoViewMixin:
         web = dict(E=self.web_E.get(), A=self.web_A.get(), I=self.web_I.get(),
                   J=self.web_J.get(), Fy=self.web_Fy.get(), Fu=self.web_Fu.get(),
                   K=self.web_K.get(), r_gyr=self.web_r.get())
+        web_profile = self.web_profile_var.get() if hasattr(self, 'web_profile_var') else ''
         self.members.append({'a': a, 'b': b, 'conn': self.sec_conn.get(),
-                            'role': 'user_rod', **web})
+                            'role': 'user_rod', 'profile': web_profile, **web})
         self.results = None
         self.member_checks = None
         self._refresh_all()

@@ -103,6 +103,13 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         self.members = []
         self.loads = []
         self.supports = []
+        self.profiles = {'Default chord': {'E': 200.0, 'A': 20.0, 'I': 400.0,
+                                           'J': 400.0, 'Fy': 235.0, 'Fu': 360.0,
+                                           'r_gyr': 4.0, 'K': 1.0},
+                         'Default web':   {'E': 200.0, 'A': 20.0, 'I': 400.0,
+                                           'J': 400.0, 'Fy': 235.0, 'Fu': 360.0,
+                                           'r_gyr': 4.0, 'K': 1.0}}
+        self.active_profile = tk.StringVar(value='Default chord')
         self.results = None
         self.member_checks = None
         self.err = None
@@ -178,13 +185,15 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
     # ── model snapshot / undo-redo (same shape as truss_app.py) ─────────────
     def _model_snapshot(self):
         return {'nodes': copy.deepcopy(self.nodes), 'members': copy.deepcopy(self.members),
-                'loads': copy.deepcopy(self.loads), 'supports': copy.deepcopy(self.supports)}
+                'loads': copy.deepcopy(self.loads), 'supports': copy.deepcopy(self.supports),
+                'profiles': copy.deepcopy(self.profiles)}
 
     def _restore_snapshot(self, snap):
         self.nodes = snap['nodes']
         self.members = snap['members']
         self.loads = snap['loads']
         self.supports = snap['supports']
+        self.profiles = snap.get('profiles', self.profiles)
         self.results = None
         self.member_checks = None
 

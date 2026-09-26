@@ -16,7 +16,9 @@ import math
 import time as _time
 
 from apps.stereo import stereo_math as sm
-from apps.stereo.stereo_app_canvas_geom import _point_segment_distance
+from apps.stereo.stereo_app_canvas_geom import (
+    _point_segment_distance, _seg_intersects_rect,
+)
 from apps.stereo.stereo_app_constants import (
     DOF_LABELS, LASSO_DRAG_THRESHOLD_PX, MEMBER_SEL_HIT_PX,
     DRAW_THROTTLE_MS,
@@ -113,12 +115,34 @@ class StereoViewMixin:
         self._lasso_press = (event.x, event.y)
         self._lasso_dragging = False
         self._lasso_cur = None
+        self._drag_node = None
+        self._drag_node_active = False
+        if self.selected_nodes and not self.add_rod_mode.get():
+            pts = self._screen_positions()
+            for i in self.selected_nodes:
+                if i < len(pts):
+                    sx, sy = pts[i]
+                    if math.hypot(sx - event.x, sy - event.y) < 12.0:
+                        self._drag_node = (event.x, event.y)
+                        break
 
     def _on_canvas_motion(self, event):
         if self._lasso_press is None:
             return
         x0, y0 = self._lasso_press
         dx, dy = event.x - x0, event.y - y0
+        if self._drag_node is not None:
+            if not self._drag_node_active and (abs(dx) > LASSO_DRAG_THRESHOLD_PX
+                                               or abs(dy) > LASSO_DRAG_THRESHOLD_PX):
+                self._drag_node_active = True
+                self._push_undo('drag node')
+            if self._drag_node_active:
+                prev_sx, prev_sy = self._drag_node
+                self._move_selected_nodes_by_screen(prev_sx, prev_sy,
+                                                    event.x, event.y)
+                self._drag_node = (event.x, event.y)
+                self._draw_throttled()
+            return
         if not self._lasso_dragging and (abs(dx) > LASSO_DRAG_THRESHOLD_PX
                                          or abs(dy) > LASSO_DRAG_THRESHOLD_PX):
             self._lasso_dragging = True
@@ -128,13 +152,18 @@ class StereoViewMixin:
 
     def _on_canvas_release(self, event):
         self.canvas.focus_set()   # so a following Delete/Backspace reaches us
+        if self._drag_node_active:
+            self._drag_node = None
+            self._drag_node_active = False
+            self._lasso_press = None
+            self.results = None
+            self.member_checks = None
+            self._refresh_all()
+            return
+        self._drag_node = None
+        self._drag_node_active = False
         additive = bool(event.state & 0x0001)   # Shift held: add to selection
         if self.add_rod_mode.get():
-            # A plain click-to-pick tool, deliberately bypassing the lasso/
-            # select machinery below entirely (including the support-
-            # sandbox click-to-disable behaviour) so the two clicks that
-            # place a rod can never be misread as a box-select or a
-            # sandbox toggle while this mode is on.
             self._handle_add_rod_click(event.x, event.y)
             self._lasso_press = None
             self._lasso_dragging = False
@@ -143,8 +172,14 @@ class StereoViewMixin:
         if self._lasso_dragging and self._lasso_cur is not None:
             x0, y0 = self._lasso_press
             x1, y1 = self._lasso_cur
-            found = set(self._nodes_in_screen_box(x0, y0, x1, y1))
-            self.selected_nodes = (self.selected_nodes | found) if additive else found
+            found_nodes = set(self._nodes_in_screen_box(x0, y0, x1, y1))
+            found_members = set(self._members_in_screen_box(x0, y0, x1, y1))
+            if additive:
+                self.selected_nodes = self.selected_nodes | found_nodes
+                self.selected_members = self.selected_members | found_members
+            else:
+                self.selected_nodes = found_nodes
+                self.selected_members = found_members
             self.selected_member = None
             self._sync_selection_fields()
         else:
@@ -153,6 +188,26 @@ class StereoViewMixin:
         self._lasso_dragging = False
         self._lasso_cur = None
         self._draw()
+
+    def _move_selected_nodes_by_screen(self, sx0, sy0, sx1, sy1):
+        """Move all selected nodes by the world-space delta corresponding
+        to a screen-pixel drag from (sx0,sy0) to (sx1,sy1), keeping
+        each node's depth (view-direction component) constant."""
+        wx0, wy0 = self.zc.s2w(sx0, sy0)
+        wx1, wy1 = self.zc.s2w(sx1, sy1)
+        dpx = (wx1 - wx0) / self.PX_PER_M
+        dpy = (wy1 - wy0) / self.PX_PER_M
+        az = math.radians(self.azimuth)
+        el = math.radians(self.elevation)
+        c, s = math.cos(az), math.sin(az)
+        ce, se = math.cos(el), math.sin(el)
+        dx = c * dpx - s * se * dpy
+        dy = -s * dpx - c * se * dpy
+        dz = -ce * dpy
+        for i in self.selected_nodes:
+            if i < len(self.nodes):
+                ox, oy, oz = self.nodes[i]
+                self.nodes[i] = (ox + dx, oy + dy, oz + dz)
 
     def _project(self, x, y, z):
         """Rotating orthographic projection: azimuth about the global Z
@@ -228,6 +283,26 @@ class StereoViewMixin:
         return [i for i, (sx, sy) in enumerate(self._screen_positions())
                 if xlo <= sx <= xhi and ylo <= sy <= yhi]
 
+    def _members_in_screen_box(self, sx0, sy0, sx1, sy1):
+        """Members whose line segment intersects the screen-space rectangle.
+        A member qualifies when at least one endpoint is inside the box OR
+        the segment crosses one of the box edges."""
+        xlo, xhi = sorted((sx0, sx1))
+        ylo, yhi = sorted((sy0, sy1))
+        pts = self._screen_positions()
+        result = []
+        for i, m in enumerate(self.members):
+            ax, ay = pts[m['a']]
+            bx, by = pts[m['b']]
+            a_in = xlo <= ax <= xhi and ylo <= ay <= yhi
+            b_in = xlo <= bx <= xhi and ylo <= by <= yhi
+            if a_in or b_in:
+                result.append(i)
+                continue
+            if _seg_intersects_rect(ax, ay, bx, by, xlo, ylo, xhi, yhi):
+                result.append(i)
+        return result
+
     def _sync_selection_fields(self):
         """Push the current single-node selection (if exactly one node is
         selected) into the typed node fields and the selection/BC panels --
@@ -239,8 +314,13 @@ class StereoViewMixin:
         if best is None:
             if self.selected_member is not None:
                 self._show_member_info(self.selected_member)
-            elif len(self.selected_nodes) > 1:
-                self.sel_label.config(text=f'{len(self.selected_nodes)} nodes selected.')
+            elif len(self.selected_nodes) > 1 or self.selected_members:
+                parts = []
+                if self.selected_nodes:
+                    parts.append(f'{len(self.selected_nodes)} node{"s" if len(self.selected_nodes) != 1 else ""}')
+                if self.selected_members:
+                    parts.append(f'{len(self.selected_members)} member{"s" if len(self.selected_members) != 1 else ""}')
+                self.sel_label.config(text=f'{" + ".join(parts)} selected.')
             else:
                 self.sel_label.config(
                     text='(click, or drag a box, to select node(s); click a rod to inspect it)')
@@ -345,6 +425,69 @@ class StereoViewMixin:
         self.member_checks = None
         self._refresh_all()
 
+    # ── keyboard axis extend ────────────────────────────────────────────────
+    _AXIS_KEYS = {
+        'Left':  (-1, 0, 0, '-X'),
+        'Right': ( 1, 0, 0, '+X'),
+        'Up':    ( 0, 1, 0, '+Y'),
+        'Down':  ( 0,-1, 0, '-Y'),
+        'Prior': ( 0, 0, 1, '+Z'),
+        'Next':  ( 0, 0,-1, '-Z'),
+    }
+
+    def _on_axis_key(self, event=None):
+        if not event or len(self.selected_nodes) != 1:
+            return
+        info = self._AXIS_KEYS.get(event.keysym)
+        if not info:
+            return
+        dx, dy, dz, label = info
+        self._axis_pending = (dx, dy, dz)
+        self._axis_dir_label.config(text=label)
+        self._axis_extend_frame.pack(fill='x', pady=(0, 4))
+        self._axis_len_entry.focus_set()
+        self._axis_len_entry.select_range(0, 'end')
+        self._draw()
+
+    def _on_axis_cancel(self, event=None):
+        self._axis_pending = None
+        self._axis_extend_frame.pack_forget()
+        self.canvas.focus_set()
+        self._draw()
+
+    def _axis_extend_go(self):
+        if self._axis_pending is None or len(self.selected_nodes) != 1:
+            self._on_axis_cancel()
+            return
+        try:
+            length = self._axis_len_var.get()
+        except Exception:
+            return
+        if length <= 0:
+            return
+        dx, dy, dz = self._axis_pending
+        src = next(iter(self.selected_nodes))
+        ox, oy, oz = self.nodes[src]
+        new_pos = (ox + dx * length, oy + dy * length, oz + dz * length)
+        self._push_undo('extend along axis')
+        new_idx = len(self.nodes)
+        self.nodes.append(new_pos)
+        web = dict(E=self.web_E.get(), A=self.web_A.get(), I=self.web_I.get(),
+                  J=self.web_J.get(), Fy=self.web_Fy.get(), Fu=self.web_Fu.get(),
+                  K=self.web_K.get(), r_gyr=self.web_r.get())
+        self.members.append({'a': src, 'b': new_idx,
+                            'conn': self.sec_conn.get(),
+                            'role': 'user_rod', **web})
+        self.results = None
+        self.member_checks = None
+        self.selected_nodes = {new_idx}
+        self.selected_member = None
+        self.selected_members = set()
+        self._axis_pending = None
+        self._axis_extend_frame.pack_forget()
+        self.canvas.focus_set()
+        self._refresh_all()
+
     def _select_node_at(self, ex, ey, additive=False):
         if not self.nodes:
             return
@@ -366,6 +509,8 @@ class StereoViewMixin:
             else:
                 self.selected_nodes = {best}
             self.selected_member = None
+            if not additive:
+                self.selected_members = set()
             self._sync_selection_fields()
             self._draw()
             return
@@ -374,14 +519,18 @@ class StereoViewMixin:
         mi = self._select_member_at(ex, ey)
         if mi is not None:
             self.selected_member = mi
-            if not additive:
+            if additive:
+                self.selected_members.symmetric_difference_update({mi})
+            else:
                 self.selected_nodes = set()
+                self.selected_members = {mi}
             self._sync_selection_fields()
             self._draw()
             return
         if not additive:
             self.selected_nodes = set()
             self.selected_member = None
+            self.selected_members = set()
             self._sync_selection_fields()
             self._draw()
 
@@ -400,44 +549,56 @@ class StereoViewMixin:
                 best, best_d = i, d
         return best
 
-    def _on_delete_nodes(self, event=None):
-        """Delete every currently selected node, and (transitively) every
-        member touching one, remapping every remaining reference to a node
-        INDEX -- other members' a/b, supports, loads, support_candidates,
-        load_nodes -- down past the removed indices. Node identity in this
-        tab is the list index (as in truss_app.py's own _on_delete, which
-        this mirrors), so anything left referring to a stale index once
-        the list has shifted would be silent corruption, not a crash.
-        Deleting a support node (or enough of the mesh) can leave the rest
-        of the structure a genuine mechanism -- that surfaces the normal
-        way, as Analyze reporting a singular stiffness matrix, rather than
-        being auto-patched here."""
-        targets = set(self.selected_nodes)
-        if not targets:
-            return
-        self._push_undo('delete node' + ('s' if len(targets) != 1 else ''))
+    def _on_delete_selection(self, event=None):
+        """Delete selected nodes and/or members.
 
-        remap = {}
-        new_nodes = []
-        for i, n in enumerate(self.nodes):
-            if i in targets:
-                continue
-            remap[i] = len(new_nodes)
-            new_nodes.append(n)
-        self.nodes = new_nodes
-        self.members = [{**m, 'a': remap[m['a']], 'b': remap[m['b']]}
-                       for m in self.members if m['a'] not in targets and m['b'] not in targets]
-        self.supports = [{**s, 'node': remap[s['node']]}
-                        for s in self.supports if s['node'] not in targets]
-        self.loads = [{**ld, 'node': remap[ld['node']]}
-                    for ld in self.loads if ld['node'] not in targets]
-        self._support_candidates = [remap[i] for i in self._support_candidates
-                                    if i not in targets]
-        self._load_nodes = {remap[i]: v for i, v in self._load_nodes.items()
-                           if i not in targets}
+        When nodes are selected their connected members are removed
+        transitively and every surviving node-index reference is remapped.
+        When only members are selected (no nodes) just those members are
+        removed -- nodes at their endpoints are kept."""
+        node_targets = set(self.selected_nodes)
+        member_targets = set(self.selected_members)
+        if not node_targets and not member_targets:
+            return
+
+        if node_targets:
+            what = 'node' + ('s' if len(node_targets) != 1 else '')
+            if member_targets:
+                what += ' + member' + ('s' if len(member_targets) != 1 else '')
+        else:
+            what = 'member' + ('s' if len(member_targets) != 1 else '')
+        self._push_undo('delete ' + what)
+
+        if node_targets:
+            remap = {}
+            new_nodes = []
+            for i, n in enumerate(self.nodes):
+                if i in node_targets:
+                    continue
+                remap[i] = len(new_nodes)
+                new_nodes.append(n)
+            self.nodes = new_nodes
+            self.members = [
+                {**m, 'a': remap[m['a']], 'b': remap[m['b']]}
+                for j, m in enumerate(self.members)
+                if m['a'] not in node_targets
+                and m['b'] not in node_targets
+                and j not in member_targets]
+            self.supports = [{**s, 'node': remap[s['node']]}
+                            for s in self.supports if s['node'] not in node_targets]
+            self.loads = [{**ld, 'node': remap[ld['node']]}
+                        for ld in self.loads if ld['node'] not in node_targets]
+            self._support_candidates = [remap[i] for i in self._support_candidates
+                                        if i not in node_targets]
+            self._load_nodes = {remap[i]: v for i, v in self._load_nodes.items()
+                               if i not in node_targets}
+        else:
+            self.members = [m for j, m in enumerate(self.members)
+                           if j not in member_targets]
 
         self.selected_nodes = set()
         self.selected_member = None
+        self.selected_members = set()
         self.results = None
         self.member_checks = None
         self._refresh_all()

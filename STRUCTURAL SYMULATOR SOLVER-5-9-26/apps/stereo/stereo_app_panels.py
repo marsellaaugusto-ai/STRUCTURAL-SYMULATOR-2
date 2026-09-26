@@ -373,8 +373,12 @@ class StereoPanelsMixin(_ToolbarModes):
         # canvas itself (not root.bind_all), matching truss_app.py, so a
         # keypress only ever hits this while the canvas -- not a text entry
         # elsewhere in the panel -- actually has focus.
-        self.canvas.bind('<Delete>', self._on_delete_nodes)
-        self.canvas.bind('<BackSpace>', self._on_delete_nodes)
+        self.canvas.bind('<Delete>', self._on_delete_selection)
+        self.canvas.bind('<BackSpace>', self._on_delete_selection)
+        for key in ('<Left>', '<Right>', '<Up>', '<Down>',
+                    '<Prior>', '<Next>'):
+            self.canvas.bind(key, self._on_axis_key)
+        self.canvas.bind('<Escape>', self._on_axis_cancel)
         self.canvas.focus_set()
 
         self._build_panel(self.panel_outer.interior)
@@ -807,6 +811,28 @@ class StereoPanelsMixin(_ToolbarModes):
                       ).pack(side='left')
         tk.Entry(row2, textvariable=self.unit_weight_var, width=7).pack(side='left', padx=4)
 
+        dist = tk.LabelFrame(box, text='Distributed load on members', bg=BG,
+                             font=('Helvetica', 8, 'bold'))
+        dist.pack(fill='x', padx=6, pady=(0, 4))
+        tk.Label(dist, text='Select members (lasso/click), set w and direction, '
+                           'then Apply. Loads are converted to equivalent nodal forces.',
+                 bg=BG, fg='#666', font=('Helvetica', 7),
+                 wraplength=PANEL_W - 40, justify='left').pack(anchor='w', padx=4, pady=(2, 0))
+        drow = tk.Frame(dist, bg=BG)
+        drow.pack(fill='x', padx=4, pady=2)
+        tk.Label(drow, text='w (kN/m):', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        self.dist_w_var = tk.DoubleVar(value=1.0)
+        tk.Entry(drow, textvariable=self.dist_w_var, width=7).pack(side='left', padx=4)
+        drow2 = tk.Frame(dist, bg=BG)
+        drow2.pack(fill='x', padx=4, pady=2)
+        tk.Label(drow2, text='Direction:', bg=BG, font=('Helvetica', 9)).pack(side='left')
+        self.dist_dir_var = tk.StringVar(value='Down (−Z)')
+        ttk.Combobox(drow2, textvariable=self.dist_dir_var, state='readonly',
+                     width=11, values=list(LOAD_DIRECTION_NAMES[:-1])).pack(side='left', padx=4)
+        tk.Button(dist, text='Apply to selected members',
+                  command=self._apply_dist_load,
+                  font=('Helvetica', 8)).pack(anchor='w', padx=4, pady=(0, 4))
+
         adv = tk.LabelFrame(box, text='Point loads (any node, any direction)', bg=BG,
                             font=('Helvetica', 8, 'bold'))
         adv.pack(fill='x', padx=6, pady=(0, 6))
@@ -923,8 +949,27 @@ class StereoPanelsMixin(_ToolbarModes):
                                   bg=BG, fg='#666', font=('Helvetica', 9),
                                   wraplength=PANEL_W - 24, justify='left')
         self.sel_label.pack(anchor='w', padx=6, pady=4)
-        tk.Button(box, text='Delete selected node(s)', command=self._on_delete_nodes
+        tk.Button(box, text='Delete selection', command=self._on_delete_selection
                  ).pack(anchor='w', padx=6, pady=(0, 4))
+        self._axis_extend_frame = tk.Frame(box, bg=BG)
+        tk.Label(self._axis_extend_frame, text='Extend:', bg=BG,
+                 font=('Helvetica', 9)).pack(side='left', padx=(6, 2))
+        self._axis_dir_label = tk.Label(self._axis_extend_frame, text='',
+                                        bg=BG, fg='#2ecc71',
+                                        font=('Helvetica', 9, 'bold'))
+        self._axis_dir_label.pack(side='left', padx=(0, 4))
+        self._axis_len_var = tk.DoubleVar(value=3.0)
+        self._axis_len_entry = tk.Entry(self._axis_extend_frame,
+                                        textvariable=self._axis_len_var,
+                                        width=6)
+        self._axis_len_entry.pack(side='left', padx=(0, 2))
+        tk.Label(self._axis_extend_frame, text='m', bg=BG,
+                 font=('Helvetica', 9)).pack(side='left')
+        tk.Button(self._axis_extend_frame, text='Go',
+                  command=self._axis_extend_go,
+                  font=('Helvetica', 8)).pack(side='left', padx=(4, 6))
+        self._axis_len_entry.bind('<Return>', lambda e: self._axis_extend_go())
+        self._axis_len_entry.bind('<Escape>', lambda e: self._on_axis_cancel())
 
     # ── add-on features: column (capital + shaft) and reinforcement beam ────
     def _build_addons_panel(self, parent):

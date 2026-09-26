@@ -25,6 +25,31 @@ def _point_segment_distance(px, py, ax, ay, bx, by):
     return math.hypot(px - nx, py - ny)
 
 
+def _seg_intersects_rect(ax, ay, bx, by, xmin, ymin, xmax, ymax):
+    """True when the segment (ax,ay)-(bx,by) crosses the axis-aligned
+    rectangle [xmin,ymin]-[xmax,ymax], assuming neither endpoint is
+    inside (the caller checks containment separately for speed)."""
+    def _cross(px, py, qx, qy, rx, ry, sx, sy):
+        d1x, d1y = qx - px, qy - py
+        d2x, d2y = sx - rx, sy - ry
+        denom = d1x * d2y - d1y * d2x
+        if abs(denom) < 1e-12:
+            return False
+        t = ((rx - px) * d2y - (ry - py) * d2x) / denom
+        u = ((rx - px) * d1y - (ry - py) * d1x) / denom
+        return 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0
+    edges = [
+        (xmin, ymin, xmax, ymin),
+        (xmax, ymin, xmax, ymax),
+        (xmax, ymax, xmin, ymax),
+        (xmin, ymax, xmin, ymin),
+    ]
+    for ex0, ey0, ex1, ey1 in edges:
+        if _cross(ax, ay, bx, by, ex0, ey0, ex1, ey1):
+            return True
+    return False
+
+
 def _clip_polygon_to_bbox(poly, xmin, ymin, xmax, ymax):
     """Sutherland-Hodgman clip of a convex polygon (list of (x, y) points)
     against an axis-aligned rectangle -- every Voronoi cell is convex, so

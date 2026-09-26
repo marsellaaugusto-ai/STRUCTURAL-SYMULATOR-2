@@ -191,6 +191,7 @@ class StereoModelMixin:
         self.member_checks = None
         self.selected_nodes = set()
         self.selected_member = None
+        self.selected_members = set()
         self._reset_view(redraw=False)
         self._refresh_all()
 
@@ -385,6 +386,55 @@ class StereoModelMixin:
         if len(self.loads) == before:
             self._undo_stack.pop()
             return
+        self.results = None
+        self.member_checks = None
+        self._refresh_all()
+
+    def _apply_dist_load(self):
+        """Convert a uniform line load on selected members to nodal forces.
+
+        Each member of length L with load intensity w (kN/m) produces
+        w*L/2 at each endpoint, applied in the chosen direction.
+        """
+        targets = set(self.selected_members)
+        if not targets:
+            messagebox.showinfo('Distributed load',
+                                'Select one or more members first.')
+            return
+        try:
+            w = float(self.dist_w_var.get())
+        except (ValueError, tk.TclError):
+            messagebox.showerror('Distributed load',
+                                 'Enter a valid number for w.')
+            return
+        if w == 0:
+            return
+        direction = LOAD_DIRECTIONS.get(self.dist_dir_var.get())
+        if direction is None:
+            messagebox.showerror('Distributed load',
+                                 'Choose a direction preset.')
+            return
+        dx_d, dy_d, dz_d = direction
+        self._push_undo('distributed load')
+        totals = {}
+        for mi in targets:
+            if mi >= len(self.members):
+                continue
+            m = self.members[mi]
+            _, _, _, L = sm.member_vector(self.nodes, m)
+            if L < 1e-12:
+                continue
+            half = w * L / 2.0
+            for nid in (m['a'], m['b']):
+                prev = totals.get(nid, (0.0, 0.0, 0.0))
+                totals[nid] = (prev[0] + half * dx_d,
+                               prev[1] + half * dy_d,
+                               prev[2] + half * dz_d)
+        for nid, (fx, fy, fz) in totals.items():
+            self.loads.append({'node': nid,
+                               'fx': round(fx, 6),
+                               'fy': round(fy, 6),
+                               'fz': round(fz, 6)})
         self.results = None
         self.member_checks = None
         self._refresh_all()

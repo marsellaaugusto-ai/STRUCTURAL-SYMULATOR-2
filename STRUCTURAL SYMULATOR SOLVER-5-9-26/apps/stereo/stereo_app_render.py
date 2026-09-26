@@ -30,7 +30,7 @@ from apps.stereo.stereo_app_colors import (
 )
 from apps.stereo import stereo_voronoi_surface as svs
 from apps.stereo.stereo_app_constants import (
-    NODE_COLOR, NODE_SEL_COLOR, ADD_ROD_PENDING_COLOR,
+    NODE_COLOR, NODE_SEL_COLOR, ADD_ROD_PENDING_COLOR, AXIS_EXTEND_COLOR,
     SUPPORT_COLOR, SUPPORT_DISABLED_COLOR, SUPPORT_BOX_HALF_PX,
     MEMBER_PIN_COLOR, MEMBER_RIGID_COLOR, MEMBER_SEL_COLOR,
     TENSION_HIGH, COMPRESSION_HIGH, LOAD_COLOR, REACTION_COLOR, NEAR_ZERO_FRAC,
@@ -480,7 +480,7 @@ class StereoRenderMixin:
                 if chk and chk.get('checked') and chk['util'] * frac > 1.0:
                     over = True
                     width = max(width, 3)
-                if i == self.selected_member:
+                if i == self.selected_member or i in self.selected_members:
                     width = max(width, 4)
                 # Slenderness is a purely geometric/section property (KL/r),
                 # independent of the applied load -- unlike the utilization
@@ -516,9 +516,7 @@ class StereoRenderMixin:
                     # would otherwise read it as one of them.
                     c.create_line(sx0, sy0, sx1, sy1, fill=CLIP_MARK_COLOR, width=1,
                                  dash=CLIP_MARK_DASH, tags='clip_mark')
-                if i == self.selected_member:
-                    # A halo drawn on top so the selected member reads
-                    # clearly regardless of whatever colour mode is active.
+                if i == self.selected_member or i in self.selected_members:
                     c.create_line(sx0, sy0, sx1, sy1, fill=MEMBER_SEL_COLOR, width=1,
                                  dash=(2, 2), tags='member')
                 # Load-path pulse: a genuinely unambiguous single "load
@@ -633,6 +631,31 @@ class StereoRenderMixin:
                 r = MOMENT_NODE_RADIUS_PX + 3
                 c.create_oval(sx - r, sy - r, sx + r, sy + r, outline=ADD_ROD_PENDING_COLOR,
                              width=2, dash=(3, 2), tags='add_rod_pending')
+
+            if (self._axis_pending is not None
+                    and len(self.selected_nodes) == 1):
+                src = next(iter(self.selected_nodes))
+                if src < len(proj):
+                    dx, dy, dz = self._axis_pending
+                    try:
+                        length = self._axis_len_var.get()
+                    except Exception:
+                        length = 3.0
+                    if length > 0:
+                        ox, oy, oz = self.nodes[src]
+                        ep = self._project(ox + dx * length,
+                                           oy + dy * length,
+                                           oz + dz * length)
+                        sx0, sy0 = to_screen(*proj[src][:2])
+                        sx1, sy1 = to_screen(ep[0], ep[1])
+                        c.create_line(sx0, sy0, sx1, sy1,
+                                      fill=AXIS_EXTEND_COLOR, width=2,
+                                      dash=(6, 3), tags='axis_preview')
+                        r = 4
+                        c.create_oval(sx1 - r, sy1 - r, sx1 + r, sy1 + r,
+                                      fill=AXIS_EXTEND_COLOR,
+                                      outline=AXIS_EXTEND_COLOR,
+                                      tags='axis_preview')
 
             if self.shaded_faces.get():
                 self._draw_shaded_faces(c, proj, to_screen, frac, by_util, by_force,
@@ -1432,4 +1455,6 @@ class StereoRenderMixin:
         c.create_text(x0, hint_y, anchor='nw', font=('Helvetica', 8), fill='#888',
                      text='left-drag: lasso select (+Shift: add)  ·  right-drag: orbit\n'
                           'wheel: zoom  ·  middle-drag: pan  ·  □ box = support\n'
-                          'click a rod to inspect its force/utilization')
+                          'click a rod to inspect its force/utilization\n'
+                          'arrows/PgUp/PgDn: extend rod along axis from selected node\n'
+                          'drag a selected node to reposition it')

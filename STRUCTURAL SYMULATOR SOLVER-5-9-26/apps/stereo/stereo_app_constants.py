@@ -151,7 +151,7 @@ MOMENT_NODE_RADIUS_PX = 6   # bigger than the normal 4px dot for the same
 
 DOF_LABELS = (('ux', 'Ux'), ('uy', 'Uy'), ('uz', 'Uz'),
               ('rx', 'Rx'), ('ry', 'Ry'), ('rz', 'Rz'))
-PRESET_NAMES = ('free', 'pin', 'fixed', 'rollerX', 'rollerY', 'rollerZ', 'custom')
+PRESET_NAMES = ('free', 'pin', 'fixed', 'rollerX', 'rollerY', 'rollerZ', 'cable', 'custom')
 GRID_PATTERNS = (('square', 'Square (grid-aligned chords)'),
                  ('diagonal', 'Diagonal (diagonal-on-diagonal chords)'))
 PATTERN_KEY = {label: key for key, label in GRID_PATTERNS}
@@ -185,6 +185,8 @@ CHORD_ROLES = {'bottom_chord', 'top_chord', 'outer_rib', 'inner_rib', 'purlin',
               # the same sense the grid's are: the primary framing carrying
               # the load, with the ties and X-bracing as its webs
               'column_chord', 'column_shaft'}
+
+AXIS_EXTEND_COLOR = '#2ecc71'
 
 QUICK_SUPPORT_CUSTOM = 'Custom (edit per node below)'
 QUICK_SUPPORT_PIN = 'All suggested nodes: pinned'

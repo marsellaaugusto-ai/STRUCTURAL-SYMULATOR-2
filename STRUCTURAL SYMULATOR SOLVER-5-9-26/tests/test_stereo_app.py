@@ -654,6 +654,39 @@ def test_lasso_selecting_every_node_then_applying_a_support_reaches_them_all(app
     assert all(all(sm.support_restraints(s).values()) for s in app.supports)
 
 
+def test_members_in_screen_box_captures_visible_members(app):
+    """A full-canvas bounding box should capture many members (some may
+    project outside the viewport in the default view)."""
+    w = app.canvas.winfo_width()
+    h = app.canvas.winfo_height()
+    found = app._members_in_screen_box(0, 0, w, h)
+    assert len(found) > len(app.members) // 2
+
+
+def test_members_in_screen_box_empty_for_offscreen_box(app):
+    """A box far off-screen should capture nothing."""
+    found = app._members_in_screen_box(9000, 9000, 9100, 9100)
+    assert len(found) == 0
+
+
+def test_lasso_selects_both_nodes_and_members(app):
+    """A large lasso should populate both selected_nodes and selected_members."""
+    w = app.canvas.winfo_width()
+    h = app.canvas.winfo_height()
+    app.selected_nodes = set()
+    app.selected_members = set()
+    app._lasso_press = (0, 0)
+    app._lasso_cur = (w, h)
+    app._lasso_dragging = True
+    import tkinter as tk
+    evt = tk.Event()
+    evt.x, evt.y = w, h
+    evt.state = 0
+    app._on_canvas_release(evt)
+    assert len(app.selected_nodes) > 0
+    assert len(app.selected_members) > 0
+
+
 def test_with_no_selection_apply_support_falls_back_to_the_typed_node_field(app):
     node = app.supports[0]['node']
     app.selected_nodes = set()
@@ -1111,7 +1144,7 @@ def test_delete_selected_node_removes_it_and_its_members(app):
     assert touching > 0   # node 0 in a generated grid always has members on it
 
     app.selected_nodes = {target}
-    app._on_delete_nodes()
+    app._on_delete_selection()
 
     assert len(app.nodes) == n0 - 1
     assert len(app.members) == m0 - touching
@@ -1132,7 +1165,7 @@ def test_delete_selected_node_remaps_every_surviving_index(app):
     old_supports_nodes = {s['node'] for s in app.supports}
 
     app.selected_nodes = {target}
-    app._on_delete_nodes()
+    app._on_delete_selection()
 
     for old_i in old_supports_nodes:
         if old_i == target:
@@ -1146,7 +1179,7 @@ def test_delete_selected_node_remaps_every_surviving_index(app):
 def test_delete_with_no_selection_is_a_no_op(app):
     n0, m0 = len(app.nodes), len(app.members)
     app.selected_nodes = set()
-    app._on_delete_nodes()
+    app._on_delete_selection()
     assert len(app.nodes) == n0
     assert len(app.members) == m0
 
@@ -1154,7 +1187,7 @@ def test_delete_with_no_selection_is_a_no_op(app):
 def test_delete_selected_nodes_is_undoable(app):
     n0 = len(app.nodes)
     app.selected_nodes = {0}
-    app._on_delete_nodes()
+    app._on_delete_selection()
     assert len(app.nodes) == n0 - 1
     app._undo()
     assert len(app.nodes) == n0
@@ -1176,9 +1209,185 @@ def test_delete_after_analysis_clears_stale_results(app):
     app._analyze()
     assert app.results is not None
     app.selected_nodes = {0}
-    app._on_delete_nodes()
+    app._on_delete_selection()
     assert app.results is None
     assert app.member_checks is None
+
+
+def test_delete_selected_members_only(app):
+    """Deleting members without selecting nodes keeps all nodes."""
+    n0 = len(app.nodes)
+    m0 = len(app.members)
+    app.selected_nodes = set()
+    app.selected_members = {0, 1}
+    app._on_delete_selection()
+    assert len(app.nodes) == n0
+    assert len(app.members) == m0 - 2
+    assert app.selected_members == set()
+    for m in app.members:
+        assert 0 <= m['a'] < n0
+        assert 0 <= m['b'] < n0
+
+
+def test_delete_mixed_nodes_and_members(app):
+    """Deleting nodes + members removes both, with proper remapping."""
+    n0 = len(app.nodes)
+    m0 = len(app.members)
+    target_node = 0
+    touching = sum(1 for m in app.members if m['a'] == target_node or m['b'] == target_node)
+    non_touching_member = None
+    for i, m in enumerate(app.members):
+        if m['a'] != target_node and m['b'] != target_node:
+            non_touching_member = i
+            break
+    assert non_touching_member is not None
+    app.selected_nodes = {target_node}
+    app.selected_members = {non_touching_member}
+    app._on_delete_selection()
+    assert len(app.nodes) == n0 - 1
+    assert len(app.members) == m0 - touching - 1
+    for m in app.members:
+        assert 0 <= m['a'] < len(app.nodes)
+        assert 0 <= m['b'] < len(app.nodes)
+
+
+def test_axis_extend_creates_node_and_member(app):
+    """Pressing an arrow key + Go creates a new node along that axis."""
+    import tkinter as tk
+    n0 = len(app.nodes)
+    m0 = len(app.members)
+    ox, oy, oz = app.nodes[0]
+    app.selected_nodes = {0}
+    evt = tk.Event()
+    evt.keysym = 'Right'
+    app._on_axis_key(evt)
+    assert app._axis_pending == (1, 0, 0)
+    app._axis_len_var.set(5.0)
+    app._axis_extend_go()
+    assert len(app.nodes) == n0 + 1
+    assert len(app.members) == m0 + 1
+    new_node = app.nodes[-1]
+    assert new_node == (ox + 5.0, oy, oz)
+    assert app.selected_nodes == {n0}
+
+
+def test_axis_extend_chains_to_new_node(app):
+    """After extending, the new node is selected so pressing another
+    arrow key continues the chain."""
+    import tkinter as tk
+    app.selected_nodes = {0}
+    evt = tk.Event()
+    evt.keysym = 'Up'
+    app._on_axis_key(evt)
+    app._axis_len_var.set(2.0)
+    app._axis_extend_go()
+    new_idx = len(app.nodes) - 1
+    assert app.selected_nodes == {new_idx}
+    evt2 = tk.Event()
+    evt2.keysym = 'Prior'
+    app._on_axis_key(evt2)
+    app._axis_len_var.set(4.0)
+    app._axis_extend_go()
+    newest = app.nodes[-1]
+    prev = app.nodes[new_idx]
+    assert newest[2] == pytest.approx(prev[2] + 4.0)
+
+
+def test_axis_extend_cancel_clears_pending(app):
+    """Escape cancels the pending axis extend."""
+    import tkinter as tk
+    app.selected_nodes = {0}
+    evt = tk.Event()
+    evt.keysym = 'Left'
+    app._on_axis_key(evt)
+    assert app._axis_pending is not None
+    app._on_axis_cancel()
+    assert app._axis_pending is None
+
+
+def test_axis_key_ignored_when_no_single_selection(app):
+    """Arrow keys are a no-op when zero or multiple nodes are selected."""
+    import tkinter as tk
+    n0 = len(app.nodes)
+    app.selected_nodes = {0, 1}
+    evt = tk.Event()
+    evt.keysym = 'Right'
+    app._on_axis_key(evt)
+    assert app._axis_pending is None
+    assert len(app.nodes) == n0
+
+
+def test_drag_node_moves_position(app):
+    """Dragging a selected node changes its world coordinates."""
+    app.selected_nodes = {0}
+    old_pos = app.nodes[0]
+    import tkinter as tk
+    evt = tk.Event()
+    pts = app._screen_positions()
+    sx, sy = pts[0]
+    evt.x, evt.y = int(sx), int(sy)
+    app._on_canvas_press(evt)
+    assert app._drag_node is not None
+    evt2 = tk.Event()
+    evt2.x, evt2.y = int(sx) + 40, int(sy) + 40
+    app._on_canvas_motion(evt2)
+    assert app._drag_node_active
+    evt3 = tk.Event()
+    evt3.x, evt3.y = int(sx) + 40, int(sy) + 40
+    evt3.state = 0
+    app._on_canvas_release(evt3)
+    new_pos = app.nodes[0]
+    moved = any(abs(a - b) > 1e-6 for a, b in zip(old_pos, new_pos))
+    assert moved, f'node did not move: {old_pos} → {new_pos}'
+
+
+def test_drag_node_no_op_when_no_selection(app):
+    """Drag on canvas without selected nodes does not activate node drag."""
+    app.selected_nodes = set()
+    import tkinter as tk
+    evt = tk.Event()
+    evt.x, evt.y = 200, 200
+    app._on_canvas_press(evt)
+    assert app._drag_node is None
+
+
+def test_cable_support_restrains_only_uz(app):
+    """The 'cable' preset restrains uz only, leaving all other DOFs free."""
+    from apps.stereo import stereo_math as sm
+    app.supports = [{'node': 0, 'type': 'cable', 'dofs': {}}]
+    r = sm.support_restraints(app.supports[0])
+    assert r['uz'] is True
+    assert r['ux'] is False
+    assert r['uy'] is False
+    assert r['rx'] is False
+    assert r['ry'] is False
+    assert r['rz'] is False
+
+
+def test_apply_dist_load_adds_nodal_forces(app):
+    """Distributed load w on selected members produces w*L/2 at each end."""
+    app.loads.clear()
+    app.selected_members = {0, 1}
+    app.dist_w_var.set(2.0)
+    app.dist_dir_var.set('Down (−Z)')
+    app._apply_dist_load()
+    assert len(app.loads) > 0
+    for ld in app.loads:
+        assert ld['fz'] < 0
+        assert ld['fx'] == 0.0
+        assert ld['fy'] == 0.0
+
+
+def test_apply_dist_load_no_members_shows_info(app, monkeypatch):
+    """With no members selected, a messagebox appears and no loads are added."""
+    shown = []
+    monkeypatch.setattr('apps.stereo.stereo_app_model.messagebox.showinfo',
+                        lambda *a, **kw: shown.append(a))
+    app.selected_members = set()
+    n_before = len(app.loads)
+    app._apply_dist_load()
+    assert len(app.loads) == n_before
+    assert len(shown) == 1
 
 
 def test_member_info_before_analysis_says_so(app):

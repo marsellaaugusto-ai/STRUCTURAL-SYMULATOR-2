@@ -92,6 +92,7 @@ PRESET_SUPPORTS = {
     'rollerX': {'uy': True, 'uz': True},    # free to slide along global X only
     'rollerY': {'ux': True, 'uz': True},    # free to slide along global Y only
     'rollerZ': {'ux': True, 'uy': True},    # free to slide along global Z only
+    'cable':   {'uz': True},                # vertical cable: restrains only uz (crane hoist)
 }
 
 

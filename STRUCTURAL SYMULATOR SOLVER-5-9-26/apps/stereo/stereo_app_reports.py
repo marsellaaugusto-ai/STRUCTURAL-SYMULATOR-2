@@ -160,6 +160,7 @@ class StereoReportsMixin:
         self.member_checks = None
         self.selected_nodes = set()
         self.selected_member = None
+        self.selected_members = set()
         self._refresh_all()
 
     def _import_sketchup(self):
@@ -183,6 +184,7 @@ class StereoReportsMixin:
         self.member_checks = None
         self.selected_nodes = set()
         self.selected_member = None
+        self.selected_members = set()
         self._refresh_all()
         self._reset_view()
         n_n, n_m = len(nodes), len(members)
@@ -296,6 +298,7 @@ class StereoReportsMixin:
         self.member_checks = None
         self.selected_nodes = set()
         self.selected_member = None
+        self.selected_members = set()
         self._refresh_all()
         self._reset_view()
         messagebox.showinfo(

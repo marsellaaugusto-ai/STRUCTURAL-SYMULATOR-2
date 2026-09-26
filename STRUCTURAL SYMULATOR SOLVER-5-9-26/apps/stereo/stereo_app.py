@@ -108,6 +108,7 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         self.err = None
         self.selected_nodes = set()
         self.selected_member = None
+        self.selected_members = set()
         self._support_candidates = []
         self._load_nodes = {}
         self._load_glyphs = {}
@@ -115,6 +116,7 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         self._load_path_phase = 0
         self._load_path_after_id = None
         self._add_rod_first = None   # first-picked node while 'Add rod' mode is on
+        self._axis_pending = None    # (dx, dy, dz) while axis-extend is active
         self._shaded_cells = None    # lazy cache, see _get_shaded_cells
         # The 3D Voronoi tessellation is expensive to build and independent
         # of the camera, so it is cached against everything it really depends
@@ -132,6 +134,8 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         self._lasso_press = None
         self._lasso_dragging = False
         self._lasso_cur = None
+        self._drag_node = None          # (start_sx, start_sy) while dragging node(s)
+        self._drag_node_active = False  # True once threshold exceeded
 
         self.grid_family = tk.StringVar(value=FAMILY_LABEL['flat_grid'])
 

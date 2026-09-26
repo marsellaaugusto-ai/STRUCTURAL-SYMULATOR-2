@@ -25,77 +25,222 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     if not _ensure_openpyxl():
         raise RuntimeError('openpyxl is required for Excel export and could not '
                             'be installed automatically.')
+    import math
     import openpyxl
-    from openpyxl.styles import Font
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.formatting.rule import ColorScaleRule
     from openpyxl.utils import get_column_letter
 
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
-    def header_row(ws, labels, row=1, bold=True):
+    HDR_FILL = PatternFill('solid', fgColor='404040')
+    HDR_FONT = Font(name='Arial', bold=True, color='FFFFFF', size=10)
+    BODY_FONT = Font(name='Arial', size=10)
+    TITLE_FONT = Font(name='Arial', bold=True, size=14, color='1F4E79')
+    LABEL_FONT = Font(name='Arial', bold=True, size=10, color='333333')
+    VALUE_FONT = Font(name='Arial', size=10)
+    OVER_FILL = PatternFill('solid', fgColor='FDECEA')
+    OK_FILL = PatternFill('solid', fgColor='E2EFDA')
+    thin_side = Side(style='thin', color='BFBFBF')
+    THIN_BORDER = Border(left=thin_side, right=thin_side,
+                         top=thin_side, bottom=thin_side)
+
+    def styled_header(ws, labels, row=1):
         for col, lbl in enumerate(labels, 1):
             c = ws.cell(row=row, column=col, value=lbl)
-            if bold:
-                c.font = Font(bold=True)
+            c.font = HDR_FONT
+            c.fill = HDR_FILL
+            c.border = THIN_BORDER
+            c.alignment = Alignment(horizontal='center')
+        ws.row_dimensions[row].height = 22
 
+    def style_data_range(ws, start_row, end_row, n_cols):
+        for r in range(start_row, end_row + 1):
+            for c in range(1, n_cols + 1):
+                cell = ws.cell(row=r, column=c)
+                cell.border = THIN_BORDER
+                cell.font = BODY_FONT
+
+    # ── Cover sheet ──────────────────────────────────────────────────────────
+    ws_cover = wb.create_sheet('Summary')
+    ws_cover.sheet_properties.tabColor = '1F4E79'
+    ws_cover.column_dimensions['A'].width = 28
+    ws_cover.column_dimensions['B'].width = 20
+    ws_cover.column_dimensions['C'].width = 10
+
+    r = 1
+    t = ws_cover.cell(row=r, column=1, value='STEREO STRUCTURE CALCULATOR')
+    t.font = TITLE_FONT
+    t.alignment = Alignment(horizontal='left')
+    r += 1
+    import datetime
+    ws_cover.cell(row=r, column=1, value='Export date:').font = LABEL_FONT
+    ws_cover.cell(row=r, column=2,
+                  value=datetime.datetime.now().strftime('%Y-%m-%d %H:%M')).font = VALUE_FONT
+    r += 1
+    if meta and meta.get('grid_family'):
+        ws_cover.cell(row=r, column=1, value='Grid family:').font = LABEL_FONT
+        ws_cover.cell(row=r, column=2, value=meta['grid_family']).font = VALUE_FONT
+        r += 1
+    r += 1
+
+    cover_data = [
+        ('Nodes', len(nodes)),
+        ('Members', len(members)),
+        ('Loads', len(loads)),
+        ('Supports', len(supports)),
+    ]
+
+    if results is not None:
+        forces = [mr.get('N', 0.0) for mr in results['member_res']]
+        max_t = max((f for f in forces if f > 0), default=0.0)
+        max_c = min((f for f in forces if f < 0), default=0.0)
+        disps = results.get('node_res', [])
+        max_d = 0.0
+        for nr in disps:
+            d = math.sqrt(nr.get('ux', 0)**2 + nr.get('uy', 0)**2 + nr.get('uz', 0)**2)
+            if d > max_d:
+                max_d = d
+        rxns = results.get('reactions', {})
+        tot_fz = sum(r.get('Fz', 0.0) for r in rxns.values())
+        cover_data += [
+            ('', ''),
+            ('Max tension (kN)', round(max_t, 2)),
+            ('Max compression (kN)', round(max_c, 2)),
+            ('Max displacement (mm)', round(max_d, 4)),
+            ('Total vertical reaction (kN)', round(tot_fz, 2)),
+        ]
+
+    if checks is not None:
+        n_checked = sum(1 for c in checks if c.get('checked'))
+        n_over = sum(1 for c in checks if c.get('checked') and c.get('util', 0) > 1.0)
+        max_util = max((c.get('util', 0) for c in checks if c.get('checked')), default=0.0)
+        cover_data += [
+            ('', ''),
+            ('Members checked', n_checked),
+            ('Members over capacity', n_over),
+            ('Governing utilization', round(max_util, 3)),
+        ]
+
+    for label, val in cover_data:
+        if label == '':
+            r += 1
+            continue
+        ws_cover.cell(row=r, column=1, value=label).font = LABEL_FONT
+        c = ws_cover.cell(row=r, column=2, value=val)
+        c.font = VALUE_FONT
+        if isinstance(val, (int, float)):
+            c.number_format = '0.00' if isinstance(val, float) else '0'
+        r += 1
+
+    # ── Nodes ────────────────────────────────────────────────────────────────
     ws = wb.create_sheet('Nodes')
-    header_row(ws, ['idx', 'x_m', 'y_m', 'z_m'])
+    styled_header(ws, ['idx', 'x_m', 'y_m', 'z_m'])
     for i, (x, y, z) in enumerate(nodes):
         ws.append([i, x, y, z])
+    style_data_range(ws, 2, 1 + len(nodes), 4)
 
+    # ── Members ──────────────────────────────────────────────────────────────
     ws = wb.create_sheet('Members')
-    header_row(ws, ['idx', 'a', 'b', 'conn', 'E_GPa', 'A_cm2', 'I_cm4', 'J_cm4',
-                     'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role'])
+    mem_hdrs = ['idx', 'a', 'b', 'conn', 'E_GPa', 'A_cm2', 'I_cm4', 'J_cm4',
+                'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role']
+    styled_header(ws, mem_hdrs)
     for i, m in enumerate(members):
         ws.append([i, m['a'], m['b'], m.get('conn', 'pin'), m.get('E'), m.get('A'),
                    m.get('I'), m.get('J'), m.get('Fy'), m.get('Fu'), m.get('K', 1.0),
                    m.get('r_gyr'), m.get('role', '')])
+    style_data_range(ws, 2, 1 + len(members), len(mem_hdrs))
 
+    # ── Loads ────────────────────────────────────────────────────────────────
     ws = wb.create_sheet('Loads')
-    header_row(ws, ['node', 'fx_kN', 'fy_kN', 'fz_kN', 'mx_kNm', 'my_kNm', 'mz_kNm'])
+    ld_hdrs = ['node', 'fx_kN', 'fy_kN', 'fz_kN', 'mx_kNm', 'my_kNm', 'mz_kNm']
+    styled_header(ws, ld_hdrs)
     for ld in loads:
         ws.append([ld['node'], ld.get('fx', 0.0), ld.get('fy', 0.0), ld.get('fz', 0.0),
                    ld.get('mx', 0.0), ld.get('my', 0.0), ld.get('mz', 0.0)])
+    style_data_range(ws, 2, 1 + len(loads), len(ld_hdrs))
 
+    # ── Supports ─────────────────────────────────────────────────────────────
     ws = wb.create_sheet('Supports')
-    header_row(ws, ['node', 'type', 'ux', 'uy', 'uz', 'rx', 'ry', 'rz'])
+    sup_hdrs = ['node', 'type', 'ux', 'uy', 'uz', 'rx', 'ry', 'rz']
+    styled_header(ws, sup_hdrs)
     from apps.stereo.stereo_math import support_restraints
     for sp in supports:
         r = support_restraints(sp)
         ws.append([sp['node'], sp.get('type') or '', r['ux'], r['uy'], r['uz'],
                    r['rx'], r['ry'], r['rz']])
+    style_data_range(ws, 2, 1 + len(supports), len(sup_hdrs))
 
+    # ── Results ──────────────────────────────────────────────────────────────
     if results is not None:
         ws = wb.create_sheet('Results')
-        header_row(ws, ['node', 'ux_mm', 'uy_mm', 'uz_mm', 'rx_rad', 'ry_rad', 'rz_rad'])
+        res_hdrs = ['node', 'ux_mm', 'uy_mm', 'uz_mm', 'rx_rad', 'ry_rad', 'rz_rad']
+        styled_header(ws, res_hdrs)
         for i, nr in enumerate(results['node_res']):
             ws.append([i, nr['ux'], nr['uy'], nr['uz'], nr['rx'], nr['ry'], nr['rz']])
+        style_data_range(ws, 2, 1 + len(results['node_res']), len(res_hdrs))
+
+        # ── Member Forces (with axial-force color scale) ─────────────────────
         ws2 = wb.create_sheet('Member Forces')
-        header_row(ws2, ['member', 'a', 'b', 'conn', 'N_kN', 'length_m'])
+        mf_hdrs = ['member', 'a', 'b', 'conn', 'N_kN', 'length_m']
+        styled_header(ws2, mf_hdrs)
         for i, (m, mr) in enumerate(zip(members, results['member_res'])):
             ws2.append([i, m['a'], m['b'], mr.get('conn', 'pin'), mr.get('N', 0.0),
                         mr.get('length_m', 0.0)])
-        ws3 = wb.create_sheet('Reactions')
-        header_row(ws3, ['node', 'Fx_kN', 'Fy_kN', 'Fz_kN', 'Mx_kNm', 'My_kNm', 'Mz_kNm'])
-        for node, r in results['reactions'].items():
-            ws3.append([node, r.get('Fx', 0.0), r.get('Fy', 0.0), r.get('Fz', 0.0),
-                        r.get('Mx', 0.0), r.get('My', 0.0), r.get('Mz', 0.0)])
+        n_mf = len(members)
+        style_data_range(ws2, 2, 1 + n_mf, len(mf_hdrs))
+        if n_mf > 0:
+            col_letter = get_column_letter(5)
+            rng = f'{col_letter}2:{col_letter}{1 + n_mf}'
+            ws2.conditional_formatting.add(rng, ColorScaleRule(
+                start_type='min', start_color='4472C4',
+                mid_type='percentile', mid_value=50, mid_color='D9D9D9',
+                end_type='max', end_color='C00000'))
 
+        # ── Reactions ────────────────────────────────────────────────────────
+        ws3 = wb.create_sheet('Reactions')
+        rxn_hdrs = ['node', 'Fx_kN', 'Fy_kN', 'Fz_kN', 'Mx_kNm', 'My_kNm', 'Mz_kNm']
+        styled_header(ws3, rxn_hdrs)
+        for node, rx in results['reactions'].items():
+            ws3.append([node, rx.get('Fx', 0.0), rx.get('Fy', 0.0), rx.get('Fz', 0.0),
+                        rx.get('Mx', 0.0), rx.get('My', 0.0), rx.get('Mz', 0.0)])
+        style_data_range(ws3, 2, 1 + len(results['reactions']), len(rxn_hdrs))
+
+    # ── Member Checks (with utilization color scale) ─────────────────────────
     if checks is not None:
         ws = wb.create_sheet('Member Checks')
-        header_row(ws, ['member', 'checked', 'mode', 'utilization', 'governing', 'ok', 'note'])
+        chk_hdrs = ['member', 'checked', 'mode', 'utilization', 'governing', 'ok', 'note']
+        styled_header(ws, chk_hdrs)
         for i, c in enumerate(checks):
+            row_num = i + 2
             ws.append([i, c.get('checked', False), c.get('mode', ''),
                        c.get('util'), c.get('governing', ''), c.get('ok', ''),
                        c.get('note', '')])
+            if c.get('checked') and c.get('util', 0) > 1.0:
+                for col in range(1, len(chk_hdrs) + 1):
+                    ws.cell(row=row_num, column=col).fill = OVER_FILL
+            elif c.get('checked') and c.get('ok'):
+                for col in range(1, len(chk_hdrs) + 1):
+                    ws.cell(row=row_num, column=col).fill = OK_FILL
+        n_chk = len(checks)
+        style_data_range(ws, 2, 1 + n_chk, len(chk_hdrs))
+        if n_chk > 0:
+            col_letter = get_column_letter(4)
+            rng = f'{col_letter}2:{col_letter}{1 + n_chk}'
+            ws.conditional_formatting.add(rng, ColorScaleRule(
+                start_type='num', start_value=0, start_color='70AD47',
+                mid_type='num', mid_value=0.7, mid_color='FFC000',
+                end_type='num', end_value=1.0, end_color='C00000'))
 
+    # ── Model sheet (machine-parseable round-trip) ───────────────────────────
     _write_model_sheet(wb, nodes, members, loads, supports, meta,
                        results=results, checks=checks)
 
     for name in wb.sheetnames:
         ws = wb[name]
         for col in range(1, 14):
-            ws.column_dimensions[get_column_letter(col)].width = 12
+            ws.column_dimensions[get_column_letter(col)].width = 14
 
     wb.save(path)
 

@@ -109,24 +109,43 @@ def pil_draw_member_context_3d(nodes, members, member_idx, member_res=None,
 
 
 def pil_draw_node_fbd_3d(node_idx, nodes, members, member_res, loads,
-                         reactions, size=260):
-    """Render a free-body diagram at a node: axial force arrows from each
-    connected member, applied loads, and reactions — all projected from 3D
-    to 2D using the same isometric view as the context image."""
+                         reactions, size=340):
+    """Render a free-body diagram at a node with isometric X/Y/Z axes and
+    engineering vector notation: F = |F| [ux, uy, uz] kN."""
     import math
     from PIL import Image, ImageDraw
     img = Image.new('RGB', (size, size), (255, 255, 255))
     d = ImageDraw.Draw(img)
     cx = cy = size / 2
 
-    d.line([(8, cy), (size - 8, cy)], fill=(238, 238, 238))
-    d.line([(cx, 8), (cx, size - 8)], fill=(238, 238, 238))
-
     az = math.radians(30)
     el = math.radians(25)
 
+    # ── Draw isometric X / Y / Z axes ───────────────────────────────────
+    axis_len = size * 0.18
+    axis_color = (180, 180, 180)
+    axis_font = _get_ttf_font(11)
+    for label, vec3 in (('X', (1, 0, 0)), ('Y', (0, 1, 0)), ('Z', (0, 0, 1))):
+        sx, sy = _iso_project(*vec3, az, el)
+        sm = math.hypot(sx, sy)
+        if sm < 1e-6:
+            continue
+        ux, uy = sx / sm, sy / sm
+        ex, ey = cx + ux * axis_len, cy + uy * axis_len
+        d.line([(cx, cy), (ex, ey)], fill=axis_color, width=1)
+        ah = 5
+        ang = math.atan2(-(ey - cy), ex - cx)
+        a1 = (ex - ah * math.cos(ang - 0.45), ey + ah * math.sin(ang - 0.45))
+        a2 = (ex - ah * math.cos(ang + 0.45), ey + ah * math.sin(ang + 0.45))
+        d.polygon([(ex, ey), a1, a2], fill=axis_color)
+        lx = cx + ux * (axis_len + 12)
+        ly = cy + uy * (axis_len + 12)
+        d.text((lx, ly), label, fill=(120, 120, 120), font=axis_font,
+               anchor='mm')
+
     nx, ny, nz = nodes[node_idx]
 
+    # ── Collect force vectors ────────────────────────────────────────────
     vecs = []
     for mi, m in enumerate(members):
         if m['a'] != node_idx and m['b'] != node_idx:
@@ -138,14 +157,18 @@ def pil_draw_node_fbd_3d(node_idx, nodes, members, member_res, loads,
         if L < 1e-12:
             continue
         N = member_res[mi].get('N', 0.0) if member_res else 0.0
-        fx3 = N * dx / L
-        fy3 = N * dy / L
-        fz3 = N * dz / L
+        ux3, uy3, uz3 = dx / L, dy / L, dz / L
+        fx3, fy3, fz3 = N * ux3, N * uy3, N * uz3
         sx, sy = _iso_project(fx3, fy3, fz3, az, el)
         mag = abs(N)
         kind = 'T' if N > 0.01 else ('C' if N < -0.01 else 'Z')
+        if mag > 1e-9:
+            sign = 1.0 if N >= 0 else -1.0
+            uvec = (sign * ux3, sign * uy3, sign * uz3)
+        else:
+            uvec = (ux3, uy3, uz3)
         vecs.append({'sx': sx, 'sy': sy, 'mag': mag, 'kind': kind,
-                     'label': f'M{mi}\n{N:+.1f}kN'})
+                     'name': f'M{mi}', 'uvec': uvec})
 
     load = next((l for l in loads if l['node'] == node_idx), None)
     if load:
@@ -156,7 +179,8 @@ def pil_draw_node_fbd_3d(node_idx, nodes, members, member_res, loads,
         if lmag > 1e-6:
             lsx, lsy = _iso_project(lfx, lfy, lfz, az, el)
             vecs.append({'sx': lsx, 'sy': lsy, 'mag': lmag, 'kind': 'L',
-                         'label': f'Load\n{lmag:.1f}kN'})
+                         'name': 'Load',
+                         'uvec': (lfx / lmag, lfy / lmag, lfz / lmag)})
 
     rxn = reactions.get(node_idx) if reactions else None
     if rxn:
@@ -167,22 +191,31 @@ def pil_draw_node_fbd_3d(node_idx, nodes, members, member_res, loads,
         if rmag > 1e-6:
             rsx, rsy = _iso_project(rfx, rfy, rfz, az, el)
             vecs.append({'sx': rsx, 'sy': rsy, 'mag': rmag, 'kind': 'R',
-                         'label': f'Rxn\n{rmag:.1f}kN'})
+                         'name': 'Rxn',
+                         'uvec': (rfx / rmag, rfy / rmag, rfz / rmag)})
 
     mags = [v['mag'] for v in vecs]
     maxmag = max(mags) if mags else 1.0
     if maxmag < 1e-9:
         maxmag = 1.0
-    Rmax, Rmin = size * 0.34, size * 0.13
-    font = _get_ttf_font(10)
+    Rmax, Rmin = size * 0.28, size * 0.11
+    font = _get_ttf_font(9)
+    font_sm = _get_ttf_font(8)
 
-    def arrow(sx2d, sy2d, mag2d, color, label, dashed=False):
+    def _vec_label(name, mag, uvec):
+        ux, uy, uz = uvec
+        return (f'{name} = {mag:.1f} kN\n'
+                f'[{ux:+.2f}, {uy:+.2f}, {uz:+.2f}]')
+
+    def arrow(v, color):
+        sx2d, sy2d = v['sx'], v['sy']
         screen_mag = math.hypot(sx2d, sy2d)
         if screen_mag < 1e-6:
             return
         ux, uy = sx2d / screen_mag, sy2d / screen_mag
-        length = Rmin + (Rmax - Rmin) * (mag2d / maxmag)
+        length = Rmin + (Rmax - Rmin) * (v['mag'] / maxmag)
         ex, ey = cx + ux * length, cy + uy * length
+        dashed = v['kind'] in ('L', 'R')
         if dashed:
             n_dash = max(2, int(length / 6))
             for k in range(n_dash):
@@ -199,9 +232,10 @@ def pil_draw_node_fbd_3d(node_idx, nodes, members, member_res, loads,
         a1 = (ex - ah * math.cos(ang - 0.4), ey + ah * math.sin(ang - 0.4))
         a2 = (ex - ah * math.cos(ang + 0.4), ey + ah * math.sin(ang + 0.4))
         d.polygon([(ex, ey), a1, a2], fill=color)
-        lx = cx + ux * (length + 22)
-        ly = cy + uy * (length + 22)
-        d.multiline_text((lx, ly), label, fill=color, font=font,
+        label = _vec_label(v['name'], v['mag'], v['uvec'])
+        lx = cx + ux * (length + 30)
+        ly = cy + uy * (length + 30)
+        d.multiline_text((lx, ly), label, fill=color, font=font_sm,
                          anchor='mm', align='center')
 
     for v in vecs:
@@ -215,8 +249,7 @@ def pil_draw_node_fbd_3d(node_idx, nodes, members, member_res, loads,
             color = (46, 204, 113)
         else:
             color = (136, 136, 136)
-        dashed = v['kind'] in ('L', 'R')
-        arrow(v['sx'], v['sy'], v['mag'], color, v['label'], dashed)
+        arrow(v, color)
 
     d.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], fill=(51, 51, 51))
     return img
@@ -462,9 +495,9 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
             note_mc.font = Font(name='Arial', italic=True, size=9,
                                 color='555555')
 
-            IMG_PX = 230
-            ROWS_PER_BLOCK = 13
-            COLS_PER_IMG = 5
+            IMG_PX = 340
+            ROWS_PER_BLOCK = 20
+            COLS_PER_IMG = 7
             for c in range(1, 3 * COLS_PER_IMG + 3):
                 ws_mc.column_dimensions[get_column_letter(c)].width = 9
 

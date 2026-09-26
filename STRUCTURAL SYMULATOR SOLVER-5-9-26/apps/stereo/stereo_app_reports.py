@@ -33,6 +33,8 @@ class StereoReportsMixin:
         self._refresh_results_text()
         self._refresh_indeterminacy_label()
         self._sync_selection_fields()
+        self._update_properties_panel()
+        self._refresh_model_tree()
         self._me_maybe_refresh_topology()
         self._draw()
 

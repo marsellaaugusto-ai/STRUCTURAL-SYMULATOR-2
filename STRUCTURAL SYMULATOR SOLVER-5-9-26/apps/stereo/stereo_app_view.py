@@ -21,7 +21,7 @@ from apps.stereo.stereo_app_canvas_geom import (
 )
 from apps.stereo.stereo_app_constants import (
     DOF_LABELS, LASSO_DRAG_THRESHOLD_PX, MEMBER_SEL_HIT_PX,
-    DRAW_THROTTLE_MS,
+    DRAW_THROTTLE_MS, SNAP_RADIUS_PX,
 )
 
 
@@ -324,6 +324,7 @@ class StereoViewMixin:
             else:
                 self.sel_label.config(
                     text='(click, or drag a box, to select node(s); click a rod to inspect it)')
+            self._update_properties_panel()
             return
         self.sup_node_var.set(best)
         self.ld_node_var.set(best)
@@ -335,6 +336,7 @@ class StereoViewMixin:
             self.sup_preset_var.set(existing.get('type') or 'custom')
             for d, _ in DOF_LABELS:
                 self.dof_vars[d].set(r[d])
+        self._update_properties_panel()
 
     def _show_member_info(self, i):
         """The click-to-inspect readout for member `i`: its endpoints/
@@ -603,3 +605,132 @@ class StereoViewMixin:
         self.results = None
         self.member_checks = None
         self._refresh_all()
+
+    # ── snap and coordinate tracking (Phase 5.2) ────────────────────────
+
+    def _on_mouse_motion(self, event=None):
+        if not event or not self.nodes:
+            return
+        ex, ey = event.x, event.y
+        pts = self._screen_positions()
+        old_snap = self._snap_node
+        old_mid = self._snap_midpoint
+
+        best_node, best_d = None, SNAP_RADIUS_PX
+        for i, (sx, sy) in enumerate(pts):
+            d = math.hypot(sx - ex, sy - ey)
+            if d < best_d:
+                best_node, best_d = i, d
+        self._snap_node = best_node
+
+        best_mid = None
+        if best_node is None:
+            mid_d = SNAP_RADIUS_PX
+            for mi, m in enumerate(self.members):
+                a, b = m['a'], m['b']
+                if a >= len(pts) or b >= len(pts):
+                    continue
+                ax, ay = pts[a]
+                bx, by = pts[b]
+                mx, my = (ax + bx) / 2.0, (ay + by) / 2.0
+                d = math.hypot(mx - ex, my - ey)
+                if d < mid_d:
+                    xa, ya, za = self.nodes[a]
+                    xb, yb, zb = self.nodes[b]
+                    best_mid = (mx, my,
+                                (xa + xb) / 2.0, (ya + yb) / 2.0, (za + zb) / 2.0,
+                                mi)
+                    mid_d = d
+        self._snap_midpoint = best_mid
+
+        if self._snap_node is not None:
+            x, y, z = self.nodes[self._snap_node]
+            self._cursor_world = (x, y, z)
+            self._status_var.set(
+                f'Node {self._snap_node}: ({x:.3f}, {y:.3f}, {z:.3f}) m')
+        elif self._snap_midpoint is not None:
+            _, _, x, y, z, mi = self._snap_midpoint
+            self._cursor_world = (x, y, z)
+            self._status_var.set(
+                f'Midpoint of member {mi}: ({x:.3f}, {y:.3f}, {z:.3f}) m')
+        else:
+            world = self._unproject_to_z0(ex, ey)
+            if world is not None:
+                self._cursor_world = world
+                x, y, z = world
+                self._status_var.set(
+                    f'Cursor (Z=0): ({x:.3f}, {y:.3f}, {z:.3f}) m')
+            else:
+                self._cursor_world = None
+                self._status_var.set('')
+
+        changed = (self._snap_node != old_snap
+                   or self._snap_midpoint != old_mid)
+        if changed:
+            self._draw()
+
+    def _unproject_to_z0(self, sx, sy):
+        if not self.nodes:
+            return None
+        proj = [self._project(x, y, z) for x, y, z in self.nodes]
+        xs = [p[0] for p in proj]
+        ys = [p[1] for p in proj]
+        cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+        wx, wy = self.zc.s2w(sx, sy)
+        px = wx / self.PX_PER_M + cx
+        py = wy / self.PX_PER_M + cy
+        az = math.radians(self.azimuth)
+        el = math.radians(self.elevation)
+        se = math.sin(el)
+        if abs(se) < 1e-6:
+            return None
+        ce = math.cos(el)
+        ca, sa = math.cos(az), math.sin(az)
+        yr_val = -py / se
+        x = px * ca + yr_val * sa
+        y = -px * sa + yr_val * ca
+        z_check = yr_val * ce
+        if abs(z_check) > 1e-3:
+            pass
+        return (x, y, 0.0)
+
+    # ── keyboard shortcuts (Phase 5.3) ──────────────────────────────────
+
+    def _shortcut_generate(self, event=None):
+        if self._axis_pending is not None:
+            return
+        self._generate()
+
+    def _shortcut_analyze(self, event=None):
+        if self._axis_pending is not None:
+            return
+        self._analyze()
+
+    def _shortcut_zoom_fit(self, event=None):
+        if self._axis_pending is not None:
+            return
+        self._reset_view()
+
+    def _shortcut_view_xy(self, event=None):
+        if self._axis_pending is not None:
+            return
+        self.azimuth = 0.0
+        self.elevation = 0.0
+        self._view_touched = True
+        self._draw()
+
+    def _shortcut_view_xz(self, event=None):
+        if self._axis_pending is not None:
+            return
+        self.azimuth = 0.0
+        self.elevation = 90.0
+        self._view_touched = True
+        self._draw()
+
+    def _shortcut_view_yz(self, event=None):
+        if self._axis_pending is not None:
+            return
+        self.azimuth = 90.0
+        self.elevation = 0.0
+        self._view_touched = True
+        self._draw()

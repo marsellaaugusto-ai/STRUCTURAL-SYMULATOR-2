@@ -124,6 +124,9 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         self._load_path_after_id = None
         self._add_rod_first = None   # first-picked node while 'Add rod' mode is on
         self._axis_pending = None    # (dx, dy, dz) while axis-extend is active
+        self._snap_node = None       # nearest node index under cursor, or None
+        self._snap_midpoint = None   # (sx, sy, x, y, z, member_idx) of nearest midpoint, or None
+        self._cursor_world = None    # (x, y, z) world coords under cursor
         self._shaded_cells = None    # lazy cache, see _get_shaded_cells
         # The 3D Voronoi tessellation is expensive to build and independent
         # of the camera, so it is cached against everything it really depends

@@ -261,7 +261,7 @@ class StereoModelMixin:
         self.results = None
         self.member_checks = None
         self._refresh_all()
-        self.status_var.set(f'Assigned profile "{name}" to {len(self.selected_members)} member(s).')
+        self._status_var.set(f'Assigned profile "{name}" to {len(self.selected_members)} member(s).')
 
     def _select_same_profile(self):
         if len(self.selected_members) != 1:
@@ -275,7 +275,7 @@ class StereoModelMixin:
                                  if m.get('profile', '') == name}
         self.selected_nodes = set()
         self._refresh_all()
-        self.status_var.set(f'Selected {len(self.selected_members)} member(s) with profile "{name}".')
+        self._status_var.set(f'Selected {len(self.selected_members)} member(s) with profile "{name}".')
 
     # ── boundary conditions ──────────────────────────────────────────────────
     def _apply_quick_support_preset(self):

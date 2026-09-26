@@ -4890,3 +4890,391 @@ class TestSimpleAdvancedToggle:
         app._on_mode_toggle()
         app._analyze()
         assert app.results is not None
+
+
+# ── Phase 5.2: snap-to-node, snap-to-midpoint, coordinate display ──────────
+
+class TestSnapAndCoordinateDisplay:
+
+    def test_status_bar_exists(self, app):
+        assert hasattr(app, '_status_var')
+        assert hasattr(app, '_status_bar')
+        info = app._status_bar.pack_info()
+        assert info is not None
+
+    def test_snap_node_on_exact_hit(self, app):
+        pts = app._screen_positions()
+        sx, sy = pts[0]
+        evt = FakeEvent(int(sx), int(sy))
+        app._on_mouse_motion(evt)
+        assert app._snap_node == 0
+        assert 'Node 0' in app._status_var.get()
+
+    def test_snap_node_within_radius(self, app):
+        pts = app._screen_positions()
+        sx, sy = pts[0]
+        evt = FakeEvent(int(sx) + 5, int(sy) + 5)
+        app._on_mouse_motion(evt)
+        assert app._snap_node == 0
+
+    def test_no_snap_far_from_nodes(self, app):
+        evt = FakeEvent(-9999, -9999)
+        app._on_mouse_motion(evt)
+        assert app._snap_node is None
+
+    def test_snap_midpoint_when_no_node_nearby(self, app):
+        pts = app._screen_positions()
+        m = app.members[0]
+        ax, ay = pts[m['a']]
+        bx, by = pts[m['b']]
+        mx, my = (ax + bx) / 2.0, (ay + by) / 2.0
+        if math.hypot(mx - pts[m['a']][0], my - pts[m['a']][1]) > sc.SNAP_RADIUS_PX:
+            evt = FakeEvent(int(mx), int(my))
+            app._on_mouse_motion(evt)
+            if app._snap_node is None:
+                assert app._snap_midpoint is not None
+                assert 'Midpoint' in app._status_var.get()
+
+    def test_cursor_world_set_on_snap(self, app):
+        pts = app._screen_positions()
+        sx, sy = pts[0]
+        evt = FakeEvent(int(sx), int(sy))
+        app._on_mouse_motion(evt)
+        assert app._cursor_world is not None
+        x, y, z = app._cursor_world
+        nx, ny, nz = app.nodes[0]
+        assert abs(x - nx) < 1e-6
+        assert abs(y - ny) < 1e-6
+        assert abs(z - nz) < 1e-6
+
+    def test_status_var_shows_coordinates(self, app):
+        pts = app._screen_positions()
+        sx, sy = pts[0]
+        evt = FakeEvent(int(sx), int(sy))
+        app._on_mouse_motion(evt)
+        text = app._status_var.get()
+        assert '(' in text and ')' in text
+        assert 'm' in text
+
+    def test_unproject_to_z0_returns_tuple(self, app):
+        app.azimuth = 35.0
+        app.elevation = 22.0
+        pts = app._screen_positions()
+        sx, sy = pts[0]
+        result = app._unproject_to_z0(sx, sy)
+        assert result is not None
+        assert len(result) == 3
+        assert result[2] == 0.0
+
+    def test_unproject_returns_none_at_zero_elevation(self, app):
+        app.azimuth = 0.0
+        app.elevation = 0.0
+        app._draw()
+        pts = app._screen_positions()
+        sx, sy = pts[0]
+        result = app._unproject_to_z0(sx, sy)
+        assert result is None
+
+    def test_motion_with_no_nodes_does_not_crash(self, app):
+        saved = app.nodes[:]
+        app.nodes = []
+        evt = FakeEvent(100, 100)
+        app._on_mouse_motion(evt)
+        app.nodes = saved
+
+    def test_motion_with_no_event_does_not_crash(self, app):
+        app._on_mouse_motion(None)
+
+    def test_snap_constants_exist(self):
+        assert sc.SNAP_RADIUS_PX == 15
+        assert sc.SNAP_NODE_COLOR == '#e67e22'
+        assert sc.SNAP_MIDPOINT_COLOR == '#3498db'
+        assert sc.SNAP_RING_RADIUS == 8
+
+
+# ── Phase 5.3: keyboard shortcuts ──────────────────────────────────────────
+
+class TestKeyboardShortcuts:
+
+    def test_shortcut_generate_regenerates(self, app):
+        old_n = len(app.nodes)
+        app._shortcut_generate()
+        assert len(app.nodes) == old_n
+
+    def test_shortcut_analyze_runs_solver(self, app):
+        app._shortcut_analyze()
+        assert app.results is not None
+
+    def test_shortcut_zoom_fit_does_not_crash(self, app):
+        app._shortcut_zoom_fit()
+
+    def test_shortcut_view_xy(self, app):
+        app._shortcut_view_xy()
+        assert app.azimuth == 0.0
+        assert app.elevation == 0.0
+
+    def test_shortcut_view_xz(self, app):
+        app._shortcut_view_xz()
+        assert app.azimuth == 0.0
+        assert app.elevation == 90.0
+
+    def test_shortcut_view_yz(self, app):
+        app._shortcut_view_yz()
+        assert app.azimuth == 90.0
+        assert app.elevation == 0.0
+
+    def test_shortcuts_suppressed_during_axis_extend(self, app):
+        app._axis_pending = (1, 0, 0)
+        old_az = app.azimuth
+        old_el = app.elevation
+        app._shortcut_view_xy()
+        assert app.azimuth == old_az
+        assert app.elevation == old_el
+        app._shortcut_generate()
+        app._shortcut_analyze()
+        app._shortcut_zoom_fit()
+        app._axis_pending = None
+
+
+# ── Phase 5.4: contextual properties panel ─────────────────────────────────
+
+class TestPropertiesPanel:
+
+    def test_properties_panel_exists(self, app):
+        assert hasattr(app, '_panel_properties')
+        assert hasattr(app, '_props_label')
+        assert hasattr(app, '_props_frame')
+        assert hasattr(app, '_props_entries')
+
+    def test_no_selection_shows_placeholder(self, app):
+        app.selected_nodes = set()
+        app.selected_member = None
+        app.selected_members = set()
+        app._update_properties_panel()
+        assert 'select' in app._props_label.cget('text').lower()
+
+    def test_single_node_selection_shows_coords(self, app):
+        app.selected_nodes = {0}
+        app.selected_member = None
+        app.selected_members = set()
+        app._update_properties_panel()
+        text = app._props_label.cget('text')
+        assert 'Node 0' in text
+        assert 'x' in app._props_entries
+        assert 'y' in app._props_entries
+        assert 'z' in app._props_entries
+
+    def test_single_member_selection_shows_section_props(self, app):
+        app.selected_nodes = set()
+        app.selected_member = 0
+        app.selected_members = {0}
+        app._update_properties_panel()
+        text = app._props_label.cget('text')
+        assert 'Member 0' in text
+        assert 'E' in app._props_entries
+        assert 'A' in app._props_entries
+
+    def test_multi_select_shows_count(self, app):
+        app.selected_nodes = {0, 1, 2}
+        app.selected_member = None
+        app.selected_members = set()
+        app._update_properties_panel()
+        text = app._props_label.cget('text')
+        assert '3' in text
+        assert 'node' in text.lower()
+
+    def test_apply_node_properties_changes_coords(self, app):
+        app.selected_nodes = {0}
+        app.selected_member = None
+        app.selected_members = set()
+        app._update_properties_panel()
+        old_pos = app.nodes[0]
+        app._props_entries['x'].set(99.0)
+        app._props_entries['y'].set(88.0)
+        app._props_entries['z'].set(77.0)
+        app._apply_node_properties()
+        assert app.nodes[0] == (99.0, 88.0, 77.0)
+        assert app.nodes[0] != old_pos
+
+    def test_apply_node_creates_undo(self, app):
+        app.selected_nodes = {0}
+        app.selected_member = None
+        app.selected_members = set()
+        app._update_properties_panel()
+        undo_len = len(app._undo_stack)
+        app._apply_node_properties()
+        assert len(app._undo_stack) == undo_len + 1
+
+    def test_apply_member_properties_changes_section(self, app):
+        app.selected_nodes = set()
+        app.selected_member = 0
+        app.selected_members = {0}
+        app._update_properties_panel()
+        app._props_entries['E'].set(210.0)
+        app._apply_member_properties()
+        assert app.members[0]['E'] == 210.0
+
+    def test_apply_member_creates_undo(self, app):
+        app.selected_nodes = set()
+        app.selected_member = 0
+        app.selected_members = {0}
+        app._update_properties_panel()
+        undo_len = len(app._undo_stack)
+        app._apply_member_properties()
+        assert len(app._undo_stack) == undo_len + 1
+
+    def test_apply_node_with_no_selection_is_noop(self, app):
+        app.selected_nodes = set()
+        app._apply_node_properties()
+
+    def test_apply_member_with_no_selection_is_noop(self, app):
+        app.selected_member = None
+        app._apply_member_properties()
+
+    def test_node_with_support_shows_support_info(self, app):
+        if app.supports:
+            sn = app.supports[0]['node']
+            app.selected_nodes = {sn}
+            app.selected_member = None
+            app.selected_members = set()
+            app._update_properties_panel()
+            children = app._props_frame.winfo_children()
+            texts = []
+            for c in children:
+                try:
+                    texts.append(c.cget('text'))
+                except tk.TclError:
+                    pass
+            assert any('Support' in t for t in texts if isinstance(t, str))
+
+    def test_properties_panel_hidden_in_simple_mode(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        try:
+            app._panel_properties.pack_info()
+            visible = True
+        except tk.TclError:
+            visible = False
+        assert not visible
+        app.simple_mode.set(False)
+        app._on_mode_toggle()
+
+    def test_analyzed_member_shows_axial_force(self, app):
+        app._analyze()
+        assert app.results is not None
+        app.selected_nodes = set()
+        app.selected_member = 0
+        app.selected_members = {0}
+        app._update_properties_panel()
+        children = app._props_frame.winfo_children()
+        texts = []
+        for c in children:
+            try:
+                texts.append(c.cget('text'))
+            except tk.TclError:
+                pass
+        assert any('N =' in t for t in texts if isinstance(t, str))
+
+
+# ── Phase 5.5: model tree panel ────────────────────────────────────────────
+
+class TestModelTree:
+
+    def test_model_tree_panel_exists(self, app):
+        assert hasattr(app, '_panel_model_tree')
+        assert hasattr(app, '_tree_items')
+        assert hasattr(app, '_tree_frame')
+
+    def test_tree_has_all_sections(self, app):
+        for key in ('Nodes', 'Members', 'Supports', 'Loads', 'Profiles'):
+            assert key in app._tree_items
+            item = app._tree_items[key]
+            assert 'label' in item
+            assert 'detail' in item
+            assert 'expanded' in item
+
+    def test_tree_count_returns_correct_values(self, app):
+        assert app._tree_count('Nodes') == len(app.nodes)
+        assert app._tree_count('Members') == len(app.members)
+        assert app._tree_count('Supports') == len(app.supports)
+        assert app._tree_count('Loads') == len(app.loads)
+        assert app._tree_count('Profiles') == len(app.profiles)
+
+    def test_toggle_section_expands_and_collapses(self, app):
+        assert not app._tree_items['Nodes']['expanded']
+        app._toggle_tree_section('Nodes')
+        assert app._tree_items['Nodes']['expanded']
+        app._toggle_tree_section('Nodes')
+        assert not app._tree_items['Nodes']['expanded']
+
+    def test_expanded_section_shows_items(self, app):
+        app._toggle_tree_section('Nodes')
+        detail = app._tree_items['Nodes']['detail']
+        children = detail.winfo_children()
+        assert len(children) > 0
+        app._toggle_tree_section('Nodes')
+
+    def test_tree_select_node_sets_selection(self, app):
+        app._tree_select_node(0)
+        assert 0 in app.selected_nodes
+        assert app.selected_member is None
+
+    def test_tree_select_member_sets_selection(self, app):
+        app._tree_select_member(0)
+        assert 0 in app.selected_members
+        assert app.selected_member == 0
+        assert len(app.selected_nodes) == 0
+
+    def test_center_on_node_updates_pan(self, app):
+        old_px = app.zc.pan_x
+        old_py = app.zc.pan_y
+        app._center_on_node(0)
+        assert app._view_touched
+
+    def test_refresh_model_tree_updates_counts(self, app):
+        app._refresh_model_tree()
+        text = app._tree_items['Nodes']['label'].cget('text')
+        assert str(len(app.nodes)) in text
+
+    def test_tree_hidden_in_simple_mode(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        try:
+            app._panel_model_tree.pack_info()
+            visible = True
+        except tk.TclError:
+            visible = False
+        assert not visible
+        app.simple_mode.set(False)
+        app._on_mode_toggle()
+
+    def test_tree_select_node_out_of_range_is_safe(self, app):
+        app._tree_select_node(99999)
+
+    def test_tree_select_member_out_of_range_is_safe(self, app):
+        app._tree_select_member(99999)
+
+    def test_center_on_node_out_of_range_is_safe(self, app):
+        app._center_on_node(99999)
+
+    def test_expanded_members_shows_role(self, app):
+        app._toggle_tree_section('Members')
+        detail = app._tree_items['Members']['detail']
+        children = detail.winfo_children()
+        if children:
+            text = children[0].cget('text')
+            assert '–' in text
+        app._toggle_tree_section('Members')
+
+    def test_expanded_profiles_shows_names(self, app):
+        app._toggle_tree_section('Profiles')
+        detail = app._tree_items['Profiles']['detail']
+        children = detail.winfo_children()
+        assert len(children) == len(app.profiles)
+        app._toggle_tree_section('Profiles')
+
+    def test_toggle_all_sections_does_not_crash(self, app):
+        for key in ('Nodes', 'Members', 'Supports', 'Loads', 'Profiles'):
+            app._toggle_tree_section(key)
+        for key in ('Nodes', 'Members', 'Supports', 'Loads', 'Profiles'):
+            app._toggle_tree_section(key)

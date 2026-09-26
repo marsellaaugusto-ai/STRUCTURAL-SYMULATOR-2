@@ -188,6 +188,15 @@ CHORD_ROLES = {'bottom_chord', 'top_chord', 'outer_rib', 'inner_rib', 'purlin',
 
 AXIS_EXTEND_COLOR = '#2ecc71'
 
+SNAP_RADIUS_PX = 15
+SNAP_NODE_COLOR = '#e67e22'
+SNAP_MIDPOINT_COLOR = '#3498db'
+SNAP_RING_RADIUS = 8
+
+STATUS_BAR_BG = '#2c2c2c'
+STATUS_BAR_FG = '#dddddd'
+STATUS_BAR_FONT = ('Consolas', 9)
+
 QUICK_SUPPORT_CUSTOM = 'Custom (edit per node below)'
 QUICK_SUPPORT_PIN = 'All suggested nodes: pinned'
 QUICK_SUPPORT_FIXED = 'All suggested nodes: fixed'

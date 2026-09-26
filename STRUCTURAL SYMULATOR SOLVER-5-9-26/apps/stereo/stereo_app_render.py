@@ -45,6 +45,7 @@ from apps.stereo.stereo_app_constants import (
     SCALE_P95, FORCE_SCALE_PERCENTILE, CLIP_MARK_COLOR, CLIP_MARK_DASH,
     CELL_EDGE_COLOR, CELL_EDGE_WIDTH,
     FILL_DENSITY_STIPPLE, FILL_DENSITY_DEFAULT,
+    SNAP_NODE_COLOR, SNAP_MIDPOINT_COLOR, SNAP_RING_RADIUS,
 )
 
 
@@ -656,6 +657,25 @@ class StereoRenderMixin:
                                       fill=AXIS_EXTEND_COLOR,
                                       outline=AXIS_EXTEND_COLOR,
                                       tags='axis_preview')
+
+            if self._snap_node is not None and self._snap_node < len(proj):
+                px, py, _ = proj[self._snap_node]
+                sx, sy = to_screen(px, py)
+                r = SNAP_RING_RADIUS
+                c.create_oval(sx - r, sy - r, sx + r, sy + r,
+                              outline=SNAP_NODE_COLOR, width=2,
+                              dash=(3, 2), tags='snap')
+
+            if self._snap_midpoint is not None and self._snap_node is None:
+                msx, msy = self._snap_midpoint[0], self._snap_midpoint[1]
+                r = SNAP_RING_RADIUS - 2
+                c.create_oval(msx - r, msy - r, msx + r, msy + r,
+                              outline=SNAP_MIDPOINT_COLOR, fill='',
+                              width=2, tags='snap')
+                c.create_line(msx - 3, msy, msx + 3, msy,
+                              fill=SNAP_MIDPOINT_COLOR, width=1, tags='snap')
+                c.create_line(msx, msy - 3, msx, msy + 3,
+                              fill=SNAP_MIDPOINT_COLOR, width=1, tags='snap')
 
             if self.shaded_faces.get():
                 self._draw_shaded_faces(c, proj, to_screen, frac, by_util, by_force,

@@ -4767,3 +4767,126 @@ def test_voronoi_faces_legend_caption_appears_only_when_active(app):
     texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
             if app.canvas.type(i) == 'text']
     assert any('Voronoi ·' in t for t in texts)
+
+
+# ── Simple / Advanced mode toggle ──────────────────────────────────────
+
+class TestSimpleAdvancedToggle:
+    def test_default_mode_is_advanced(self, app):
+        assert app.simple_mode.get() is False
+
+    def test_toggle_to_simple_hides_advanced_toolbar_groups(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        hidden_ids = set(id(w) for w in app._advanced_toolbar_widgets)
+        for g in app.toolbar_flow.groups:
+            assert id(g) not in hidden_ids
+
+    def test_toggle_to_simple_hides_advanced_build_widgets(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        for w in app._build_advanced_widgets:
+            try:
+                w.pack_info()
+                assert False, f'{w} should be hidden'
+            except tk.TclError:
+                pass
+
+    def test_toggle_to_simple_hides_solve_advanced_widgets(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        for w in app._solve_advanced_widgets:
+            try:
+                w.pack_info()
+                assert False, f'{w} should be hidden'
+            except tk.TclError:
+                pass
+
+    def test_toggle_to_simple_hides_output_advanced_widgets(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        for w in app._output_advanced_widgets:
+            try:
+                w.pack_info()
+                assert False, f'{w} should be hidden'
+            except tk.TclError:
+                pass
+
+    def test_toggle_to_simple_hides_advanced_panels(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        for w in app._advanced_panel_widgets:
+            try:
+                w.pack_info()
+                assert False, f'{w} should be hidden'
+            except tk.TclError:
+                pass
+
+    def test_toggle_to_simple_hides_module_editor(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        try:
+            app.module_panel_outer.pack_info()
+            assert False, 'module_panel_outer should be hidden'
+        except tk.TclError:
+            pass
+
+    def test_toggle_back_to_advanced_restores_toolbar_groups(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        app.simple_mode.set(False)
+        app._on_mode_toggle()
+        assert app.toolbar_flow.groups == app._toolbar_groups_snapshot
+
+    def test_toggle_back_to_advanced_restores_build_widgets(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        app.simple_mode.set(False)
+        app._on_mode_toggle()
+        for w in app._build_advanced_widgets:
+            info = w.pack_info()
+            assert info is not None
+
+    def test_toggle_back_to_advanced_restores_panels(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        app.simple_mode.set(False)
+        app._on_mode_toggle()
+        for w in app._advanced_panel_widgets:
+            info = w.pack_info()
+            assert info is not None
+
+    def test_toggle_back_to_advanced_restores_module_editor(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        app.simple_mode.set(False)
+        app._on_mode_toggle()
+        info = app.module_panel_outer.pack_info()
+        assert info is not None
+
+    def test_simple_mode_keeps_geometry_panel_visible(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        children = app.panel_outer.interior.winfo_children()
+        visible = []
+        for c in children:
+            try:
+                c.pack_info()
+                visible.append(c)
+            except tk.TclError:
+                pass
+        assert len(visible) >= 1
+
+    def test_round_trip_toggle_does_not_crash(self, app):
+        for _ in range(3):
+            app.simple_mode.set(True)
+            app._on_mode_toggle()
+            app.simple_mode.set(False)
+            app._on_mode_toggle()
+        assert app.simple_mode.get() is False
+
+    def test_analyze_works_in_simple_mode(self, app):
+        app.simple_mode.set(True)
+        app._on_mode_toggle()
+        app._analyze()
+        assert app.results is not None

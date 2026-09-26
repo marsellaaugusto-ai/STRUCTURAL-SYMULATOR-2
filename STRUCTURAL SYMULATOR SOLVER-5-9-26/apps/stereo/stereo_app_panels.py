@@ -81,6 +81,10 @@ class StereoPanelsMixin(_ToolbarModes):
         tb.pack(side='top', fill='x')
         self.toolbar_flow = FlowBar(tb)
 
+        self._advanced_toolbar_widgets = []
+        self._advanced_panel_widgets = []
+        self._toolbar_groups_snapshot = None
+
         # ── 1 · BUILD ────────────────────────────────────────────────────────
         g = self._tb_group('BUILD')
         tk.Label(g, text='Grid family:', bg=BG).pack(side='left', padx=(0, 2))
@@ -90,42 +94,58 @@ class StereoPanelsMixin(_ToolbarModes):
         fam_box.bind('<<ComboboxSelected>>', lambda e: self._on_generator_change())
         tk.Button(g, text='Generate', font=('Helvetica', 9, 'bold'),
                   command=self._generate).pack(side='left', padx=4)
-        tk.Button(g, text='Custom Surface Wizard…', command=self._open_custom_surface_wizard
-                 ).pack(side='left', padx=(2, 4))
+        self._btn_wizard = tk.Button(g, text='Custom Surface Wizard…',
+                                     command=self._open_custom_surface_wizard)
+        self._btn_wizard.pack(side='left', padx=(2, 4))
         examples_btn = tk.Menubutton(g, text='Load Example ▾', relief='raised',
                                      font=('Helvetica', 9))
+        self._btn_examples = examples_btn
         examples_menu = tk.Menu(examples_btn, tearoff=False)
         for label, builder in sx.EXAMPLES:
             examples_menu.add_command(label=label,
                                       command=lambda b=builder, lbl=label: self._load_example(b, lbl))
         examples_btn['menu'] = examples_menu
         examples_btn.pack(side='left', padx=(2, 4))
-        tk.Button(g, text='Import SketchUp…', command=self._import_sketchup
-                 ).pack(side='left', padx=(2, 4))
-        tk.Button(g, text='Undo', command=self._undo).pack(side='left', padx=(6, 1))
-        tk.Button(g, text='Redo', command=self._redo).pack(side='left', padx=1)
+        self._btn_import_su = tk.Button(g, text='Import SketchUp…',
+                                        command=self._import_sketchup)
+        self._btn_import_su.pack(side='left', padx=(2, 4))
+        self._btn_undo = tk.Button(g, text='Undo', command=self._undo)
+        self._btn_undo.pack(side='left', padx=(6, 1))
+        self._btn_redo = tk.Button(g, text='Redo', command=self._redo)
+        self._btn_redo.pack(side='left', padx=1)
         self.add_rod_mode = tk.BooleanVar(value=False)
-        tk.Checkbutton(g, text='Add rod (click 2 nodes)', variable=self.add_rod_mode,
-                       bg=BG, command=self._on_add_rod_mode_toggle).pack(side='left', padx=(6, 0))
+        self._chk_add_rod = tk.Checkbutton(g, text='Add rod (click 2 nodes)',
+                                            variable=self.add_rod_mode,
+                                            bg=BG, command=self._on_add_rod_mode_toggle)
+        self._chk_add_rod.pack(side='left', padx=(6, 0))
+        self._build_advanced_widgets = [self._btn_wizard, self._btn_examples,
+                                         self._btn_import_su, self._btn_undo,
+                                         self._btn_redo, self._chk_add_rod]
 
         # ── 2 · SOLVE ────────────────────────────────────────────────────────
         self.toolbar_flow.separator()
         g = self._tb_group('SOLVE')
         tk.Button(g, text='▶ Analyze', font=('Helvetica', 9, 'bold'), bg='#dff0d8',
                   command=self._analyze).pack(side='left', padx=2)
-        tk.Label(g, text='Load %:', bg=BG, font=('Helvetica', 9)).pack(side='left', padx=(8, 2))
+        self._solve_load_label = tk.Label(g, text='Load %:', bg=BG,
+                                          font=('Helvetica', 9))
+        self._solve_load_label.pack(side='left', padx=(8, 2))
         self.load_fraction = tk.IntVar(value=100)
-        tk.Scale(g, from_=0, to=100, orient='horizontal', variable=self.load_fraction,
-                length=100, showvalue=True, command=lambda _v: self._draw()
-                ).pack(side='left')
+        self._solve_load_scale = tk.Scale(g, from_=0, to=100, orient='horizontal',
+                                           variable=self.load_fraction,
+                                           length=100, showvalue=True,
+                                           command=lambda _v: self._draw())
+        self._solve_load_scale.pack(side='left')
+        self._solve_advanced_widgets = [self._solve_load_label, self._solve_load_scale]
 
         # ── 3 · COLOUR BY ────────────────────────────────────────────────────
         # One quantity at a time, so this is a radio. It replaces three
         # independent checkboxes whose mutual exclusivity was real but
         # invisible -- utilization silently won over force, which won over
         # moment, and nothing on screen said so.
-        self.toolbar_flow.separator()
+        _sep3 = self.toolbar_flow.separator()
         g = self._tb_group('COLOUR BY')
+        self._advanced_toolbar_widgets.extend([_sep3, g])
         self.colour_by_force = tk.BooleanVar(value=True)
         self.colour_by_util = tk.BooleanVar(value=False)
         self.colour_by_moment = tk.BooleanVar(value=False)
@@ -152,8 +172,9 @@ class StereoPanelsMixin(_ToolbarModes):
         moment_axis_box.bind('<<ComboboxSelected>>', lambda e: self._draw())
 
         # ── 4 · DRAW RODS AS ─────────────────────────────────────────────────
-        self.toolbar_flow.separator()
+        _sep4 = self.toolbar_flow.separator()
         g = self._tb_group('DRAW RODS AS')
+        self._advanced_toolbar_widgets.extend([_sep4, g])
         self.smooth_gradient = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Smooth gradient', variable=self.smooth_gradient,
                        bg=BG, command=self._draw).pack(side='left')
@@ -179,8 +200,9 @@ class StereoPanelsMixin(_ToolbarModes):
         # One fill at a time, so again a radio. Whichever is chosen takes its
         # colours from the COLOUR BY group above -- the fill decides the
         # SHAPE being coloured, never the quantity.
-        self.toolbar_flow.separator()
+        _sep5 = self.toolbar_flow.separator()
         g = self._tb_group('FILL')
+        self._advanced_toolbar_widgets.extend([_sep5, g])
         self.shaded_faces = tk.BooleanVar(value=False)
         self.voronoi_faces = tk.BooleanVar(value=False)
         self.faces_mode = tk.StringVar(value=FILL_NONE)
@@ -207,8 +229,9 @@ class StereoPanelsMixin(_ToolbarModes):
         # structure's own surface, which needs no choosing and no parameter
         # (see stereo_voronoi_surface). Only Section is volumetric, so the
         # cut controls belong to it alone.
-        self.toolbar_flow.separator()
+        _sep6 = self.toolbar_flow.separator()
         g = self._tb_group('VORONOI')
+        self._advanced_toolbar_widgets.extend([_sep6, g])
         tk.Label(g, text='view', bg=BG, font=('Helvetica', 8), fg='#556')\
             .pack(side='left', padx=(0, 2))
         self.voronoi_view = tk.StringVar(value=svs.VIEW_SURFACE)
@@ -239,8 +262,9 @@ class StereoPanelsMixin(_ToolbarModes):
         # object -- the displaced copy drawn over the structure -- so it
         # carries its own quantity choice rather than competing for the one
         # above.
-        self.toolbar_flow.separator()
+        _sep7 = self.toolbar_flow.separator()
         g = self._tb_group('DEFORMED SHAPE')
+        self._advanced_toolbar_widgets.extend([_sep7, g])
         self.show_deformed = tk.BooleanVar(value=False)
         tk.Checkbutton(g, text='Show', variable=self.show_deformed, bg=BG,
                        command=self._draw).pack(side='left')
@@ -270,8 +294,9 @@ class StereoPanelsMixin(_ToolbarModes):
         # Independent annotations drawn over whatever the groups above
         # produced -- every one of these is on or off by itself, which is why
         # they are all checkboxes and all live together.
-        self.toolbar_flow.separator()
+        _sep8 = self.toolbar_flow.separator()
         g = self._tb_group('SHOW')
+        self._advanced_toolbar_widgets.extend([_sep8, g])
         self.show_members = tk.BooleanVar(value=True)
         tk.Checkbutton(g, text='Rods', variable=self.show_members, bg=BG,
                        command=self._draw).pack(side='left')
@@ -301,14 +326,29 @@ class StereoPanelsMixin(_ToolbarModes):
         self.toolbar_flow.separator()
         g = self._tb_group('OUTPUT')
         tk.Button(g, text='Reset view', command=self._reset_view).pack(side='left', padx=2)
-        tk.Button(g, text='Member Report', command=self._show_member_report
-                 ).pack(side='left', padx=2)
-        tk.Button(g, text='Export Excel…', command=self._export_excel).pack(side='left', padx=2)
-        tk.Button(g, text='Export 3D…', command=self._export_3d_model).pack(side='left', padx=2)
-        tk.Button(g, text='Import Excel…', command=self._import_excel).pack(side='left', padx=2)
-        tk.Button(g, text='Open Example', command=self._open_example).pack(side='left', padx=2)
+        self._btn_member_report = tk.Button(g, text='Member Report',
+                                             command=self._show_member_report)
+        self._btn_member_report.pack(side='left', padx=2)
+        self._btn_export_excel = tk.Button(g, text='Export Excel…',
+                                            command=self._export_excel)
+        self._btn_export_excel.pack(side='left', padx=2)
+        self._btn_export_3d = tk.Button(g, text='Export 3D…',
+                                         command=self._export_3d_model)
+        self._btn_export_3d.pack(side='left', padx=2)
+        self._btn_import_excel = tk.Button(g, text='Import Excel…',
+                                            command=self._import_excel)
+        self._btn_import_excel.pack(side='left', padx=2)
+        self._btn_open_example = tk.Button(g, text='Open Example',
+                                            command=self._open_example)
+        self._btn_open_example.pack(side='left', padx=2)
+        self._output_advanced_widgets = [self._btn_member_report,
+                                          self._btn_export_excel,
+                                          self._btn_export_3d,
+                                          self._btn_import_excel,
+                                          self._btn_open_example]
 
         self.toolbar_flow.start()
+        self._toolbar_groups_snapshot = list(self.toolbar_flow.groups)
 
         main = tk.Frame(self.root, bg=BG)
         main.pack(fill='both', expand=True, padx=6, pady=(6, 0))
@@ -382,6 +422,16 @@ class StereoPanelsMixin(_ToolbarModes):
         self.canvas.focus_set()
 
         self._build_panel(self.panel_outer.interior)
+        self._sidebar_children_order = list(self.panel_outer.interior.winfo_children())
+        self._sidebar_pack_info = {}
+        for w in self._sidebar_children_order:
+            try:
+                info = w.pack_info()
+                self._sidebar_pack_info[id(w)] = {
+                    k: v for k, v in info.items() if k != 'in'
+                }
+            except tk.TclError:
+                pass
         self.panel_outer.fit_to_content()
 
         self._build_module_editor_panel(self.module_panel_outer.interior)
@@ -402,6 +452,21 @@ class StereoPanelsMixin(_ToolbarModes):
                 ).pack(anchor='w', padx=6, pady=(6, 2))
 
     def _build_panel(self, parent):
+        # ── Mode toggle (Simple / Advanced) ──────────────────────────────────
+        mode_frame = tk.Frame(parent, bg=BG)
+        mode_frame.pack(fill='x', padx=6, pady=(6, 2))
+        self.simple_mode = tk.BooleanVar(value=False)
+        tk.Label(mode_frame, text='Mode:', bg=BG,
+                 font=('Helvetica', 9, 'bold')).pack(side='left')
+        tk.Radiobutton(mode_frame, text='Simple', value=True,
+                       variable=self.simple_mode, bg=BG,
+                       font=('Helvetica', 9),
+                       command=self._on_mode_toggle).pack(side='left', padx=(4, 0))
+        tk.Radiobutton(mode_frame, text='Advanced', value=False,
+                       variable=self.simple_mode, bg=BG,
+                       font=('Helvetica', 9),
+                       command=self._on_mode_toggle).pack(side='left', padx=(4, 0))
+
         self._build_geometry_panel(parent)
         self._build_supports_panel(parent)
         self._build_loads_panel(parent)
@@ -896,6 +961,8 @@ class StereoPanelsMixin(_ToolbarModes):
     def _build_connectivity_panel(self, parent):
         box = tk.LabelFrame(parent, text='Connectivity', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=4)
+        self._panel_connectivity = box
+        self._advanced_panel_widgets.append(box)
         self.sec_conn = tk.StringVar(value='pin')
         row = tk.Frame(box, bg=BG)
         row.pack(fill='x', padx=6, pady=4)
@@ -909,6 +976,8 @@ class StereoPanelsMixin(_ToolbarModes):
     def _build_section_panel(self, parent, prefix, title):
         box = tk.LabelFrame(parent, text=title, bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=4)
+        setattr(self, f'_panel_section_{prefix}', box)
+        self._advanced_panel_widgets.append(box)
 
         profile_var = tk.StringVar(value=f'Default {prefix}')
         setattr(self, f'{prefix}_profile_var', profile_var)
@@ -1213,6 +1282,8 @@ class StereoPanelsMixin(_ToolbarModes):
     def _build_selection_panel(self, parent):
         box = tk.LabelFrame(parent, text='Selected node', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=4)
+        self._panel_selection = box
+        self._advanced_panel_widgets.append(box)
         self.sel_label = tk.Label(box, text='(click, or drag a box, to select node(s))',
                                   bg=BG, fg='#666', font=('Helvetica', 9),
                                   wraplength=PANEL_W - 24, justify='left')
@@ -1255,6 +1326,8 @@ class StereoPanelsMixin(_ToolbarModes):
     def _build_addons_panel(self, parent):
         box = tk.LabelFrame(parent, text='Add-ons', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=4)
+        self._panel_addons = box
+        self._advanced_panel_widgets.append(box)
 
         col = tk.LabelFrame(box, text='Column', bg=BG,
                             font=('Helvetica', 8, 'bold'))
@@ -1356,3 +1429,64 @@ class StereoPanelsMixin(_ToolbarModes):
         self.results_text = tk.Text(box, height=8, width=32, wrap='word',
                                     font=('Helvetica', 9), relief='flat', bg=BG)
         self.results_text.pack(fill='both', padx=6, pady=6)
+
+    # ── Simple / Advanced mode ──────────────────────────────────────────────
+    def _hide_advanced_in_groups(self):
+        """Called after every FlowBar relayout to re-hide advanced widgets
+        inside the BUILD/SOLVE/OUTPUT groups that stay visible."""
+        if not self.simple_mode.get():
+            return
+        for w in (self._build_advanced_widgets +
+                  self._solve_advanced_widgets +
+                  self._output_advanced_widgets):
+            try:
+                w.pack_forget()
+            except tk.TclError:
+                pass
+
+    def _on_mode_toggle(self):
+        simple = self.simple_mode.get()
+        hidden_tb_ids = set(id(w) for w in self._advanced_toolbar_widgets)
+        if simple:
+            self.toolbar_flow.groups = [
+                g for g in self._toolbar_groups_snapshot
+                if id(g) not in hidden_tb_ids
+            ]
+            self.toolbar_flow.on_relayout = self._hide_advanced_in_groups
+            self.toolbar_flow.relayout()
+            for w in self._advanced_panel_widgets:
+                try:
+                    w.pack_forget()
+                except tk.TclError:
+                    pass
+            self.module_panel_outer.pack_forget()
+        else:
+            self.toolbar_flow.groups = list(self._toolbar_groups_snapshot)
+            self.toolbar_flow.on_relayout = None
+            self.toolbar_flow.relayout()
+            self._repack_sidebar_panels()
+            self.module_panel_outer.pack(side='right', fill='y', padx=(6, 0))
+        self.panel_outer.fit_to_content()
+        self._draw()
+
+    def _repack_sidebar_panels(self):
+        """Re-pack all sidebar panels in their canonical order.
+
+        When switching back from Simple to Advanced, the hidden panels need
+        to appear in the right order among their siblings.  Rather than
+        tracking every pack option, we just unpack ALL panels and re-pack
+        them in the original order.
+        """
+        parent = self.panel_outer.interior
+        for w in list(parent.winfo_children()):
+            w.pack_forget()
+        for w in self._sidebar_children_order:
+            try:
+                if w.winfo_exists():
+                    info = self._sidebar_pack_info.get(id(w))
+                    if info:
+                        w.pack(**info)
+                    else:
+                        w.pack(fill='x', padx=6, pady=4)
+            except tk.TclError:
+                pass

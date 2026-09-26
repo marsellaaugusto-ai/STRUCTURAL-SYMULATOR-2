@@ -417,14 +417,20 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
                    r['rx'], r['ry'], r['rz']])
     style_data_range(ws, 2, 1 + len(supports), len(sup_hdrs))
 
-    # ── Results ──────────────────────────────────────────────────────────────
+    # ── Node Properties (displacements + reactions + moments) ─────────────────
     if results is not None:
-        ws = wb.create_sheet('Results')
-        res_hdrs = ['node', 'ux_mm', 'uy_mm', 'uz_mm', 'rx_rad', 'ry_rad', 'rz_rad']
-        styled_header(ws, res_hdrs)
+        ws = wb.create_sheet('Node Properties')
+        np_hdrs = ['node', 'ux_mm', 'uy_mm', 'uz_mm', 'rx_rad', 'ry_rad', 'rz_rad',
+                   'Fx_kN', 'Fy_kN', 'Fz_kN', 'Mx_kNm', 'My_kNm', 'Mz_kNm']
+        styled_header(ws, np_hdrs)
+        reactions = results.get('reactions', {})
         for i, nr in enumerate(results['node_res']):
-            ws.append([i, nr['ux'], nr['uy'], nr['uz'], nr['rx'], nr['ry'], nr['rz']])
-        style_data_range(ws, 2, 1 + len(results['node_res']), len(res_hdrs))
+            rx = reactions.get(i, {})
+            ws.append([i, nr['ux'], nr['uy'], nr['uz'],
+                       nr['rx'], nr['ry'], nr['rz'],
+                       rx.get('Fx', ''), rx.get('Fy', ''), rx.get('Fz', ''),
+                       rx.get('Mx', ''), rx.get('My', ''), rx.get('Mz', '')])
+        style_data_range(ws, 2, 1 + len(results['node_res']), len(np_hdrs))
 
         # ── Member Forces (with axial-force color scale) ─────────────────────
         ws2 = wb.create_sheet('Member Forces')
@@ -455,13 +461,31 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     # ── Member Checks (with utilization color scale) ─────────────────────────
     if checks is not None:
         ws = wb.create_sheet('Member Checks')
-        chk_hdrs = ['member', 'checked', 'mode', 'utilization', 'governing', 'ok', 'note']
+        chk_hdrs = ['member', 'a', 'b', 'role', 'conn', 'N_kN', 'mode',
+                    'A_cm2', 'r_gyr_cm', 'K', 'length_m', 'slenderness',
+                    'sigma_MPa', 'capacity_MPa', 'Fcr_MPa', 'Pd_kN',
+                    'utilization', 'governing', 'ok', 'note']
         styled_header(ws, chk_hdrs)
+        member_res = results['member_res'] if results else [{}] * len(members)
         for i, c in enumerate(checks):
             row_num = i + 2
-            ws.append([i, c.get('checked', False), c.get('mode', ''),
-                       c.get('util'), c.get('governing', ''), c.get('ok', ''),
-                       c.get('note', '')])
+            m = members[i]
+            mr = member_res[i] if i < len(member_res) else {}
+            ws.append([
+                i, m['a'], m['b'], m.get('role', ''), m.get('conn', 'pin'),
+                mr.get('N', ''),
+                c.get('mode', ''),
+                m.get('A', ''), m.get('r_gyr', ''), m.get('K', 1.0),
+                mr.get('length_m', ''),
+                c.get('slenderness', ''),
+                c.get('sigma_MPa', ''),
+                c.get('capacity_MPa', ''),
+                c.get('Fcr_MPa', ''),
+                c.get('Pd_kN', ''),
+                c.get('util'),
+                c.get('governing', ''), c.get('ok', ''),
+                c.get('note', ''),
+            ])
             if c.get('checked') and c.get('util', 0) > 1.0:
                 for col in range(1, len(chk_hdrs) + 1):
                     ws.cell(row=row_num, column=col).fill = OVER_FILL
@@ -471,7 +495,8 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
         n_chk = len(checks)
         style_data_range(ws, 2, 1 + n_chk, len(chk_hdrs))
         if n_chk > 0:
-            col_letter = get_column_letter(4)
+            util_col = chk_hdrs.index('utilization') + 1
+            col_letter = get_column_letter(util_col)
             rng = f'{col_letter}2:{col_letter}{1 + n_chk}'
             ws.conditional_formatting.add(rng, ColorScaleRule(
                 start_type='num', start_value=0, start_color='70AD47',
@@ -573,13 +598,59 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
         except Exception:
             pass
 
+    # ── Gusset Plates (Whitmore + block shear for coplanar nodes) ─────────────
+    if results is not None:
+        from apps.stereo import stereo_plates as sp
+        member_res = results['member_res']
+        Fy_plate = members[0].get('Fy', sp.DEFAULT_FY_MPA) if members else sp.DEFAULT_FY_MPA
+        Fu_plate = members[0].get('Fu', sp.DEFAULT_FU_MPA) if members else sp.DEFAULT_FU_MPA
+        gusset_checks = sp.check_all_gussets(
+            nodes, members, member_res, Fy=Fy_plate, Fu=Fu_plate)
+        if gusset_checks:
+            ws_gp = wb.create_sheet('Gusset Plates')
+            gp_hdrs = ['group', 'node', 'member', 'other', 'N_kN', 'mode',
+                       't_mm', 'whitmore_mm', 'sigma_MPa', 'whitmore_util',
+                       'Agv_mm2', 'Anv_mm2', 'Ant_mm2',
+                       'block_shear_Rd_kN', 'block_shear_util',
+                       'buckling_applies', 'buckling_util', 'buckling_Pd_kN',
+                       'utilization', 'governing', 'ok']
+            styled_header(ws_gp, gp_hdrs)
+            for gc in gusset_checks:
+                ws_gp.append([
+                    gc['group'], gc['node'], gc['member'], gc['other'],
+                    gc['N_kN'], gc['mode'], gc['t_mm'], gc['whitmore_mm'],
+                    gc['sigma_MPa'], gc['whitmore_util'],
+                    gc['Agv'], gc['Anv'], gc['Ant'],
+                    gc['block_shear_Rd_kN'], gc['block_shear_util'],
+                    gc['buckling_applies'], gc['buckling_util'],
+                    gc.get('buckling_Pd_kN', ''),
+                    gc['util'], gc['governing'], gc['ok'],
+                ])
+                row_num = ws_gp.max_row
+                if gc['util'] > 1.0:
+                    for col in range(1, len(gp_hdrs) + 1):
+                        ws_gp.cell(row=row_num, column=col).fill = OVER_FILL
+                elif gc['ok']:
+                    for col in range(1, len(gp_hdrs) + 1):
+                        ws_gp.cell(row=row_num, column=col).fill = OK_FILL
+            n_gp = len(gusset_checks)
+            style_data_range(ws_gp, 2, 1 + n_gp, len(gp_hdrs))
+            if n_gp > 0:
+                util_col = gp_hdrs.index('utilization') + 1
+                col_letter = get_column_letter(util_col)
+                rng = f'{col_letter}2:{col_letter}{1 + n_gp}'
+                ws_gp.conditional_formatting.add(rng, ColorScaleRule(
+                    start_type='num', start_value=0, start_color='70AD47',
+                    mid_type='num', mid_value=0.7, mid_color='FFC000',
+                    end_type='num', end_value=1.0, end_color='C00000'))
+
     # ── Model sheet (machine-parseable round-trip) ───────────────────────────
     _write_model_sheet(wb, nodes, members, loads, supports, meta,
                        results=results, checks=checks, profiles=profiles)
 
     for name in wb.sheetnames:
         ws = wb[name]
-        for col in range(1, 14):
+        for col in range(1, 22):
             ws.column_dimensions[get_column_letter(col)].width = 14
 
     wb.save(path)

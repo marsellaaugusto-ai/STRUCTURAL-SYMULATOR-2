@@ -174,7 +174,7 @@ def plugin_xlsx_new(tmp_path):
 
 def test_old_plugin_xlsx_imports_without_error(plugin_xlsx_old):
     from apps.stereo.stereo_reports import import_excel_model
-    nodes, members, loads, supports = import_excel_model(plugin_xlsx_old)
+    nodes, members, loads, supports, _ = import_excel_model(plugin_xlsx_old)
     assert len(nodes) == 4
     assert len(members) == 6
     assert loads == []
@@ -183,7 +183,7 @@ def test_old_plugin_xlsx_imports_without_error(plugin_xlsx_old):
 
 def test_old_plugin_xlsx_gets_default_section_properties(plugin_xlsx_old):
     from apps.stereo.stereo_reports import import_excel_model
-    _, members, _, _ = import_excel_model(plugin_xlsx_old)
+    _, members, _, _, _ = import_excel_model(plugin_xlsx_old)
     for m in members:
         assert 'E' in m and 'A' in m, 'missing section properties'
         assert m['E'] == pytest.approx(200.0)
@@ -194,7 +194,7 @@ def test_old_plugin_xlsx_gets_default_section_properties(plugin_xlsx_old):
 def test_old_plugin_xlsx_survives_analysis(plugin_xlsx_old):
     from apps.stereo.stereo_reports import import_excel_model
     from apps.stereo import stereo_math as sm
-    nodes, members, _, _ = import_excel_model(plugin_xlsx_old)
+    nodes, members, _, _, _ = import_excel_model(plugin_xlsx_old)
     loads = [{'node': 3, 'fx': 0, 'fy': 0, 'fz': -10, 'mx': 0, 'my': 0, 'mz': 0}]
     supports = [{'node': i, 'type': 'pin'} for i in range(3)]
     res, err = sm.analyze(nodes, members, loads, supports)
@@ -204,7 +204,7 @@ def test_old_plugin_xlsx_survives_analysis(plugin_xlsx_old):
 
 def test_new_plugin_xlsx_imports_with_correct_sections(plugin_xlsx_new):
     from apps.stereo.stereo_reports import import_excel_model
-    nodes, members, _, _ = import_excel_model(plugin_xlsx_new)
+    nodes, members, _, _, _ = import_excel_model(plugin_xlsx_new)
     assert len(nodes) == 4
     assert len(members) == 6
     for m in members:
@@ -222,7 +222,7 @@ def test_new_plugin_xlsx_imports_with_correct_sections(plugin_xlsx_new):
 def test_new_plugin_xlsx_survives_analysis(plugin_xlsx_new):
     from apps.stereo.stereo_reports import import_excel_model
     from apps.stereo import stereo_math as sm
-    nodes, members, _, _ = import_excel_model(plugin_xlsx_new)
+    nodes, members, _, _, _ = import_excel_model(plugin_xlsx_new)
     loads = [{'node': 3, 'fx': 0, 'fy': 0, 'fz': -10, 'mx': 0, 'my': 0, 'mz': 0}]
     supports = [{'node': i, 'type': 'pin'} for i in range(3)]
     res, err = sm.analyze(nodes, members, loads, supports)
@@ -239,14 +239,14 @@ def test_explicit_sections_override_defaults(tmp_path):
     path = str(tmp_path / 'custom.xlsx')
     with open(path, 'wb') as f:
         f.write(_build_plugin_xlsx(nodes_m, members, with_sections=True))
-    _, mems, _, _ = import_excel_model(path)
+    _, mems, _, _, _ = import_excel_model(path)
     assert mems[0]['E'] == pytest.approx(200.0)
     assert mems[0]['A'] == pytest.approx(20.0)
 
 
 def test_node_coordinates_are_exact(plugin_xlsx_new):
     from apps.stereo.stereo_reports import import_excel_model
-    nodes, _, _, _ = import_excel_model(plugin_xlsx_new)
+    nodes, _, _, _, _ = import_excel_model(plugin_xlsx_new)
     for i, (x, y, z) in enumerate(TETRA_NODES):
         assert nodes[i][0] == pytest.approx(x, abs=1e-9)
         assert nodes[i][1] == pytest.approx(y, abs=1e-9)

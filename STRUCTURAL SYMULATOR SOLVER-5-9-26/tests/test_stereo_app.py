@@ -2142,7 +2142,7 @@ def test_excel_export_import_round_trip_through_the_app(app, tmp_path):
     path = str(tmp_path / 'model.xlsx')
     sr.export_excel(app.nodes, app.members, app.loads, app.supports, app.results,
                     path, checks=app.member_checks)
-    nodes2, members2, loads2, supports2 = sr.import_excel_model(path)
+    nodes2, members2, loads2, supports2, _ = sr.import_excel_model(path)
     assert len(nodes2) == len(app.nodes)
     assert len(members2) == len(app.members)
 

@@ -256,13 +256,16 @@ def pil_draw_node_fbd_3d(node_idx, nodes, members, member_res, loads,
 
 
 def export_excel(nodes, members, loads, supports, results, path, checks=None,
-                  meta=None):
+                  meta=None, max_calc_members=None):
     """Write a workbook with Nodes, Members, Loads, Supports, Results (if
     `results` is not None), Member Checks (if `checks` is not None) and a
     machine-parseable Model sheet. `meta` is an optional dict of free-text
     generator parameters (typology, span, etc.) written at the top of the
     Model sheet purely for a human reader's benefit; it is not required by
     `import_excel_model`.
+
+    `max_calc_members` caps the Member Calculations sheet to the N most
+    critical members (sorted by utilization desc). None = all members.
     """
     if not _ensure_openpyxl():
         raise RuntimeError('openpyxl is required for Excel export and could not '
@@ -504,8 +507,18 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
             member_res = results['member_res']
             reactions = results.get('reactions', {})
 
+            calc_indices = list(range(len(members)))
+            if max_calc_members is not None and len(calc_indices) > max_calc_members:
+                def _util_key(i):
+                    if checks and i < len(checks) and checks[i].get('checked'):
+                        return -checks[i].get('util', 0.0)
+                    return 0.0
+                calc_indices = sorted(calc_indices, key=_util_key)[:max_calc_members]
+                calc_indices.sort()
+
             row0 = 4
-            for mi, mem in enumerate(members):
+            for mi in calc_indices:
+                mem = members[mi]
                 a, b = mem['a'], mem['b']
                 na, nb = nodes[a], nodes[b]
                 dx = nb[0] - na[0]

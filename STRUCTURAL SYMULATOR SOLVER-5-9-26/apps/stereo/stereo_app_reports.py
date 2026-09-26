@@ -273,6 +273,38 @@ class StereoReportsMixin:
         tk.Button(win, text='Export', command=do_export,
                   width=14).pack(pady=(12, 8))
 
+    # ── Example ──────────────────────────────────────────────────────────────
+    def _open_example(self):
+        import os
+        example_path = os.path.join(os.path.dirname(__file__),
+                                    'example_stereo_model.xlsx')
+        if not os.path.isfile(example_path):
+            messagebox.showerror('Example', 'example_stereo_model.xlsx not found.')
+            return
+        try:
+            nodes, members, loads, supports = sr.import_excel_model(example_path)
+        except Exception as exc:
+            messagebox.showerror('Import failed', str(exc))
+            return
+        self._push_undo('open example')
+        self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
+        self._support_candidates = [s['node'] for s in supports]
+        self._load_nodes = {}
+        self.area_load_on.set(False)
+        self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
+        self.results = None
+        self.member_checks = None
+        self.selected_nodes = set()
+        self.selected_member = None
+        self._refresh_all()
+        self._reset_view()
+        messagebox.showinfo(
+            'Example Model',
+            f'Loaded paraboloid dish (antenna):\n'
+            f'{len(nodes)} nodes, {len(members)} members,\n'
+            f'{len(loads)} loads, {len(supports)} supports.\n\n'
+            f'Click Analyze to run the solver.')
+
     # ── units ────────────────────────────────────────────────────────────────
     def _on_units_changed(self):
         self._refresh_all()

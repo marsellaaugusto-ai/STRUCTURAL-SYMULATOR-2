@@ -6,7 +6,84 @@ machine-parseable '[SECTION]' Model sheet that round-trips through
 Includes PIL-rendered free-body-diagram images for each member, projected
 from 3D to 2D using an isometric-style parallel projection.
 """
+import units
+
 from common import _ensure_openpyxl
+
+
+# ── the units the Stereo tab stores in, and the ones a sheet writes ──────
+#
+# Every solver computes in SI; the tab holds its model in these units (see
+# UnitsMixin and units.storage_like). Declared HERE, and imported by
+# stereo_app, so the report and the tab cannot disagree about what the
+# numbers in a member dict mean.
+STORAGE_UNITS = units.storage_like('stereo storage', stress=units.MPA)
+
+
+class ReportUnits:
+    """A stored value -> the number and the label this report writes it in.
+
+    The app has an app-wide unit selector, and until 2026-09-27 the PDF
+    ignored it: 'kN', 'm' and 'mm' were hard-coded into sixty format
+    strings and 'm, kN, mm' into the title block. Switch the app to AISC
+    and the screen said kip while the sheet said kN, over the same model,
+    with nothing on the sheet admitting it. Every number the report prints
+    now goes through here.
+
+    `system` defaults to whatever the selector is set to AT EXPORT TIME,
+    which is the convention the reader was just looking at.
+    """
+
+    def __init__(self, system=None):
+        self.system = units.current() if system is None else system
+
+    def v(self, quantity, stored):
+        """The number, in the reader's convention."""
+        return units.reexpress(quantity, stored, STORAGE_UNITS, self.system)
+
+    def to_storage(self, quantity, shown):
+        """The inverse of v(): a number in the reader's convention back
+        into the units the model is stored in.
+
+        Needed wherever the report CHOOSES a round number -- a scale bar's
+        length, a grid spacing, a triad arm. A bar that is a round 5
+        metres is 16.4 feet, which is not a scale bar; the round number
+        has to be picked in the unit it will be labelled with, and only
+        then converted back to draw it.
+        """
+        return units.reexpress(quantity, shown, self.system, STORAGE_UNITS)
+
+    def lab(self, quantity):
+        return self.system.label(quantity)
+
+    def f(self, quantity, stored, digits=2, sign=False, comma=False):
+        """The number, formatted, WITHOUT its label."""
+        spec = f'{"+" if sign else ""}{"," if comma else ""}.{digits}f'
+        return format(self.v(quantity, stored), spec)
+
+    def fl(self, quantity, stored, digits=2, sign=False, comma=False):
+        """The number and its label, e.g. '12.50 kN'."""
+        return f'{self.f(quantity, stored, digits, sign, comma)} ' \
+               f'{self.lab(quantity)}'
+
+    def title_block(self):
+        """What the title block's UNITS field says."""
+        return ', '.join((self.lab('length'), self.lab('force'),
+                          self.lab('deflection')))
+
+    # A stress computed straight from the model as |N| / A is in kN/cm^2:
+    # kN over cm^2, the units those two are stored in. The tab stores a
+    # stress in MPa (Fy, Fu), so it has to be carried across before it can
+    # be re-expressed like any other stress.
+    KN_CM2_TO_MPA = 10.0
+
+    def stress_from_kn_cm2(self, sigma):
+        return self.v('stress', sigma * self.KN_CM2_TO_MPA)
+
+    def f_stress_kn_cm2(self, sigma, digits=2, comma=True):
+        spec = f'{"," if comma else ""}.{digits}f'
+        return (f'{format(self.stress_from_kn_cm2(sigma), spec)} '
+                f'{self.lab("stress")}')
 
 
 # ── PIL rendering helpers for 3D→2D free-body diagrams ───────────────────
@@ -901,9 +978,10 @@ def import_excel_model(path):
     return nodes, members, loads, supports, profiles
 
 
-def summary_text(nodes, members, results, checks=None):
+def summary_text(nodes, members, results, checks=None, u=None):
     """A short human-readable analysis summary, for the tab's results pane
     -- the same role truss_app._show_analysis_text plays for Truss."""
+    u = u or ReportUnits()
     lines = [f'Nodes: {len(nodes)}   Members: {len(members)}']
     if results is None:
         lines.append('Not yet analyzed.')
@@ -913,15 +991,18 @@ def summary_text(nodes, members, results, checks=None):
     for nr in results['node_res']:
         d = (nr['ux'] ** 2 + nr['uy'] ** 2 + nr['uz'] ** 2) ** 0.5
         max_disp = max(max_disp, d)
-    lines.append(f'Max nodal displacement: {max_disp:.3f} mm')
+    lines.append(f'Max nodal displacement: '
+                 f'{u.fl("deflection", max_disp, 3)}')
 
     forces = [mr['N'] for mr in results['member_res']]
     if forces:
-        lines.append(f'Max tension:     {max(forces):+.2f} kN')
-        lines.append(f'Max compression: {min(forces):+.2f} kN')
+        lines.append(f'Max tension:     '
+                     f'{u.fl("force", max(forces), 2, sign=True)}')
+        lines.append(f'Max compression: '
+                     f'{u.fl("force", min(forces), 2, sign=True)}')
 
     total_rz = sum(r.get('Fz', 0.0) for r in results['reactions'].values())
-    lines.append(f'Total vertical reaction: {total_rz:.2f} kN')
+    lines.append(f'Total vertical reaction: {u.fl("force", total_rz)}')
 
     if checks is not None:
         from apps.stereo.stereo_checks import worst_utilization
@@ -1580,7 +1661,7 @@ def _pdf_sheet(fig, sheet_no, sheet_total, title, meta):
                      fontfamily=PDF_MONO)
 
 
-def _pdf_sheet_meta(nodes, members, meta=None):
+def _pdf_sheet_meta(nodes, members, meta=None, u=None):
     """The title-block fields shared by every sheet of one report.
 
     When the report covers a SELECTION, the block carries two names, not
@@ -1589,6 +1670,7 @@ def _pdf_sheet_meta(nodes, members, meta=None):
     back to anything.
     """
     import time
+    u = u or ReportUnits()
     family = ''
     group = ''
     parent = ''
@@ -1604,7 +1686,7 @@ def _pdf_sheet_meta(nodes, members, meta=None):
         fields.append(('MODEL', (str(family)[:22] or 'user model')))
     fields += [
         ('SIZE', f'{len(nodes)} nodes / {len(members)} bars'),
-        ('UNITS', 'm, kN, mm'),
+        ('UNITS', u.title_block()),
         ('CODE', PDF_CODE_BASIS),
         ('DATE', time.strftime('%Y-%m-%d %H:%M')),
     ]
@@ -1791,7 +1873,7 @@ def _pdf_stats_panel(ax, lines, x=PDF_STATS_X, y=PDF_STATS_Y):
 
 
 def _pdf_scale_bar(ax, model_span_m, xy, unit_len_data=1.0, ref_axis='X',
-                   exact=True, divisions=PDF_SCALE_DIVISIONS):
+                   exact=True, divisions=PDF_SCALE_DIVISIONS, u=None):
     """A HORIZONTAL chequered graphic scale bar.
 
     Horizontal in every view, which is how a scale bar is read. On an
@@ -1807,8 +1889,13 @@ def _pdf_scale_bar(ax, model_span_m, xy, unit_len_data=1.0, ref_axis='X',
     the model is degenerate and no honest bar can be drawn).
     """
     from matplotlib.patches import Rectangle
+    u = u or ReportUnits()
 
-    length_m = _pdf_nice_length(model_span_m * PDF_SCALE_TARGET)
+    # The round number is chosen in the unit the bar will be LABELLED in,
+    # then converted back to draw it: a bar that is a round 5 m is 16.4 ft,
+    # which is not a scale bar.
+    shown = _pdf_nice_length(u.v('length', model_span_m) * PDF_SCALE_TARGET)
+    length_m = u.to_storage('length', shown) if shown > 0 else 0.0
     if length_m <= 0.0 or unit_len_data <= 0.0:
         return 0.0
 
@@ -1822,17 +1909,19 @@ def _pdf_scale_bar(ax, model_span_m, xy, unit_len_data=1.0, ref_axis='X',
                                edgecolor='#333333', linewidth=0.6, zorder=15))
     ax.text(bx, by - thick * 0.45, '0', fontsize=PDF_KEY_FS - 0.5,
             color=PDF_INK, ha='center', va='top', zorder=16)
-    ax.text(bx + drawn, by - thick * 0.45, f'{length_m:g}',
+    ax.text(bx + drawn, by - thick * 0.45, f'{shown:g}',
             fontsize=PDF_KEY_FS - 0.5, color=PDF_INK, ha='center', va='top',
             zorder=16)
     note = 'true to scale' if exact else f'along {ref_axis} (foreshortened)'
-    ax.text(bx + drawn / 2.0, by + thick * 1.5, f'{length_m:g} m · {note}',
+    ax.text(bx + drawn / 2.0, by + thick * 1.5,
+            f'{shown:g} {u.lab("length")} · {note}',
             fontsize=PDF_KEY_FS, color=PDF_INK, ha='center', va='bottom',
             zorder=16)
     return length_m
 
 
-def _pdf_orientation_triad(ax, az_rad, el_rad, arm_m, xy, caption_y=None):
+def _pdf_orientation_triad(ax, az_rad, el_rad, arm_m, xy, caption_y=None,
+                           u=None):
     """The X/Y/Z triad, every arm the same world length.
 
     This is what lets a reader orient the structure in 3D space from the
@@ -1906,7 +1995,9 @@ def _pdf_orientation_triad(ax, az_rad, el_rad, arm_m, xy, caption_y=None):
     # On a fixed line of the furniture band, not derived from the arm
     # geometry: deriving it put the caption through the middle of the
     # flat-axis symbol on every elevation.
-    head = (f'arms = {arm_m:g} m (all three)' if not flat
+    u = u or ReportUnits()
+    head = (f'arms = {u.v("length", arm_m):g} {u.lab("length")} (all three)'
+            if not flat
             else ' · '.join(notes))
     cap_y = caption_y if caption_y is not None else oy - arm_m * 0.9
     ax.text(ox - arm_m * 0.3, cap_y,
@@ -1936,7 +2027,7 @@ PDF_BAND_TRIAD = 0.135         # orientation indicator's origin, right
 PDF_TRIAD_ARM_MAX = 0.075
 
 
-def _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view):
+def _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view, u=None):
     """The almost-invisible dimension grid behind an orthographic view.
 
     Two things a bare wireframe cannot tell you: HOW BIG it is and WHERE
@@ -1950,11 +2041,16 @@ def _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view):
 
     Returns (spacing_m, n_levels) so the caller can say so in its panel.
     """
+    u = u or ReportUnits()
     x0, y0, x1, y1 = win
     h_axis, v_axis = view['h'], view['v']
     h_sign, v_sign = _pdf_ortho_frame(az_rad, el_rad, h_axis, v_axis)
 
-    spacing = _pdf_nice_length(max(x1 - x0, y1 - y0) * 0.12)
+    # Round in the unit the ruler is labelled in, then back -- see
+    # _pdf_scale_bar for why a grid at a round 2 m is not a grid at all
+    # once its numbers are written in feet.
+    step_shown = _pdf_nice_length(u.v('length', max(x1 - x0, y1 - y0) * 0.12))
+    spacing = u.to_storage('length', step_shown) if step_shown > 0 else 0.0
     if spacing <= 0.0:
         return 0.0, 0
 
@@ -1974,7 +2070,8 @@ def _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view):
             continue
         ax.plot([dxp, dxp], [y0, y1], color=PDF_GHOST_LINE, linewidth=0.5,
                 zorder=0)
-        ax.text(dxp, y0 + (y1 - y0) * PDF_BAND_RULER, f'{wh:g}',
+        ax.text(dxp, y0 + (y1 - y0) * PDF_BAND_RULER,
+                f'{u.v("length", wh):g}',
                 fontsize=PDF_KEY_FS - 1.4, color=PDF_GHOST_TEXT, ha='center',
                 va='bottom', zorder=1)
 
@@ -1986,16 +2083,16 @@ def _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view):
             continue
         ax.plot([x0, x1], [dyp, dyp], color=PDF_GHOST_LINE, linewidth=0.5,
                 zorder=0)
-        ax.text(x0 + (x1 - x0) * 0.006, dyp, f'{wv:g}',
+        ax.text(x0 + (x1 - x0) * 0.006, dyp, f'{u.v("length", wv):g}',
                 fontsize=PDF_KEY_FS - 1.4, color=PDF_GHOST_TEXT, ha='left',
                 va='bottom', zorder=1)
 
     # The axis NAMES sit a line above the ruler numbers, not among them.
     ax.text(x1 - (x1 - x0) * 0.004, y0 + (y1 - y0) * (PDF_BAND_RULER + 0.026),
-            f'{h_axis} (m) \u2192', fontsize=PDF_KEY_FS - 1.0,
+            f'{h_axis} ({u.lab("length")}) \u2192', fontsize=PDF_KEY_FS - 1.0,
             color=PDF_GHOST_TEXT, ha='right', va='bottom', zorder=1)
     ax.text(x0 + (x1 - x0) * 0.006, y1 - (y1 - y0) * 0.008,
-            f'\u2191 {v_axis} (m)', fontsize=PDF_KEY_FS - 1.0,
+            f'\u2191 {v_axis} ({u.lab("length")})', fontsize=PDF_KEY_FS - 1.0,
             color=PDF_GHOST_TEXT, ha='left', va='top', zorder=1)
 
     # Named levels: the structure's own distinct heights, which is what an
@@ -2010,7 +2107,8 @@ def _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view):
                     continue
                 ax.plot([x0, x1], [dyp, dyp], color=PDF_LEVEL_LINE,
                         linewidth=0.7, linestyle=(0, (6, 3)), zorder=1)
-                ax.text(x1 - (x1 - x0) * 0.004, dyp, f'  {z:+.2f} ',
+                ax.text(x1 - (x1 - x0) * 0.004, dyp,
+                        f'  {u.f("length", z, 2, sign=True)} ',
                         fontsize=PDF_KEY_FS - 0.8, color='#6b7680',
                         ha='right', va='bottom', zorder=2)
                 n_levels += 1
@@ -2018,7 +2116,7 @@ def _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view):
 
 
 def _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad, extra_pts=(),
-                 reserve_top=0.0, view=None):
+                 reserve_top=0.0, view=None, u=None):
     """Fit the view, then hang the grid, the scale bar and the triad on it.
 
     `reserve_top` is how much of the axes the colour key and the stats
@@ -2029,6 +2127,7 @@ def _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad, extra_pts=(),
     Returns (window, scale_len_m, arm_m, grid) where grid is
     (spacing_m, n_levels) or (0.0, 0).
     """
+    u = u or ReportUnits()
     band = PDF_FURNITURE_BAND if view is not None else PDF_FURNITURE_BAND_ISO
     win = _pdf_fit_window(ax, list(proj_2d) + list(extra_pts),
                           reserve_top=reserve_top, reserve_bottom=band)
@@ -2039,7 +2138,7 @@ def _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad, extra_pts=(),
 
     grid = (0.0, 0)
     if view is not None:
-        grid = _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view)
+        grid = _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view, u=u)
 
     # On an orthographic sheet the drawn horizontal axis IS a world axis,
     # so one metre of it is one data unit and the bar is exactly true. On
@@ -2049,13 +2148,15 @@ def _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad, extra_pts=(),
     unit = math.hypot(*_pdf_project(*PDF_AXIS_UNIT[ref], az_rad, el_rad))
     bar_xy = (x0 + w * 0.045, y0 + h * PDF_BAND_SCALE)
     scale_len = _pdf_scale_bar(ax, span, bar_xy, unit_len_data=unit,
-                               ref_axis=ref, exact=view is not None)
+                               ref_axis=ref, exact=view is not None, u=u)
 
     want = min(span * 0.16, h * PDF_TRIAD_ARM_MAX)
-    arm = _pdf_nice_length(want) or max(want, 1e-3)
+    arm_shown = _pdf_nice_length(u.v('length', want))
+    arm = (u.to_storage('length', arm_shown) if arm_shown > 0
+           else max(want, 1e-3))
     triad_xy = (x1 - w * 0.12, y0 + h * PDF_BAND_TRIAD)
     _pdf_orientation_triad(ax, az_rad, el_rad, arm, triad_xy,
-                           caption_y=y0 + h * PDF_BAND_TRIAD_TEXT)
+                           caption_y=y0 + h * PDF_BAND_TRIAD_TEXT, u=u)
 
     if view is not None:
         ax.text((x0 + x1) / 2.0, y0 + h * PDF_BAND_CAPTION, view['caption'],
@@ -2065,7 +2166,7 @@ def _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad, extra_pts=(),
 
 
 def _pdf_finish_view(ax, nodes, proj_2d, az_rad, el_rad, key, stats,
-                     extra_pts=(), view=None):
+                     extra_pts=(), view=None, u=None):
     """Close one view sheet.
 
     The order matters and is the whole point: the key and the stats panel
@@ -2078,7 +2179,8 @@ def _pdf_finish_view(ax, nodes, proj_2d, az_rad, el_rad, key, stats,
     key.finish()
     _pdf_stats_panel(ax, stats)
     return _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad,
-                        extra_pts=extra_pts, reserve_top=reserve, view=view)
+                        extra_pts=extra_pts, reserve_top=reserve, view=view,
+                        u=u)
 
 
 def _pdf_stress_widths(members, member_res, lo=None, hi=None):
@@ -2376,26 +2478,30 @@ def _pdf_fit_window(ax, pts, reserve_top=0.0, reserve_bottom=0.20,
 
 # ── per-view statistics ───────────────────────────────────────────────────
 
-def _pdf_fmt_node(nodes, i):
-    x, y, z = nodes[i]
+def _pdf_fmt_node(nodes, i, u=None):
+    u = u or ReportUnits()
+    x, y, z = (u.v('length', c) for c in nodes[i])
     return f'#{i} ({x:.2f}, {y:.2f}, {z:.2f})'
 
 
-def _pdf_fmt_bar(nodes, members, i):
+def _pdf_fmt_bar(nodes, members, i, u=None):
     """'bar 98: nodes 35 → 44 at (x, y, z)', so the reader can FIND it.
 
     Naming only one of a bar's two ends, as the first draft did, is not
     enough to identify it in the model tree or in the Excel export.
     """
+    u = u or ReportUnits()
     m = members[i]
     a, b = m['a'], m['b']
-    mid = tuple((nodes[a][k] + nodes[b][k]) / 2.0 for k in range(3))
+    mid = tuple(u.v('length', (nodes[a][k] + nodes[b][k]) / 2.0)
+                for k in range(3))
     return (f'bar {i}: nodes {a} → {b}',
             f'  mid ({mid[0]:.2f}, {mid[1]:.2f}, {mid[2]:.2f})')
 
 
-def _pdf_force_stats(nodes, members, member_res):
+def _pdf_force_stats(nodes, members, member_res, u=None):
     """Axial-force numbers worth printing beside the axial-force drawing."""
+    u = u or ReportUnits()
     forces = [mr['N'] for mr in member_res]
     if not forces:
         return ['AXIAL FORCE', 'no members']
@@ -2414,12 +2520,13 @@ def _pdf_force_stats(nodes, members, member_res):
         f'in compression  {n_c}   ({n_c / len(forces):.0%})',
         f'near zero       {n_zero}   (<{NEAR_ZERO_FRAC:.0%} of peak)',
         '',
-        f'max tension     {forces[i_max]:+.2f} kN',
+        f'max tension     {u.fl("force", forces[i_max], 2, sign=True)}',
     ]
-    out += [f'  {ln}' for ln in _pdf_fmt_bar(nodes, members, i_max)]
-    out.append(f'max compression {forces[i_min]:+.2f} kN')
-    out += [f'  {ln}' for ln in _pdf_fmt_bar(nodes, members, i_min)]
-    out.append(f'mean |N|        {total_abs / len(forces):.2f} kN')
+    out += [f'  {ln}' for ln in _pdf_fmt_bar(nodes, members, i_max, u)]
+    out.append(f'max compression {u.fl("force", forces[i_min], 2, sign=True)}')
+    out += [f'  {ln}' for ln in _pdf_fmt_bar(nodes, members, i_min, u)]
+    out.append(f'mean |N|        '
+               f'{u.fl("force", total_abs / len(forces))}')
     return out
 
 
@@ -2453,8 +2560,9 @@ def _pdf_util_stats(checks):
     ]
 
 
-def _pdf_moment_stats(nodes, moment_by_node, n_rigid, n_members):
+def _pdf_moment_stats(nodes, moment_by_node, n_rigid, n_members, u=None):
     """Nodal-moment numbers, and an honest line when there are none."""
+    u = u or ReportUnits()
     if not moment_by_node:
         return [
             'NODAL MOMENTS',
@@ -2475,17 +2583,62 @@ def _pdf_moment_stats(nodes, moment_by_node, n_rigid, n_members):
         f'rigid connections  {n_rigid} of {n_members}',
         f'joints with moment {len(vals)}',
         '',
-        f'max positive   {moment_by_node[i_pos]:+.3f} kN·m',
-        f'  node {_pdf_fmt_node(nodes, i_pos)}',
-        f'max negative   {moment_by_node[i_neg]:+.3f} kN·m',
-        f'  node {_pdf_fmt_node(nodes, i_neg)}',
-        f'peak |M|       {peak:.3f} kN·m',
-        f'mean |M|       {sum(abs(v) for v in vals) / len(vals):.3f} kN·m',
+        f'max positive   '
+        f'{u.fl("moment", moment_by_node[i_pos], 3, sign=True)}',
+        f'  node {_pdf_fmt_node(nodes, i_pos, u)}',
+        f'max negative   '
+        f'{u.fl("moment", moment_by_node[i_neg], 3, sign=True)}',
+        f'  node {_pdf_fmt_node(nodes, i_neg, u)}',
+        f'peak |M|       {u.fl("moment", peak, 3)}',
+        f'mean |M|       '
+        f'{u.fl("moment", sum(abs(v) for v in vals) / len(vals), 3)}',
     ]
 
 
-def _pdf_deform_stats(nodes, node_res, disps, scale_factor, span_m):
+# The serviceability limit the deformed sheet is judged against. L/250 of
+# the span under the total load is the common SI roof limit (CIRSOC 301
+# follows EN 1993-1-1's recommended values, which give L/250 total and
+# L/300 for the variable part alone). It is a RECOMMENDED value, not a
+# hard rule: it is the number a project brief usually adopts and
+# occasionally overrides, so export_pdf takes it as an argument.
+PDF_DEFLECTION_DENOM = 250
+
+
+def _pdf_deflection_check(disps, ext, longest_bar_m, denom=PDF_DEFLECTION_DENOM):
+    """Worst displacement against its allowance. Returns a dict, or None.
+
+    The reference span is the model's largest HORIZONTAL extent, not its
+    longest bar: a serviceability limit is about how far the structure
+    sags between its supports, and the longest single rod in a space truss
+    is a diagonal of one module, which would make the allowance far too
+    tight. Where the model has no horizontal extent at all (a single
+    column) the longest bar is the only length there is, so it is used.
+
+    `ratio` is displacement / allowance: at or below 1.0 the structure
+    passes. It is a ratio of two lengths, so it is the same number in
+    every unit convention.
+    """
+    if not disps or denom <= 0:
+        return None
+    span_m = max(ext[0], ext[1]) or longest_bar_m
+    if span_m <= 0:
+        return None
+    allow_mm = span_m * 1000.0 / denom
+    worst_mm = max(disps)
+    return {
+        'denom': denom,
+        'span_m': span_m,
+        'allow_mm': allow_mm,
+        'worst_mm': worst_mm,
+        'ratio': (worst_mm / allow_mm) if allow_mm > 0 else float('inf'),
+        'ok': worst_mm <= allow_mm,
+    }
+
+
+def _pdf_deform_stats(nodes, node_res, disps, scale_factor, span_m, u=None,
+                      check=None):
     """Displacement numbers, including the span/deflection ratio."""
+    u = u or ReportUnits()
     if not disps:
         return ['DEFORMED SHAPE', 'no nodes']
     i_max = max(range(len(disps)), key=lambda i: disps[i])
@@ -2494,18 +2647,37 @@ def _pdf_deform_stats(nodes, node_res, disps, scale_factor, span_m):
     ratio = (span_m * 1000.0 / max_disp) if max_disp > 1e-12 else float('inf')
     ratio_txt = f'L / {ratio:,.0f}' if ratio != float('inf') else 'L / inf'
     n_moving = sum(1 for d in disps if d > max_disp * 0.5) if max_disp else 0
+    tail = []
+    if check:
+        tail = [
+            '',
+            f'SERVICEABILITY  L / {check["denom"]}',
+            f'  span (ref)    {u.fl("length", check["span_m"])}',
+            f'  allowance     {u.fl("deflection", check["allow_mm"], 3)}',
+            f'  worst / allow {check["ratio"]:.3f}',
+            ('  VERDICT: within L / %d' % check['denom'] if check['ok']
+             else '  VERDICT: EXCEEDS L / %d' % check['denom']),
+        ]
     return [
         'DEFORMED SHAPE',
         f'display scale   x{scale_factor:,.0f}',
-        f'max |u|         {max_disp:.3f} mm',
-        f'  node {_pdf_fmt_node(nodes, i_max)}',
-        f'   ux {nr["ux"]:+.3f}  uy {nr["uy"]:+.3f}  uz {nr["uz"]:+.3f} mm',
+        f'max |u|         {u.fl("deflection", max_disp, 3)}',
+        f'  node {_pdf_fmt_node(nodes, i_max, u)}',
+        f'   ux {u.f("deflection", nr["ux"], 3, sign=True)}'
+        f'  uy {u.f("deflection", nr["uy"], 3, sign=True)}'
+        f'  uz {u.f("deflection", nr["uz"], 3, sign=True)} '
+        f'{u.lab("deflection")}',
         '',
-        f'longest bar     {span_m:.2f} m',
-        f'deflection      {ratio_txt}',
-        f'mean |u|        {sum(disps) / len(disps):.3f} mm',
+        f'longest bar     {u.fl("length", span_m)}',
+        # L/n is a RATIO of two lengths, so it is the one number here that
+        # is the same in every convention -- and must not be converted.
+        # Its L is the longest BAR; the serviceability block below takes
+        # its own L over the span, and saying which is which keeps two
+        # different ratios on one panel from reading as a contradiction.
+        f'deflection      {ratio_txt}  (longest bar)',
+        f'mean |u|        {u.fl("deflection", sum(disps) / len(disps), 3)}',
         f'nodes > 50% max {n_moving}',
-    ]
+    ] + tail
 
 
 def submodel(nodes, members, loads, supports, results=None, checks=None,
@@ -2593,6 +2765,13 @@ def _pdf_equilibrium(loads, reactions):
     return tuple(ap), tuple(rc), tuple(res)
 
 
+# How much of a table sheet's note fits on one line, and how far the next
+# one sits below it. Measured against the widest sheet the report draws,
+# at the 7.5 pt italic the note is set in.
+PDF_TABLE_NOTE_CHARS = 168
+PDF_TABLE_NOTE_PITCH = 0.021
+
+
 def _pdf_table_page(fig, title, headers, rows, widths, note='', tail_rows=()):
     """A plain monospaced table sheet, with alternating row shading.
 
@@ -2616,9 +2795,16 @@ def _pdf_table_page(fig, title, headers, rows, widths, note='', tail_rows=()):
             va='top', ha='left')
     top = 0.935
     if note:
-        ax.text(0.0, 0.965, note, fontsize=7.5, color='#5f6368', va='top',
-                ha='left', style='italic')
-        top = 0.915
+        # Wrapped, not trimmed. A one-line note ran off the right edge of
+        # the sheet the moment it said anything worth saying, and the
+        # sentence that fell off was invisible -- there is no clipping
+        # mark, the text simply stops at the paper's edge.
+        import textwrap
+        lines = textwrap.wrap(note, PDF_TABLE_NOTE_CHARS) or ['']
+        for k, line in enumerate(lines):
+            ax.text(0.0, 0.965 - k * PDF_TABLE_NOTE_PITCH, line, fontsize=7.5,
+                    color='#5f6368', va='top', ha='left', style='italic')
+        top = 0.915 - (len(lines) - 1) * PDF_TABLE_NOTE_PITCH
 
     total = sum(widths) or 1.0
     xs, acc = [], 0.0
@@ -2713,6 +2899,7 @@ def plan_sheets(results=None, checks=None, n_rigid=0, groups=None):
         plan += ['reactions', 'governing', 'solicitation_rods']
         if n_rigid:
             plan.append('solicitation_nodes')
+        plan.append('takeoff')
     return plan
 
 
@@ -2720,15 +2907,21 @@ def plan_sheets(results=None, checks=None, n_rigid=0, groups=None):
 
 def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                meta=None, az_deg=30, el_deg=25, ortho_views=True,
-               groups=None):
+               groups=None, deflection_denom=PDF_DEFLECTION_DENOM,
+               unit_weight_kN_m3=None):
     """Generate the multi-sheet PDF analysis report.
 
     Sheets: 1) the general (axonometric) view with the load case, then the
     five orthographic views -- plan, front, back, right, left -- each over
     its own dimension grid; then, once the model has been analysed, axial
-    force, utilisation (when members carry a section), nodal moments,
-    deformed shape, support reactions with the equilibrium check, and the
-    governing-member schedule.
+    force and utilisation (each in the general view and in plan, and
+    utilisation once more scaled to this model's own range), nodal
+    moments, bending and shear along the rods where the model has rigid
+    joints, the deformed shape with its serviceability verdict, support
+    reactions with the equilibrium check, the governing-member schedule,
+    the maximum-solicitation schedules for the rods and the nodes, and the
+    steel take-off. `plan_sheets` is the authority on which of those a
+    given model and `groups` selection actually produces.
 
     Every sheet carries a frame, a title block, a horizontal graphic scale
     bar, an orientation indicator and one colour key; see this section's
@@ -2741,7 +2934,11 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
     across the cut rather than a solver error.
 
     `ortho_views=False` drops the five orthographic sheets, for a short
-    report.
+    report. `deflection_denom` is the serviceability limit the deformed
+    sheet is judged against, as the n in L/n; None drops the check.
+    `unit_weight_kN_m3` is the material unit weight the take-off sheet
+    computes mass from; it defaults to the same one the self-weight load
+    case uses, so the two cannot disagree.
     """
     from common import _ensure_matplotlib
     if not _ensure_matplotlib():
@@ -2768,7 +2965,14 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
     proj_2d = [_pdf_project(x, y, z, az, el) for x, y, z in nodes]
     ext = _pdf_model_extents(nodes)
     span_m = max(max(ext), 1e-6)
-    sheet_meta = _pdf_sheet_meta(nodes, members, meta)
+    # Whatever the app-wide selector is set to AT EXPORT TIME -- the
+    # convention the reader was just looking at on screen.
+    u = ReportUnits()
+    sheet_meta = _pdf_sheet_meta(nodes, members, meta, u=u)
+
+    from apps.stereo import stereo_math as _sm
+    unit_weight = (_sm.DEFAULT_STEEL_UNIT_WEIGHT if unit_weight_kN_m3 is None
+                   else float(unit_weight_kN_m3))
 
     n_rigid = sum(1 for m in members if m.get('conn') == 'rigid')
     have_checks = bool(checks) and any(c.get('checked') for c in checks)
@@ -2830,8 +3034,9 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
             f'supports        {len(supports)}',
             f'loaded nodes    {n_loaded}',
             '',
-            'EXTENTS (m)',
-            f'  X  {ext[0]:.2f}   Y  {ext[1]:.2f}   Z  {ext[2]:.2f}',
+            f'EXTENTS ({u.lab("length")})',
+            f'  X  {u.f("length", ext[0])}   Y  {u.f("length", ext[1])}'
+            f'   Z  {u.f("length", ext[2])}',
         ]
         try:
             from apps.stereo import stereo_math as sm_mod
@@ -2840,16 +3045,19 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
         except Exception:
             pass
         ap, rc, resid = _pdf_equilibrium(loads, (results or {}).get('reactions'))
-        info += ['', 'APPLIED LOAD (kN)',
-                 f'  Fx {ap[0]:+.2f}  Fy {ap[1]:+.2f}  Fz {ap[2]:+.2f}']
+        info += ['', f'APPLIED LOAD ({u.lab("force")})',
+                 f'  Fx {u.f("force", ap[0], 2, sign=True)}'
+                 f'  Fy {u.f("force", ap[1], 2, sign=True)}'
+                 f'  Fz {u.f("force", ap[2], 2, sign=True)}']
         if results is not None:
             info += [
                 '', 'RESULTS',
             ] + [f'  {ln}' for ln in
-                 summary_text(nodes, members, results, checks).splitlines()[1:]]
+                 summary_text(nodes, members, results, checks,
+                              u=u).splitlines()[1:]]
         else:
             info += ['', '(not yet analysed)']
-        _pdf_finish_view(ax, nodes, proj_2d, az, el, key, info)
+        _pdf_finish_view(ax, nodes, proj_2d, az, el, key, info, u=u)
 
         pdf.savefig(fig)
         plt.close(fig)
@@ -2888,9 +3096,10 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
             n_i = 'XYZ'.index(view['normal'])
             vstats = [
                 view['caption'].split('  \u00b7  ')[0],
-                f"across    {view['h']}   {ext[h_i]:.2f} m",
-                f"up        {view['v']}   {ext[v_i]:.2f} m",
-                f"depth     {view['normal']}   {ext[n_i]:.2f} m  (into the sheet)",
+                f"across    {view['h']}   {u.fl('length', ext[h_i])}",
+                f"up        {view['v']}   {u.fl('length', ext[v_i])}",
+                f"depth     {view['normal']}   {u.fl('length', ext[n_i])}"
+                f"  (into the sheet)",
                 '',
                 f'nodes     {len(nodes)}',
                 f'bars      {len(members)}',
@@ -2900,10 +3109,12 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                 levels = sorted({round(n[2], 4) for n in nodes})
                 vstats += ['',
                            f'levels    {len(levels)}',
-                           f'  lowest  {levels[0]:+.2f} m',
-                           f'  highest {levels[-1]:+.2f} m']
+                           f'  lowest  '
+                           f'{u.fl("length", levels[0], 2, sign=True)}',
+                           f'  highest '
+                           f'{u.fl("length", levels[-1], 2, sign=True)}']
             _pdf_finish_view(ax, nodes, v_proj, v_az, v_el, vkey, vstats,
-                             view=view)
+                             view=view, u=u)
             pdf.savefig(fig)
             plt.close(fig)
 
@@ -2939,11 +3150,12 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
         def thickness_rows(key):
             if peak_sigma > 0:
                 key.note(f'bar thickness = axial stress |N|/A against this '
-                         f'model\'s own peak, {peak_sigma:,.2f} kN/cm²')
+                         f'model\'s own peak, '
+                         f'{u.f_stress_kn_cm2(peak_sigma)}')
 
         def force_sheet(view):
             where = 'plan view' if view else 'general view'
-            fig = new_sheet(f'Axial force — N (kN), {where}')
+            fig = new_sheet(f'Axial force — N ({u.lab("force")}), {where}')
             ax = _pdf_view_axes(fig)
             pts, v_az, v_el = view_proj(view)
 
@@ -2954,11 +3166,15 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
             _pdf_supports(ax, supports, pts)
 
             key = _PdfKey(ax)
-            key.caption('Axial force, kN  (+ tension / − compression)')
+            key.caption(f'Axial force, {u.lab("force")}  '
+                        f'(+ tension / − compression)')
             if max_abs_N > 0:
                 key.ramp(lambda N: force_color(N, max_abs_N), -max_abs_N, max_abs_N,
-                         [(-max_abs_N, f'−{max_abs_N:,.1f}'), (0.0, '0'),
-                          (max_abs_N, f'+{max_abs_N:,.1f}')])
+                         [(-max_abs_N,
+                           f'−{u.f("force", max_abs_N, 1, comma=True)}'),
+                          (0.0, '0'),
+                          (max_abs_N,
+                           f'+{u.f("force", max_abs_N, 1, comma=True)}')])
                 n_zero = sum(1 for mr in member_res
                              if abs(mr['N']) / max_abs_N < NEAR_ZERO_FRAC)
                 if n_zero:
@@ -2971,10 +3187,12 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                 key.row(MEMBER_PIN_COLOR,
                         f'dashed: {len(over)} bar(s) over capacity', dashed=True)
             thickness_rows(key)
-            stats = _pdf_force_stats(nodes, members, member_res)
+            stats = _pdf_force_stats(nodes, members, member_res, u=u)
             if peak_sigma > 0:
-                stats += ['', f'peak stress     {peak_sigma:,.2f} kN/cm²']
-            _pdf_finish_view(ax, nodes, pts, v_az, v_el, key, stats, view=view)
+                stats += ['', f'peak stress     '
+                              f'{u.f_stress_kn_cm2(peak_sigma)}']
+            _pdf_finish_view(ax, nodes, pts, v_az, v_el, key, stats, view=view,
+                             u=u)
             pdf.savefig(fig)
             plt.close(fig)
 
@@ -3033,7 +3251,7 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
             key.row(SUPPORT_COLOR, 'support', marker='s')
             thickness_rows(key)
             _pdf_finish_view(ax, nodes, pts, v_az, v_el, key,
-                             _pdf_util_stats(checks), view=view)
+                             _pdf_util_stats(checks), view=view, u=u)
             pdf.savefig(fig)
             plt.close(fig)
 
@@ -3051,7 +3269,7 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
         if 'moment_nodes' in plan:
             # nodal moments
             # ── Sheet 4: nodal moments ──────────────────────────────────────
-            fig = new_sheet('Nodal moments — M (kN·m)')
+            fig = new_sheet(f'Nodal moments — M ({u.lab("moment")})')
             ax = _pdf_view_axes(fig)
             moment_by_node = {}
             max_abs_m = 0.0
@@ -3096,22 +3314,24 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
 
             key = _PdfKey(ax)
             if moment_by_node:
-                key.caption('Node moment, kN·m (resultant, sagging + / hogging −)')
+                key.caption(f'Node moment, {u.lab("moment")} '
+                            f'(resultant, sagging + / hogging −)')
+                peak_shown = u.v('moment', max_abs_m)
                 key.ramp(lambda m_: moment_color(m_, max_abs_m), -max_abs_m, max_abs_m,
-                         [(-max_abs_m, f'−{max_abs_m:,.3g}'), (0.0, '0'),
-                          (max_abs_m, f'+{max_abs_m:,.3g}')])
+                         [(-max_abs_m, f'−{peak_shown:,.3g}'), (0.0, '0'),
+                          (max_abs_m, f'+{peak_shown:,.3g}')])
                 key.row(MOMENT_BACKDROP_COLOR,
                         'bars faded — the NODE colour is the content')
                 key.row(MOMENT_NEG_HIGH, 'orange = hogging (negative)')
                 key.row(MOMENT_POS_HIGH, 'violet = sagging (positive)')
             else:
-                key.caption('Node moment, kN·m')
+                key.caption(f'Node moment, {u.lab("moment")}')
                 key.note('no joint in this model transfers a moment')
                 key.row(MEMBER_PIN_COLOR, 'bar, pin connection')
             key.row(SUPPORT_COLOR, 'support', marker='s')
             _pdf_finish_view(ax, nodes, proj_2d, az, el, key,
                              _pdf_moment_stats(nodes, moment_by_node, n_rigid,
-                                               len(members)))
+                                               len(members), u=u), u=u)
             pdf.savefig(fig)
             plt.close(fig)
 
@@ -3125,7 +3345,8 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
         def along_rod_sheet(kind):
             from apps.stereo import stereo_math as sm_mod
             is_moment = kind == 'moment'
-            unit = 'kN·m' if is_moment else 'kN'
+            quantity = 'moment' if is_moment else 'force'
+            unit = u.lab(quantity)
             curves, peaks, res_peaks, flips = [], [], [], 0
             for i, mr in enumerate(member_res):
                 if mr.get('conn') != 'rigid':
@@ -3172,16 +3393,18 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
             key = _PdfKey(ax)
             key.caption(f'Peak |{"M" if is_moment else "V"}| along each rod, {unit}')
             if peak_res > 1e-12:
+                peak_shown = u.v(quantity, peak_res)
                 key.ramp(lambda v: moment_color(v if is_moment else -v, 1.0),
                          0.0, 1.0,
-                         [(0.0, '0'), (0.5, f'{peak_res * 0.5:,.3g}'),
-                          (1.0, f'{peak_res:,.3g}')])
+                         [(0.0, '0'), (0.5, f'{peak_shown * 0.5:,.3g}'),
+                          (1.0, f'{peak_shown:,.3g}')])
                 key.row(hot, 'diagram: the value along the rod, to one '
                              'common scale')
                 key.note('ordinate = the SIGNED component about the rod\'s '
                          'more heavily worked local axis, so a sign change '
                          'along the span shows')
-                key.note(f'tallest diagram = {peak_ord:,.3g} {unit}; '
+                key.note(f'tallest diagram = '
+                         f'{u.v(quantity, peak_ord):,.3g} {unit}; '
                          f'the ramp above is the RESULTANT peak per rod')
             else:
                 key.note(f'no rod in this model carries '
@@ -3204,14 +3427,17 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                 stats += ['',
                           'governing rod']
                 stats += [f'  {ln.strip()}'
-                          for ln in _pdf_fmt_bar(nodes, members, gi)]
-                stats += [f'  peak          {res_peaks[gi]:,.3f} {unit}',
-                          f'  at x          {at:.3f} m of {L:.3f} m',
+                          for ln in _pdf_fmt_bar(nodes, members, gi, u)]
+                stats += [f'  peak          '
+                          f'{u.fl(quantity, res_peaks[gi], 3, comma=True)}',
+                          f'  at x          {u.f("length", at, 3)} of '
+                          f'{u.fl("length", L, 3)}',
                           '',
-                          f'mean peak       {sum(live) / len(live):,.3f} {unit}',
+                          f'mean peak       '
+                          f'{u.fl(quantity, sum(live) / len(live), 3, comma=True)}',
                           f'sign reverses   {flips} rod(s) in span']
             _pdf_finish_view(ax, nodes, proj_2d, az, el, key, stats,
-                             extra_pts=extra)
+                             extra_pts=extra, u=u)
             pdf.savefig(fig)
             plt.close(fig)
 
@@ -3223,7 +3449,8 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
         if 'deformed' in plan:
             # deformed shape
             # ── Sheet 5: deformed shape ─────────────────────────────────────
-            fig = new_sheet('Deformed shape — displacement (mm)')
+            fig = new_sheet(f'Deformed shape — displacement '
+                            f'({u.lab("deflection")})')
             ax = _pdf_view_axes(fig)
             disps = [(nr['ux'] ** 2 + nr['uy'] ** 2 + nr['uz'] ** 2) ** 0.5
                      for nr in node_res]
@@ -3255,21 +3482,44 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                          linewidth=1.1, zorder=4)
             _pdf_supports(ax, supports, proj_2d)
 
+            check = (_pdf_deflection_check(disps, ext, longest,
+                                           deflection_denom)
+                     if deflection_denom else None)
+
             key = _PdfKey(ax)
-            key.caption(f'Deformed shape, displacement in mm (×{scale_factor:,.0f})')
+            key.caption(f'Deformed shape, displacement in '
+                        f'{u.lab("deflection")} (×{scale_factor:,.0f})')
             if max_disp > 0:
+                shown = u.v('deflection', max_disp)
+                # The ramp stays a MAGNITUDE scale and the allowance is
+                # marked on it, rather than the bars being recoloured by
+                # displacement/allowance. A fraction-of-allowance ramp
+                # reads as one flat colour on any structure comfortably
+                # inside its limit -- the same flaw the absolute
+                # utilisation sheet has -- and the deflected SHAPE, which
+                # is what this sheet exists to show, would go with it.
+                mark = None
+                if check and check['allow_mm'] <= max_disp:
+                    mark = (check['allow_mm'], f'L / {check["denom"]}')
                 key.ramp(lambda d: deform_color(d, max_disp), 0.0, max_disp,
-                         [(0.0, '0'), (max_disp / 2.0, f'{max_disp / 2.0:,.3g}'),
-                          (max_disp, f'{max_disp:,.3g}')])
+                         [(0.0, '0'), (max_disp / 2.0, f'{shown / 2.0:,.3g}'),
+                          (max_disp, f'{shown:,.3g}')],
+                         mark=mark)
             else:
                 key.note('the model did not move')
             key.row(PDF_UNDEFORMED, 'undeformed geometry (reference)')
             key.row(SUPPORT_COLOR, 'support', marker='s')
+            if check:
+                key.note(f'serviceability limit L / {check["denom"]} = '
+                         f'{u.fl("deflection", check["allow_mm"], 2)} over a '
+                         f'{u.fl("length", check["span_m"])} span — '
+                         f'{"within" if check["ok"] else "EXCEEDED"}')
             key.note('exaggerated — the scale bar measures the undeformed model')
             _pdf_finish_view(ax, nodes, proj_2d, az, el, key,
                              _pdf_deform_stats(nodes, node_res, disps,
-                                               scale_factor, longest),
-                             extra_pts=def_proj)
+                                               scale_factor, longest, u=u,
+                                               check=check),
+                             extra_pts=def_proj, u=u)
             pdf.savefig(fig)
             plt.close(fig)
 
@@ -3283,19 +3533,19 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                 r = reactions[i]
                 x, y, z = nodes[i]
                 rows.append([
-                    str(i), f'{x:.2f}', f'{y:.2f}', f'{z:.2f}',
-                    f'{r.get("Fx", 0.0):+.3f}', f'{r.get("Fy", 0.0):+.3f}',
-                    f'{r.get("Fz", 0.0):+.3f}', f'{r.get("Mx", 0.0):+.4f}',
-                    f'{r.get("My", 0.0):+.4f}', f'{r.get("Mz", 0.0):+.4f}',
-                ])
+                    str(i)] + [u.f('length', c) for c in (x, y, z)]
+                    + [u.f('force', r.get(k, 0.0), 3, sign=True)
+                       for k in ('Fx', 'Fy', 'Fz')]
+                    + [u.f('moment', r.get(k, 0.0), 4, sign=True)
+                       for k in ('Mx', 'My', 'Mz')])
             ap, rc, resid = _pdf_equilibrium(loads, reactions)
             tail = [
-                ['Σ react', '', '', '', f'{rc[0]:+.3f}', f'{rc[1]:+.3f}',
-                 f'{rc[2]:+.3f}', '', '', ''],
-                ['Σ applied', '', '', '', f'{ap[0]:+.3f}', f'{ap[1]:+.3f}',
-                 f'{ap[2]:+.3f}', '', '', ''],
-                ['residual', '', '', '', f'{resid[0]:+.2e}',
-                 f'{resid[1]:+.2e}', f'{resid[2]:+.2e}', '', '', ''],
+                ['Σ react', '', '', ''] +
+                [u.f('force', v, 3, sign=True) for v in rc] + ['', '', ''],
+                ['Σ applied', '', '', ''] +
+                [u.f('force', v, 3, sign=True) for v in ap] + ['', '', ''],
+                ['residual', '', '', ''] +
+                [f'{u.v("force", v):+.2e}' for v in resid] + ['', '', ''],
             ]
             worst_res = max(abs(v) for v in resid)
             scale_ref = max(abs(v) for v in ap) or 1.0
@@ -3304,14 +3554,17 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                 # used to carry load across the cut are gone, so the residual is
                 # exactly that transferred force. Calling it a solver error, as
                 # the whole-model wording does, would be wrong.
-                verdict = (f'residual {worst_res:,.2f} kN is the force the rest of '
-                           f'the structure carries across this cut, not an error')
+                verdict = (f'residual '
+                           f'{u.fl("force", worst_res, 2, comma=True)} is the '
+                           f'force the rest of the structure carries across '
+                           f'this cut, not an error')
             else:
                 verdict = ('equilibrium satisfied'
                            if worst_res <= max(1e-6, scale_ref * 1e-6)
-                           else f'residual {worst_res:.3e} kN — CHECK THE MODEL')
+                           else f'residual {u.v("force", worst_res):.3e} '
+                                f'{u.lab("force")} — CHECK THE MODEL')
             _pdf_table_page(
-                fig, 'Support reactions (kN, kN·m)',
+                fig, f'Support reactions ({u.lab("force")}, {u.lab("moment")})',
                 ['node', 'x', 'y', 'z', 'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz'],
                 rows, [0.9, 1.0, 1.0, 1.0, 1.25, 1.25, 1.25, 1.3, 1.3, 1.3],
                 note=f'Σ reaction + Σ applied must come to zero — {verdict}. '
@@ -3328,7 +3581,8 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
             if have_checks:
                 order = sorted((i for i, c in enumerate(checks) if c.get('checked')),
                                key=lambda i: checks[i]['util'], reverse=True)[:26]
-                headers = ['bar', 'from', 'to', 'L (m)', 'N (kN)', 'mode',
+                headers = ['bar', 'from', 'to', f'L ({u.lab("length")})',
+                           f'N ({u.lab("force")})', 'mode',
                            'util', 'KL/r', 'status']
                 rows = []
                 for i in order:
@@ -3338,8 +3592,10 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                     L = sum((a - b) ** 2 for a, b in zip(na, nb)) ** 0.5
                     sl = c.get('slenderness')
                     rows.append([
-                        str(i), str(m['a']), str(m['b']), f'{L:.3f}',
-                        f'{forces[i]:+.2f}', c.get('mode', ''),
+                        str(i), str(m['a']), str(m['b']),
+                        u.f('length', L, 3),
+                        u.f('force', forces[i], 2, sign=True),
+                        c.get('mode', ''),
                         f'{c["util"]:.3f}',
                         (f'{sl:.0f}' if isinstance(sl, (int, float)) else '—'),
                         ('OK' if c['util'] <= 1.0 else 'OVER'),
@@ -3357,13 +3613,15 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                     m = members[i]
                     na, nb = nodes[m['a']], nodes[m['b']]
                     L = sum((a - b) ** 2 for a, b in zip(na, nb)) ** 0.5
-                    rows.append([str(i), str(m['a']), str(m['b']), f'{L:.3f}',
-                                 f'{forces[i]:+.2f}',
+                    rows.append([str(i), str(m['a']), str(m['b']),
+                                 u.f('length', L, 3),
+                                 u.f('force', forces[i], 2, sign=True),
                                  ('tension' if forces[i] >= 0 else 'compression'),
                                  m.get('conn', 'pin')])
                 _pdf_table_page(
                     fig, 'Most loaded members',
-                    ['bar', 'from', 'to', 'L (m)', 'N (kN)', 'sense', 'conn'],
+                    ['bar', 'from', 'to', f'L ({u.lab("length")})',
+                     f'N ({u.lab("force")})', 'sense', 'conn'],
                     rows, [0.8, 0.8, 0.8, 1.1, 1.25, 1.4, 1.0],
                     note='Ranked by |N|. No member carries a section yet, so no '
                          'code check could be run — assign profiles to get the '
@@ -3401,17 +3659,22 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                                abs(r['N'])))
             order = sorted(range(len(sol)), key=lambda i: rank(sol[i]),
                            reverse=True)[:26]
-            headers = ['bar', 'from', 'to', 'L (m)', 'N (kN)', 'V (kN)',
-                       'M (kN·m)', 'T (kN·m)', '|N|/A', 'util']
+            headers = ['bar', 'from', 'to', f'L ({u.lab("length")})',
+                       f'N ({u.lab("force")})', f'V ({u.lab("force")})',
+                       f'M ({u.lab("moment")})', f'T ({u.lab("moment")})',
+                       f'|N|/A ({u.lab("stress")})', 'util']
 
             def sol_row(r, label=None):
                 return [label or str(r['i']),
                         '' if label else str(members[r['i']]['a']),
                         '' if label else str(members[r['i']]['b']),
-                        '' if label else f"{r['L']:.3f}",
-                        f"{r['N']:+.2f}", f"{r['V']:.2f}", f"{r['M']:.3f}",
-                        f"{r['T']:.3f}",
-                        ('—' if r['sig'] is None else f"{r['sig']:.3f}"),
+                        '' if label else u.f('length', r['L'], 3),
+                        u.f('force', r['N'], 2, sign=True),
+                        u.f('force', r['V'], 2),
+                        u.f('moment', r['M'], 3),
+                        u.f('moment', r['T'], 3),
+                        ('—' if r['sig'] is None
+                         else f"{u.stress_from_kn_cm2(r['sig']):.3f}"),
                         ('—' if r['util'] is None else f"{r['util']:.3f}")]
 
             rows = [sol_row(sol[i]) for i in order]
@@ -3429,14 +3692,19 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                 w = worst(field)
                 if w is None or abs(w[field]) <= 1e-12:
                     continue
-                val = w[field]
-                unit = {'N': 'kN', 'V': 'kN', 'M': 'kN·m', 'T': 'kN·m',
-                        'sig': 'kN/cm²', 'util': ''}[field]
+                quantity = {'N': 'force', 'V': 'force', 'M': 'moment',
+                            'T': 'moment'}.get(field)
+                if quantity:
+                    shown, unit = u.v(quantity, w[field]), u.lab(quantity)
+                elif field == 'sig':
+                    shown, unit = u.stress_from_kn_cm2(w[field]), u.lab('stress')
+                else:
+                    shown, unit = w[field], ''
                 tail.append([f'MAX {label}',
                              str(members[w['i']]['a']), str(members[w['i']]['b']),
-                             f"{w['L']:.3f}",
-                             f'{val:+.3f} {unit}'.strip() if field == 'N'
-                             else f'{val:.3f} {unit}'.strip(),
+                             u.f('length', w['L'], 3),
+                             f'{shown:+.3f} {unit}'.strip() if field == 'N'
+                             else f'{shown:.3f} {unit}'.strip(),
                              f"bar {w['i']}", '', '', '', ''])
             _pdf_table_page(
                 fig, 'Maximum solicitation of the rods', headers, rows,
@@ -3478,31 +3746,35 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
             order = sorted(range(len(joints)),
                            key=lambda k: (joints[k]['M'], joints[k]['N']),
                            reverse=True)[:26]
-            headers = ['node', 'x, y, z (m)', 'rods', 'M joint (kN·m)',
-                       'max |N| (kN)', 'max |V| (kN)', 'reaction (kN)', 'support']
+            headers = ['node', f'x, y, z ({u.lab("length")})', 'rods',
+                       f'M joint ({u.lab("moment")})',
+                       f'max |N| ({u.lab("force")})',
+                       f'max |V| ({u.lab("force")})',
+                       f'reaction ({u.lab("force")})', 'support']
             rows = []
             for k in order:
                 jt = joints[k]
-                x, y, z = nodes[jt['j']]
+                x, y, z = (u.v('length', c) for c in nodes[jt['j']])
                 rows.append([str(jt['j']), f'{x:.2f}, {y:.2f}, {z:.2f}',
-                             str(jt['deg']), f"{jt['M']:.3f}",
-                             f"{jt['N']:.2f}", f"{jt['V']:.2f}",
-                             (f"{jt['R']:.2f}" if jt['sup'] else '—'),
+                             str(jt['deg']), u.f('moment', jt['M'], 3),
+                             u.f('force', jt['N'], 2),
+                             u.f('force', jt['V'], 2),
+                             (u.f('force', jt['R'], 2) if jt['sup'] else '—'),
                              ('yes' if jt['sup'] else '')])
             tail = []
             # Short labels on purpose: the first column is one column wide,
             # and a label that outruns it prints straight over the next one.
-            for field, label, unit in (('M', 'M joint', 'kN·m'),
-                                       ('N', '|N| rod', 'kN'),
-                                       ('V', '|V| rod', 'kN'),
-                                       ('R', 'reaction', 'kN')):
+            for field, label, quantity in (('M', 'M joint', 'moment'),
+                                           ('N', '|N| rod', 'force'),
+                                           ('V', '|V| rod', 'force'),
+                                           ('R', 'reaction', 'force')):
                 live = [jt for jt in joints if jt[field] > 1e-12]
                 if not live:
                     continue
                 w = max(live, key=lambda jt: jt[field])
-                x, y, z = nodes[w['j']]
+                x, y, z = (u.v('length', c) for c in nodes[w['j']])
                 tail.append([f'MAX {label}', f'{x:.2f}, {y:.2f}, {z:.2f}',
-                             str(w['deg']), f"{w[field]:.3f} {unit}",
+                             str(w['deg']), u.fl(quantity, w[field], 3),
                              f"node {w['j']}", '', '', ''])
             _pdf_table_page(
                 fig, 'Maximum solicitation of the nodes', headers, rows,
@@ -3511,6 +3783,69 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                      'largest resultant end-moment any rigid rod imposes there — '
                      'what a Vierendeel connection is detailed for; a pin joint '
                      'reads 0.00 by definition.',
+                tail_rows=tail)
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        if 'takeoff' in plan:
+            # ── Steel take-off ──────────────────────────────────────────
+            #
+            # What the structure weighs, by section. It is the number a
+            # brief is costed from and the one an audience remembers
+            # ("this dome is four tonnes"), and it comes free out of data
+            # the report already has.
+            fig = new_sheet('Steel take-off')
+            by_profile = {}
+            for i, m in enumerate(members):
+                na, nb = nodes[m['a']], nodes[m['b']]
+                L = math.dist(na, nb)
+                name = (m.get('profile') or '').strip() or '(no profile)'
+                A = float(m.get('A', 0.0) or 0.0)
+                e = by_profile.setdefault(name, {'n': 0, 'L': 0.0, 'A': A,
+                                                 'kg': 0.0, 'mixed': False})
+                e['n'] += 1
+                e['L'] += L
+                # kN/m^3 -> kg/m^3 at standard gravity, so the sheet can
+                # report a mass rather than a weight.
+                e['kg'] += A * 1e-4 * L * unit_weight * 1000.0 / 9.80665
+                if abs(A - e['A']) > 1e-9:
+                    e['mixed'] = True       # one name, two section areas
+
+            rows = []
+            for name in sorted(by_profile, key=lambda k: -by_profile[k]['kg']):
+                e = by_profile[name]
+                rows.append([
+                    name[:22] + (' *' if e['mixed'] else ''),
+                    str(e['n']),
+                    ('—' if e['mixed'] else f"{u.v('area', e['A']):.2f}"),
+                    u.f('length', e['L'], 2, comma=True),
+                    u.f('length', e['L'] / e['n'], 3),
+                    f"{e['kg'] / max(e['L'], 1e-9):.2f}",
+                    f"{e['kg']:,.1f}",
+                ])
+            total_L = sum(e['L'] for e in by_profile.values())
+            total_kg = sum(e['kg'] for e in by_profile.values())
+            tail = [['TOTAL  (kg)', str(len(members)), '',
+                     u.f('length', total_L, 2, comma=True), '', '',
+                     f'{total_kg:,.1f}'],
+                    ['TOTAL  (tonnes)', '', '', '', '', '',
+                     f'{total_kg / 1000.0:,.3f}']]
+            foot = ''
+            if any(e['mixed'] for e in by_profile.values()):
+                foot = (' A row marked * groups bars that share a profile '
+                        'NAME but not the same area, so its area and mass '
+                        'per length are not one number.')
+            _pdf_table_page(
+                fig, 'Steel take-off, by section',
+                ['profile', 'bars', f'A ({u.lab("area")})',
+                 f'total L ({u.lab("length")})',
+                 f'mean L ({u.lab("length")})', 'kg/m', 'mass (kg)'],
+                rows, [2.2, 0.8, 1.1, 1.35, 1.35, 1.0, 1.3],
+                note=f'Mass from the section area at {unit_weight:g} '
+                     f'kN/m³ — the unit weight the self-weight load case '
+                     f'uses, so the two cannot disagree. Bars with no '
+                     f'section contribute none. kg whatever the '
+                     f'convention: mass is not a converted quantity.{foot}',
                 tail_rows=tail)
             pdf.savefig(fig)
             plt.close(fig)

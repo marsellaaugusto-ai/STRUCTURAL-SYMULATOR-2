@@ -47,6 +47,72 @@ One honesty note that came with the isolation feature: an isolated group is a **
 | "a complete pdf file of a selection or group or sub group … isolated" | Already in the second pass (**PDF of Selection…**), and now it takes the sheet chooser too — with the sub-model's *own* rigid count, so a pin-jointed group cut out of a rigid model is not offered sheets it cannot fill. |
 | "put the name of the document in the pdf presentation with the name of the group" | The title block's **GROUP** and **FILE** fields, from the second pass, carry it on every sheet of a selection report. |
 
+### Two additions that answer "so is it alright?"
+
+**A serviceability verdict on the deformed sheet.** It reported `L / 412`
+and left the reader to know whether that passed. It now carries the limit
+as well: the allowance `L / 250` (the recommended SI roof value; CIRSOC
+301 follows EN 1993-1-1 here, and `export_pdf` takes the denominator as an
+argument for a brief that says otherwise), the span it is taken over, the
+ratio of worst displacement to allowance, and a one-line VERDICT.
+
+The reference span is the model's largest **horizontal extent**, not its
+longest bar. A serviceability limit is about how far a structure sags
+between its supports, and the longest single rod in a space truss is the
+diagonal of one module — using it would make the allowance several times
+too tight. Where a model has no horizontal extent at all (a lone column)
+the longest bar is the only length there is, and it is used.
+
+The bars are still coloured by displacement **magnitude**, with the
+allowance drawn as a rule across the ramp, rather than recoloured by
+displacement ÷ allowance. A fraction-of-allowance ramp reads as one flat
+colour on any structure comfortably inside its limit — the same flaw the
+absolute utilisation sheet has — and the deflected *shape*, which is what
+this sheet exists to show, would go flat with it.
+
+**A steel take-off.** Bars, area, total and mean length, kg/m and mass per
+section, ranked by mass, closing on the total in kg and tonnes. Mass is
+computed from the section area and the **same unit weight the self-weight
+load case uses**, so the weight the report states and the weight the
+solver applied cannot disagree. Bars sharing a profile name but not an
+area are marked, rather than averaged into a single misleading figure.
+Mass stays in kg and tonnes in every convention, because mass is not one
+of the quantities the unit selector converts.
+
+### The units on the sheet
+
+The app has an app-wide unit selector (CIRSOC, Eurocode, NBR, CSA, AISC).
+Until this pass the report ignored it: `kN`, `m` and `mm` were hard-coded
+into some sixty format strings and `m, kN, mm` into the title block.
+Switch the app to AISC and the screen said kip while the sheet said kN,
+over the same model, with nothing on the sheet admitting it.
+
+Every number the report prints now goes through `ReportUnits`, which
+converts from the units the tab **stores** in (declared once, in
+`stereo_reports.STORAGE_UNITS`, and imported by `stereo_app` so the two
+cannot drift) to the convention selected **at export time** — the one the
+reader was just looking at. The title block states which.
+
+Two things are deliberately *not* converted:
+
+- **Utilisation**, and the **L / n** deflection ratio. Both are ratios of
+  two like quantities, so they are the same number in every convention;
+  "converting" them would be a straightforward error.
+- The **round numbers the report chooses for itself** — a scale bar's
+  length, the ghost grid's spacing, the triad's arm — are picked in the
+  unit they will be *labelled* in and then converted back to draw. A bar
+  that is a round 5 m is 16.4 ft, which is not a scale bar.
+
+One unit needed reconciling: `|N| / A` falls out of the model in kN/cm²,
+because that is what force and area are stored in, while the tab stores a
+*stress* (Fy, Fu) in MPa. `ReportUnits.stress_from_kn_cm2` carries it
+across before re-expressing it, so the peak stress on the axial-force
+sheet and `Fy` in the member table are in the same unit as each other,
+whichever convention is selected.
+
+The Excel export still writes SI regardless of the selector. That is a
+separate gap, and a known one.
+
 ### Choosing the sheets
 
 The full report is nineteen sheets on a rigid-jointed model. That is the
@@ -112,7 +178,8 @@ inside their span.
 **15 — Deformed shape.** The undeformed geometry as a ghost, the deformed
 one coloured by displacement, exaggeration factor stated in the caption.
 Stats: max |u| with its node and its ux/uy/uz components, the longest bar,
-and the deflection as an **L / n** ratio.
+the deflection as an **L / n** ratio, and the serviceability check against
+**L / 250** with its span, allowance, ratio and verdict.
 
 **16 — Support reactions and equilibrium.** Every restrained node's Fx, Fy,
 Fz, Mx, My, Mz, then Σ reaction, Σ applied and the **residual** between
@@ -128,6 +195,9 @@ bar, with the envelope of each and the bar that owns it.
 
 **19 — Maximum solicitation, nodes.** Rigid models only: the joint moment,
 the worst axial and shear framing in, the reaction, and the envelope.
+
+**20 — Steel take-off.** Bars, area, total and mean length, kg/m and mass
+per section, ranked by mass, closing on the total in kg and tonnes.
 
 ## Rebuilding the hand-out artefacts
 

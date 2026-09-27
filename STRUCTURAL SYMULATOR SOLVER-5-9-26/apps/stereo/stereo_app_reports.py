@@ -273,9 +273,10 @@ class StereoReportsMixin:
          'at the joints, and — on a rigid model — bending and shear along '
          'the rods'),
         ('deformed', 'Deformed shape',
-         'the displaced geometry against the undeformed ghost'),
+         'the displaced geometry, with the serviceability verdict'),
         ('tables', 'Schedules',
-         'reactions and equilibrium, governing members, maximum solicitation'),
+         'reactions and equilibrium, governing members, maximum '
+         'solicitation, steel take-off'),
     )
 
     def _pdf_sheet_dialog(self, title, results, checks, n_rigid):
@@ -397,7 +398,8 @@ class StereoReportsMixin:
                                 'subset_of': self._model_name(),
                                 'grid_family': self._model_name()},
                           az_deg=self.azimuth, el_deg=self.elevation,
-                          groups=groups)
+                          groups=groups,
+                          unit_weight_kN_m3=self.unit_weight_var.get())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return
@@ -433,7 +435,8 @@ class StereoReportsMixin:
                           self.results, path, checks=self.member_checks,
                           meta={'grid_family': self._model_name()},
                           az_deg=self.azimuth, el_deg=self.elevation,
-                          groups=groups)
+                          groups=groups,
+                          unit_weight_kN_m3=self.unit_weight_var.get())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return

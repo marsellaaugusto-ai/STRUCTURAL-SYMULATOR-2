@@ -240,10 +240,17 @@ def test_export_pdf_with_checks_has_the_utilization_sheet():
         sr.export_pdf(nodes, members, loads, supports, res, with_checks,
                       checks=checks)
         sr.export_pdf(nodes, members, loads, supports, res, without)
-        # 1 general + 5 orthographic + 4 analysis + 2 tables, and one more
-        # analysis sheet when the members carry a checkable section
-        assert _pdf_page_count(with_checks) == 12
-        assert _pdf_page_count(without) == 11
+        # Counted from plan_sheets rather than written out as a number:
+        # the plan IS what the render loop walks and what the title
+        # block's 'Sheet n / N' counts, so pinning the magic number here
+        # only made this test go stale every time a sheet was added.
+        n_rigid = sum(1 for m in members if m.get('conn') == 'rigid')
+        assert _pdf_page_count(with_checks) == \
+            len(sr.plan_sheets(res, checks, n_rigid))
+        assert _pdf_page_count(without) == \
+            len(sr.plan_sheets(res, None, n_rigid))
+        # the utilisation sheets are exactly what the sections buy
+        assert _pdf_page_count(with_checks) > _pdf_page_count(without)
 
 
 # ── 6.1  PDF sheet furniture ──────────────────────────────────────────────
@@ -345,10 +352,15 @@ def test_the_report_carries_a_sheet_for_every_view():
         sr.export_pdf(nodes, members, loads, supports, res, full, checks=checks)
         sr.export_pdf(nodes, members, loads, supports, res, short,
                       checks=checks, ortho_views=False)
-        # 1 general + 5 orthographic + 4 analysis + 2 tables
-        assert _pdf_page_count(full) == 12
-        assert _pdf_page_count(short) == 7
+        n_rigid = sum(1 for m in members if m.get('conn') == 'rigid')
+        assert _pdf_page_count(full) == \
+            len(sr.plan_sheets(res, checks, n_rigid))
+        # whatever else the report gains, dropping ortho_views drops
+        # exactly the five orthographic sheets and nothing else
         assert _pdf_page_count(full) - _pdf_page_count(short) == 5
+        assert _pdf_page_count(short) == len(sr.plan_sheets(
+            res, checks, n_rigid,
+            set(sr.PDF_SHEET_GROUPS) - {'views'}))
 
 
 def test_an_unanalysed_report_still_carries_the_views():
@@ -444,7 +456,10 @@ def test_a_selection_report_names_both_the_file_and_the_group():
         sr.export_pdf(s[0], s[1], s[2], s[3], s[4], path, checks=s[5],
                       meta=meta)
         assert os.path.isfile(path)
-        assert _pdf_page_count(path) == 11   # no checks -> no utilisation sheet
+        sub_rigid = sum(1 for m in s[1] if m.get('conn') == 'rigid')
+        # no checks travelled with the cut, so no utilisation sheets
+        assert _pdf_page_count(path) == \
+            len(sr.plan_sheets(s[4], s[5], sub_rigid))
 
 
 def test_a_whole_model_report_still_names_the_model():
@@ -970,3 +985,262 @@ def test_table_tail_rows_are_drawn_below_the_last_body_row():
         assert any(y > tail_y for y in rule_ys)
     finally:
         plt.close(fig)
+
+
+# ── the report follows the app-wide unit selector ────────────────────────
+
+def _read_pdf_text(path):
+    """Every string a reader would see on the sheets.
+
+    Through poppler's pdftotext, not by grepping the content stream:
+    matplotlib embeds a subset font and writes glyph INDICES, so the
+    bytes of a page that plainly reads "kN" contain no k and no N. The
+    first version of this helper searched the raw stream and passed on
+    nothing at all.
+    """
+    import shutil
+    import subprocess
+    exe = shutil.which('pdftotext')
+    if exe is None:
+        pytest.skip('pdftotext (poppler-utils) is not installed')
+    p = subprocess.run([exe, '-layout', path, '-'], capture_output=True)
+    assert p.returncode == 0, p.stderr.decode('utf-8', 'replace')
+    return p.stdout.decode('utf-8', 'replace')
+
+
+@pytest.fixture
+def unit_selector():
+    """Leave the app-wide selector exactly as it was found."""
+    import units
+    before = units.current()
+    yield units
+    units.set_current(
+        [k for k in units.ORDER if units.SYSTEMS[k] is before][0])
+
+
+def test_report_units_convert_from_the_tab_storage(unit_selector):
+    unit_selector.set_current('aisc')
+    u = sr.ReportUnits()
+    assert u.v('force', 100.0) == pytest.approx(22.4809, rel=1e-3)   # kN -> kip
+    assert u.v('length', 6.0) == pytest.approx(19.685, rel=1e-3)     # m  -> ft
+    assert u.v('deflection', 25.4) == pytest.approx(1.0, rel=1e-3)   # mm -> in
+    assert u.lab('force') == 'kip'
+    assert u.title_block() == 'ft, kip, in'
+
+
+def test_report_units_round_trip_through_to_storage(unit_selector):
+    for key in unit_selector.ORDER:
+        unit_selector.set_current(key)
+        u = sr.ReportUnits()
+        for quantity, value in (('length', 6.0), ('force', 250.0),
+                                ('moment', 12.5), ('deflection', 3.2)):
+            assert u.to_storage(quantity, u.v(quantity, value)) == \
+                pytest.approx(value, rel=1e-9), (key, quantity)
+
+
+def test_stress_from_kn_cm2_lands_on_the_right_unit(unit_selector):
+    """|N|/A comes out of the model in kN/cm^2, while the tab stores a
+    stress in MPa -- the two have to be reconciled before conversion."""
+    unit_selector.set_current('cirsoc')
+    assert sr.ReportUnits().stress_from_kn_cm2(1.0) == pytest.approx(10.0)
+    unit_selector.set_current('aisc')
+    # 1 kN/cm^2 = 10 MPa = 1.4504 ksi
+    assert sr.ReportUnits().stress_from_kn_cm2(1.0) == pytest.approx(1.4504,
+                                                                     rel=1e-3)
+
+
+def test_the_title_block_states_the_selected_convention(unit_selector):
+    nodes, members, loads, supports = _built_model()
+    unit_selector.set_current('cirsoc')
+    assert dict(sr._pdf_sheet_meta(nodes, members))['UNITS'] == 'm, kN, mm'
+    unit_selector.set_current('aisc')
+    assert dict(sr._pdf_sheet_meta(nodes, members))['UNITS'] == 'ft, kip, in'
+
+
+def test_the_sheets_are_written_in_the_selected_convention(unit_selector,
+                                                           tmp_path):
+    """The whole point: switch the app to AISC and the PDF must not still
+    say kN. Before 2026-09-27 the units were hard-coded into sixty format
+    strings, so the report contradicted the screen it came from."""
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    unit_selector.set_current('aisc')
+    path = str(tmp_path / 'aisc.pdf')
+    sr.export_pdf(nodes, members, loads, supports, res, path, checks=checks,
+                  groups=set(sr.PDF_SHEET_GROUPS))
+    text = _read_pdf_text(path)
+    assert 'kip' in text
+    assert 'ft, kip, in' in text
+    # No line may still be written in SI. The one exemption is the line
+    # quoting the material unit weight, which the app itself labels kN/m³
+    # whatever is selected -- see test_the_takeoff_keeps_two_units_on_purpose.
+    si_only = [ln for ln in text.splitlines()
+               if ('kN' in ln or ' mm' in ln) and 'kN/m³' not in ln]
+    assert si_only == [], si_only
+
+
+def test_the_same_model_in_si_says_kN(unit_selector, tmp_path):
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    unit_selector.set_current('cirsoc')
+    path = str(tmp_path / 'si.pdf')
+    sr.export_pdf(nodes, members, loads, supports, res, path, checks=checks)
+    text = _read_pdf_text(path)
+    assert 'kN' in text
+    assert 'm, kN, mm' in text
+    assert 'kip' not in text
+    assert 'ksi' not in text
+
+
+def test_a_round_scale_bar_is_round_in_the_unit_it_is_labelled_in(
+        unit_selector):
+    """A bar that is a round 5 m is 16.4 ft, which is not a scale bar: the
+    round number has to be chosen in the unit that will be printed."""
+    from common import _ensure_matplotlib
+    assert _ensure_matplotlib()
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    unit_selector.set_current('aisc')
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    try:
+        u = sr.ReportUnits()
+        length_m = sr._pdf_scale_bar(ax, 30.0, (0.0, 0.0), u=u)
+        shown = u.v('length', length_m)
+        assert round(shown, 6) in (1, 2, 5, 10, 20, 50, 100, 200), shown
+        labels = [t.get_text() for t in ax.texts]
+        assert any('ft' in t for t in labels)
+        assert not any(t.endswith(' m') for t in labels)
+    finally:
+        plt.close(fig)
+
+
+def test_the_storage_declaration_is_shared_with_the_tab():
+    """Two copies of 'what a number in a member dict means' is exactly how
+    a report starts disagreeing with the app that wrote it."""
+    from apps.stereo.stereo_app import StereoApp
+    assert StereoApp.STORAGE_UNITS is sr.STORAGE_UNITS
+
+
+# ── serviceability, and the take-off ─────────────────────────────────────
+
+def test_the_deflection_check_measures_against_the_span_not_the_longest_bar():
+    """A serviceability limit is about how far the structure sags between
+    its supports. The longest single rod in a space truss is the diagonal
+    of one module; using it would make the allowance several times too
+    tight and fail structures that are fine."""
+    check = sr._pdf_deflection_check([10.0, 4.0], ext=(30.0, 12.0, 3.0),
+                                     longest_bar_m=2.5, denom=250)
+    assert check['span_m'] == pytest.approx(30.0)     # the X extent
+    assert check['allow_mm'] == pytest.approx(120.0)  # 30 m / 250
+    assert check['worst_mm'] == pytest.approx(10.0)
+    assert check['ratio'] == pytest.approx(10.0 / 120.0)
+    assert check['ok'] is True
+
+
+def test_the_deflection_check_falls_back_to_the_longest_bar():
+    """A lone column has no horizontal extent at all, and its longest bar
+    is then the only length there is."""
+    check = sr._pdf_deflection_check([3.0], ext=(0.0, 0.0, 8.0),
+                                     longest_bar_m=8.0, denom=250)
+    assert check['span_m'] == pytest.approx(8.0)
+
+
+def test_the_deflection_check_fails_a_model_that_sags_too_far():
+    check = sr._pdf_deflection_check([200.0], ext=(30.0, 12.0, 3.0),
+                                     longest_bar_m=2.5, denom=250)
+    assert check['ok'] is False
+    assert check['ratio'] > 1.0
+
+
+def test_the_deflection_check_is_skippable_and_degenerate_safe():
+    assert sr._pdf_deflection_check([], (1.0, 1.0, 1.0), 1.0) is None
+    assert sr._pdf_deflection_check([1.0], (0.0, 0.0, 0.0), 0.0) is None
+    assert sr._pdf_deflection_check([1.0], (1.0, 1.0, 1.0), 1.0, denom=0) is None
+
+
+def test_the_deformed_sheet_states_the_verdict(tmp_path):
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    path = str(tmp_path / 'd.pdf')
+    sr.export_pdf(nodes, members, loads, supports, res, path, checks=checks,
+                  groups={'deformed'})
+    text = _read_pdf_text(path)
+    assert 'SERVICEABILITY' in text
+    assert 'VERDICT' in text
+
+
+def test_the_takeoff_totals_agree_with_the_self_weight_load_case():
+    """The mass the report states and the weight the solver applied come
+    from one unit weight, so they cannot drift apart."""
+    nodes, members, loads, supports = _built_model()
+    total_W_kN = sum(-ld.get('fz', 0.0)
+                     for ld in sm.self_weight_loads(nodes, members))
+    total_kg = total_W_kN / 9.80665 * 1000.0
+    # the same arithmetic the take-off sheet does, per member
+    import math
+    by_hand = 0.0
+    for m in members:
+        L = math.dist(nodes[m['a']], nodes[m['b']])
+        by_hand += (m['A'] * 1e-4 * L * sm.DEFAULT_STEEL_UNIT_WEIGHT
+                    * 1000.0 / 9.80665)
+    assert by_hand == pytest.approx(total_kg, rel=1e-9)
+
+
+def test_the_takeoff_sheet_is_planned_with_the_tables():
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    assert 'takeoff' in sr.plan_sheets(res, checks, len(members))
+    assert 'takeoff' in sr.plan_sheets(res, checks, 0, {'tables'})
+    assert 'takeoff' not in sr.plan_sheets(res, checks, 0, {'force'})
+
+
+def test_the_takeoff_sheet_reports_a_mass(tmp_path):
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    path = str(tmp_path / 't.pdf')
+    sr.export_pdf(nodes, members, loads, supports, res, path, checks=checks,
+                  groups={'tables'})
+    text = _read_pdf_text(path)
+    assert 'take-off' in text
+    assert 'tonnes' in text
+
+
+def test_a_table_note_too_long_for_one_line_wraps_instead_of_running_off():
+    """Text that runs past the paper's edge is not clipped with a mark --
+    it simply stops, and the sentence that fell off is invisible."""
+    fig, _ = _diagram_axes()
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+    fig = plt.figure(figsize=sr.PDF_SHEET_IN)
+    try:
+        note = 'word ' * 120
+        ax = sr._pdf_table_page(fig, 'T', ['a'], [['1']], [1.0], note=note)
+        note_lines = [t for t in ax.texts if t.get_text().startswith('word')]
+        assert len(note_lines) > 1
+        for t in note_lines:
+            assert len(t.get_text()) <= sr.PDF_TABLE_NOTE_CHARS
+    finally:
+        plt.close(fig)
+
+
+def test_the_takeoff_keeps_two_units_on_purpose(unit_selector, tmp_path):
+    """Two things on the take-off sheet do not follow the selector, and
+    both are deliberate.
+
+    The material unit weight is quoted as the app holds it -- the tab's
+    own field is labelled kN/m³ whatever convention is selected -- so
+    converting it here would make the report disagree with the box the
+    number was typed into. And mass is simply not one of the quantities
+    the selector knows: there is no mass in units.QUANTITIES, so kg and
+    tonnes are the only honest answer. The sheet's note says both.
+    """
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    unit_selector.set_current('aisc')
+    path = str(tmp_path / 'takeoff.pdf')
+    sr.export_pdf(nodes, members, loads, supports, res, path, checks=checks,
+                  groups={'tables'})
+    text = _read_pdf_text(path)
+    assert 'kN/m³' in text          # the unit weight, as the app holds it
+    assert 'mass (kg)' in text      # not a converted quantity
+    assert 'tonnes' in text
+    assert 'not a converted quantity' in text   # and the sheet says so
+    # everything the selector DOES cover still followed it
+    assert 'total L (ft)' in text
+    assert 'A (in²)' in text

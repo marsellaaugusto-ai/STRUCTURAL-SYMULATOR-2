@@ -328,9 +328,23 @@ legends and colourbar tick values.
   or the circled dot / circled cross for the axis pointing at the reader),
   one compact colour key mirroring the on-screen legend, and its own
   statistics panel. See `PDF_REPORT_GUIDE_2026-09-27.md`.
+- **Serviceability verdict** — the deformed sheet states the L/250
+  allowance (configurable), the span it is taken over, the ratio of worst
+  displacement to allowance, and a pass/fail verdict, with the allowance
+  marked on the displacement ramp.
+- **Steel take-off sheet** — bars, area, total and mean length, kg/m and
+  mass per section, ranked by mass, totalling in kg and tonnes, computed
+  from the same unit weight the self-weight load case uses.
 - **Sheet chooser** — both PDF exports open with a chooser: six groups of
   sheets, the resulting sheet count shown live, and the choice remembered
   for the next export. The general view is always included.
+- **The report follows the app-wide unit selector.** Every number on every
+  sheet, and the title block's UNITS field, are written in the convention
+  selected at export time — so a report made with AISC selected is in ft,
+  kip and ksi throughout rather than contradicting the screen it came
+  from. Utilisation and the L/n deflection ratio stay unconverted, being
+  ratios; the scale bar, grid spacing and triad arm pick their round
+  number in the unit they are labelled in.
 - **PDF of Selection** — the same report for the selected group **alone**,
   with the rest of the model cut out rather than dimmed, so nothing
   obstructs it. The title block names both the file and the group.

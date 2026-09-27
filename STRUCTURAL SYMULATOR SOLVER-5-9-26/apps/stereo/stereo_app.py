@@ -82,6 +82,7 @@ from apps.stereo.stereo_app_module_editor import StereoModuleEditorMixin
 from apps.stereo.stereo_app_wizard import StereoWizardMixin
 from apps.stereo.stereo_app_addons import StereoAddonsMixin
 from apps.stereo.stereo_app_reports import StereoReportsMixin
+from apps.stereo.stereo_reports import STORAGE_UNITS as sr_storage_units
 
 
 class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
@@ -95,7 +96,10 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
     by the mixins listed above -- each one documented in its own module --
     so this class body stays small enough to read in one screen.
     """
-    STORAGE_UNITS = units.storage_like('stereo storage', stress=units.MPA)
+    # Declared in stereo_reports, and imported rather than repeated, so
+    # the tab and the report it writes cannot disagree about what the
+    # numbers in a member dict mean.
+    STORAGE_UNITS = sr_storage_units
 
     def __init__(self, root):
         self.root = root

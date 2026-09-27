@@ -10,7 +10,129 @@ under the same root folder -- they import each other via the apps.<name>
 package path (see REPORTS AND GUIDES/MODULAR_ARCHITECTURE.md), so this file
 must be run with that root as the working directory, not installed as a
 standalone package.
+
+If it will not start, see REPORTS AND GUIDES/RUNNING_THE_APP.md, or run
+`python tools/doctor.py` with the same interpreter.
 """
+import sys
+
+# ── launch preflight ──────────────────────────────────────────────────────
+#
+# Everything below imports tkinter, numpy and scipy at module scope, so an
+# interpreter missing any one of them kills the process on an import line
+# before a single window exists. From a terminal that traceback is at least
+# visible. From an editor's Run button it is often a console that closes
+# again, or a ModuleNotFoundError pointing at line 14 of a file the reader
+# did not write -- which is indistinguishable, from the outside, from "the
+# program crashes when I open it".
+#
+# In an editor the cause is almost always the SELECTED INTERPRETER: VS Code
+# picks one per workspace, and it is frequently not the one the packages
+# were installed into. So the preflight names the interpreter that is
+# actually running, what it is missing, and the command that fixes it.
+
+MIN_PYTHON = (3, 9)
+
+HARD_DEPENDENCIES = (
+    ('tkinter', None,
+     'the GUI toolkit every window is built from',
+     ('Debian/Ubuntu:  sudo apt install python3-tk',
+      'Fedora:         sudo dnf install python3-tkinter',
+      'macOS/Windows:  reinstall Python from python.org — tkinter is',
+      '                included there, but not in some Homebrew, pyenv or',
+      '                Microsoft Store builds')),
+    ('numpy', 'numpy>=1.24',
+     'every solver in the app; common.py imports it unguarded',
+     None),
+    ('scipy', 'scipy>=1.10',
+     'the cable-web solver and the Stereo sparse assembly',
+     None),
+)
+
+
+def environment_problems():
+    """Everything about THIS interpreter that would stop the app starting.
+
+    Returns a list of (title, detail_lines). Empty means the app will run.
+    A real import is attempted rather than importlib.util.find_spec,
+    because a tkinter whose _tkinter C extension is missing has a spec and
+    still cannot be imported -- which is exactly the Homebrew/pyenv case.
+    """
+    problems = []
+    if sys.version_info < MIN_PYTHON:
+        want = '.'.join(str(n) for n in MIN_PYTHON)
+        problems.append((
+            f'Python {want} or newer is required',
+            [f'this interpreter is Python {sys.version.split()[0]}']))
+
+    for name, pip_name, why, hints in HARD_DEPENDENCIES:
+        try:
+            __import__(name)
+            continue
+        except Exception as exc:                 # ImportError, and worse
+            detail = [f'needed for {why}', f'({type(exc).__name__}: {exc})']
+            if pip_name:
+                detail.append(f'install it:  "{sys.executable}" -m pip '
+                              f'install "{pip_name}"')
+            if hints:
+                detail.extend(hints)
+            problems.append((f'{name} cannot be imported', detail))
+    return problems
+
+
+def environment_report(problems):
+    """The whole message, as one block of text."""
+    import os
+    lines = ['STRUCTURAL SYMULATOR SOLVER cannot start.', '']
+    lines.append(f'Interpreter : {sys.executable}')
+    lines.append(f'Version     : {sys.version.split()[0]}')
+    lines.append(f'Working dir : {os.getcwd()}')
+    lines.append(f'This file   : {os.path.abspath(__file__)}')
+    lines.append('')
+    for title, detail in problems:
+        lines.append(f'  * {title}')
+        for d in detail:
+            lines.append(f'      {d}')
+    lines.append('')
+    lines.append('Install everything at once, with THIS interpreter:')
+    lines.append(f'    "{sys.executable}" -m pip install -r requirements.txt')
+    lines.append('')
+    lines.append('In VS Code this nearly always means the selected')
+    lines.append('interpreter is not the one the packages are installed in:')
+    lines.append('    Ctrl+Shift+P  ->  "Python: Select Interpreter"')
+    lines.append('then press F5 — .vscode/launch.json runs the app from the')
+    lines.append('right folder. See REPORTS AND GUIDES/RUNNING_THE_APP.md.')
+    return '\n'.join(lines)
+
+
+def report_environment_problems(problems):
+    """Say it on the console, and in a window when one is possible.
+
+    Both, not either: an editor may hide the console, and the console is
+    the only channel left when tkinter itself is what is missing.
+    """
+    text = environment_report(problems)
+    sys.stderr.write(text + '\n')
+    sys.stderr.flush()
+    try:                                    # a window, if tkinter survived
+        import tkinter as _tk
+        from tkinter import messagebox as _mb
+        _root = _tk.Tk()
+        _root.withdraw()
+        _mb.showerror('STRUCTURAL SYMULATOR SOLVER — cannot start', text)
+        _root.destroy()
+    except Exception:
+        pass                                # console-only; already written
+
+
+if __name__ == '__main__':
+    # Before the imports below, not after: the whole point is to replace
+    # the traceback they would raise.
+    _problems = environment_problems()
+    if _problems:
+        report_environment_problems(_problems)
+        raise SystemExit(1)
+
 import tkinter as tk
 from tkinter import ttk
 

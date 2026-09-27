@@ -50,12 +50,17 @@ REQUIRED_RB = (
 # an archive of its own.
 ZIP_NAME = 'structural_simulator_app.zip'
 ZIP_INCLUDE_DIRS = ('apps', 'tests', 'sketchup_plugin', 'tools',
-                    'REPORTS AND GUIDES')
+                    'REPORTS AND GUIDES',
+                    # ships deliberately: launch.json is what makes F5 run
+                    # the app from the right working directory, which is
+                    # the difference between it starting and it not. It is
+                    # therefore NOT in ZIP_SKIP_DIRS below.
+                    '.vscode')
 ZIP_INCLUDE_FILES = ('main.py', 'common.py', 'cirsoc_301.py', 'units.py',
                      'requirements.txt', RBZ_NAME,
                      # a real model to open straight after unpacking
                      'wave_like_structure_1.xlsx')
-ZIP_SKIP_DIRS = {'__pycache__', '.pytest_cache', '.git', '.idea', '.vscode',
+ZIP_SKIP_DIRS = {'__pycache__', '.pytest_cache', '.git', '.idea',
                  'node_modules', '.mypy_cache', '.ruff_cache'}
 ZIP_SKIP_SUFFIX = ('.pyc', '.pyo', '.pyd', '.so', '.orig', '.rej', '.swp')
 

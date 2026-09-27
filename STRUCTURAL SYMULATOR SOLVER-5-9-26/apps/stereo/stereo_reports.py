@@ -1298,82 +1298,969 @@ def export_ifc(nodes, members, path, supports=None, profiles=None, results=None)
 
 
 # ── PDF report ─────────────────────────────────────────────────────────────
+#
+# These sheets are handed to someone who reads DRAWINGS, so the furniture
+# follows ordinary drafting practice rather than matplotlib's defaults:
+#
+#   * an ISO 5457-style frame with an ISO 7200-style title block in the
+#     bottom-right corner, carrying the same data fields a title block is
+#     required to carry (title, originator, date, sheet n of N, units,
+#     code basis) -- previously there was no title block at all, so a
+#     printed page could not be identified once it left the screen;
+#   * a GRAPHIC scale bar, so a sheet that is printed, photocopied or
+#     dropped into a slide at some other size still measures;
+#   * an axonometric AXIS TRIAD, so "which way is this structure facing"
+#     is answerable from the paper alone -- with each arm drawn as the
+#     SAME world length, which makes the projection's own foreshortening
+#     (different per axis, see _pdf_axis_dirs) directly visible rather
+#     than something the reader has to know about;
+#   * ONE compact colour key per view, built to mirror the tab's own
+#     on-screen legend (_draw_legend in stereo_app_render.py) -- a caption,
+#     a horizontal ramp sampled from the very same colour function the
+#     drawing is painted with, proportional tick labels, then discrete
+#     rows for everything else on the sheet. It replaces a full-page-height
+#     matplotlib colorbar that dominated every view, AND the separate
+#     hand-written patch legend that used to sit beside it quoting hexes
+#     (#e6b800 for utilisation 0.5, #aaaaaa for "near zero") that the
+#     colour functions never actually produce. Standard FEA-reporting
+#     practice is that a figure legend must explain every symbol, line and
+#     colour the figure uses and no others, which is exactly what the two
+#     disagreeing legends failed at.
+#
+# Everything here is metric and in the app's own stored units: metres,
+# kN, kN*m, mm.
+
+PDF_SHEET_IN = (11.69, 8.27)        # A4 landscape (ISO 5457 / ISO 216)
+PDF_FRAME = (0.026, 0.030, 0.974, 0.970)    # x0, y0, x1, y1, figure fraction
+PDF_TITLE_H = 0.128                 # title-block height, figure fraction
+PDF_TITLE_W = 0.560                 # title-block width, figure fraction
+PDF_APP_NAME = 'Stereo Structure Calculator'
+PDF_CODE_BASIS = 'CIRSOC 301 / AISC 360'
+
+PDF_KEY_X = 0.010                   # key origin, axes fraction
+PDF_KEY_Y = 0.988
+PDF_KEY_W = 0.200                   # ramp width, axes fraction
+PDF_KEY_H = 0.020                   # ramp height, axes fraction
+PDF_KEY_ROW = 0.030                 # line pitch, axes fraction
+PDF_KEY_SEGMENTS = 48               # ramp resolution; matches the canvas legend
+PDF_KEY_FS = 7.0                    # key font size, points
+
+PDF_STATS_X = 0.990                 # stats panel origin (right edge), axes fraction
+PDF_STATS_Y = 0.988
+
+PDF_SCALE_DIVISIONS = 4             # chequers in the graphic scale bar
+PDF_SCALE_TARGET = 0.38             # bar aims at this fraction of the drawing
+                                    # (before rounding DOWN to 1-2-5, which
+                                    # on a 16 m model turned 0.30 into a
+                                    # stubby 2 m bar rather than a 5 m one)
+PDF_MONO = 'DejaVu Sans Mono'
+
+PDF_INK = '#333333'
+PDF_RULE = '#9aa0a6'
+PDF_PANEL_FACE = '#ffffff'
+PDF_PANEL_EDGE = '#c8ccd0'
+PDF_PANEL_ALPHA = 0.94              # opaque enough that the drawing behind
+                                    # a corner panel does not ghost through
+PDF_UNDEFORMED = '#c2c8cd'          # the "where it started" ghost wireframe
+
 
 def _hex_to_rgb(h):
     return (int(h[1:3], 16) / 255, int(h[3:5], 16) / 255, int(h[5:7], 16) / 255)
 
 
-def _pdf_draw_structure(ax, nodes, members, proj_2d, color_fn, supports=None,
-                        title='', legend_info=None, node_colors=None,
-                        node_radius=1.5):
-    """Draw a projected 3D structure onto a matplotlib Axes.
+def _pdf_project(px, py, pz, az_rad, el_rad):
+    """_iso_project's parallel projection with the vertical axis flipped.
 
-    color_fn: callable(member_index) -> hex color string
-    node_colors: optional dict {node_idx: hex_color} for moment/deform display
-    legend_info: optional list of (color_hex, label) for a custom legend
+    _iso_project returns TK CANVAS coordinates, where y grows DOWNWARD --
+    correct for the on-screen view, and what its own test pins ("Z must
+    project upward, i.e. NEGATIVE screen-y"). Matplotlib's y grows upward,
+    so handing it _iso_project's output directly drew every sheet
+    vertically MIRRORED against the tab it is a report of: a roof sagging
+    under its own weight bulged upward on the deformed-shape sheet, and
+    the orientation triad's +Z arrow pointed at the floor.
+
+    One flip here, applied to the nodes, the deformed nodes, the load
+    arrows and the axis triad alike, is what keeps the printed sheet and
+    the canvas showing the same structure the same way up.
     """
-    ax.set_aspect('equal')
-    ax.set_axis_off()
-    if title:
-        ax.set_title(title, fontsize=14, fontweight='bold', pad=12)
+    sx, sy = _iso_project(px, py, pz, az_rad, el_rad)
+    return sx, -sy
 
+
+def _pdf_nice_length(raw):
+    """`raw` rounded DOWN to the nearest 1, 2 or 5 times a power of ten.
+
+    The classic graphic-scale-bar rounding: a bar has to be a length a
+    reader can divide in their head (5 m, 20 m, 0.5 m), never "13.7 m".
+    Returns 0.0 for a non-positive or non-finite input so a degenerate
+    model simply gets no scale bar instead of raising.
+    """
+    import math
+    if not (raw > 0.0) or not math.isfinite(raw):
+        return 0.0
+    exp = math.floor(math.log10(raw))
+    base = 10.0 ** exp
+    for mult in (5.0, 2.0, 1.0):
+        if raw >= mult * base - 1e-12:
+            return mult * base
+    return base
+
+
+def _pdf_axis_dirs(az_rad, el_rad):
+    """Where one world metre along each axis lands on the sheet.
+
+    Returns {'X': (dx, dy), 'Y': (...), 'Z': (...)} in projected units.
+    A parallel projection foreshortens each axis by a DIFFERENT factor
+    (|dir| below), which is why the triad draws all three arms at one
+    shared world length and why the scale bar is tied to a named axis
+    rather than pretending one bar measures every direction.
+    """
+    out = {}
+    for name, v in (('X', (1.0, 0.0, 0.0)),
+                    ('Y', (0.0, 1.0, 0.0)),
+                    ('Z', (0.0, 0.0, 1.0))):
+        out[name] = _pdf_project(v[0], v[1], v[2], az_rad, el_rad)
+    return out
+
+
+def _pdf_foreshortening(az_rad, el_rad):
+    """{'X': f, 'Y': f, 'Z': f}: projected length of one world metre."""
+    import math
+    return {k: math.hypot(*d)
+            for k, d in _pdf_axis_dirs(az_rad, el_rad).items()}
+
+
+def _pdf_model_extents(nodes):
+    """(dx, dy, dz) bounding-box size of the model, in metres."""
+    if not nodes:
+        return (0.0, 0.0, 0.0)
+    xs = [n[0] for n in nodes]
+    ys = [n[1] for n in nodes]
+    zs = [n[2] for n in nodes]
+    return (max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs))
+
+
+# ── sheet furniture ───────────────────────────────────────────────────────
+
+def _pdf_sheet(fig, sheet_no, sheet_total, title, meta):
+    """The frame and the ISO 7200-style title block, on every sheet.
+
+    `meta` is an ordered list of (caption, value) pairs; they are laid out
+    across the block's lower band, which is what a title block is for --
+    the fields that identify the sheet once it is off the screen.
+    """
+    from matplotlib.patches import Rectangle
+
+    x0, y0, x1, y1 = PDF_FRAME
+    fig.add_artist(Rectangle((x0, y0), x1 - x0, y1 - y0, transform=fig.transFigure,
+                             facecolor='none', edgecolor=PDF_RULE, linewidth=0.9,
+                             zorder=5))
+
+    tb_x = x1 - PDF_TITLE_W
+    tb_y = y0
+    fig.add_artist(Rectangle((tb_x, tb_y), PDF_TITLE_W, PDF_TITLE_H,
+                             transform=fig.transFigure, facecolor='#fbfbfc',
+                             edgecolor=PDF_RULE, linewidth=0.9, zorder=6))
+
+    band = tb_y + PDF_TITLE_H * 0.46
+    fig.add_artist(Rectangle((tb_x, band), PDF_TITLE_W, 0.0,
+                             transform=fig.transFigure, facecolor='none',
+                             edgecolor=PDF_RULE, linewidth=0.7, zorder=7))
+
+    pad = 0.010
+    fig.text(tb_x + pad, tb_y + PDF_TITLE_H * 0.74, title, fontsize=11,
+             fontweight='bold', color='#1a1a1a', va='center', ha='left',
+             zorder=8)
+    fig.text(x1 - pad, tb_y + PDF_TITLE_H * 0.74,
+             f'Sheet {sheet_no} / {sheet_total}', fontsize=9,
+             color=PDF_INK, va='center', ha='right', zorder=8)
+
+    # The identifying fields, each in a column WIDE ENOUGH FOR ITS VALUE --
+    # equal columns ran 'CIRSOC 301 / AISC 360' straight into the date
+    # beside it.
+    if meta:
+        weights = [max(len(str(v)), len(str(c)) + 2) for c, v in meta]
+        total_w = float(sum(weights)) or 1.0
+        avail = PDF_TITLE_W - 2 * pad
+        acc = 0.0
+        for (cap, val), wt in zip(meta, weights):
+            fx = tb_x + pad + (acc / total_w) * avail
+            acc += wt
+            fig.text(fx, tb_y + PDF_TITLE_H * 0.30, cap, fontsize=5.6,
+                     color='#7a8087', va='center', ha='left', zorder=8)
+            fig.text(fx, tb_y + PDF_TITLE_H * 0.12, val, fontsize=6.6,
+                     color=PDF_INK, va='center', ha='left', zorder=8,
+                     fontfamily=PDF_MONO)
+
+
+def _pdf_sheet_meta(nodes, members, meta=None):
+    """The title-block fields shared by every sheet of one report."""
+    import time
+    family = ''
+    if meta:
+        family = meta.get('grid_family') or meta.get('typology') or ''
+    return [
+        ('MODEL', (str(family)[:22] or 'user model')),
+        ('SIZE', f'{len(nodes)} nodes / {len(members)} bars'),
+        ('UNITS', 'm, kN, mm'),
+        ('CODE', PDF_CODE_BASIS),
+        ('DATE', time.strftime('%Y-%m-%d %H:%M')),
+    ]
+
+
+class _PdfKey:
+    """The compact colour key, drawn in one view's axes-fraction space.
+
+    Deliberately the same idiom as the tab's own on-screen legend: a bold
+    caption, then either a horizontal ramp with proportional tick labels or
+    a short line swatch with a sentence beside it. The ramp SAMPLES the
+    colour function the drawing itself was painted with, so the key cannot
+    drift away from the picture the way a separately hand-picked list of
+    hexes did.
+
+    Every entry added here is background-panelled at finish() time, sized
+    to whatever was actually written, so the key never leaves a fixed
+    white rectangle floating over an empty corner.
+    """
+
+    def __init__(self, ax, x=PDF_KEY_X, y=PDF_KEY_Y):
+        self.ax = ax
+        self.x0 = x
+        self.y = y
+        self._width = PDF_KEY_W
+        self._any = False
+
+    def _t(self):
+        return self.ax.transAxes
+
+    # Rough advance width of one glyph, as a fraction of the axes width, at
+    # PDF_KEY_FS on an A4-landscape sheet. Only the backing panel is sized
+    # from it, so an approximation is enough -- but it has to be close, or
+    # the panel either clips the text or floats a white slab across the
+    # drawing.
+    _CHAR_W = 0.0058
+
+    def caption(self, text):
+        self.y -= PDF_KEY_ROW * 0.95
+        self.ax.text(self.x0, self.y, text, transform=self._t(),
+                     fontsize=PDF_KEY_FS, fontweight='bold', color='#222222',
+                     va='center', ha='left', zorder=20, clip_on=False)
+        self._width = max(self._width, self._CHAR_W * 1.06 * len(text))
+        self._any = True
+
+    def note(self, text):
+        self.y -= PDF_KEY_ROW * 0.82
+        self.ax.text(self.x0, self.y, text, transform=self._t(),
+                     fontsize=PDF_KEY_FS - 0.5, color='#5f6368', va='center',
+                     ha='left', zorder=20, clip_on=False, style='italic')
+        self._width = max(self._width, self._CHAR_W * 0.90 * len(text))
+        self._any = True
+
+    def ramp(self, color_fn, lo, hi, ticks, segments=PDF_KEY_SEGMENTS,
+             mark=None):
+        """A continuous gradient strip from `lo` to `hi`.
+
+        `ticks` are (value, label) pairs placed at their PROPORTIONAL
+        position along the bar rather than assumed to sit at its ends --
+        utilisation's 0.5 tick, for one, is not the midpoint of its domain.
+
+        `mark` is an optional (value, label) threshold drawn as a rule
+        ACROSS the bar instead of a label under it, for a value that
+        matters but sits too close to an end for its own tick (capacity at
+        1.0 on a bar that runs to 1.2).
+        """
+        from matplotlib.patches import Rectangle
+        # clear of the caption above -- and of the threshold label, when one
+        # is printed over the bar
+        self.y -= PDF_KEY_H + PDF_KEY_ROW * (1.35 if mark is not None else 0.75)
+        span = (hi - lo) or 1.0
+        for i in range(segments):
+            frac = i / (segments - 1) if segments > 1 else 0.0
+            col = _hex_to_rgb(color_fn(lo + frac * span))
+            sx = self.x0 + (i / segments) * PDF_KEY_W
+            w = PDF_KEY_W / segments * 1.02      # 2% overlap: no hairline seams
+            self.ax.add_patch(Rectangle((sx, self.y), w, PDF_KEY_H,
+                                        transform=self._t(), facecolor=col,
+                                        edgecolor='none', zorder=20,
+                                        clip_on=False))
+        self.ax.add_patch(Rectangle((self.x0, self.y), PDF_KEY_W, PDF_KEY_H,
+                                    transform=self._t(), facecolor='none',
+                                    edgecolor='#888888', linewidth=0.6,
+                                    zorder=21, clip_on=False))
+        if mark is not None:
+            mval, mlabel = mark
+            mf = min(1.0, max(0.0, (mval - lo) / span))
+            mx = self.x0 + mf * PDF_KEY_W
+            self.ax.plot([mx, mx], [self.y, self.y + PDF_KEY_H],
+                         transform=self._t(), color='#1a1a1a', linewidth=1.0,
+                         zorder=22, clip_on=False)
+            self.ax.text(mx, self.y + PDF_KEY_H * 1.35, mlabel,
+                         transform=self._t(), fontsize=PDF_KEY_FS - 1.0,
+                         color='#1a1a1a', va='bottom', ha='center', zorder=22,
+                         clip_on=False)
+        ty = self.y - PDF_KEY_ROW * 0.55
+        for value, label in ticks:
+            fp = (value - lo) / span
+            fp = min(1.0, max(0.0, fp))
+            ha = 'left' if fp <= 0.02 else ('right' if fp >= 0.98 else 'center')
+            self.ax.text(self.x0 + fp * PDF_KEY_W, ty, label,
+                         transform=self._t(), fontsize=PDF_KEY_FS - 0.5,
+                         color='#444444', va='center', ha=ha, zorder=20,
+                         clip_on=False)
+        self.y = ty - PDF_KEY_ROW * 0.30
+        self._any = True
+
+    def row(self, color, label, dashed=False, marker=None, outline=None,
+            linewidth=2.2):
+        """One discrete entry: a swatch of the real colour, then its meaning."""
+        self.y -= PDF_KEY_ROW
+        sx0, sx1 = self.x0, self.x0 + 0.028
+        if outline:
+            self.ax.plot([sx0, sx1], [self.y, self.y], transform=self._t(),
+                         color=_hex_to_rgb(outline), linewidth=linewidth + 1.8,
+                         solid_capstyle='butt', zorder=20, clip_on=False)
+        if marker:
+            self.ax.plot([(sx0 + sx1) / 2], [self.y], transform=self._t(),
+                         marker=marker, color=_hex_to_rgb(color),
+                         markersize=4.5, linestyle='none', zorder=21,
+                         clip_on=False)
+        else:
+            kw = {'linestyle': (0, (3.5, 2.2))} if dashed else {}
+            self.ax.plot([sx0, sx1], [self.y, self.y], transform=self._t(),
+                         color=_hex_to_rgb(color), linewidth=linewidth,
+                         solid_capstyle='butt', zorder=21, clip_on=False, **kw)
+        self.ax.text(sx1 + 0.010, self.y, label, transform=self._t(),
+                     fontsize=PDF_KEY_FS, color='#444444', va='center',
+                     ha='left', zorder=20, clip_on=False)
+        self._width = max(self._width, 0.038 + self._CHAR_W * len(label))
+        self._any = True
+
+    def height(self):
+        """How much of the axes this key has claimed, as a fraction.
+
+        The caller hands it to _pdf_fit_window so the drawing is fitted
+        BELOW the key instead of behind it.
+        """
+        return (PDF_KEY_Y - self.y) + 0.030 if self._any else 0.0
+
+    def finish(self):
+        """The backing panel, sized to what was actually written."""
+        from matplotlib.patches import FancyBboxPatch
+        if not self._any:
+            return
+        pad = 0.012
+        w = min(self._width + 2 * pad, 0.62)
+        h = (PDF_KEY_Y - self.y) + 2 * pad
+        self.ax.add_patch(FancyBboxPatch(
+            (self.x0 - pad, self.y - pad), w, h,
+            boxstyle='round,pad=0.004,rounding_size=0.006',
+            transform=self._t(), facecolor=PDF_PANEL_FACE,
+            alpha=PDF_PANEL_ALPHA, edgecolor=PDF_PANEL_EDGE, linewidth=0.6,
+            zorder=19, clip_on=False, mutation_aspect=1.0))
+
+
+def _pdf_stats_height(ax, lines):
+    """The axes fraction a stats panel of these lines will occupy."""
+    if not lines:
+        return 0.0
+    return _pdf_text_block_height(ax, len(lines)) + (1.0 - PDF_STATS_Y) + 0.012
+
+
+def _pdf_stats_panel(ax, lines, x=PDF_STATS_X, y=PDF_STATS_Y):
+    """The per-view numbers, top-right, opposite the colour key.
+
+    Every analysis sheet carries one: a view that only shows WHERE the
+    extreme is, without saying what it is, which member carries it and how
+    the rest of the structure is distributed around it, is half a report.
+    """
+    if not lines:
+        return
+    # ha='right' anchors the BLOCK to the sheet's right edge;
+    # multialignment='left' keeps the lines inside it flush left, so
+    # "label   value" pairs still line up and a sentence still reads as a
+    # sentence (right-ragged prose is what the first draft produced).
+    ax.text(x, y, '\n'.join(lines), transform=ax.transAxes,
+            fontsize=PDF_KEY_FS, color='#333333', va='top', ha='right',
+            multialignment='left', family=PDF_MONO, zorder=20, clip_on=False,
+            bbox=dict(boxstyle='round,pad=0.45', facecolor=PDF_PANEL_FACE,
+                      alpha=PDF_PANEL_ALPHA, edgecolor=PDF_PANEL_EDGE,
+                      linewidth=0.6))
+
+
+def _pdf_scale_bar(ax, az_rad, el_rad, model_span_m, xy, divisions=PDF_SCALE_DIVISIONS):
+    """A chequered graphic scale bar laid along the projected +X axis.
+
+    Drawn ALONG X, not horizontally, because a parallel projection
+    foreshortens each axis by its own factor: a horizontal bar would be
+    true for no direction at all. Along a named axis it is exactly true
+    for everything parallel to that axis, and the label says so.
+
+    Returns the round length it chose, in metres (0.0 if the model is
+    degenerate and no honest bar can be drawn).
+    """
+    import math
+    from matplotlib.patches import Polygon
+
+    length_m = _pdf_nice_length(model_span_m * PDF_SCALE_TARGET)
+    if length_m <= 0.0:
+        return 0.0
+
+    dx, dy = _pdf_axis_dirs(az_rad, el_rad)['X']
+    norm = math.hypot(dx, dy)
+    if norm < 1e-12:
+        return 0.0
+    # the bar's thickness runs perpendicular to it, in projected units
+    tx, ty = -dy / norm, dx / norm
+    thick = model_span_m * 0.012
+
+    bx, by = xy
+    seg = length_m / divisions
+    for i in range(divisions):
+        p0 = (bx + dx * seg * i, by + dy * seg * i)
+        p1 = (bx + dx * seg * (i + 1), by + dy * seg * (i + 1))
+        quad = [p0, p1,
+                (p1[0] + tx * thick, p1[1] + ty * thick),
+                (p0[0] + tx * thick, p0[1] + ty * thick)]
+        ax.add_patch(Polygon(quad, closed=True,
+                             facecolor=('#333333' if i % 2 == 0 else '#ffffff'),
+                             edgecolor='#333333', linewidth=0.6, zorder=15))
+
+    ex, ey = bx + dx * length_m, by + dy * length_m
+    ax.text(bx - tx * thick * 0.6, by - ty * thick * 0.6, '0',
+            fontsize=PDF_KEY_FS - 0.5, color=PDF_INK, ha='center', va='top',
+            zorder=16)
+    ax.text(ex + tx * thick * 1.9, ey + ty * thick * 1.9,
+            f'{length_m:g} m  (true along X)', fontsize=PDF_KEY_FS,
+            color=PDF_INK, ha='center', va='bottom', zorder=16)
+    return length_m
+
+
+def _pdf_orientation_triad(ax, az_rad, el_rad, arm_m, xy):
+    """The X/Y/Z triad, every arm the same world length.
+
+    This is what lets a reader orient the structure in 3D space from the
+    printed sheet alone, which none of these views previously allowed. All
+    three arms carry ONE shared world length, so the projection's own
+    per-axis foreshortening is visible directly in the drawing: on a
+    typical az 35 / el 22 view the Z arm reads noticeably longer than the
+    Y arm, and that is the truth about the view, not a drawing error.
+    """
+    import math
+    from apps.stereo.stereo_app_constants import (
+        AXIS_COLOR_X, AXIS_COLOR_Y, AXIS_COLOR_Z,
+    )
+    dirs = _pdf_axis_dirs(az_rad, el_rad)
+    cols = {'X': AXIS_COLOR_X, 'Y': AXIS_COLOR_Y, 'Z': AXIS_COLOR_Z}
+    ox, oy = xy
+    for name in ('X', 'Y', 'Z'):
+        dx, dy = dirs[name]
+        ex, ey = ox + dx * arm_m, oy + dy * arm_m
+        ax.annotate('', xy=(ex, ey), xytext=(ox, oy),
+                    arrowprops=dict(arrowstyle='-|>', color=cols[name],
+                                    linewidth=1.3, shrinkA=0, shrinkB=0,
+                                    mutation_scale=9),
+                    zorder=16, annotation_clip=False)
+        lx, ly = ox + dx * arm_m * 1.26, oy + dy * arm_m * 1.26
+        label = name + (' (N)' if name == 'Y' else '')
+        ax.text(lx, ly, label, fontsize=PDF_KEY_FS + 0.6, fontweight='bold',
+                color=cols[name], ha='center', va='center', zorder=17)
+    ax.plot([ox], [oy], marker='o', markersize=2.0, color='#444444',
+            linestyle='none', zorder=17)
+    # Below the LOWEST arm, not below the origin: at a shallow elevation
+    # the −Z end of the triad reaches well past the origin and the caption
+    # landed on top of the Z label.
+    low = min(oy + d[1] * arm_m * 1.45 for d in dirs.values())
+    ax.text(ox, min(low, oy - arm_m * 0.45),
+            f'arms = {arm_m:g} m (all three)\n'
+            f'az {math.degrees(az_rad):.0f}° · el {math.degrees(el_rad):.0f}° '
+            f'· parallel projection',
+            fontsize=PDF_KEY_FS - 1.0, color='#5f6368', ha='center', va='top',
+            linespacing=1.5, zorder=17)
+
+
+PDF_FURNITURE_BAND = 0.17      # bottom of the sheet held for bar + triad
+
+
+def _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad, extra_pts=(),
+                 reserve_top=0.0):
+    """Fit the view, then hang the scale bar and the triad below it.
+
+    `reserve_top` is how much of the axes the colour key and the stats
+    panel have already claimed, so the drawing can be fitted UNDER them
+    rather than behind them.
+
+    Returns (window, scale_len_m, arm_m) so a caller can quote the scale in
+    its own stats panel.
+    """
+    win = _pdf_fit_window(ax, list(proj_2d) + list(extra_pts),
+                          reserve_top=reserve_top,
+                          reserve_bottom=PDF_FURNITURE_BAND)
+    x0, y0, x1, y1 = win
+    w, h = x1 - x0, y1 - y0
+    dx, dy, dz = _pdf_model_extents(nodes)
+    span = max(dx, dy, dz, 1e-6)
+
+    bar_xy = (x0 + w * 0.045, y0 + h * 0.085)
+    scale_len = _pdf_scale_bar(ax, az_rad, el_rad, span, bar_xy)
+
+    arm = _pdf_nice_length(span * 0.16) or max(span * 0.16, 1e-3)
+    triad_xy = (x1 - w * 0.115, y0 + h * 0.115)
+    _pdf_orientation_triad(ax, az_rad, el_rad, arm, triad_xy)
+    return win, scale_len, arm
+
+
+def _pdf_finish_view(ax, nodes, proj_2d, az_rad, el_rad, key, stats,
+                     extra_pts=()):
+    """Close one view sheet.
+
+    The order matters and is the whole point: the key and the stats panel
+    are measured FIRST, the drawing is then fitted into what is left, and
+    only then are the scale bar and the triad placed from the final
+    window. Fitting the drawing first, as the first draft did, put the
+    panels on top of the structure on any model tall enough to reach them.
+    """
+    reserve = max(key.height(), _pdf_stats_height(ax, stats))
+    key.finish()
+    _pdf_stats_panel(ax, stats)
+    return _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad,
+                        extra_pts=extra_pts, reserve_top=reserve)
+
+
+def _pdf_members(ax, members, proj_2d, color_fn, linewidth=1.0, zorder=3,
+                 dashed_idx=()):
+    """Every bar in one LineCollection.
+
+    One collection instead of one Line2D per bar: an 800-bar model across
+    six sheets is ~5000 artists otherwise, which is both slow to write and
+    needlessly large in the file.
+    """
+    from matplotlib.collections import LineCollection
+    segs, cols = [], []
+    dash_segs, dash_cols = [], []
+    dashed_idx = set(dashed_idx)
     for i, m in enumerate(members):
-        xa, ya = proj_2d[m['a']]
-        xb, yb = proj_2d[m['b']]
+        a, b = m['a'], m['b']
+        if a >= len(proj_2d) or b >= len(proj_2d):
+            continue
+        seg = (proj_2d[a], proj_2d[b])
         col = _hex_to_rgb(color_fn(i))
-        ax.plot([xa, xb], [ya, yb], color=col, linewidth=1.0, solid_capstyle='round')
-
-    if supports:
-        sup_nodes = {s['node'] for s in supports}
-        for idx in sup_nodes:
-            sx, sy = proj_2d[idx]
-            ax.plot(sx, sy, 's', color=_hex_to_rgb('#1a6bbd'), markersize=5, zorder=5)
-
-    if node_colors:
-        for idx, hex_c in node_colors.items():
-            if 0 <= idx < len(proj_2d):
-                sx, sy = proj_2d[idx]
-                ax.plot(sx, sy, 'o', color=_hex_to_rgb(hex_c),
-                        markersize=node_radius * 2, zorder=6)
-    else:
-        nxs = [p[0] for p in proj_2d]
-        nys = [p[1] for p in proj_2d]
-        ax.plot(nxs, nys, 'o', color='#1a1a1a', markersize=node_radius, zorder=4)
-
-    if legend_info:
-        from matplotlib.patches import Patch
-        handles = [Patch(facecolor=_hex_to_rgb(c), label=lbl)
-                   for c, lbl in legend_info]
-        ax.legend(handles=handles, loc='lower right', fontsize=7,
-                  framealpha=0.9, edgecolor='#cccccc')
+        if i in dashed_idx:
+            dash_segs.append(seg)
+            dash_cols.append(col)
+        else:
+            segs.append(seg)
+            cols.append(col)
+    if segs:
+        ax.add_collection(LineCollection(segs, colors=cols, linewidths=linewidth,
+                                         zorder=zorder, capstyle='round'))
+    if dash_segs:
+        ax.add_collection(LineCollection(dash_segs, colors=dash_cols,
+                                         linewidths=linewidth, zorder=zorder + 0.1,
+                                         linestyles=(0, (3.5, 2.2))))
 
 
-def _pdf_colorbar(fig, ax, cmap_fn, vmin, vmax, label='', n_steps=256):
-    """Add a vertical colorbar next to an axes using a custom color function.
+def _pdf_supports(ax, supports, proj_2d):
+    """The support glyph is the same small square the canvas draws."""
+    from apps.stereo.stereo_app_constants import SUPPORT_COLOR
+    if not supports:
+        return
+    pts = [proj_2d[s['node']] for s in supports
+           if 0 <= s['node'] < len(proj_2d)]
+    if not pts:
+        return
+    ax.plot([p[0] for p in pts], [p[1] for p in pts], linestyle='none',
+            marker='s', markersize=4.0, color=_hex_to_rgb(SUPPORT_COLOR),
+            zorder=8)
 
-    cmap_fn: callable(value) -> hex color string, for values in [vmin, vmax]
+
+def _pdf_load_arrows(ax, nodes, loads, proj_2d, az_rad, el_rad, span_m):
+    """An arrow per loaded node, along that node's own net force direction.
+
+    A general view that shows the geometry but not what is being PUT on it
+    is not a load case, and the load case is the first thing anyone asks
+    about a result. Lengths are gamma-compressed against the largest load
+    present, the same perceptual compression the canvas uses, so a model
+    whose loads span orders of magnitude still shows every arrow.
     """
-    import numpy as np
-    from matplotlib.colors import ListedColormap
+    import math
+    from matplotlib.collections import LineCollection
+    from apps.stereo.stereo_app_constants import LOAD_COLOR
 
-    vals = np.linspace(vmin, vmax, n_steps)
-    colors_rgb = [_hex_to_rgb(cmap_fn(v)) for v in vals]
-    cmap = ListedColormap(colors_rgb)
-    import matplotlib as mpl
-    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
-    sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.02, aspect=30)
-    cbar.set_label(label, fontsize=8)
-    cbar.ax.tick_params(labelsize=7)
+    net = {}
+    for ld in loads or ():
+        i = ld.get('node')
+        if i is None or not (0 <= i < len(nodes)):
+            continue
+        fx, fy, fz = net.get(i, (0.0, 0.0, 0.0))
+        net[i] = (fx + ld.get('fx', 0.0), fy + ld.get('fy', 0.0),
+                  fz + ld.get('fz', 0.0))
+    mags = [math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2) for v in net.values()]
+    mags = [m for m in mags if m > 1e-12]
+    if not mags:
+        return 0
+    peak = max(mags)
+    full = span_m * 0.10
 
+    segs = []
+    for i, (fx, fy, fz) in net.items():
+        mag = math.sqrt(fx * fx + fy * fy + fz * fz)
+        if mag <= 1e-12:
+            continue
+        L = full * (mag / peak) ** 0.6           # same gamma as the canvas
+        ux, uy, uz = fx / mag * L, fy / mag * L, fz / mag * L
+        hx, hy = proj_2d[i]
+        tx, ty = _pdf_project(nodes[i][0] - ux, nodes[i][1] - uy,
+                              nodes[i][2] - uz, az_rad, el_rad)
+        segs.append(((tx, ty), (hx, hy)))
+        # two barbs, so the arrow reads as pointing AT the node
+        vx, vy = hx - tx, hy - ty
+        n = math.hypot(vx, vy)
+        if n > 1e-12:
+            vx, vy = vx / n, vy / n
+            px, py = -vy, vx
+            # Capped against the LONGEST arrow on the sheet, not against
+            # this one's own shaft, so every head is the same size and the
+            # length alone carries the magnitude.
+            head = max(min(n * 0.30, full * 0.22), 1e-9)
+            segs.append(((hx, hy), (hx - vx * head + px * head * 0.45,
+                                    hy - vy * head + py * head * 0.45)))
+            segs.append(((hx, hy), (hx - vx * head - px * head * 0.45,
+                                    hy - vy * head - py * head * 0.45)))
+    if segs:
+        ax.add_collection(LineCollection(segs, colors=[_hex_to_rgb(LOAD_COLOR)],
+                                         linewidths=0.7, zorder=6))
+    return len(net)
+
+
+def _pdf_view_axes(fig):
+    """One drawing axes filling the sheet above the title block.
+
+    Deliberately NOT set_aspect('equal'): that makes matplotlib resize the
+    axes BOX at draw time to satisfy the aspect, which moves everything
+    placed in axes fractions (the key, the stats panel) out from under the
+    drawing they annotate. _pdf_fit_window does the equal-aspect fit on
+    the LIMITS instead, against this fixed box, so x and y still scale
+    identically and every position stays computable in advance.
+    """
+    x0, y0, x1, y1 = PDF_FRAME
+    ax = fig.add_axes([x0 + 0.012, y0 + PDF_TITLE_H + 0.012,
+                       (x1 - x0) - 0.024,
+                       (y1 - y0) - PDF_TITLE_H - 0.030])
+    ax.set_aspect('auto')
+    ax.set_axis_off()
+    return ax
+
+
+def _pdf_axes_size_in(ax):
+    """(width, height) of an axes box in inches."""
+    fig = ax.get_figure()
+    box = ax.get_position()
+    fw, fh = fig.get_size_inches()
+    return box.width * fw, box.height * fh
+
+
+def _pdf_text_block_height(ax, n_lines, fontsize=PDF_KEY_FS, pad_pt=6.3):
+    """How much of the axes height a monospaced block of n lines takes.
+
+    Returned as an axes FRACTION, so a caller can keep that band of the
+    sheet clear. matplotlib's default line spacing is 1.2 x the font size.
+    """
+    _, h_in = _pdf_axes_size_in(ax)
+    h_pt = max(h_in * 72.0, 1e-6)
+    return (n_lines * fontsize * 1.2 + pad_pt) / h_pt
+
+
+def _pdf_fit_window(ax, pts, reserve_top=0.0, reserve_bottom=0.20,
+                    reserve_left=0.02, reserve_right=0.02, margin=0.04):
+    """Data limits that hold every point, keep the reserved bands of the
+    axes clear, and scale x and y identically.
+
+    `reserve_*` are fractions of the axes that the furniture has already
+    claimed -- the colour key and the stats panel along the top, the scale
+    bar and the orientation triad along the bottom. The drawing is fitted
+    into what is left and centred there, so no panel ever lands on top of
+    the structure it is describing.
+
+    Returns the (x0, y0, x1, y1) window actually set.
+    """
+    pts = list(pts)
+    if not pts:
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, 1.0)
+        return (0.0, 0.0, 1.0, 1.0)
+
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
+    dw = (maxx - minx) or 1.0
+    dh = (maxy - miny) or 1.0
+
+    box_w, box_h = _pdf_axes_size_in(ax)
+    fx = max(1.0 - reserve_left - reserve_right - 2 * margin, 0.05)
+    fy = max(1.0 - reserve_top - reserve_bottom - 2 * margin, 0.05)
+
+    # data units per inch: whichever direction runs out of room first
+    s = max(dw / (box_w * fx), dh / (box_h * fy))
+    win_w, win_h = s * box_w, s * box_h
+
+    # centre the drawing inside the band that is still free
+    cx_frac = (reserve_left + margin + (1.0 - reserve_right - margin)) / 2.0
+    cy_frac = (reserve_bottom + margin + (1.0 - reserve_top - margin)) / 2.0
+    x0 = (minx + maxx) / 2.0 - cx_frac * win_w
+    y0 = (miny + maxy) / 2.0 - cy_frac * win_h
+    ax.set_xlim(x0, x0 + win_w)
+    ax.set_ylim(y0, y0 + win_h)
+    return (x0, y0, x0 + win_w, y0 + win_h)
+
+
+# ── per-view statistics ───────────────────────────────────────────────────
+
+def _pdf_fmt_node(nodes, i):
+    x, y, z = nodes[i]
+    return f'#{i} ({x:.2f}, {y:.2f}, {z:.2f})'
+
+
+def _pdf_fmt_bar(nodes, members, i):
+    """'bar 98: nodes 35 → 44 at (x, y, z)', so the reader can FIND it.
+
+    Naming only one of a bar's two ends, as the first draft did, is not
+    enough to identify it in the model tree or in the Excel export.
+    """
+    m = members[i]
+    a, b = m['a'], m['b']
+    mid = tuple((nodes[a][k] + nodes[b][k]) / 2.0 for k in range(3))
+    return (f'bar {i}: nodes {a} → {b}',
+            f'  mid ({mid[0]:.2f}, {mid[1]:.2f}, {mid[2]:.2f})')
+
+
+def _pdf_force_stats(nodes, members, member_res):
+    """Axial-force numbers worth printing beside the axial-force drawing."""
+    forces = [mr['N'] for mr in member_res]
+    if not forces:
+        return ['AXIAL FORCE', 'no members']
+    i_max = max(range(len(forces)), key=lambda i: forces[i])
+    i_min = min(range(len(forces)), key=lambda i: forces[i])
+    peak = max(abs(f) for f in forces)
+    from apps.stereo.stereo_app_constants import NEAR_ZERO_FRAC
+    n_zero = sum(1 for f in forces if peak > 0 and abs(f) / peak < NEAR_ZERO_FRAC)
+    n_t = sum(1 for f in forces if f > 0)
+    n_c = sum(1 for f in forces if f < 0)
+    total_abs = sum(abs(f) for f in forces)
+    out = [
+        'AXIAL FORCE',
+        f'bars            {len(forces)}',
+        f'in tension      {n_t}   ({n_t / len(forces):.0%})',
+        f'in compression  {n_c}   ({n_c / len(forces):.0%})',
+        f'near zero       {n_zero}   (<{NEAR_ZERO_FRAC:.0%} of peak)',
+        '',
+        f'max tension     {forces[i_max]:+.2f} kN',
+    ]
+    out += [f'  {ln}' for ln in _pdf_fmt_bar(nodes, members, i_max)]
+    out.append(f'max compression {forces[i_min]:+.2f} kN')
+    out += [f'  {ln}' for ln in _pdf_fmt_bar(nodes, members, i_min)]
+    out.append(f'mean |N|        {total_abs / len(forces):.2f} kN')
+    return out
+
+
+def _pdf_util_stats(checks):
+    """Utilisation numbers: the margin table an FEA report is judged on."""
+    vals = [(i, c['util']) for i, c in enumerate(checks) if c.get('checked')]
+    if not vals:
+        return ['UTILIZATION', 'no member has a section assigned yet']
+    utils = [u for _, u in vals]
+    utils_sorted = sorted(utils)
+    i_worst, worst = max(vals, key=lambda t: t[1])
+    n_over = sum(1 for u in utils if u > 1.0)
+    n_high = sum(1 for u in utils if 0.8 < u <= 1.0)
+    unchecked = len(checks) - len(vals)
+    mid = utils_sorted[len(utils_sorted) // 2]
+    mode = checks[i_worst].get('mode', '?')
+    return [
+        'UTILIZATION (demand / capacity)',
+        f'checked bars    {len(vals)}' + (f'   ({unchecked} unchecked)'
+                                          if unchecked else ''),
+        f'governing       {worst:.3f}   bar {i_worst} ({mode})',
+        f'median          {mid:.3f}',
+        f'mean            {sum(utils) / len(utils):.3f}',
+        '',
+        f'over capacity   {n_over}  (util > 1.00)',
+        f'0.80 - 1.00     {n_high}',
+        f'below 0.80      {len(vals) - n_over - n_high}',
+        '',
+        ('VERDICT: all checked bars within capacity' if not n_over
+         else f'VERDICT: {n_over} bar(s) OVER capacity'),
+    ]
+
+
+def _pdf_moment_stats(nodes, moment_by_node, n_rigid, n_members):
+    """Nodal-moment numbers, and an honest line when there are none."""
+    if not moment_by_node:
+        return [
+            'NODAL MOMENTS',
+            f'rigid connections  {n_rigid} of {n_members}',
+            '',
+            'Every connection in this model is a',
+            'PIN, so no joint transfers a moment',
+            'and there is nothing to plot. Give',
+            'members a rigid connection to see a',
+            'moment field here.',
+        ]
+    vals = list(moment_by_node.values())
+    i_pos = max(moment_by_node, key=lambda k: moment_by_node[k])
+    i_neg = min(moment_by_node, key=lambda k: moment_by_node[k])
+    peak = max(abs(v) for v in vals)
+    return [
+        'NODAL MOMENTS (resultant, signed)',
+        f'rigid connections  {n_rigid} of {n_members}',
+        f'joints with moment {len(vals)}',
+        '',
+        f'max positive   {moment_by_node[i_pos]:+.3f} kN·m',
+        f'  node {_pdf_fmt_node(nodes, i_pos)}',
+        f'max negative   {moment_by_node[i_neg]:+.3f} kN·m',
+        f'  node {_pdf_fmt_node(nodes, i_neg)}',
+        f'peak |M|       {peak:.3f} kN·m',
+        f'mean |M|       {sum(abs(v) for v in vals) / len(vals):.3f} kN·m',
+    ]
+
+
+def _pdf_deform_stats(nodes, node_res, disps, scale_factor, span_m):
+    """Displacement numbers, including the span/deflection ratio."""
+    if not disps:
+        return ['DEFORMED SHAPE', 'no nodes']
+    i_max = max(range(len(disps)), key=lambda i: disps[i])
+    max_disp = disps[i_max]
+    nr = node_res[i_max]
+    ratio = (span_m * 1000.0 / max_disp) if max_disp > 1e-12 else float('inf')
+    ratio_txt = f'L / {ratio:,.0f}' if ratio != float('inf') else 'L / inf'
+    n_moving = sum(1 for d in disps if d > max_disp * 0.5) if max_disp else 0
+    return [
+        'DEFORMED SHAPE',
+        f'display scale   x{scale_factor:,.0f}',
+        f'max |u|         {max_disp:.3f} mm',
+        f'  node {_pdf_fmt_node(nodes, i_max)}',
+        f'   ux {nr["ux"]:+.3f}  uy {nr["uy"]:+.3f}  uz {nr["uz"]:+.3f} mm',
+        '',
+        f'longest bar     {span_m:.2f} m',
+        f'deflection      {ratio_txt}',
+        f'mean |u|        {sum(disps) / len(disps):.3f} mm',
+        f'nodes > 50% max {n_moving}',
+    ]
+
+
+def _pdf_equilibrium(loads, reactions):
+    """Applied load vs. reaction totals, and the residual between them.
+
+    A solved model that does not close on its own equilibrium is wrong, and
+    that check belongs in the report rather than in the reader's head.
+    Returns (applied, reacted, residual), each an (Fx, Fy, Fz) tuple.
+    """
+    ap = [0.0, 0.0, 0.0]
+    for ld in loads or ():
+        ap[0] += ld.get('fx', 0.0)
+        ap[1] += ld.get('fy', 0.0)
+        ap[2] += ld.get('fz', 0.0)
+    rc = [0.0, 0.0, 0.0]
+    for r in (reactions or {}).values():
+        rc[0] += r.get('Fx', 0.0)
+        rc[1] += r.get('Fy', 0.0)
+        rc[2] += r.get('Fz', 0.0)
+    res = [a + b for a, b in zip(ap, rc)]
+    return tuple(ap), tuple(rc), tuple(res)
+
+
+def _pdf_table_page(fig, title, headers, rows, widths, note='', tail_rows=()):
+    """A plain monospaced table sheet, with alternating row shading.
+
+    `tail_rows` are summary lines (totals, a residual) that are ALWAYS
+    drawn, with the body truncated above them to make room. They cannot be
+    the last few entries of `rows`, because on a model with 294 supports
+    the body ran off the bottom of the sheet and took the Σ-reaction,
+    Σ-applied and residual lines with it -- deleting the one thing the
+    reactions sheet exists to show.
+    """
+    from matplotlib.patches import Rectangle
+    x0, y0, x1, y1 = PDF_FRAME
+    ax = fig.add_axes([x0 + 0.020, y0 + PDF_TITLE_H + 0.010,
+                       (x1 - x0) - 0.040,
+                       (y1 - y0) - PDF_TITLE_H - 0.040])
+    ax.set_axis_off()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+
+    ax.text(0.0, 1.0, title, fontsize=13, fontweight='bold', color='#1a1a1a',
+            va='top', ha='left')
+    top = 0.935
+    if note:
+        ax.text(0.0, 0.965, note, fontsize=7.5, color='#5f6368', va='top',
+                ha='left', style='italic')
+        top = 0.915
+
+    total = sum(widths) or 1.0
+    xs, acc = [], 0.0
+    for w in widths:
+        xs.append(acc / total)
+        acc += w
+
+    for x, h in zip(xs, headers):
+        ax.text(x, top, h, fontsize=7.6, fontweight='bold', color='#222222',
+                va='top', ha='left', family=PDF_MONO)
+    ax.plot([0, 1], [top - 0.022, top - 0.022], color=PDF_RULE, linewidth=0.8)
+
+    def draw_row(y_, row, shaded):
+        if shaded:
+            ax.add_patch(Rectangle((-0.004, y_ - pitch * 0.30), 1.008, pitch * 0.92,
+                                   facecolor='#f4f6f8', edgecolor='none',
+                                   zorder=0))
+        for x, cell in zip(xs, row):
+            ax.text(x, y_, str(cell), fontsize=7.2, color='#333333', va='top',
+                    ha='left', family=PDF_MONO, zorder=1)
+
+    pitch = 0.0235
+    # reserve the tail (plus its rule and the truncation note) up front
+    tail = list(tail_rows)
+    floor = 0.02 + (len(tail) + 1) * pitch + (1.6 * pitch if tail else 0.0)
+
+    y = top - 0.040
+    shown = 0
+    for ri, row in enumerate(rows):
+        if y < floor:
+            break
+        draw_row(y, row, ri % 2 == 1)
+        y -= pitch
+        shown += 1
+
+    # A table that silently stops at the bottom of the sheet is a table the
+    # reader has no way to know is incomplete.
+    if shown < len(rows):
+        ax.text(0.0, y, f'… {len(rows) - shown} further row(s) not shown — '
+                        f'use Export Excel for the complete table',
+                fontsize=7.0, color='#5f6368', va='top', ha='left',
+                style='italic')
+        y -= 1.6 * pitch    # the note hangs BELOW its baseline; clear it
+
+    if tail:
+        ax.plot([0, 1], [y + pitch * 0.55, y + pitch * 0.55], color=PDF_RULE,
+                linewidth=0.8)
+        for row in tail:
+            draw_row(y, row, False)
+            y -= pitch
+    return ax
+
+
+# ── the report itself ─────────────────────────────────────────────────────
 
 def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                meta=None, az_deg=30, el_deg=25):
-    """Generate a multi-page PDF analysis report.
+    """Generate the multi-sheet PDF analysis report.
 
-    Pages: 1) Summary + general view, 2) Axial force, 3) Utilization,
-    4) Moments, 5) Deformed shape. Pages 2-5 only if results are available.
+    Sheets: 1) model, load case and general view; then, once the model has
+    been analysed, 2) axial force, 3) utilisation (when members carry a
+    section), 4) nodal moments, 5) deformed shape, 6) support reactions and
+    the equilibrium check, 7) the governing-member schedule.
+
+    Every sheet carries a frame, a title block, a graphic scale bar, an
+    orientation triad and one colour key; see this section's own header for
+    why each of those is there.
     """
     from common import _ensure_matplotlib
     if not _ensure_matplotlib():
@@ -1389,67 +2276,86 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
         force_color, util_color, moment_color, deform_color,
         reaction_moment_signed,
     )
+    from apps.stereo.stereo_app_constants import (
+        MEMBER_PIN_COLOR, MEMBER_RIGID_COLOR, NEAR_ZERO_COLOR, NEAR_ZERO_FRAC,
+        SUPPORT_COLOR, LOAD_COLOR, UTIL_HIGH,
+        MOMENT_NEG_HIGH, MOMENT_POS_HIGH,
+    )
 
     az = math.radians(az_deg)
     el = math.radians(el_deg)
-    proj_2d = [_iso_project(x, y, z, az, el) for x, y, z in nodes]
+    proj_2d = [_pdf_project(x, y, z, az, el) for x, y, z in nodes]
+    ext = _pdf_model_extents(nodes)
+    span_m = max(max(ext), 1e-6)
+    sheet_meta = _pdf_sheet_meta(nodes, members, meta)
+
+    n_rigid = sum(1 for m in members if m.get('conn') == 'rigid')
+    have_checks = bool(checks) and any(c.get('checked') for c in checks)
+    total = 1 if results is None else (6 + (1 if have_checks else 0))
+    sheet = [0]
+
+    def new_sheet(title):
+        sheet[0] += 1
+        fig = plt.figure(figsize=PDF_SHEET_IN)
+        fig.patch.set_facecolor('white')
+        _pdf_sheet(fig, sheet[0], total, title, sheet_meta)
+        return fig
+
+    def conn_color(i):
+        return (MEMBER_RIGID_COLOR if members[i].get('conn') == 'rigid'
+                else MEMBER_PIN_COLOR)
 
     with PdfPages(path) as pdf:
-        # ── Page 1: Summary + general view ──────────────────────────────
-        fig, (ax_text, ax_view) = plt.subplots(1, 2, figsize=(11, 8.5),
-                                                gridspec_kw={'width_ratios': [1, 1.5]})
-        fig.suptitle('Stereo Structure — Analysis Report', fontsize=16,
-                     fontweight='bold', y=0.97)
+        # ── Sheet 1: model, load case, general view ─────────────────────
+        fig = new_sheet('General view — model and load case')
+        ax = _pdf_view_axes(fig)
+        _pdf_members(ax, members, proj_2d, conn_color, linewidth=0.8)
+        _pdf_supports(ax, supports, proj_2d)
+        n_loaded = _pdf_load_arrows(ax, nodes, loads, proj_2d, az, el, span_m)
 
-        ax_text.set_axis_off()
-        summary = summary_text(nodes, members, results, checks)
-        info_lines = []
+        key = _PdfKey(ax)
+        key.caption('References')
+        key.row(MEMBER_PIN_COLOR, 'bar, pin connection')
+        if n_rigid:
+            key.row(MEMBER_RIGID_COLOR, 'bar, rigid (moment) connection')
+        key.row(SUPPORT_COLOR, 'support (restrained node)', marker='s')
+        if n_loaded:
+            key.row(LOAD_COLOR, 'applied load, along its own direction')
+            key.note('arrow length ∝ |F|^0.6 of the largest load')
+
+        info = ['MODEL']
         if meta:
-            family = meta.get('grid_family', '')
-            if family:
-                info_lines.append(f'Grid family: {family}')
-        info_lines.append(f'Nodes: {len(nodes)}    Members: {len(members)}')
-        info_lines.append(f'Supports: {len(supports)}    Loads: {len(loads)}')
-        info_lines.append('')
+            fam = meta.get('grid_family') or meta.get('typology')
+            if fam:
+                info.append(f'family          {fam}')
+        info += [
+            f'nodes           {len(nodes)}',
+            f'bars            {len(members)}',
+            f'  pin / rigid   {len(members) - n_rigid} / {n_rigid}',
+            f'supports        {len(supports)}',
+            f'loaded nodes    {n_loaded}',
+            '',
+            'EXTENTS (m)',
+            f'  X  {ext[0]:.2f}   Y  {ext[1]:.2f}   Z  {ext[2]:.2f}',
+        ]
+        try:
+            from apps.stereo import stereo_math as sm_mod
+            dgi = sm_mod.degree_of_indeterminacy(nodes, members, supports)
+            info.append(f'indeterminacy   {dgi:+d}')
+        except Exception:
+            pass
+        ap, rc, resid = _pdf_equilibrium(loads, (results or {}).get('reactions'))
+        info += ['', 'APPLIED LOAD (kN)',
+                 f'  Fx {ap[0]:+.2f}  Fy {ap[1]:+.2f}  Fz {ap[2]:+.2f}']
         if results is not None:
-            info_lines.append('— Analysis Results —')
-            forces = [mr['N'] for mr in results['member_res']]
-            if forces:
-                info_lines.append(f'Max tension:     {max(forces):+.2f} kN')
-                info_lines.append(f'Max compression: {min(forces):+.2f} kN')
-            max_disp = 0.0
-            for nr in results['node_res']:
-                d = (nr['ux']**2 + nr['uy']**2 + nr['uz']**2)**0.5
-                max_disp = max(max_disp, d)
-            info_lines.append(f'Max displacement: {max_disp:.3f} mm')
-            total_rz = sum(r.get('Fz', 0.0) for r in results['reactions'].values())
-            info_lines.append(f'Total ΣRz: {total_rz:.2f} kN')
-            if checks:
-                from apps.stereo.stereo_checks import worst_utilization
-                worst = worst_utilization(checks)
-                if worst is not None:
-                    n_over = sum(1 for c in checks
-                                 if c.get('checked') and c['util'] > 1.0)
-                    info_lines.append(f'Governing utilization: {worst:.2f}')
-                    if n_over:
-                        info_lines.append(f'Members over capacity: {n_over}')
-                    else:
-                        info_lines.append('All members OK')
+            info += [
+                '', 'RESULTS',
+            ] + [f'  {ln}' for ln in
+                 summary_text(nodes, members, results, checks).splitlines()[1:]]
         else:
-            info_lines.append('(Not yet analyzed)')
+            info += ['', '(not yet analysed)']
+        _pdf_finish_view(ax, nodes, proj_2d, az, el, key, info)
 
-        ax_text.text(0.05, 0.92, '\n'.join(info_lines), transform=ax_text.transAxes,
-                     fontsize=10, verticalalignment='top', fontfamily='monospace',
-                     bbox=dict(boxstyle='round,pad=0.4', facecolor='#f5f5f5',
-                               edgecolor='#cccccc'))
-
-        def default_color(i):
-            m = members[i]
-            return '#888888' if m.get('conn') == 'pin' else '#555555'
-
-        _pdf_draw_structure(ax_view, nodes, members, proj_2d, default_color,
-                            supports=supports, title='General View')
-        fig.tight_layout(rect=[0, 0.02, 1, 0.94])
         pdf.savefig(fig)
         plt.close(fig)
 
@@ -1457,58 +2363,79 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
             return
 
         member_res = results['member_res']
+        node_res = results['node_res']
 
-        # ── Page 2: Axial force ─────────────────────────────────────────
-        fig, ax = plt.subplots(figsize=(11, 8.5))
+        # ── Sheet 2: axial force ────────────────────────────────────────
+        fig = new_sheet('Axial force — N (kN)')
+        ax = _pdf_view_axes(fig)
         max_abs_N = max((abs(mr['N']) for mr in member_res), default=0.0)
 
         def fc(i):
             return force_color(member_res[i]['N'], max_abs_N)
 
-        from apps.stereo.stereo_app_constants import TENSION_HIGH, COMPRESSION_HIGH
-        legend = [
-            (TENSION_HIGH, f'Tension (max {max(mr["N"] for mr in member_res):+.1f} kN)'),
-            (COMPRESSION_HIGH, f'Compression (min {min(mr["N"] for mr in member_res):+.1f} kN)'),
-            ('#aaaaaa', '~0 (near zero)'),
-        ]
-        _pdf_draw_structure(ax, nodes, members, proj_2d, fc,
-                            supports=supports, title='Axial Force (kN)',
-                            legend_info=legend)
+        over = set()
+        if have_checks:
+            over = {i for i, c in enumerate(checks)
+                    if c.get('checked') and c['util'] > 1.0}
+        _pdf_members(ax, members, proj_2d, fc, linewidth=1.0, dashed_idx=over)
+        _pdf_supports(ax, supports, proj_2d)
+
+        key = _PdfKey(ax)
+        key.caption('Axial force, kN  (+ tension / − compression)')
         if max_abs_N > 0:
-            _pdf_colorbar(fig, ax,
-                          lambda v: force_color(v, max_abs_N),
-                          -max_abs_N, max_abs_N, label='N (kN)')
-        fig.tight_layout(rect=[0, 0.02, 1, 0.95])
+            key.ramp(lambda N: force_color(N, max_abs_N), -max_abs_N, max_abs_N,
+                     [(-max_abs_N, f'−{max_abs_N:,.1f}'), (0.0, '0'),
+                      (max_abs_N, f'+{max_abs_N:,.1f}')])
+            n_zero = sum(1 for mr in member_res
+                         if abs(mr['N']) / max_abs_N < NEAR_ZERO_FRAC)
+            if n_zero:
+                key.row(NEAR_ZERO_COLOR,
+                        f'~0: {n_zero} bars below {NEAR_ZERO_FRAC:.0%} of the scale')
+        else:
+            key.note('every bar reads exactly zero axial force')
+        key.row(SUPPORT_COLOR, 'support', marker='s')
+        if over:
+            key.row(MEMBER_PIN_COLOR,
+                    f'dashed: {len(over)} bar(s) over capacity', dashed=True)
+        _pdf_finish_view(ax, nodes, proj_2d, az, el, key,
+                         _pdf_force_stats(nodes, members, member_res))
         pdf.savefig(fig)
         plt.close(fig)
 
-        # ── Page 3: Utilization ─────────────────────────────────────────
-        if checks:
-            fig, ax = plt.subplots(figsize=(11, 8.5))
+        # ── Sheet 3: utilization ────────────────────────────────────────
+        if have_checks:
+            fig = new_sheet('Member utilization — demand / capacity')
+            ax = _pdf_view_axes(fig)
 
             def uc(i):
-                chk = checks[i]
-                if chk.get('checked'):
-                    return util_color(chk['util'])
-                return '#cccccc'
+                c = checks[i]
+                return util_color(c['util']) if c.get('checked') else NEAR_ZERO_COLOR
 
-            from apps.stereo.stereo_app_constants import UTIL_LOW, UTIL_HIGH
-            legend = [
-                (UTIL_LOW, 'Util ≈ 0 (lightly loaded)'),
-                ('#e6b800', 'Util ≈ 0.5'),
-                (UTIL_HIGH, 'Util ≥ 1.0 (over capacity)'),
-            ]
-            _pdf_draw_structure(ax, nodes, members, proj_2d, uc,
-                                supports=supports, title='Member Utilization',
-                                legend_info=legend)
-            _pdf_colorbar(fig, ax, util_color, 0.0, 1.2,
-                          label='Utilization (demand/capacity)')
-            fig.tight_layout(rect=[0, 0.02, 1, 0.95])
+            _pdf_members(ax, members, proj_2d, uc, linewidth=1.0, dashed_idx=over)
+            _pdf_supports(ax, supports, proj_2d)
+
+            key = _PdfKey(ax)
+            key.caption('Utilization (demand ÷ capacity)')
+            key.ramp(util_color, 0.0, 1.2,
+                     [(0.0, '0'), (0.5, '0.5'), (1.2, '≥1.2')],
+                     mark=(1.0, 'capacity 1.0'))
+            n_unchecked = sum(1 for c in checks if not c.get('checked'))
+            if n_unchecked:
+                key.row(NEAR_ZERO_COLOR,
+                        f'{n_unchecked} bar(s) with no section assigned')
+            if over:
+                key.row(UTIL_HIGH, f'dashed: {len(over)} bar(s) over capacity',
+                        dashed=True)
+            key.row(SUPPORT_COLOR, 'support', marker='s')
+            key.note('absolute code thresholds — not relative to this model')
+            _pdf_finish_view(ax, nodes, proj_2d, az, el, key,
+                             _pdf_util_stats(checks))
             pdf.savefig(fig)
             plt.close(fig)
 
-        # ── Page 4: Moments ─────────────────────────────────────────────
-        fig, ax = plt.subplots(figsize=(11, 8.5))
+        # ── Sheet 4: nodal moments ──────────────────────────────────────
+        fig = new_sheet('Nodal moments — M (kN·m)')
+        ax = _pdf_view_axes(fig)
         moment_by_node = {}
         max_abs_m = 0.0
         centroid_xy = (sum(n[0] for n in nodes) / max(len(nodes), 1),
@@ -1517,108 +2444,193 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
         for i in support_set:
             r = results['reactions'].get(i)
             if r is not None:
-                node_xy = (nodes[i][0], nodes[i][1])
-                m = reaction_moment_signed(r, node_xy=node_xy,
-                                           centroid_xy=centroid_xy)
-                moment_by_node[i] = m
-                max_abs_m = max(max_abs_m, abs(m))
+                m_val = reaction_moment_signed(
+                    r, node_xy=(nodes[i][0], nodes[i][1]), centroid_xy=centroid_xy)
+                moment_by_node[i] = m_val
+                max_abs_m = max(max_abs_m, abs(m_val))
         from apps.stereo import stereo_math as sm_mod
-        node_vecs = sm_mod.node_moment_vectors(nodes, members, member_res)
-        for i, vec in node_vecs.items():
+        for i, vec in sm_mod.node_moment_vectors(nodes, members, member_res).items():
             if i in moment_by_node:
                 continue
-            node_xy = (nodes[i][0], nodes[i][1])
-            m = reaction_moment_signed(vec, node_xy=node_xy,
-                                       centroid_xy=centroid_xy)
-            moment_by_node[i] = m
-            max_abs_m = max(max_abs_m, abs(m))
+            m_val = reaction_moment_signed(
+                vec, node_xy=(nodes[i][0], nodes[i][1]), centroid_xy=centroid_xy)
+            moment_by_node[i] = m_val
+            max_abs_m = max(max_abs_m, abs(m_val))
+        # A joint whose moment rounds to nothing is not a data point; keeping
+        # it would paint a field of white dots and let the key claim a
+        # ±0.00 kN·m range, which is what the old sheet did on every
+        # pin-jointed model.
+        if max_abs_m <= 1e-9:
+            moment_by_node = {}
 
-        nc = {idx: moment_color(val, max_abs_m)
-              for idx, val in moment_by_node.items()}
+        from apps.stereo.stereo_app_constants import MOMENT_BACKDROP_COLOR
+        _pdf_members(ax, members, proj_2d,
+                     lambda i: (MOMENT_BACKDROP_COLOR if moment_by_node
+                                else conn_color(i)),
+                     linewidth=0.7)
+        _pdf_supports(ax, supports, proj_2d)
+        if moment_by_node:
+            for idx, val in moment_by_node.items():
+                sx, sy = proj_2d[idx]
+                ax.plot([sx], [sy], marker='o', markersize=5.0,
+                        color=_hex_to_rgb(moment_color(val, max_abs_m)),
+                        markeredgecolor='#9a9a9a', markeredgewidth=0.4,
+                        linestyle='none', zorder=9)
 
-        _pdf_draw_structure(ax, nodes, members, proj_2d, default_color,
-                            supports=supports, title='Nodal Moments (kN·m)',
-                            node_colors=nc, node_radius=3.5)
-        if max_abs_m > 0:
-            _pdf_colorbar(fig, ax,
-                          lambda v: moment_color(v, max_abs_m),
-                          -max_abs_m, max_abs_m, label='Moment (kN·m)')
-        from apps.stereo.stereo_app_constants import MOMENT_NEG_HIGH, MOMENT_POS_HIGH
-        legend = [
-            (MOMENT_NEG_HIGH, f'Negative ({-max_abs_m:.2f} kN·m)'),
-            ('#ffffff', 'Zero'),
-            (MOMENT_POS_HIGH, f'Positive (+{max_abs_m:.2f} kN·m)'),
-        ]
-        ax.legend(handles=[plt.matplotlib.patches.Patch(
-                      facecolor=_hex_to_rgb(c), label=lbl)
-                  for c, lbl in legend],
-                  loc='lower right', fontsize=7, framealpha=0.9,
-                  edgecolor='#cccccc')
-        fig.tight_layout(rect=[0, 0.02, 1, 0.95])
+        key = _PdfKey(ax)
+        if moment_by_node:
+            key.caption('Node moment, kN·m (resultant, sagging + / hogging −)')
+            key.ramp(lambda m_: moment_color(m_, max_abs_m), -max_abs_m, max_abs_m,
+                     [(-max_abs_m, f'−{max_abs_m:,.3g}'), (0.0, '0'),
+                      (max_abs_m, f'+{max_abs_m:,.3g}')])
+            key.row(MOMENT_BACKDROP_COLOR,
+                    'bars faded — the NODE colour is the content')
+            key.row(MOMENT_NEG_HIGH, 'orange = hogging (negative)')
+            key.row(MOMENT_POS_HIGH, 'violet = sagging (positive)')
+        else:
+            key.caption('Node moment, kN·m')
+            key.note('no joint in this model transfers a moment')
+            key.row(MEMBER_PIN_COLOR, 'bar, pin connection')
+        key.row(SUPPORT_COLOR, 'support', marker='s')
+        _pdf_finish_view(ax, nodes, proj_2d, az, el, key,
+                         _pdf_moment_stats(nodes, moment_by_node, n_rigid,
+                                           len(members)))
         pdf.savefig(fig)
         plt.close(fig)
 
-        # ── Page 5: Deformed shape ──────────────────────────────────────
-        fig, ax = plt.subplots(figsize=(11, 8.5))
-        node_res = results['node_res']
-        disps = [(nr['ux']**2 + nr['uy']**2 + nr['uz']**2)**0.5
+        # ── Sheet 5: deformed shape ─────────────────────────────────────
+        fig = new_sheet('Deformed shape — displacement (mm)')
+        ax = _pdf_view_axes(fig)
+        disps = [(nr['ux'] ** 2 + nr['uy'] ** 2 + nr['uz'] ** 2) ** 0.5
                  for nr in node_res]
         max_disp = max(disps, default=0.0)
 
-        span = 0.0
+        longest = 0.0
         for m in members:
             na, nb = nodes[m['a']], nodes[m['b']]
-            span = max(span, sum((a - b)**2 for a, b in zip(na, nb))**0.5)
-        if max_disp > 0 and span > 0:
-            scale_factor = span * 0.05 / (max_disp / 1000.0)
+            longest = max(longest, sum((a - b) ** 2 for a, b in zip(na, nb)) ** 0.5)
+        if max_disp > 0 and longest > 0:
+            scale_factor = longest * 0.05 / (max_disp / 1000.0)
         else:
             scale_factor = 1.0
 
         def_nodes = []
         for i, (x, y, z) in enumerate(nodes):
             nr = node_res[i]
-            def_nodes.append((
-                x + nr['ux'] / 1000.0 * scale_factor,
-                y + nr['uy'] / 1000.0 * scale_factor,
-                z + nr['uz'] / 1000.0 * scale_factor,
-            ))
-        def_proj = [_iso_project(x, y, z, az, el) for x, y, z in def_nodes]
+            def_nodes.append((x + nr['ux'] / 1000.0 * scale_factor,
+                              y + nr['uy'] / 1000.0 * scale_factor,
+                              z + nr['uz'] / 1000.0 * scale_factor))
+        def_proj = [_pdf_project(x, y, z, az, el) for x, y, z in def_nodes]
 
-        ax.set_aspect('equal')
-        ax.set_axis_off()
-        ax.set_title('Deformed Shape (exaggerated)', fontsize=14,
-                     fontweight='bold', pad=12)
-        for i, m in enumerate(members):
-            xa, ya = proj_2d[m['a']]
-            xb, yb = proj_2d[m['b']]
-            ax.plot([xa, xb], [ya, yb], color='#dddddd', linewidth=0.5)
+        _pdf_members(ax, members, proj_2d, lambda i: PDF_UNDEFORMED,
+                     linewidth=0.5, zorder=2)
+        _pdf_members(ax, members, def_proj,
+                     lambda i: deform_color(
+                         (disps[members[i]['a']] + disps[members[i]['b']]) / 2.0,
+                         max_disp),
+                     linewidth=1.1, zorder=4)
+        _pdf_supports(ax, supports, proj_2d)
 
-        for i, m in enumerate(members):
-            xa, ya = def_proj[m['a']]
-            xb, yb = def_proj[m['b']]
-            disp_a = disps[m['a']]
-            disp_b = disps[m['b']]
-            avg_disp = (disp_a + disp_b) / 2.0
-            col = _hex_to_rgb(deform_color(avg_disp, max_disp))
-            ax.plot([xa, xb], [ya, yb], color=col, linewidth=1.2)
-
-        dc = {idx: deform_color(disps[idx], max_disp)
-              for idx in range(len(nodes)) if disps[idx] > 0}
-        for idx, hex_c in dc.items():
-            sx, sy = def_proj[idx]
-            ax.plot(sx, sy, 'o', color=_hex_to_rgb(hex_c), markersize=2.5,
-                    zorder=6)
-
+        key = _PdfKey(ax)
+        key.caption(f'Deformed shape, displacement in mm (×{scale_factor:,.0f})')
         if max_disp > 0:
-            _pdf_colorbar(fig, ax,
-                          lambda v: deform_color(v, max_disp),
-                          0, max_disp, label='Displacement (mm)')
-        ax.text(0.02, 0.02, f'Scale factor: {scale_factor:.0f}×\n'
-                f'Max disp: {max_disp:.3f} mm',
-                transform=ax.transAxes, fontsize=8,
-                verticalalignment='bottom',
-                bbox=dict(boxstyle='round,pad=0.3', facecolor='#f5f5f5',
-                          edgecolor='#cccccc'))
-        fig.tight_layout(rect=[0, 0.02, 1, 0.95])
+            key.ramp(lambda d: deform_color(d, max_disp), 0.0, max_disp,
+                     [(0.0, '0'), (max_disp / 2.0, f'{max_disp / 2.0:,.3g}'),
+                      (max_disp, f'{max_disp:,.3g}')])
+        else:
+            key.note('the model did not move')
+        key.row(PDF_UNDEFORMED, 'undeformed geometry (reference)')
+        key.row(SUPPORT_COLOR, 'support', marker='s')
+        key.note('exaggerated — the scale bar measures the undeformed model')
+        _pdf_finish_view(ax, nodes, proj_2d, az, el, key,
+                         _pdf_deform_stats(nodes, node_res, disps,
+                                           scale_factor, longest),
+                         extra_pts=def_proj)
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # ── Sheet 6: reactions and equilibrium ──────────────────────────
+        fig = new_sheet('Support reactions and equilibrium')
+        reactions = results['reactions']
+        rows = []
+        for i in sorted(reactions):
+            r = reactions[i]
+            x, y, z = nodes[i]
+            rows.append([
+                str(i), f'{x:.2f}', f'{y:.2f}', f'{z:.2f}',
+                f'{r.get("Fx", 0.0):+.3f}', f'{r.get("Fy", 0.0):+.3f}',
+                f'{r.get("Fz", 0.0):+.3f}', f'{r.get("Mx", 0.0):+.4f}',
+                f'{r.get("My", 0.0):+.4f}', f'{r.get("Mz", 0.0):+.4f}',
+            ])
+        ap, rc, resid = _pdf_equilibrium(loads, reactions)
+        tail = [
+            ['Σ react', '', '', '', f'{rc[0]:+.3f}', f'{rc[1]:+.3f}',
+             f'{rc[2]:+.3f}', '', '', ''],
+            ['Σ applied', '', '', '', f'{ap[0]:+.3f}', f'{ap[1]:+.3f}',
+             f'{ap[2]:+.3f}', '', '', ''],
+            ['residual', '', '', '', f'{resid[0]:+.2e}',
+             f'{resid[1]:+.2e}', f'{resid[2]:+.2e}', '', '', ''],
+        ]
+        worst_res = max(abs(v) for v in resid)
+        scale_ref = max(abs(v) for v in ap) or 1.0
+        verdict = ('equilibrium satisfied'
+                   if worst_res <= max(1e-6, scale_ref * 1e-6)
+                   else f'residual {worst_res:.3e} kN — CHECK THE MODEL')
+        _pdf_table_page(
+            fig, 'Support reactions (kN, kN·m)',
+            ['node', 'x', 'y', 'z', 'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz'],
+            rows, [0.9, 1.0, 1.0, 1.0, 1.25, 1.25, 1.25, 1.3, 1.3, 1.3],
+            note=f'Σ reaction + Σ applied must come to zero — {verdict}. '
+                 f'{len(reactions)} restrained node(s).',
+            tail_rows=tail)
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # ── Sheet 7: governing members ──────────────────────────────────
+        fig = new_sheet('Governing members')
+        forces = [mr['N'] for mr in member_res]
+        if have_checks:
+            order = sorted((i for i, c in enumerate(checks) if c.get('checked')),
+                           key=lambda i: checks[i]['util'], reverse=True)[:26]
+            headers = ['bar', 'from', 'to', 'L (m)', 'N (kN)', 'mode',
+                       'util', 'KL/r', 'status']
+            rows = []
+            for i in order:
+                c = checks[i]
+                m = members[i]
+                na, nb = nodes[m['a']], nodes[m['b']]
+                L = sum((a - b) ** 2 for a, b in zip(na, nb)) ** 0.5
+                sl = c.get('slenderness')
+                rows.append([
+                    str(i), str(m['a']), str(m['b']), f'{L:.3f}',
+                    f'{forces[i]:+.2f}', c.get('mode', ''),
+                    f'{c["util"]:.3f}',
+                    (f'{sl:.0f}' if isinstance(sl, (int, float)) else '—'),
+                    ('OK' if c['util'] <= 1.0 else 'OVER'),
+                ])
+            _pdf_table_page(
+                fig, 'Most utilized members (CIRSOC 301 / AISC 360)',
+                headers, rows, [0.8, 0.8, 0.8, 1.1, 1.25, 1.35, 1.0, 1.0, 1.0],
+                note='Ranked by utilisation. Tension is checked against yield '
+                     '(H.3.4); compression against flexural buckling (E3).')
+        else:
+            order = sorted(range(len(forces)), key=lambda i: abs(forces[i]),
+                           reverse=True)[:26]
+            rows = []
+            for i in order:
+                m = members[i]
+                na, nb = nodes[m['a']], nodes[m['b']]
+                L = sum((a - b) ** 2 for a, b in zip(na, nb)) ** 0.5
+                rows.append([str(i), str(m['a']), str(m['b']), f'{L:.3f}',
+                             f'{forces[i]:+.2f}',
+                             ('tension' if forces[i] >= 0 else 'compression'),
+                             m.get('conn', 'pin')])
+            _pdf_table_page(
+                fig, 'Most loaded members',
+                ['bar', 'from', 'to', 'L (m)', 'N (kN)', 'sense', 'conn'],
+                rows, [0.8, 0.8, 0.8, 1.1, 1.25, 1.4, 1.0],
+                note='Ranked by |N|. No member carries a section yet, so no '
+                     'code check could be run — assign profiles to get the '
+                     'utilisation schedule here.')
         pdf.savefig(fig)
         plt.close(fig)

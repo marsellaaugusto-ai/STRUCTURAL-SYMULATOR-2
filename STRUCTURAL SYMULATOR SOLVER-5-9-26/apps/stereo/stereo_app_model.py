@@ -163,6 +163,12 @@ class StereoModelMixin:
         cleared, view reset) instead of two call sites drifting apart."""
         if push_undo:
             self._push_undo(undo_label)
+        # A generated mesh is named by the Grid Family dropdown that made
+        # it; only an example, an import or a variant carries a name of its
+        # own. Cleared here, the single choke point every generator goes
+        # through, so a stale example title cannot follow a regenerated grid
+        # into its report.
+        self._model_label = None
         self.nodes = mesh['nodes']
         self.members = mesh['members']
         self._support_candidates = mesh['support_candidates']
@@ -207,6 +213,7 @@ class StereoModelMixin:
             messagebox.showerror('Load Example', str(exc))
             return
         self._load_mesh(mesh, push_undo=True, undo_label=f'load example: {label}')
+        self._model_label = label   # after _load_mesh, which clears it
 
     def _apply_sections(self, members=None, redraw=True):
         members = self.members if members is None else members

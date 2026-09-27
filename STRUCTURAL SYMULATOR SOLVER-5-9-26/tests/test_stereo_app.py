@@ -35,6 +35,7 @@ from apps.stereo.stereo_app import (
 )
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
+from apps.stereo import stereo_reports as sr_module
 from apps.stereo import stereo_voronoi_surface as svs
 from apps.stereo import stereo_app_constants as sc
 from apps.stereo import stereo_app_module_editor as me
@@ -5327,3 +5328,203 @@ class TestDesignVariants:
     def test_variant_buttons_exist(self, app):
         assert hasattr(app, '_btn_save_variant')
         assert hasattr(app, '_btn_compare_variants')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  The exports must describe the model that was actually SOLVED
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# self.loads holds only the point loads typed into the Loads panel, while
+# _analyze() solves _all_loads() -- those PLUS the area load and the
+# self-weight. Export Excel, Export PDF, Export 3D and Save Variant all used
+# to hand out self.loads, which on the default model is EMPTY: the workbook
+# re-imported and re-analysed to zero displacement, and the PDF's own
+# equilibrium check printed an 1800 kN residual against its own reaction
+# table. These drive the real buttons and read the real artefacts back.
+
+class TestExportsCarryTheSolvedLoadCase:
+    def test_the_default_model_is_loaded_by_something_other_than_self_loads(self, app):
+        """The premise: without this, the tests below would pass vacuously."""
+        assert app.loads == [], 'the default model types no point loads'
+        assert len(app._all_loads()) > 0, 'but it IS loaded (area load)'
+
+    def test_export_excel_writes_the_loads_the_solver_used(self, app, tmp_path,
+                                                            monkeypatch):
+        app._analyze()
+        assert app.err is None
+        path = str(tmp_path / 'model.xlsx')
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: path)
+        app._export_excel()
+
+        from apps.stereo import stereo_reports as sr
+        nodes2, members2, loads2, supports2, _ = sr.import_excel_model(path)
+        assert len(loads2) == len(app._all_loads())
+
+        # and the re-imported model must solve to the SAME answer
+        res2, err2 = sm.analyze(nodes2, members2, loads2, supports2)
+        assert err2 is None
+        def _max_disp(res):
+            return max((nr['ux'] ** 2 + nr['uy'] ** 2 + nr['uz'] ** 2) ** 0.5
+                       for nr in res['node_res'])
+        assert _max_disp(res2) == pytest.approx(_max_disp(app.results), rel=1e-9)
+        assert _max_disp(res2) > 0.0
+
+    def test_exported_workbook_reimports_without_double_counting(self, app, tmp_path,
+                                                                  monkeypatch):
+        """The exported [LOADS] table is the complete case, so the import
+        has to switch the area-load and self-weight generators OFF or the
+        next Analyze adds a second copy of both."""
+        app.self_weight_on.set(True)
+        app._analyze()
+        before = sum(ld.get('fz', 0.0) for ld in app._all_loads())
+
+        path = str(tmp_path / 'model.xlsx')
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: path)
+        app._export_excel()
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                            lambda *a, **kw: path)
+        app._import_excel()
+
+        assert app.area_load_on.get() is False
+        assert app.self_weight_on.get() is False
+        after = sum(ld.get('fz', 0.0) for ld in app._all_loads())
+        assert after == pytest.approx(before, rel=1e-9)
+
+    def test_export_pdf_reports_a_load_case_that_balances_the_reactions(
+            self, app, tmp_path, monkeypatch):
+        app._analyze()
+        assert app.err is None
+        seen = {}
+        real = sr_module.export_pdf
+
+        def spy(nodes, members, loads, supports, results, path, **kw):
+            seen['loads'] = loads
+            seen['supports'] = supports
+            return real(nodes, members, loads, supports, results, path, **kw)
+
+        monkeypatch.setattr(sr_module, 'export_pdf', spy)
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: str(tmp_path / 'r.pdf'))
+        app._export_pdf()
+
+        applied, reacted, residual = sr_module._pdf_equilibrium(
+            seen['loads'], app.results['reactions'])
+        assert applied[2] < 0, 'the model is loaded downward'
+        scale = max(abs(v) for v in applied) or 1.0
+        for r in residual:
+            assert abs(r) < scale * 1e-6, (
+                f'the report contradicts its own reaction table: {residual}')
+
+    def test_export_pdf_draws_the_supports_the_solver_actually_used(
+            self, app, tmp_path, monkeypatch):
+        """A support switched off in the sandbox is not in the solve, so it
+        must not be drawn on the report as if it were holding the
+        structure up."""
+        app._analyze()
+        victim = app.supports[0]['node']
+        app._disabled_supports.add(victim)
+        app._analyze()
+
+        seen = {}
+        real = sr_module.export_pdf
+        monkeypatch.setattr(sr_module, 'export_pdf',
+                            lambda n, m, l, s, r, p, **kw: (
+                                seen.update(supports=s),
+                                real(n, m, l, s, r, p, **kw))[1])
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: str(tmp_path / 'r.pdf'))
+        app._export_pdf()
+        assert victim not in {s['node'] for s in seen['supports']}
+        assert len(seen['supports']) == len(app._active_supports())
+
+    def test_saved_variant_keeps_the_load_case_it_was_analysed_under(
+            self, app, monkeypatch):
+        """Loading a variant clears _load_nodes, so a variant carrying only
+        the typed point loads came back as an unloaded structure sitting
+        beside the results of a loaded one."""
+        app._analyze()
+        solved = app._all_loads()
+        assert solved
+        monkeypatch.setattr('tkinter.simpledialog.askstring',
+                            lambda *a, **kw: 'baseline')
+        app._save_variant()
+        assert len(app._variants) == 1
+        v = app._variants[0]
+        assert len(v['loads']) == len(solved)
+        assert v['summary']['n_loads'] == len(solved)
+        total = sum(ld.get('fz', 0.0) for ld in v['loads'])
+        assert total == pytest.approx(sum(ld.get('fz', 0.0) for ld in solved))
+        # re-solving the snapshot alone reproduces the stored result
+        res2, err2 = sm.analyze(v['nodes'], v['members'], v['loads'],
+                                v['supports'])
+        assert err2 is None
+        d1 = max((nr['ux'] ** 2 + nr['uy'] ** 2 + nr['uz'] ** 2) ** 0.5
+                 for nr in v['results']['node_res'])
+        d2 = max((nr['ux'] ** 2 + nr['uy'] ** 2 + nr['uz'] ** 2) ** 0.5
+                 for nr in res2['node_res'])
+        assert d2 == pytest.approx(d1, rel=1e-9)
+        assert d2 > 0.0
+
+
+class TestExportedReportsNameTheModel:
+    """meta['grid_family'] ends up in the PDF title block and the Excel
+    [META] sheet. It used to be read straight off the Grid Family dropdown,
+    which _load_example, _import_excel, _open_example and the variant
+    loader never touch -- so loading the Schwedler dome example and
+    exporting produced a report headed "Flat double-layer grid"."""
+
+    def test_a_generated_model_is_named_after_its_family(self, app):
+        app.grid_family.set(FAMILY_LABEL['dome'])
+        app._on_generator_change()
+        app._generate()
+        assert app._model_name() == FAMILY_LABEL['dome']
+
+    def test_an_example_is_named_after_the_example(self, app):
+        from apps.stereo import stereo_examples as sx
+        label, builder = sx.EXAMPLES[7]
+        app._load_example(builder, label)
+        assert app._model_name() == label
+        assert app._model_name() != app.grid_family.get()
+
+    def test_regenerating_drops_the_example_name(self, app):
+        from apps.stereo import stereo_examples as sx
+        label, builder = sx.EXAMPLES[7]
+        app._load_example(builder, label)
+        app.grid_family.set(FAMILY_LABEL['flat_grid'])
+        app._on_generator_change()
+        app._generate()
+        assert app._model_name() == FAMILY_LABEL['flat_grid']
+
+    def test_the_pdf_title_block_carries_that_name(self, app, tmp_path,
+                                                   monkeypatch):
+        from apps.stereo import stereo_examples as sx
+        label, builder = sx.EXAMPLES[7]
+        app._load_example(builder, label)
+        app._analyze()
+        seen = {}
+        real = sr_module.export_pdf
+        monkeypatch.setattr(sr_module, 'export_pdf',
+                            lambda n, m, l, s, r, p, **kw: (
+                                seen.update(meta=kw.get('meta')),
+                                real(n, m, l, s, r, p, **kw))[1])
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: str(tmp_path / 'r.pdf'))
+        app._export_pdf()
+        assert seen['meta']['grid_family'] == label
+        fields = dict(sr_module._pdf_sheet_meta(app.nodes, app.members,
+                                                seen['meta']))
+        assert fields['MODEL'] == label[:22]
+
+    def test_an_imported_model_is_named_after_its_file(self, app, tmp_path,
+                                                        monkeypatch):
+        app._analyze()
+        path = str(tmp_path / 'my_roof.xlsx')
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: path)
+        app._export_excel()
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                            lambda *a, **kw: path)
+        app._import_excel()
+        assert app._model_name() == 'my_roof.xlsx'

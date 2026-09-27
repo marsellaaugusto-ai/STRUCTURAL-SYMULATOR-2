@@ -11,6 +11,7 @@ import pytest
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_reports as sr
+from apps.stereo import stereo_checks as sk
 
 
 def _built_model():
@@ -178,6 +179,19 @@ def _analysed_model():
 
 # ── 6.1  PDF export ───────────────────────────────────────────────────────
 
+def _pdf_page_count(path):
+    """Pages in a PDF, straight out of the file's own /Type /Page objects.
+
+    Counted from the bytes rather than from matplotlib's call count, so the
+    assertion is about the artefact the user opens. The negative lookahead
+    matters: every PDF also carries one /Type /Pages tree node, and
+    /Type /Page is a prefix of it.
+    """
+    import re
+    data = open(path, 'rb').read()
+    return len(re.findall(rb'/Type\s*/Page(?![a-zA-Z])', data))
+
+
 def test_export_pdf_creates_multi_page_file():
     nodes, members, loads, supports, res = _analysed_model()
     with tempfile.TemporaryDirectory() as d:
@@ -196,6 +210,271 @@ def test_export_pdf_without_results():
         sr.export_pdf(nodes, members, loads, supports, None, path,
                       az_deg=35.0, el_deg=22.0)
         assert os.path.isfile(path)
+
+
+def test_export_pdf_unanalysed_report_is_one_sheet_only():
+    """Without results there is nothing to plot but the model itself, and
+    the title block's 'Sheet 1 / N' must not promise sheets that the file
+    does not contain."""
+    nodes, members, loads, supports = _built_model()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'report.pdf')
+        sr.export_pdf(nodes, members, loads, supports, None, path)
+        assert _pdf_page_count(path) == 1
+
+
+def test_export_pdf_with_checks_has_the_utilization_sheet():
+    """The utilisation sheet exists only when a member actually carries a
+    section, and the reactions/governing-member sheets always follow the
+    view sheets."""
+    nodes, members, loads, supports, res = _analysed_model()
+    checks = sk.check_all_members(nodes, members, res['member_res'])
+    assert any(c.get('checked') for c in checks)
+    with tempfile.TemporaryDirectory() as d:
+        with_checks = os.path.join(d, 'with.pdf')
+        without = os.path.join(d, 'without.pdf')
+        sr.export_pdf(nodes, members, loads, supports, res, with_checks,
+                      checks=checks)
+        sr.export_pdf(nodes, members, loads, supports, res, without)
+        assert _pdf_page_count(with_checks) == 7
+        assert _pdf_page_count(without) == 6
+
+
+# ── 6.1  PDF sheet furniture ──────────────────────────────────────────────
+#
+# The report is read as a DRAWING, so the furniture that makes a drawing
+# readable off the screen -- which way is up, how big is it, what does the
+# colour mean -- is tested here as its own behaviour rather than left to
+# "the file was produced".
+
+def test_pdf_projection_puts_z_up_for_matplotlib():
+    """_iso_project answers in Tk canvas coordinates (y grows DOWN); the
+    PDF path must flip it, or every sheet is a vertical mirror of the tab
+    it reports on -- a sagging roof would bulge upward."""
+    import math
+    az, el = math.radians(35.0), math.radians(22.0)
+    _, up_y = sr._pdf_project(0.0, 0.0, 1.0, az, el)
+    _, down_y = sr._pdf_project(0.0, 0.0, -1.0, az, el)
+    assert up_y > 0, '+Z must land ABOVE the origin on the sheet'
+    assert down_y < 0
+    # and it must still be the same projection, just mirrored
+    sx_iso, sy_iso = sr._iso_project(3.0, -2.0, 1.5, az, el)
+    sx_pdf, sy_pdf = sr._pdf_project(3.0, -2.0, 1.5, az, el)
+    assert sx_pdf == pytest.approx(sx_iso)
+    assert sy_pdf == pytest.approx(-sy_iso)
+
+
+def test_pdf_nice_length_rounds_to_1_2_or_5():
+    """A graphic scale bar has to be a length the reader can divide in
+    their head, so it is always 1, 2 or 5 times a power of ten -- and
+    never longer than what was asked for."""
+    cases = {
+        1.0: 1.0, 1.9: 1.0, 2.0: 2.0, 4.99: 2.0, 5.0: 5.0, 9.99: 5.0,
+        10.0: 10.0, 13.7: 10.0, 23.0: 20.0, 78.0: 50.0, 100.0: 100.0,
+        0.37: 0.2, 0.09: 0.05, 640.0: 500.0,
+    }
+    for raw, want in cases.items():
+        assert sr._pdf_nice_length(raw) == pytest.approx(want), raw
+        assert sr._pdf_nice_length(raw) <= raw + 1e-9
+
+
+def test_pdf_nice_length_is_safe_on_a_degenerate_model():
+    """A single-node or zero-extent model gets NO scale bar rather than a
+    crash or a nonsense one."""
+    import math
+    for bad in (0.0, -3.0, float('nan'), float('inf')):
+        assert sr._pdf_nice_length(bad) == 0.0
+    assert not math.isnan(sr._pdf_nice_length(0.0))
+
+
+def test_pdf_axis_dirs_foreshorten_each_axis_differently():
+    """The triad draws all three arms at ONE world length precisely
+    because a parallel projection squashes each axis by its own factor;
+    this pins that the factors really do differ, and that Z is the least
+    squashed at a shallow elevation (which is why the scale bar names the
+    axis it is true for)."""
+    import math
+    az, el = math.radians(35.0), math.radians(22.0)
+    f = sr._pdf_foreshortening(az, el)
+    assert set(f) == {'X', 'Y', 'Z'}
+    assert f['Z'] > f['X'] > f['Y'], f
+    for k, v in f.items():
+        assert 0.0 < v <= 1.0 + 1e-9, (k, v)
+    # straight down the Z axis, X and Y are unsquashed and Z vanishes
+    flat = sr._pdf_foreshortening(0.0, math.radians(90.0))
+    assert flat['X'] == pytest.approx(1.0)
+    assert flat['Y'] == pytest.approx(1.0)
+    assert flat['Z'] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_pdf_model_extents_reports_the_bounding_box():
+    nodes = [(0.0, 0.0, 0.0), (6.0, 0.0, 1.5), (6.0, 4.0, -0.5)]
+    dx, dy, dz = sr._pdf_model_extents(nodes)
+    assert (dx, dy, dz) == pytest.approx((6.0, 4.0, 2.0))
+    assert sr._pdf_model_extents([]) == (0.0, 0.0, 0.0)
+
+
+def test_pdf_equilibrium_closes_on_a_solved_model():
+    """The reactions sheet claims equilibrium; that claim is computed, and
+    on a real solve the residual must be numerically zero."""
+    nodes, members, loads, supports, res = _analysed_model()
+    applied, reacted, residual = sr._pdf_equilibrium(loads, res['reactions'])
+    assert applied[2] < 0, 'this model is loaded downward'
+    assert reacted[2] == pytest.approx(-applied[2], rel=1e-9)
+    for r in residual:
+        assert abs(r) < 1e-6, residual
+
+
+def test_pdf_equilibrium_handles_a_model_with_no_results_yet():
+    nodes, members, loads, supports = _built_model()
+    applied, reacted, residual = sr._pdf_equilibrium(loads, None)
+    assert reacted == (0.0, 0.0, 0.0)
+    assert residual == pytest.approx(applied)
+
+
+# ── the colour key must agree with the drawing ────────────────────────────
+
+def test_pdf_key_colours_come_from_the_colour_functions():
+    """The old sheet hand-quoted hexes in its legend (#e6b800 for
+    utilisation 0.5, #aaaaaa for 'near zero') that the colour functions
+    never produce, so the key disagreed with the picture beside it. The
+    report must only name colours the app actually paints with."""
+    import inspect
+    from apps.stereo import stereo_app_colors as sc
+    from apps.stereo import stereo_app_constants as k
+
+    src = inspect.getsource(sr.export_pdf)
+    for bogus in ('#e6b800', '#aaaaaa', '#888888', '#cccccc'):
+        assert bogus not in src, f'{bogus} is not a colour this app paints with'
+
+    # the values the key DOES name are the constants themselves
+    assert sc.util_color(0.5) == k.UTIL_MID
+    assert sc.util_color(0.0) == k.UTIL_LOW
+    assert sc.util_color(1.4) == k.UTIL_HIGH
+    assert sc.force_color(0.0, 10.0) == k.NEAR_ZERO_COLOR
+
+
+def test_pdf_and_canvas_share_one_set_of_axis_colours():
+    """The triad on the sheet and the gizmo on screen must never colour
+    the same axis differently."""
+    from apps.stereo import stereo_app_constants as k
+    from apps.stereo.stereo_app_render import StereoRenderMixin
+    assert StereoRenderMixin.AXIS_COLOR_X == k.AXIS_COLOR_X
+    assert StereoRenderMixin.AXIS_COLOR_Y == k.AXIS_COLOR_Y
+    assert StereoRenderMixin.AXIS_COLOR_Z == k.AXIS_COLOR_Z
+
+
+# ── per-sheet statistics ──────────────────────────────────────────────────
+
+def test_pdf_force_stats_name_the_extreme_bars():
+    nodes, members, loads, supports, res = _analysed_model()
+    lines = sr._pdf_force_stats(nodes, members, res['member_res'])
+    text = '\n'.join(lines)
+    assert 'AXIAL FORCE' in text
+    assert 'max tension' in text and 'max compression' in text
+    forces = [mr['N'] for mr in res['member_res']]
+    i_max = max(range(len(forces)), key=lambda i: forces[i])
+    assert f'bar {i_max}:' in text, 'the governing bar must be identified'
+    assert f'{max(forces):+.2f} kN' in text
+
+
+def test_pdf_util_stats_give_a_verdict():
+    nodes, members, loads, supports, res = _analysed_model()
+    checks = sk.check_all_members(nodes, members, res['member_res'])
+    text = '\n'.join(sr._pdf_util_stats(checks))
+    assert 'governing' in text
+    worst = sk.worst_utilization(checks)
+    assert f'{worst:.3f}' in text
+    n_over = sum(1 for c in checks if c.get('checked') and c['util'] > 1.0)
+    if n_over:
+        assert 'OVER capacity' in text
+    else:
+        assert 'within capacity' in text
+
+
+def test_pdf_util_stats_say_so_when_nothing_is_checkable():
+    text = '\n'.join(sr._pdf_util_stats([{'checked': False, 'util': None}] * 3))
+    assert 'no member has a section assigned' in text
+
+
+def test_pdf_moment_stats_are_honest_about_a_pin_jointed_model():
+    """A fully pinned model has no nodal moments at all. The sheet used to
+    draw white dots and claim a +-0.00 kN.m range; it must instead say
+    plainly that there is nothing to plot."""
+    nodes, members, loads, supports = _built_model()
+    text = '\n'.join(sr._pdf_moment_stats(nodes, {}, 0, len(members)))
+    assert 'PIN' in text
+    assert 'nothing to plot' in text
+    assert f'0 of {len(members)}' in text
+
+
+def test_pdf_moment_stats_report_both_extremes_when_there_are_moments():
+    nodes = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 1.0, 0.0)]
+    moments = {0: -1.25, 1: 0.5, 2: 3.75}
+    text = '\n'.join(sr._pdf_moment_stats(nodes, moments, 3, 3))
+    assert '+3.750' in text and '-1.250' in text
+    assert 'node #2' in text and 'node #0' in text
+
+
+def test_pdf_deform_stats_report_the_span_over_deflection_ratio():
+    nodes, members, loads, supports, res = _analysed_model()
+    disps = [(nr['ux'] ** 2 + nr['uy'] ** 2 + nr['uz'] ** 2) ** 0.5
+             for nr in res['node_res']]
+    text = '\n'.join(sr._pdf_deform_stats(nodes, res['node_res'], disps,
+                                          42.0, 3.0))
+    assert 'x42' in text
+    assert 'L /' in text, 'a deflection is judged as a fraction of the span'
+    assert f'{max(disps):.3f} mm' in text
+
+
+def test_reactions_sheet_keeps_its_totals_when_the_table_overflows():
+    """On a model with hundreds of supports the body of the reactions table
+    runs off the sheet. The Σ-reaction / Σ-applied / residual lines must
+    survive that truncation -- they are the reason the sheet exists."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=sr.PDF_SHEET_IN)
+    rows = [[str(i)] + ['0.00'] * 3 for i in range(400)]
+    tail = [['Σ react'] + ['+1.000'] * 3,
+            ['Σ applied'] + ['-1.000'] * 3,
+            ['residual'] + ['+0.00e+00'] * 3]
+    ax = sr._pdf_table_page(fig, 'Reactions', ['node', 'Fx', 'Fy', 'Fz'],
+                            rows, [1, 1, 1, 1], tail_rows=tail)
+    drawn = [t.get_text() for t in ax.texts]
+    plt.close(fig)
+
+    for label in ('Σ react', 'Σ applied', 'residual'):
+        assert label in drawn, f'{label} was truncated away'
+    assert any('further row(s) not shown' in t for t in drawn), \
+        'a truncated table must say so'
+    assert '399' not in drawn, 'the body should have been truncated'
+
+
+def test_table_page_without_a_tail_still_renders_every_row_that_fits():
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=sr.PDF_SHEET_IN)
+    rows = [[str(i), 'x'] for i in range(5)]
+    ax = sr._pdf_table_page(fig, 'Short', ['a', 'b'], rows, [1, 1])
+    drawn = [t.get_text() for t in ax.texts]
+    plt.close(fig)
+    for i in range(5):
+        assert str(i) in drawn
+    assert not any('not shown' in t for t in drawn)
+
+
+def test_pdf_fmt_bar_names_both_ends_of_a_bar():
+    """One end is not enough to find a bar in the model tree or the Excel
+    export."""
+    nodes = [(0.0, 0.0, 0.0), (2.0, 0.0, 1.0)]
+    members = [{'a': 0, 'b': 1}]
+    head, mid = sr._pdf_fmt_bar(nodes, members, 0)
+    assert 'nodes 0' in head and '1' in head
+    assert '1.00, 0.00, 0.50' in mid
 
 
 # ── 6.2  SketchUp Ruby export ────────────────────────────────────────────
@@ -219,6 +498,28 @@ def test_export_sketchup_ruby_solid():
                                 node_radius=0.05, rod_radius=0.02)
         text = open(path).read()
         assert 'add_circle' in text
+
+
+@pytest.mark.skipif(not __import__('shutil').which('ruby'),
+                    reason='ruby not installed on this host')
+def test_generated_sketchup_scripts_are_valid_ruby():
+    """The script is handed to SketchUp's Ruby console, where a syntax
+    error surfaces as a stack trace on the user's machine and nowhere
+    else. `ruby -c` catches it here instead."""
+    import shutil
+    import subprocess
+    nodes, members, loads, supports, res = _analysed_model()
+    ruby = shutil.which('ruby')
+    with tempfile.TemporaryDirectory() as d:
+        for name, kw in (('wire.rb', {}),
+                         ('solid.rb', {'node_radius': 0.12,
+                                       'rod_radius': 0.05})):
+            path = os.path.join(d, name)
+            sr.export_sketchup_ruby(nodes, members, path, supports=supports,
+                                    results=res, **kw)
+            p = subprocess.run([ruby, '-c', path], capture_output=True,
+                               text=True)
+            assert p.returncode == 0, f'{name}: {p.stderr}'
 
 
 # ── 6.3  IFC export ──────────────────────────────────────────────────────

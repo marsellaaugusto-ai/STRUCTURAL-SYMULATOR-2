@@ -8,6 +8,8 @@ lists, labels and canvases need redrawing after an edit.
 
 Report/Excel formatting itself lives in stereo_reports.py.
 """
+import os
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -37,6 +39,18 @@ class StereoReportsMixin:
         self._refresh_model_tree()
         self._me_maybe_refresh_topology()
         self._draw()
+
+    def _model_name(self):
+        """What to call this model in an exported report.
+
+        The model's own name when it has one (an example's title, an
+        imported file, a loaded variant), otherwise the Grid Family
+        dropdown that generated it. Exports used to read the dropdown
+        directly, so every example and every imported file was reported
+        under whatever family happened to be selected.
+        """
+        label = getattr(self, '_model_label', None)
+        return label or self.grid_family.get()
 
     def _combined_loads_by_node(self):
         """Every node's net (fx, fy, fz) from _all_loads() -- point loads
@@ -135,9 +149,20 @@ class StereoReportsMixin:
         if not path:
             return
         try:
-            sr.export_excel(self.nodes, self.members, self.loads, self.supports,
+            # _all_loads(), NOT self.loads: self.loads holds only the point
+            # loads typed into the Loads panel, while the analysis this
+            # workbook reports on was run on those PLUS the area load and
+            # self-weight. Exporting the short list wrote a workbook whose
+            # [LOADS] table was empty on every default model (100 entries
+            # and 1800 kN of applied load, gone), so re-importing it and
+            # pressing Analyze produced a structure with zero displacement
+            # -- and _import_excel deliberately clears area_load_on and
+            # _load_nodes, so nothing downstream could put the missing load
+            # back.
+            sr.export_excel(self.nodes, self.members, self._all_loads(),
+                            self.supports,
                             self.results, path, checks=self.member_checks,
-                            meta={'grid_family': self.grid_family.get()},
+                            meta={'grid_family': self._model_name()},
                             profiles=self.profiles)
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
@@ -154,12 +179,18 @@ class StereoReportsMixin:
             messagebox.showerror('Import failed', str(exc))
             return
         self._push_undo('import excel')
+        self._model_label = os.path.basename(path)
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
         if profiles:
             self.profiles.update(profiles)
         self._support_candidates = [s['node'] for s in supports]
         self._load_nodes = {}   # an imported model has no known roof surface
+        # The workbook's [LOADS] table is the COMPLETE solved case (the
+        # exporter writes _all_loads()), so leaving either generator on
+        # would add a second copy of the area load or the self-weight on
+        # top of the one already in the file.
         self.area_load_on.set(False)
+        self.self_weight_on.set(False)
         self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
         self.results = None
         self.member_checks = None
@@ -181,12 +212,15 @@ class StereoReportsMixin:
             messagebox.showerror('Import failed', str(exc))
             return
         self._push_undo('import sketchup')
+        self._model_label = f'SketchUp: {os.path.basename(path)}'
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
         if profiles:
             self.profiles.update(profiles)
         self._support_candidates = [s['node'] for s in supports]
         self._load_nodes = {}
+        # see _import_excel: the file already carries the full load case
         self.area_load_on.set(False)
+        self.self_weight_on.set(False)
         self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
         self.results = None
         self.member_checks = None
@@ -214,9 +248,16 @@ class StereoReportsMixin:
         if not path:
             return
         try:
-            sr.export_pdf(self.nodes, self.members, self.loads, self.supports,
+            # The report has to describe the model that was actually
+            # SOLVED, or its load-case sheet and its equilibrium check are
+            # about some other structure: _all_loads() for the same reason
+            # as the Excel export above, and _active_supports() because the
+            # support sandbox can exclude a support from the analysis while
+            # leaving it in self.supports.
+            sr.export_pdf(self.nodes, self.members, self._all_loads(),
+                          self._active_supports(),
                           self.results, path, checks=self.member_checks,
-                          meta={'grid_family': self.grid_family.get()},
+                          meta={'grid_family': self._model_name()},
                           az_deg=self.azimuth, el_deg=self.elevation)
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
@@ -331,10 +372,10 @@ class StereoReportsMixin:
                 if not path:
                     return
                 try:
-                    meta = {'grid_family': self.grid_family.get(),
+                    meta = {'grid_family': self._model_name(),
                             'node_radius_m': n_r,
                             'rod_radius_m': r_r}
-                    sr.export_excel(self.nodes, self.members, self.loads,
+                    sr.export_excel(self.nodes, self.members, self._all_loads(),
                                    self.supports, self.results, path,
                                    checks=self.member_checks, meta=meta,
                                    profiles=self.profiles)
@@ -349,7 +390,6 @@ class StereoReportsMixin:
 
     # ── Example ──────────────────────────────────────────────────────────────
     def _open_example(self):
-        import os
         example_path = os.path.join(os.path.dirname(__file__),
                                     'example_stereo_model.xlsx')
         if not os.path.isfile(example_path):
@@ -361,12 +401,15 @@ class StereoReportsMixin:
             messagebox.showerror('Import failed', str(exc))
             return
         self._push_undo('open example')
+        self._model_label = 'Example: paraboloid dish (antenna)'
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
         if profiles:
             self.profiles.update(profiles)
         self._support_candidates = [s['node'] for s in supports]
         self._load_nodes = {}
+        # see _import_excel: the file already carries the full load case
         self.area_load_on.set(False)
+        self.self_weight_on.set(False)
         self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
         self.results = None
         self.member_checks = None
@@ -414,11 +457,18 @@ class StereoReportsMixin:
             A = m.get('A', self.profiles.get(m.get('profile', ''), {}).get('A', 20.0))
             total_weight += A * 1e-4 * L * 7850.0
 
+        # The variant stores the load case that was SOLVED, flattened to
+        # explicit nodal loads -- not self.loads. Restoring a variant
+        # clears _load_nodes (the roof surface an area load is computed
+        # over is not part of the snapshot), so a variant carrying only
+        # the typed point loads would come back as an unloaded structure
+        # sitting beside the results of a loaded one.
+        solved_loads = self._all_loads()
         self._variants.append({
             'name': name,
             'nodes': copy.deepcopy(self.nodes),
             'members': copy.deepcopy(self.members),
-            'loads': copy.deepcopy(self.loads),
+            'loads': copy.deepcopy(solved_loads),
             'supports': copy.deepcopy(self.supports),
             'profiles': copy.deepcopy(self.profiles),
             'results': copy.deepcopy(self.results),
@@ -427,7 +477,7 @@ class StereoReportsMixin:
                 'n_nodes': len(self.nodes),
                 'n_members': len(self.members),
                 'n_supports': len(self.supports),
-                'n_loads': len(self.loads),
+                'n_loads': len(solved_loads),
                 'max_force_kN': max_force,
                 'max_disp_mm': max_disp,
                 'max_util': max_util,
@@ -533,8 +583,15 @@ class StereoReportsMixin:
             self.profiles = copy.deepcopy(v['profiles'])
             self.results = copy.deepcopy(v['results'])
             self.member_checks = copy.deepcopy(v['member_checks'])
+            self._model_label = f'Variant: {v["name"]}'
             self._support_candidates = [s['node'] for s in self.supports]
             self._load_nodes = {}
+            # The stored loads are already the FULL solved case (see
+            # _save_variant), so re-adding an area load or self-weight on
+            # top of them would double-count. Same reasoning, and the same
+            # two lines, as _import_excel.
+            self.area_load_on.set(False)
+            self.self_weight_on.set(False)
             self.selected_nodes = set()
             self.selected_member = None
             self.selected_members = set()

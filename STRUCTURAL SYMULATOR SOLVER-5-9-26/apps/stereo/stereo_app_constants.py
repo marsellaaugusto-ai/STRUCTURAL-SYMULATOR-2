@@ -188,6 +188,15 @@ CHORD_ROLES = {'bottom_chord', 'top_chord', 'outer_rib', 'inner_rib', 'purlin',
 
 AXIS_EXTEND_COLOR = '#2ecc71'
 
+# The Cartesian gizmo's three axis colours. They live here rather than on
+# StereoRenderMixin because the PDF report draws the SAME triad on every
+# sheet (so a printed view can be oriented in 3D space without the app),
+# and a second hand-picked set of hexes there would be free to drift out
+# of step with the canvas the reader is being shown on screen.
+AXIS_COLOR_X = '#c0392b'
+AXIS_COLOR_Y = '#1e8449'
+AXIS_COLOR_Z = '#2456c4'
+
 SNAP_RADIUS_PX = 15
 SNAP_NODE_COLOR = '#e67e22'
 SNAP_MIDPOINT_COLOR = '#3498db'

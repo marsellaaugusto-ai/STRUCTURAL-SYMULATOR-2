@@ -31,6 +31,8 @@ from apps.stereo.stereo_app_colors import (
 from apps.stereo import stereo_voronoi_surface as svs
 from apps.stereo.stereo_app_constants import (
     NODE_COLOR, NODE_SEL_COLOR, ADD_ROD_PENDING_COLOR, AXIS_EXTEND_COLOR,
+    AXIS_COLOR_X as _AXIS_COLOR_X, AXIS_COLOR_Y as _AXIS_COLOR_Y,
+    AXIS_COLOR_Z as _AXIS_COLOR_Z,
     SUPPORT_COLOR, SUPPORT_DISABLED_COLOR, SUPPORT_BOX_HALF_PX,
     MEMBER_PIN_COLOR, MEMBER_RIGID_COLOR, MEMBER_SEL_COLOR,
     TENSION_HIGH, COMPRESSION_HIGH, LOAD_COLOR, REACTION_COLOR, NEAR_ZERO_FRAC,
@@ -1193,9 +1195,12 @@ class StereoRenderMixin:
             c.create_line(sx0, sy0, sx0 + ddx, sy0 + ddy, fill=REACTION_COLOR, width=2,
                          arrow=tk.LAST, arrowshape=(6, 7, 3), tags='reaction')
 
-    AXIS_COLOR_X = '#c0392b'
-    AXIS_COLOR_Y = '#1e8449'
-    AXIS_COLOR_Z = '#2456c4'
+    # Shared with the PDF report's own orientation triad (see
+    # stereo_app_constants), so the printed sheet and the canvas can never
+    # colour the same axis differently.
+    AXIS_COLOR_X = _AXIS_COLOR_X
+    AXIS_COLOR_Y = _AXIS_COLOR_Y
+    AXIS_COLOR_Z = _AXIS_COLOR_Z
     # How far past the model each axis line is extended, as a multiple of
     # the model's own reach from the origin. Large enough that both ends
     # leave the canvas at any zoom a user would work at, which is what makes

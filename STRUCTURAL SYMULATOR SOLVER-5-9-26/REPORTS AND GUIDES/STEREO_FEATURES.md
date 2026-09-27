@@ -309,9 +309,28 @@ legends and colourbar tick values.
   results and checks.
 - **Excel import** — reads a model back. Note it clears `load_nodes`: an
   imported model has no known roof surface, so the area load must not keep
-  applying the previous mesh's tributary areas.
+  applying the previous mesh's tributary areas — and it switches the area
+  load and self-weight generators off, because the exported `[LOADS]`
+  table is already the complete case.
+- **PDF report** — seven A4-landscape sheets: general view with the load
+  case, axial force, utilisation, nodal moments, deformed shape, support
+  reactions with an equilibrium check, and the governing-member schedule.
+  Each carries a title block, a graphic scale bar, an X/Y/Z orientation
+  triad, one compact colour key mirroring the on-screen legend, and its
+  own statistics panel. See `PDF_REPORT_GUIDE_2026-09-27.md`.
+- **SketchUp `.rb` export** and **IFC 2x3 export** for BIM handover; the
+  `CoordinateCoordinatorTrussAppAMAC` SketchUp extension imports Stereo
+  models and exports picked geometry back.
+- **Design variants** — snapshot the current model plus its solved load
+  case, then compare variants side by side on force, displacement,
+  utilisation and weight.
 - **Indeterminacy readout** — the Maxwell count with a rigid-body-motion
   caveat.
+
+Every export hands out the load case the solver actually used
+(`_all_loads()`: point loads *plus* the area load *plus* self-weight), not
+just the point loads typed into the Loads panel — see
+`TestExportsCarryTheSolvedLoadCase` in `tests/test_stereo_app.py`.
 
 ---
 

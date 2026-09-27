@@ -103,6 +103,14 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         self.members = []
         self.loads = []
         self.supports = []
+        # What the current model is CALLED, when it has a name of its own:
+        # an example's title, an imported file, a loaded variant. None means
+        # the model came from the generator panel, so the Grid Family
+        # dropdown names it. Exports read this through _model_name() --
+        # they used to read the dropdown directly, which meant loading the
+        # Schwedler dome example and exporting produced a report whose
+        # title block said "Flat double-layer grid".
+        self._model_label = None
         self.profiles = {'Default chord': {'E': 200.0, 'A': 20.0, 'I': 400.0,
                                            'J': 400.0, 'Fy': 235.0, 'Fu': 360.0,
                                            'r_gyr': 4.0, 'K': 1.0},

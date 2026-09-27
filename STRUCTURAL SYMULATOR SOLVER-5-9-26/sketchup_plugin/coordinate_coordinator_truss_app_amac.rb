@@ -18,11 +18,18 @@ module CoordinateCoordinatorTrussAppAMAC
     # No ".rb" extension: Extension Warehouse encrypts extensions to .rbe,
     # and omitting the extension lets SketchUp find either .rb or .rbe.
     ex = SketchupExtension.new('Coordinate coordinator truss app AMAC', File.join(PATH, 'coordinate_coordinator_truss_app_amac', 'main'))
-    ex.description = 'Pick an origin point and node points (vertices or line ' \
-                      'intersections) and export them, with member connectivity, ' \
-                      'to an Excel file the Structural Simulator Stereo (space-truss) ' \
-                      'app can import.'
-    ex.version = '0.1.0'
+    ex.description = 'Two-way bridge to the Structural Simulator Stereo ' \
+                      '(space-truss) app. Pick an origin point and node points ' \
+                      '(vertices or line intersections), or auto-detect them from ' \
+                      'a selection, and export them with member connectivity to an ' \
+                      'Excel file the Stereo tab imports -- or go the other way and ' \
+                      'build SketchUp geometry from a model the Stereo tab exported.'
+    # 0.2.0 adds "Import from Stereo…" (model_import.rb + xlsx_reader.rb).
+    # The 0.1.0 .rbz that shipped before this was built by hand and left
+    # both of those files out, so the command it advertised raised
+    # LoadError; tools/build_release.py now assembles and verifies the
+    # archive so that cannot recur.
+    ex.version = '0.2.0'
     ex.creator = 'Augusto'
     ex.copyright = Time.now.year.to_s
     Sketchup.register_extension(ex, true)

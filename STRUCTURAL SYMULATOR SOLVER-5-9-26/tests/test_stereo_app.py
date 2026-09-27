@@ -5278,3 +5278,52 @@ class TestModelTree:
             app._toggle_tree_section(key)
         for key in ('Nodes', 'Members', 'Supports', 'Loads', 'Profiles'):
             app._toggle_tree_section(key)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Phase 6 — Design Variants
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestDesignVariants:
+    def test_variants_list_starts_empty(self, app):
+        assert app._variants == []
+
+    def test_save_variant_requires_results(self, app):
+        app.results = None
+        app._save_variant()
+        assert len(app._variants) == 0
+
+    def test_save_variant_stores_snapshot(self, app):
+        app._analyze()
+        assert app.results is not None
+        import copy
+        from unittest.mock import patch
+        with patch('tkinter.simpledialog.askstring', return_value='Variant A'):
+            app._save_variant()
+        assert len(app._variants) == 1
+        v = app._variants[0]
+        assert v['name'] == 'Variant A'
+        assert 'summary' in v
+        assert v['summary']['n_nodes'] == len(app.nodes)
+        assert v['summary']['n_members'] == len(app.members)
+        assert v['summary']['max_force_kN'] >= 0
+        assert v['summary']['max_disp_mm'] >= 0
+        assert v['summary']['weight_kg'] > 0
+
+    def test_compare_requires_two_variants(self, app):
+        app._compare_variants()
+
+    def test_save_two_and_compare(self, app):
+        app._analyze()
+        from unittest.mock import patch
+        with patch('tkinter.simpledialog.askstring', return_value='V1'):
+            app._save_variant()
+        with patch('tkinter.simpledialog.askstring', return_value='V2'):
+            app._save_variant()
+        assert len(app._variants) == 2
+        app._show_variant_comparison()
+        app.root.update_idletasks()
+
+    def test_variant_buttons_exist(self, app):
+        assert hasattr(app, '_btn_save_variant')
+        assert hasattr(app, '_btn_compare_variants')

@@ -163,3 +163,84 @@ def test_excel_round_trip_without_profiles_returns_empty_dict():
         sr.export_excel(nodes, members, loads, supports, None, path)
         _, _, _, _, profiles2 = sr.import_excel_model(path)
     assert profiles2 == {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Phase 6 — export tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _analysed_model():
+    nodes, members, loads, supports = _built_model()
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None
+    return nodes, members, loads, supports, res
+
+
+# ── 6.1  PDF export ───────────────────────────────────────────────────────
+
+def test_export_pdf_creates_multi_page_file():
+    nodes, members, loads, supports, res = _analysed_model()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'report.pdf')
+        sr.export_pdf(nodes, members, loads, supports, res, path,
+                      az_deg=35.0, el_deg=22.0)
+        assert os.path.isfile(path)
+        size = os.path.getsize(path)
+        assert size > 1000
+
+
+def test_export_pdf_without_results():
+    nodes, members, loads, supports = _built_model()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'report.pdf')
+        sr.export_pdf(nodes, members, loads, supports, None, path,
+                      az_deg=35.0, el_deg=22.0)
+        assert os.path.isfile(path)
+
+
+# ── 6.2  SketchUp Ruby export ────────────────────────────────────────────
+
+def test_export_sketchup_ruby_wireframe():
+    nodes, members, _, supports = _built_model()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'model.rb')
+        sr.export_sketchup_ruby(nodes, members, path)
+        assert os.path.isfile(path)
+        text = open(path).read()
+        assert 'Geom::Point3d' in text
+        assert 'add_edges' in text
+
+
+def test_export_sketchup_ruby_solid():
+    nodes, members, _, supports = _built_model()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'model_solid.rb')
+        sr.export_sketchup_ruby(nodes, members, path,
+                                node_radius=0.05, rod_radius=0.02)
+        text = open(path).read()
+        assert 'add_circle' in text
+
+
+# ── 6.3  IFC export ──────────────────────────────────────────────────────
+
+def test_export_ifc_creates_valid_step_file():
+    nodes, members, _, supports = _built_model()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'model.ifc')
+        sr.export_ifc(nodes, members, path, supports=supports)
+        assert os.path.isfile(path)
+        text = open(path).read()
+        assert 'ISO-10303-21' in text
+        assert 'IFC2X3' in text
+        assert 'IFCMEMBER' in text
+        assert 'END-ISO-10303-21' in text
+
+
+def test_export_ifc_member_count():
+    nodes, members, _, supports = _built_model()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'model.ifc')
+        sr.export_ifc(nodes, members, path)
+        text = open(path).read()
+        n_members = text.count('IFCMEMBER(')
+        assert n_members == len(members)

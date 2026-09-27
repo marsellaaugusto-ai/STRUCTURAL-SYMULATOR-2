@@ -333,20 +333,40 @@ class StereoPanelsMixin(_ToolbarModes):
         self._btn_export_excel = tk.Button(g, text='Export Excel…',
                                             command=self._export_excel)
         self._btn_export_excel.pack(side='left', padx=2)
+        self._btn_export_pdf = tk.Button(g, text='Export PDF…',
+                                         command=self._export_pdf)
+        self._btn_export_pdf.pack(side='left', padx=2)
         self._btn_export_3d = tk.Button(g, text='Export 3D…',
                                          command=self._export_3d_model)
         self._btn_export_3d.pack(side='left', padx=2)
+        self._btn_export_rb = tk.Button(g, text='Export SketchUp…',
+                                         command=self._export_sketchup_ruby)
+        self._btn_export_rb.pack(side='left', padx=2)
+        self._btn_export_ifc = tk.Button(g, text='Export IFC…',
+                                          command=self._export_ifc)
+        self._btn_export_ifc.pack(side='left', padx=2)
         self._btn_import_excel = tk.Button(g, text='Import Excel…',
                                             command=self._import_excel)
         self._btn_import_excel.pack(side='left', padx=2)
         self._btn_open_example = tk.Button(g, text='Open Example',
                                             command=self._open_example)
         self._btn_open_example.pack(side='left', padx=2)
+        self._btn_save_variant = tk.Button(g, text='Save Variant…',
+                                            command=self._save_variant)
+        self._btn_save_variant.pack(side='left', padx=2)
+        self._btn_compare_variants = tk.Button(g, text='Compare Variants…',
+                                                command=self._compare_variants)
+        self._btn_compare_variants.pack(side='left', padx=2)
         self._output_advanced_widgets = [self._btn_member_report,
                                           self._btn_export_excel,
+                                          self._btn_export_pdf,
                                           self._btn_export_3d,
+                                          self._btn_export_rb,
+                                          self._btn_export_ifc,
                                           self._btn_import_excel,
-                                          self._btn_open_example]
+                                          self._btn_open_example,
+                                          self._btn_save_variant,
+                                          self._btn_compare_variants]
 
         self.toolbar_flow.start()
         self._toolbar_groups_snapshot = list(self.toolbar_flow.groups)

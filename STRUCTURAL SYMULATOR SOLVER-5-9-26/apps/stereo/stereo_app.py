@@ -169,6 +169,8 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         self._me_locked_edges = set()   # {(role_id, min(pos_a,pos_b), max(pos_a,pos_b))}
         self._me_drag = None
 
+        self._variants = []
+
         self._build_ui()
         self.init_units(repaint=self._on_units_changed)
         self._generate(push_undo=False)

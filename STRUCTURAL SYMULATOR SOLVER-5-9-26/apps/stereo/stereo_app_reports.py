@@ -203,6 +203,68 @@ class StereoReportsMixin:
             'SketchUp does not export loads or supports — '
             'add them in the panel before analyzing.')
 
+    # ── PDF export ────────────────────────────────────────────────────────────
+    def _export_pdf(self):
+        if not self.nodes or not self.members:
+            messagebox.showinfo('Export PDF', 'No model to export.')
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension='.pdf',
+            filetypes=[('PDF document', '*.pdf')])
+        if not path:
+            return
+        try:
+            sr.export_pdf(self.nodes, self.members, self.loads, self.supports,
+                          self.results, path, checks=self.member_checks,
+                          meta={'grid_family': self.grid_family.get()},
+                          az_deg=self.azimuth, el_deg=self.elevation)
+        except Exception as exc:
+            messagebox.showerror('Export failed', str(exc))
+            return
+        messagebox.showinfo('Export PDF', f'Saved to {path}')
+
+    # ── SketchUp Ruby script export ──────────────────────────────────────────
+    def _export_sketchup_ruby(self):
+        if not self.nodes or not self.members:
+            messagebox.showinfo('Export SketchUp', 'No model to export.')
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension='.rb',
+            filetypes=[('Ruby script', '*.rb')])
+        if not path:
+            return
+        try:
+            sr.export_sketchup_ruby(self.nodes, self.members, path,
+                                     supports=self.supports,
+                                     results=self.results)
+        except Exception as exc:
+            messagebox.showerror('Export failed', str(exc))
+            return
+        messagebox.showinfo('Export SketchUp',
+                            f'Saved to {path}\n\n'
+                            'In SketchUp: Window > Ruby Console,\n'
+                            'then type: load "<path>"')
+
+    # ── IFC export ───────────────────────────────────────────────────────────
+    def _export_ifc(self):
+        if not self.nodes or not self.members:
+            messagebox.showinfo('Export IFC', 'No model to export.')
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension='.ifc',
+            filetypes=[('IFC file', '*.ifc')])
+        if not path:
+            return
+        try:
+            sr.export_ifc(self.nodes, self.members, path,
+                          supports=self.supports,
+                          profiles=self.profiles,
+                          results=self.results)
+        except Exception as exc:
+            messagebox.showerror('Export failed', str(exc))
+            return
+        messagebox.showinfo('Export IFC', f'Saved to {path}')
+
     # ── 3D export ─────────────────────────────────────────────────────────────
     def _export_3d_model(self):
         if not self.nodes or not self.members:
@@ -320,6 +382,184 @@ class StereoReportsMixin:
             f'{len(nodes)} nodes, {len(members)} members,\n'
             f'{len(loads)} loads, {len(supports)} supports.\n\n'
             f'Click Analyze to run the solver.')
+
+    # ── design variants ─────────────────────────────────────────────────────
+    def _save_variant(self):
+        import copy, math
+        from tkinter import simpledialog
+        if not self.results:
+            messagebox.showinfo('Save Variant', 'Run Analyze first.')
+            return
+        name = simpledialog.askstring('Save Variant', 'Variant name:',
+                                      parent=self.root)
+        if not name:
+            return
+        nr = self.results['node_res']
+        mr = self.results['member_res']
+        max_util = 0.0
+        if self.member_checks:
+            for chk in self.member_checks:
+                u = chk.get('util', 0.0)
+                if u > max_util:
+                    max_util = u
+        max_force = max((abs(r['N']) for r in mr), default=0.0)
+        max_disp = max(
+            (math.sqrt(r['ux']**2 + r['uy']**2 + r['uz']**2) for r in nr),
+            default=0.0)
+        total_weight = 0.0
+        for mi, m in enumerate(self.members):
+            na, nb = self.nodes[m['a']], self.nodes[m['b']]
+            dx, dy, dz = nb[0]-na[0], nb[1]-na[1], nb[2]-na[2]
+            L = math.sqrt(dx*dx + dy*dy + dz*dz)
+            A = m.get('A', self.profiles.get(m.get('profile', ''), {}).get('A', 20.0))
+            total_weight += A * 1e-4 * L * 7850.0
+
+        self._variants.append({
+            'name': name,
+            'nodes': copy.deepcopy(self.nodes),
+            'members': copy.deepcopy(self.members),
+            'loads': copy.deepcopy(self.loads),
+            'supports': copy.deepcopy(self.supports),
+            'profiles': copy.deepcopy(self.profiles),
+            'results': copy.deepcopy(self.results),
+            'member_checks': copy.deepcopy(self.member_checks),
+            'summary': {
+                'n_nodes': len(self.nodes),
+                'n_members': len(self.members),
+                'n_supports': len(self.supports),
+                'n_loads': len(self.loads),
+                'max_force_kN': max_force,
+                'max_disp_mm': max_disp,
+                'max_util': max_util,
+                'weight_kg': total_weight,
+            },
+        })
+        messagebox.showinfo('Variant Saved',
+                            f'"{name}" saved ({len(self._variants)} variant'
+                            f'{"s" if len(self._variants) != 1 else ""} stored).')
+
+    def _compare_variants(self):
+        if len(self._variants) < 2:
+            messagebox.showinfo(
+                'Compare Variants',
+                'Save at least 2 variants first (Save Variant…).')
+            return
+        self._show_variant_comparison()
+
+    def _show_variant_comparison(self):
+        import math
+        win = tk.Toplevel(self.root)
+        win.title('Design Variant Comparison')
+        win.geometry('900x480')
+        win.resizable(True, True)
+
+        tk.Label(win, text='Design Variant Comparison',
+                 font=('', 13, 'bold')).pack(pady=(10, 2))
+        tk.Label(win, text=f'{len(self._variants)} variants',
+                 fg='grey').pack()
+
+        container = tk.Frame(win)
+        container.pack(fill='both', expand=True, padx=10, pady=8)
+
+        canvas = tk.Canvas(container, highlightthickness=0)
+        xscroll = tk.Scrollbar(container, orient='horizontal',
+                                command=canvas.xview)
+        yscroll = tk.Scrollbar(container, orient='vertical',
+                                command=canvas.yview)
+        canvas.configure(xscrollcommand=xscroll.set,
+                         yscrollcommand=yscroll.set)
+        yscroll.pack(side='right', fill='y')
+        xscroll.pack(side='bottom', fill='x')
+        canvas.pack(side='left', fill='both', expand=True)
+
+        tbl = tk.Frame(canvas)
+        canvas.create_window((0, 0), window=tbl, anchor='nw')
+
+        metrics = [
+            ('Nodes', 'n_nodes', '{:.0f}', False),
+            ('Members', 'n_members', '{:.0f}', False),
+            ('Supports', 'n_supports', '{:.0f}', False),
+            ('Loads', 'n_loads', '{:.0f}', False),
+            ('Max force (kN)', 'max_force_kN', '{:.2f}', True),
+            ('Max disp. (mm)', 'max_disp_mm', '{:.3f}', True),
+            ('Max util.', 'max_util', '{:.3f}', True),
+            ('Weight (kg)', 'weight_kg', '{:.1f}', True),
+        ]
+
+        hdr_bg = '#4a6fa5'
+        hdr_fg = 'white'
+        best_bg = '#d4edda'
+        worst_bg = '#f8d7da'
+
+        tk.Label(tbl, text='Metric', font=('', 10, 'bold'),
+                 bg=hdr_bg, fg=hdr_fg, padx=8, pady=4,
+                 anchor='w').grid(row=0, column=0, sticky='nsew')
+        for ci, v in enumerate(self._variants):
+            tk.Label(tbl, text=v['name'], font=('', 10, 'bold'),
+                     bg=hdr_bg, fg=hdr_fg, padx=8, pady=4,
+                     anchor='center').grid(row=0, column=ci+1, sticky='nsew')
+
+        for ri, (label, key, fmt, highlight) in enumerate(metrics, start=1):
+            tk.Label(tbl, text=label, font=('', 10),
+                     padx=8, pady=3, anchor='w',
+                     relief='groove').grid(row=ri, column=0, sticky='nsew')
+            vals = [v['summary'][key] for v in self._variants]
+            best_i = vals.index(min(vals)) if highlight else -1
+            worst_i = vals.index(max(vals)) if highlight and max(vals) != min(vals) else -1
+            for ci, val in enumerate(vals):
+                bg = '#ffffff'
+                if ci == best_i:
+                    bg = best_bg
+                elif ci == worst_i:
+                    bg = worst_bg
+                tk.Label(tbl, text=fmt.format(val), font=('', 10),
+                         padx=8, pady=3, anchor='center', bg=bg,
+                         relief='groove').grid(row=ri, column=ci+1, sticky='nsew')
+
+        tbl.update_idletasks()
+        canvas.config(scrollregion=canvas.bbox('all'))
+
+        btn_frame = tk.Frame(win)
+        btn_frame.pack(pady=(0, 8))
+
+        def load_variant(idx):
+            import copy
+            v = self._variants[idx]
+            self._push_undo('load variant')
+            self.nodes = copy.deepcopy(v['nodes'])
+            self.members = copy.deepcopy(v['members'])
+            self.loads = copy.deepcopy(v['loads'])
+            self.supports = copy.deepcopy(v['supports'])
+            self.profiles = copy.deepcopy(v['profiles'])
+            self.results = copy.deepcopy(v['results'])
+            self.member_checks = copy.deepcopy(v['member_checks'])
+            self._support_candidates = [s['node'] for s in self.supports]
+            self._load_nodes = {}
+            self.selected_nodes = set()
+            self.selected_member = None
+            self.selected_members = set()
+            self._refresh_profile_combo()
+            self._refresh_all()
+            win.destroy()
+            messagebox.showinfo('Variant Loaded',
+                                f'Loaded variant "{v["name"]}".')
+
+        def delete_variant(idx):
+            name = self._variants[idx]['name']
+            if messagebox.askyesno('Delete Variant',
+                                    f'Delete "{name}"?', parent=win):
+                self._variants.pop(idx)
+                win.destroy()
+                if len(self._variants) >= 2:
+                    self._show_variant_comparison()
+
+        for ci, v in enumerate(self._variants):
+            f = tk.Frame(btn_frame)
+            f.pack(side='left', padx=6)
+            tk.Button(f, text=f'Load "{v["name"]}"',
+                      command=lambda i=ci: load_variant(i)).pack(side='left', padx=2)
+            tk.Button(f, text='X', fg='red', width=2,
+                      command=lambda i=ci: delete_variant(i)).pack(side='left')
 
     # ── units ────────────────────────────────────────────────────────────────
     def _on_units_changed(self):

@@ -35,6 +35,32 @@ same azimuth and elevation, not against the algebra.
 
 One honesty note that came with the isolation feature: an isolated group is a **cut** through a structure, so its reactions cannot balance its applied load — the bars that used to carry force across the cut are gone. The reactions sheet says exactly that instead of reporting the difference as a solver error.
 
+## Third pass, same day: the analysis sheets
+
+| Request | What it is now |
+|---|---|
+| "a utilization sheet with the threshold relative to this model" | A third utilisation sheet whose ramp is stretched over **this model's own range** rather than the code's. On a structure whose worst bar sits at 0.08, the absolute sheet is a field of uniform green that says only "nothing is close to capacity"; the relative sheet shows *where the work goes*. Where the model does exceed capacity, a rule is drawn across the ramp at the position utilisation 1.0 falls, so the code limit is still on the sheet. The key says `RELATIVE scale` in so many words, because a red bar that does not mean "over capacity" has to announce itself. |
+| "add to the utilization models and axial forces analysis a top view" | Axial force and utilisation are each drawn twice: axonometric, which shows the whole shape at once, and **plan**, which is the view a grid is laid out and checked in, and the only one where two bars at the same plan position cannot hide behind one another. One builder, parameterised by view, so the two cannot drift apart. |
+| "and add the thickness = stress" | Bar thickness on all of those sheets is now **axial stress \|N\|/A against this model's own peak** — the same rule the canvas's Thickness-by-stress toggle uses, so a sheet and the screen weight the same bar the same way. Stress and not force: a thick chord and a thin web carrying the same kN are not working equally hard. The key states the peak in kN/cm², and the stats panel repeats it. |
+| "a moment along rods and shear along rods sheet … if the space truss has any type is present" | Two sheets, drawn only when the model actually has a rigid joint (a pin-jointed truss carries neither, and a sheet of zeros implies a check that was never possible). Each rod carries a **proper diagram hung off its own axis**: the rod is the baseline, the ordinate is laid off perpendicular to it in the sheet plane, and every rod is drawn to ONE common scale so two can be compared by eye. The ordinate is the *signed* component about whichever local axis is working harder — plotting the resultant magnitude would hide every sign change, and a diagram that never crosses its baseline cannot tell hogging from sagging. A rod pointing straight at the reader has no perpendicular on that sheet, so it is skipped and counted rather than drawn in an invented direction. |
+| "the maximum solicitation of the rods and of the nodes (in the vierendeel case)" | Two schedules. **Rods**: N, V, M, T, \|N\|/A and utilisation per bar, ranked, where V and M are the peak anywhere *along* the rod and not only at its ends. **Nodes**: the joint moment, the worst axial and shear framing in, the reaction and whether it is a support — the node sheet appears only on a rigid model, since that is the Vierendeel case it is for. Both end in an **envelope**: the worst of each column and which member or joint owns it, always printed even when the body has to be truncated, because that is the number the section gets sized from. |
+| "a complete pdf file of a selection or group or sub group … isolated" | Already in the second pass (**PDF of Selection…**), and now it takes the sheet chooser too — with the sub-model's *own* rigid count, so a pin-jointed group cut out of a rigid model is not offered sheets it cannot fill. |
+| "put the name of the document in the pdf presentation with the name of the group" | The title block's **GROUP** and **FILE** fields, from the second pass, carry it on every sheet of a selection report. |
+
+### Choosing the sheets
+
+The full report is nineteen sheets on a rigid-jointed model. That is the
+right default for a design file and the wrong one for a slide, so
+**Export PDF…** and **PDF of Selection…** both open a chooser first: six
+groups of sheets (views, axial force, utilisation, moments, deformed
+shape, schedules), with the number of sheets the choice produces counted
+live, before anything is written. Sheet 1 — the general view and the load
+case — is not optional. The choice is remembered for the next export.
+
+The chooser runs *before* the save dialog on purpose: asked for a path
+first, a reader who then cancels the chooser has already named a file that
+never appears.
+
 ## Sheet by sheet
 
 Every sheet: a frame, an **ISO 7200-style title block** bottom-right
@@ -56,34 +82,52 @@ looking at and which way the third axis runs. The elevations carry the
 structural levels. Pass `ortho_views=False` to `export_pdf` for a short
 report without them.
 
-**7 — Axial force (kN).** Red tension / blue compression, the same ramp
-as the canvas. Over-capacity bars are dashed. Stats: how many bars are in
-tension, in compression and near zero; the max tension and max compression
-with the bar identified by BOTH its end nodes and its midpoint; the mean |N|.
+**7-8 — Axial force (kN), general view and plan.** Red tension / blue
+compression, the same ramp as the canvas; bar thickness = axial stress.
+Over-capacity bars are dashed. Stats: how many bars are in tension, in
+compression and near zero; the max tension and max compression with the
+bar identified by BOTH its end nodes and its midpoint; the mean |N| and
+the peak stress.
 
-**8 — Member utilization.** Only when a member carries a section. Green /
-amber / red against the absolute CIRSOC-301 thresholds, with a capacity
-rule drawn across the ramp at 1.0. Stats: governing utilisation and which
-bar, median, mean, the count over capacity, and a one-line **verdict**.
+**9-11 — Member utilization: general view, plan, and relative.** Only when
+a member carries a section. Green / amber / red against the absolute
+CIRSOC-301 thresholds, with a capacity rule across the ramp at 1.0 — and
+then once more with the ramp stretched over this model's own range, for a
+structure whose worst bar is nowhere near capacity. Stats: governing
+utilisation and which bar, median, mean, the count over capacity, and a
+one-line **verdict**.
 
-**9 — Nodal moments (kN·m).** Orange hogging / violet sagging on the
+**12 — Nodal moments (kN·m).** Orange hogging / violet sagging on the
 joints, bars faded to a backdrop. On a fully pin-jointed model there is
 nothing to plot, and the sheet says so in words instead of drawing white
 dots under a ±0.00 key — which is what it used to do.
 
-**10 — Deformed shape.** The undeformed geometry as a ghost, the deformed
+**13-14 — Bending moment and shear ALONG the rods.** Rigid models only.
+One diagram per rod, hung off the rod's own axis, all to one common
+scale; the rods themselves are coloured by their peak resultant. Stats:
+how many rods carry a diagram, the governing rod with its peak and the
+station x it occurs at, the mean peak, and how many rods reverse sign
+inside their span.
+
+**15 — Deformed shape.** The undeformed geometry as a ghost, the deformed
 one coloured by displacement, exaggeration factor stated in the caption.
 Stats: max |u| with its node and its ux/uy/uz components, the longest bar,
 and the deflection as an **L / n** ratio.
 
-**11 — Support reactions and equilibrium.** Every restrained node's Fx, Fy,
+**16 — Support reactions and equilibrium.** Every restrained node's Fx, Fy,
 Fz, Mx, My, Mz, then Σ reaction, Σ applied and the **residual** between
 them, with a verdict. A solved model that does not close on its own
 equilibrium is wrong, and that check belongs in the report.
 
-**12 — Governing members.** The most utilised bars ranked, with length,
+**17 — Governing members.** The most utilised bars ranked, with length,
 axial force, check mode, utilisation, KL/r and OK/OVER. Without sections
 assigned it ranks by |N| instead and says why there is no code check.
+
+**18 — Maximum solicitation, rods.** N, V, M, T, |N|/A and utilisation per
+bar, with the envelope of each and the bar that owns it.
+
+**19 — Maximum solicitation, nodes.** Rigid models only: the joint moment,
+the worst axial and shear framing in, the reaction, and the envelope.
 
 ## Rebuilding the hand-out artefacts
 

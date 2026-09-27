@@ -385,6 +385,14 @@ def section_to_props(section, material: Optional[Material] = None) -> dict:
         'J':     section.J_mm4 / 10_000.0,
         'r_gyr': section.r_gyr_mm / 10.0,     # mm -> cm
     }
+    # Distance to the extreme fibre, so a bending check can form the
+    # elastic section modulus S = I/c from real geometry instead of
+    # falling back on the equivalent-round-tube assumption
+    # (stereo_checks.elastic_section_modulus_cm3). Every catalog shape here
+    # is measured from its own overall depth.
+    depth_mm = getattr(section, 'd', None) or getattr(section, 'h', None)
+    if depth_mm:
+        props['c_cm'] = (depth_mm / 2.0) / 10.0    # mm -> cm
     if material is not None:
         props['E']  = material.E / 1000.0      # MPa -> GPa
         props['Fy'] = material.Fy

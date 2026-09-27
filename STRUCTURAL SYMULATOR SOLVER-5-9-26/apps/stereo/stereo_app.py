@@ -179,6 +179,11 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
 
         self._variants = []
 
+        # Which groups of sheets the PDF report carries. None means all of
+        # them; the sheet chooser writes the reader's last choice back here
+        # so a second export does not have to be configured again.
+        self._pdf_groups = None
+
         self._build_ui()
         self.init_units(repaint=self._on_units_changed)
         self._generate(push_undo=False)

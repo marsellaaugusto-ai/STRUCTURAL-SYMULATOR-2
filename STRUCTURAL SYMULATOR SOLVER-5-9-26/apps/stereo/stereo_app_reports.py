@@ -255,6 +255,91 @@ class StereoReportsMixin:
         return {i for i, m in enumerate(self.members)
                 if m['a'] in sel_n and m['b'] in sel_n}
 
+    # ── which sheets to include ─────────────────────────────────────────────
+    #
+    # The full report is nineteen sheets on a rigid-jointed model. That is
+    # the right default for a design file and the wrong one for a slide in
+    # a presentation, so the report is assembled from groups the reader
+    # picks, and the count of sheets they will get is shown live rather
+    # than discovered after the export.
+    PDF_GROUP_LABELS = (
+        ('views', 'Orthographic views',
+         'plan, front, back, right and left, each over its dimension grid'),
+        ('force', 'Axial force',
+         'general view and plan, bar thickness = axial stress'),
+        ('utilization', 'Member utilization',
+         'general view, plan, and one scaled to this model\'s own worst bar'),
+        ('moment', 'Moments',
+         'at the joints, and — on a rigid model — bending and shear along '
+         'the rods'),
+        ('deformed', 'Deformed shape',
+         'the displaced geometry against the undeformed ghost'),
+        ('tables', 'Schedules',
+         'reactions and equilibrium, governing members, maximum solicitation'),
+    )
+
+    def _pdf_sheet_dialog(self, title, results, checks, n_rigid):
+        """Ask which groups of sheets to include; None if cancelled.
+
+        Returns a set of PDF_SHEET_GROUPS keys. Tests replace this method
+        wholesale rather than driving the widgets.
+        """
+        chosen = (set(sr.PDF_SHEET_GROUPS) if self._pdf_groups is None
+                  else set(self._pdf_groups))
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.resizable(False, False)
+        win.transient(self.root)
+
+        tk.Label(win, text='Sheets to include', font=('', 12, 'bold')).pack(
+            pady=(12, 2))
+        tk.Label(win, text='Sheet 1, the general view and load case, is '
+                           'always included.', fg='grey').pack()
+
+        body = tk.Frame(win)
+        body.pack(fill='x', padx=20, pady=(10, 0))
+        vars_ = {}
+        for row, (key, label, blurb) in enumerate(self.PDF_GROUP_LABELS):
+            v = tk.BooleanVar(value=key in chosen)
+            vars_[key] = v
+            tk.Checkbutton(body, text=label, variable=v, anchor='w').grid(
+                row=row * 2, column=0, sticky='w')
+            tk.Label(body, text=blurb, fg='grey', font=('', 9),
+                     anchor='w', justify='left', wraplength=380).grid(
+                row=row * 2 + 1, column=0, sticky='w', padx=(22, 0),
+                pady=(0, 6))
+
+        count = tk.Label(win, text='', font=('', 10, 'bold'))
+        count.pack(pady=(6, 0))
+
+        def recount(*_):
+            want = {k for k, v in vars_.items() if v.get()}
+            n = len(sr.plan_sheets(results, checks, n_rigid, want))
+            count.config(text=f'{n} sheet{"s" if n != 1 else ""}')
+
+        for v in vars_.values():
+            v.trace_add('write', recount)
+        recount()
+
+        out = {'groups': None}
+
+        def ok():
+            out['groups'] = {k for k, v in vars_.items() if v.get()}
+            win.destroy()
+
+        btns = tk.Frame(win)
+        btns.pack(pady=(10, 12))
+        tk.Button(btns, text='Export…', command=ok, width=12).pack(
+            side='left', padx=4)
+        tk.Button(btns, text='Cancel', command=win.destroy, width=10).pack(
+            side='left', padx=4)
+
+        win.grab_set()
+        self.root.wait_window(win)
+        if out['groups'] is not None:
+            self._pdf_groups = set(out['groups'])
+        return out['groups']
+
     def _export_selection_pdf(self):
         """A report on the selected group ALONE.
 
@@ -286,6 +371,15 @@ class StereoReportsMixin:
                                       initialvalue=suggestion)
         if not name:
             return
+        # The chooser runs against the SUB-model's own rigid count, so a
+        # pin-jointed group cut out of a rigid model is not offered sheets
+        # it cannot fill.
+        sub_rigid = sum(1 for i in sorted(member_idx)
+                        if self.members[i].get('conn') == 'rigid')
+        groups = self._pdf_sheet_dialog('PDF of Selection', self.results,
+                                        self.member_checks, sub_rigid)
+        if groups is None:
+            return
         path = filedialog.asksaveasfilename(
             defaultextension='.pdf',
             filetypes=[('PDF document', '*.pdf')])
@@ -302,7 +396,8 @@ class StereoReportsMixin:
                           meta={'group': name,
                                 'subset_of': self._model_name(),
                                 'grid_family': self._model_name()},
-                          az_deg=self.azimuth, el_deg=self.elevation)
+                          az_deg=self.azimuth, el_deg=self.elevation,
+                          groups=groups)
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return
@@ -315,6 +410,11 @@ class StereoReportsMixin:
     def _export_pdf(self):
         if not self.nodes or not self.members:
             messagebox.showinfo('Export PDF', 'No model to export.')
+            return
+        n_rigid = sum(1 for m in self.members if m.get('conn') == 'rigid')
+        groups = self._pdf_sheet_dialog('Export PDF', self.results,
+                                        self.member_checks, n_rigid)
+        if groups is None:
             return
         path = filedialog.asksaveasfilename(
             defaultextension='.pdf',
@@ -332,7 +432,8 @@ class StereoReportsMixin:
                           self._active_supports(),
                           self.results, path, checks=self.member_checks,
                           meta={'grid_family': self._model_name()},
-                          az_deg=self.azimuth, el_deg=self.elevation)
+                          az_deg=self.azimuth, el_deg=self.elevation,
+                          groups=groups)
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return

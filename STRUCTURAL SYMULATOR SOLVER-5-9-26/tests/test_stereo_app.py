@@ -5408,6 +5408,9 @@ class TestExportsCarryTheSolvedLoadCase:
         monkeypatch.setattr(sr_module, 'export_pdf', spy)
         monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
                             lambda *a, **kw: str(tmp_path / 'r.pdf'))
+        # the sheet chooser is a modal dialog; these tests are about what
+        # the export DOES with a choice, so they make it for it.
+        app._pdf_sheet_dialog = lambda *a, **kw: set(sr_module.PDF_SHEET_GROUPS)
         app._export_pdf()
 
         applied, reacted, residual = sr_module._pdf_equilibrium(
@@ -5436,6 +5439,9 @@ class TestExportsCarryTheSolvedLoadCase:
                                 real(n, m, l, s, r, p, **kw))[1])
         monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
                             lambda *a, **kw: str(tmp_path / 'r.pdf'))
+        # the sheet chooser is a modal dialog; these tests are about what
+        # the export DOES with a choice, so they make it for it.
+        app._pdf_sheet_dialog = lambda *a, **kw: set(sr_module.PDF_SHEET_GROUPS)
         app._export_pdf()
         assert victim not in {s['node'] for s in seen['supports']}
         assert len(seen['supports']) == len(app._active_supports())
@@ -5512,6 +5518,9 @@ class TestExportedReportsNameTheModel:
                                 real(n, m, l, s, r, p, **kw))[1])
         monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
                             lambda *a, **kw: str(tmp_path / 'r.pdf'))
+        # the sheet chooser is a modal dialog; these tests are about what
+        # the export DOES with a choice, so they make it for it.
+        app._pdf_sheet_dialog = lambda *a, **kw: set(sr_module.PDF_SHEET_GROUPS)
         app._export_pdf()
         assert seen['meta']['grid_family'] == label
         fields = dict(sr_module._pdf_sheet_meta(app.nodes, app.members,
@@ -5543,6 +5552,9 @@ class TestPdfOfSelection:
     def test_it_says_so_when_nothing_is_selected(self, app, dialogs):
         app.selected_members = set()
         app.selected_nodes = set()
+        # the sheet chooser is a modal dialog; these tests are about what
+        # the export DOES with a choice, so they make it for it.
+        app._pdf_sheet_dialog = lambda *a, **kw: set(sr_module.PDF_SHEET_GROUPS)
         app._export_selection_pdf()
         assert any('Nothing is selected' in str(d) for d in dialogs)
 
@@ -5576,6 +5588,9 @@ class TestPdfOfSelection:
         path = str(tmp_path / 'group.pdf')
         monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
                             lambda *a, **kw: path)
+        # the sheet chooser is a modal dialog; these tests are about what
+        # the export DOES with a choice, so they make it for it.
+        app._pdf_sheet_dialog = lambda *a, **kw: set(sr_module.PDF_SHEET_GROUPS)
         app._export_selection_pdf()
 
         assert os.path.isfile(path)
@@ -5606,6 +5621,9 @@ class TestPdfOfSelection:
                             lambda *a, **kw: 'Ring beam')
         monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
                             lambda *a, **kw: str(tmp_path / 'g.pdf'))
+        # the sheet chooser is a modal dialog; these tests are about what
+        # the export DOES with a choice, so they make it for it.
+        app._pdf_sheet_dialog = lambda *a, **kw: set(sr_module.PDF_SHEET_GROUPS)
         app._export_selection_pdf()
 
         assert seen['meta']['group'] == 'Ring beam'
@@ -5624,5 +5642,134 @@ class TestPdfOfSelection:
                             lambda *a, **kw: None)
         monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
                             lambda *a, **kw: str(path))
+        # the sheet chooser is a modal dialog; these tests are about what
+        # the export DOES with a choice, so they make it for it.
+        app._pdf_sheet_dialog = lambda *a, **kw: set(sr_module.PDF_SHEET_GROUPS)
         app._export_selection_pdf()
         assert not path.exists()
+
+
+class TestPdfSheetChooser:
+    """The full report is nineteen sheets on a rigid-jointed model: right
+    for a design file, wrong for a slide. The reader picks which groups of
+    sheets the export assembles, and the dialog counts them before it
+    writes anything."""
+
+    def _pdf_pages(self, path):
+        import re
+        return len(re.findall(rb'/Type\s*/Page(?![a-zA-Z])',
+                              open(path, 'rb').read()))
+
+    def test_the_chooser_runs_before_the_file_dialog(self, app, monkeypatch):
+        """Asked for a path first and the sheets second, a reader who
+        cancels the chooser has already named a file that never appears."""
+        order = []
+        app._pdf_sheet_dialog = lambda *a, **kw: (order.append('sheets'),
+                                                  set())[1]
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: (order.append('path'), '')[1])
+        app._analyze()
+        app._export_pdf()
+        assert order == ['sheets', 'path']
+
+    def test_cancelling_the_chooser_writes_nothing(self, app, tmp_path,
+                                                   monkeypatch):
+        app._analyze()
+        path = tmp_path / 'never.pdf'
+        app._pdf_sheet_dialog = lambda *a, **kw: None
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: str(path))
+        app._export_pdf()
+        assert not path.exists()
+
+    def test_the_choice_reaches_the_report(self, app, tmp_path, monkeypatch):
+        app._analyze()
+        path = tmp_path / 'short.pdf'
+        app._pdf_sheet_dialog = lambda *a, **kw: {'force'}
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: str(path))
+        app._export_pdf()
+        plan = sr_module.plan_sheets(app.results, app.member_checks,
+                                     0, {'force'})
+        assert self._pdf_pages(str(path)) == len(plan)
+        assert len(plan) < len(sr_module.plan_sheets(
+            app.results, app.member_checks, 0))
+
+    def test_the_selection_report_takes_a_choice_too(self, app, tmp_path,
+                                                     monkeypatch):
+        app._analyze()
+        app.selected_members = {0, 1, 2}
+        path = tmp_path / 'group.pdf'
+        app._pdf_sheet_dialog = lambda *a, **kw: set()
+        monkeypatch.setattr('tkinter.simpledialog.askstring',
+                            lambda *a, **kw: 'North bay')
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: str(path))
+        app._export_selection_pdf()
+        # only the general view survives an empty choice -- sheet 1 is not
+        # optional, a report with no sheets is not a report
+        assert self._pdf_pages(str(path)) == 1
+
+    def test_every_group_the_dialog_offers_is_a_real_one(self, app):
+        """A label for a group the planner has never heard of would be a
+        checkbox that silently does nothing."""
+        offered = [k for k, _, _ in app.PDF_GROUP_LABELS]
+        assert set(offered) == set(sr_module.PDF_SHEET_GROUPS)
+        assert len(offered) == len(set(offered))
+
+    def test_the_dialog_remembers_the_last_choice(self, app, monkeypatch):
+        """Exporting a second time should not mean configuring it again."""
+        assert app._pdf_groups is None
+        app._analyze()
+        chosen = {'force', 'deformed'}
+
+        def fake_wait(win):
+            # tick the checkbuttons the caller wants, then press Export
+            for w in _descendants(win):
+                if w.winfo_class() == 'Checkbutton':
+                    label = w.cget('text')
+                    key = [k for k, lab, _ in app.PDF_GROUP_LABELS
+                           if lab == label][0]
+                    (w.select if key in chosen else w.deselect)()
+            [b for b in _descendants(win)
+             if b.winfo_class() == 'Button'
+             and b.cget('text').startswith('Export')][0].invoke()
+
+        monkeypatch.setattr(app.root, 'wait_window', fake_wait)
+        got = app._pdf_sheet_dialog('Export PDF', app.results,
+                                    app.member_checks, 0)
+        assert got == chosen
+        assert app._pdf_groups == chosen
+
+    def test_the_dialog_counts_the_sheets_it_will_write(self, app,
+                                                        monkeypatch):
+        """The count is the point of the dialog: it is what tells a reader
+        that unticking Schedules saves four pages."""
+        app._analyze()
+        seen = {}
+
+        def fake_wait(win):
+            labels = [w for w in _descendants(win)
+                      if w.winfo_class() == 'Label'
+                      and w.cget('text').endswith(('sheet', 'sheets'))]
+            seen['all'] = labels[0].cget('text')
+            for w in _descendants(win):
+                if w.winfo_class() == 'Checkbutton':
+                    w.deselect()
+            win.update_idletasks()
+            seen['none'] = labels[0].cget('text')
+            win.destroy()
+
+        monkeypatch.setattr(app.root, 'wait_window', fake_wait)
+        app._pdf_sheet_dialog('Export PDF', app.results, app.member_checks, 0)
+        n_all = len(sr_module.plan_sheets(app.results, app.member_checks, 0))
+        assert seen['all'] == f'{n_all} sheets'
+        assert seen['none'] == '1 sheet'
+
+
+def _descendants(widget):
+    out = []
+    for child in widget.winfo_children():
+        out.append(child)
+        out.extend(_descendants(child))
+    return out

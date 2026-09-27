@@ -312,16 +312,25 @@ legends and colourbar tick values.
   applying the previous mesh's tributary areas — and it switches the area
   load and self-weight generators off, because the exported `[LOADS]`
   table is already the complete case.
-- **PDF report** — twelve A4-landscape sheets: the general (axonometric)
-  view with the load case; **plan, front, back, right and left** over a
-  ghost dimension grid, with every structural level named on the
-  elevations; then axial force, utilisation, nodal moments, deformed
-  shape, support reactions with an equilibrium check, and the
-  governing-member schedule. Each carries a title block, a horizontal
-  graphic scale bar, an orientation indicator (arrows, or the circled
-  dot / circled cross for the axis pointing at the reader), one compact
-  colour key mirroring the on-screen legend, and its own statistics
-  panel. See `PDF_REPORT_GUIDE_2026-09-27.md`.
+- **PDF report** — up to nineteen A4-landscape sheets: the general
+  (axonometric) view with the load case; **plan, front, back, right and
+  left** over a ghost dimension grid, with every structural level named on
+  the elevations; **axial force** and **member utilisation**, each in both
+  the general view and plan, with bar thickness reading axial stress; a
+  third utilisation sheet scaled to **this model's own range** rather than
+  the code threshold; nodal moments; **bending and shear along the rods**,
+  as a diagram hung off each rod, wherever the model has rigid joints;
+  the deformed shape; support reactions with an equilibrium check; the
+  governing-member schedule; and the **maximum-solicitation** schedules
+  for the rods and (on a rigid model) the nodes, each closing on an
+  envelope of the worst of every action. Each view sheet carries a title
+  block, a horizontal graphic scale bar, an orientation indicator (arrows,
+  or the circled dot / circled cross for the axis pointing at the reader),
+  one compact colour key mirroring the on-screen legend, and its own
+  statistics panel. See `PDF_REPORT_GUIDE_2026-09-27.md`.
+- **Sheet chooser** — both PDF exports open with a chooser: six groups of
+  sheets, the resulting sheet count shown live, and the choice remembered
+  for the next export. The general view is always included.
 - **PDF of Selection** — the same report for the selected group **alone**,
   with the rest of the model cut out rather than dimmed, so nothing
   obstructs it. The title block names both the file and the group.

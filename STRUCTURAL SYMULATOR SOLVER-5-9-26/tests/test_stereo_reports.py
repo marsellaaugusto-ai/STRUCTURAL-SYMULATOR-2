@@ -786,3 +786,187 @@ def test_export_ifc_member_count():
         text = open(path).read()
         n_members = text.count('IFCMEMBER(')
         assert n_members == len(members)
+
+
+# ── the analysis sheets added on 2026-09-27 ──────────────────────────────
+
+def _rigid_model():
+    """The same grid, but every bar moment-connected: a Vierendeel frame.
+
+    The along-the-rod and node-solicitation sheets exist only where a
+    joint can transfer a moment, so they need a model that has some.
+    """
+    nodes, members, loads, supports = _built_model()
+    for m in members:
+        m['conn'] = 'rigid'
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None
+    checks = sk.check_all_members(nodes, members, res['member_res'])
+    return nodes, members, loads, supports, res, checks
+
+
+def test_plan_sheets_lists_every_sheet_the_report_will_have():
+    """'Sheet n of N' is counted from this list, so it has to BE the list
+    the render loop walks -- not a parallel arithmetic expression."""
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    plan = sr.plan_sheets(res, checks, n_rigid=len(members))
+    assert plan[0] == 'general'
+    for key in ('plan', 'front', 'back', 'right', 'left',
+                'force_iso', 'force_top',
+                'util_iso', 'util_top', 'util_rel',
+                'moment_nodes', 'moment_rods', 'shear_rods',
+                'deformed', 'reactions', 'governing',
+                'solicitation_rods', 'solicitation_nodes'):
+        assert key in plan, key
+    assert len(plan) == len(set(plan))
+
+
+def test_plan_sheets_drops_the_rigid_only_sheets_on_a_pin_truss():
+    """Bending and shear ALONG a rod, and a joint solicitation schedule,
+    are all identically zero on a pin-jointed truss. A sheet of zeros is
+    worse than no sheet: it implies the model was checked for something it
+    cannot carry."""
+    nodes, members, loads, supports, res = _analysed_model()
+    checks = sk.check_all_members(nodes, members, res['member_res'])
+    plan = sr.plan_sheets(res, checks, n_rigid=0)
+    assert 'moment_nodes' in plan          # nodal moments still apply
+    assert 'moment_rods' not in plan
+    assert 'shear_rods' not in plan
+    assert 'solicitation_rods' in plan     # N and stress still apply
+    assert 'solicitation_nodes' not in plan
+
+
+def test_plan_sheets_honours_a_group_subset():
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    plan = sr.plan_sheets(res, checks, len(members), groups={'force'})
+    assert plan == ['general', 'force_iso', 'force_top']
+    plan = sr.plan_sheets(res, checks, len(members), groups=set())
+    assert plan == ['general']
+
+
+def test_export_pdf_writes_exactly_the_planned_sheets():
+    """The page count of the artefact, and the plan the title block counts
+    from, must agree -- a 'Sheet 3 / 19' on a 12-page file is a lie."""
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    with tempfile.TemporaryDirectory() as d:
+        for groups in (None, {'force', 'tables'}, {'moment'}, set()):
+            plan = sr.plan_sheets(res, checks, len(members), groups)
+            path = os.path.join(d, f'{len(plan)}.pdf')
+            sr.export_pdf(nodes, members, loads, supports, res, path,
+                          checks=checks, groups=groups)
+            assert _pdf_page_count(path) == len(plan), groups
+
+
+def test_stress_widths_track_stress_not_force():
+    """A thick chord and a thin web carrying the same kN are not working
+    equally hard; the sheet's line weight is |N|/A, like the canvas."""
+    members = [{'A': 10.0}, {'A': 10.0}, {'A': 1.0}]
+    member_res = [{'N': 100.0}, {'N': 50.0}, {'N': 100.0}]
+    widths, peak = sr._pdf_stress_widths(members, member_res, lo=1.0, hi=5.0)
+    assert peak == pytest.approx(100.0)          # bar 2: 100 kN over 1 cm²
+    assert widths[2] == pytest.approx(5.0)       # the peak draws at full width
+    assert widths[0] == pytest.approx(1.0 + 4.0 * 0.10)
+    assert widths[1] == pytest.approx(1.0 + 4.0 * 0.05)
+    assert widths[0] > widths[1]                 # same area, more force
+    assert widths[2] > widths[0]                 # same force, less area
+
+
+def test_stress_widths_are_uniform_when_nothing_is_stressed():
+    widths, peak = sr._pdf_stress_widths([{'A': 10.0}] * 3,
+                                         [{'N': 0.0}] * 3, lo=1.0, hi=5.0)
+    assert peak == 0.0
+    assert widths == [1.0, 1.0, 1.0]
+
+
+def test_stress_widths_survive_a_member_with_no_section():
+    widths, peak = sr._pdf_stress_widths([{'A': 0.0}, {'A': 5.0}],
+                                         [{'N': 10.0}, {'N': 10.0}],
+                                         lo=1.0, hi=5.0)
+    assert widths[0] == pytest.approx(1.0)       # no area: no stress to show
+    assert widths[1] == pytest.approx(5.0)
+
+
+def _diagram_axes():
+    from common import _ensure_matplotlib
+    assert _ensure_matplotlib()
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    fig = plt.figure()
+    return fig, fig.add_subplot(111)
+
+
+def test_along_rod_diagrams_hang_off_the_member_perpendicular():
+    """The diagram's baseline IS the rod and its ordinate is measured at
+    right angles to it, so a horizontal bar's diagram must move in y."""
+    fig, ax = _diagram_axes()
+    try:
+        members = [{'a': 0, 'b': 1}]
+        pts = [(0.0, 0.0), (10.0, 0.0)]
+        extra, drawn, flat = sr._pdf_along_rod_diagrams(
+            ax, members, pts, [[0.0, 5.0, 0.0]], peak=5.0, color='#000000')
+        assert drawn == 1 and flat == 0
+        xs = [p[0] for p in extra]
+        ys = [p[1] for p in extra]
+        assert min(xs) == pytest.approx(0.0)
+        assert max(xs) == pytest.approx(10.0)
+        # the peak ordinate is PDF_DIAGRAM_FRAC of the projected diagonal
+        assert max(abs(y) for y in ys) == pytest.approx(
+            sr.PDF_DIAGRAM_FRAC * 10.0)
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+
+def test_along_rod_diagrams_skip_a_rod_pointing_at_the_reader():
+    """A rod projecting to a single point has no perpendicular on this
+    sheet; drawing its diagram in an arbitrary direction would be a
+    fabrication, so it is counted and reported instead."""
+    fig, ax = _diagram_axes()
+    try:
+        members = [{'a': 0, 'b': 1}, {'a': 2, 'b': 3}]
+        pts = [(0.0, 0.0), (10.0, 0.0), (4.0, 4.0), (4.0, 4.0)]
+        extra, drawn, flat = sr._pdf_along_rod_diagrams(
+            ax, members, pts, [[1.0, 1.0], [1.0, 1.0]], peak=1.0,
+            color='#000000')
+        assert drawn == 1
+        assert flat == 1
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+
+def test_along_rod_diagrams_draw_nothing_without_a_peak():
+    fig, ax = _diagram_axes()
+    try:
+        extra, drawn, flat = sr._pdf_along_rod_diagrams(
+            ax, [{'a': 0, 'b': 1}], [(0.0, 0.0), (1.0, 0.0)],
+            [[0.0, 0.0]], peak=0.0, color='#000000')
+        assert extra == [] and drawn == 0
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+
+def test_table_tail_rows_are_drawn_below_the_last_body_row():
+    """The summary rows are the point of the sheet, so they are drawn
+    even when the body has to be truncated -- and the rule that separates
+    them must not strike through the row above it."""
+    fig, _ = _diagram_axes()
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+    fig = plt.figure(figsize=sr.PDF_SHEET_IN)
+    try:
+        rows = [[str(i), 'x'] for i in range(200)]
+        tail = [['MAX', '9.99'], ['MIN', '0.01']]
+        ax = sr._pdf_table_page(fig, 'T', ['a', 'b'], rows, [1.0, 1.0],
+                                tail_rows=tail)
+        texts = [t.get_text() for t in ax.texts]
+        assert 'MAX' in texts and 'MIN' in texts
+        assert any('further row(s) not shown' in t for t in texts)
+        tail_y = min(t.get_position()[1] for t in ax.texts
+                     if t.get_text() in ('MAX', 'MIN'))
+        rule_ys = [ln.get_ydata()[0] for ln in ax.lines]
+        assert any(y > tail_y for y in rule_ys)
+    finally:
+        plt.close(fig)

@@ -560,10 +560,43 @@ class StereoModelMixin:
                 self.nodes, self.members, self.unit_weight_var.get()))
         return loads
 
+    def _solve_loads(self):
+        """(nodal_loads, member_loads) for the solver.
+
+        The same load case as _all_loads(), but with a RIGID member's own
+        weight handed over as the span load it physically is instead of
+        being lumped onto its two ends. Lumping gets the end shears right
+        and silently drops the wL^2/12 fixed-end moments, which on a
+        moment-transferring frame is most of the bending.
+
+        _all_loads() deliberately keeps returning the all-nodal view: it
+        is what the reports total up and draw arrows from, and the two
+        agree on the total applied force exactly, since the integral of a
+        span load over the member is the weight that was being lumped.
+        """
+        loads = list(self.loads)
+        if self.area_load_on.get() and self._load_nodes:
+            q_at = self._area_pressure_fn()
+            if q_at is not None:
+                only = (set(self.selected_nodes)
+                        if self.area_scope.get() != AREA_SCOPE_ALL else None)
+                loads = sm.combine_loads(loads, sm.varying_area_load_to_nodal_loads(
+                    self.nodes, self._load_nodes, q_at,
+                    direction=self._area_direction(), only=only))
+        member_loads = {}
+        if self.self_weight_on.get():
+            nodal_sw, span_sw = sm.self_weight_split(
+                self.nodes, self.members, self.unit_weight_var.get())
+            loads = sm.combine_loads(loads, nodal_sw)
+            member_loads.update(span_sw)
+        return loads, member_loads
+
     # ── analysis ─────────────────────────────────────────────────────────────
     def _analyze(self):
-        loads = self._all_loads()
-        res, err = sm.analyze(self.nodes, self.members, loads, self._active_supports())
+        loads, member_loads = self._solve_loads()
+        res, err = sm.analyze(self.nodes, self.members, loads,
+                              self._active_supports(),
+                              member_loads=member_loads)
         self.err = err
         if err:
             self.results = None

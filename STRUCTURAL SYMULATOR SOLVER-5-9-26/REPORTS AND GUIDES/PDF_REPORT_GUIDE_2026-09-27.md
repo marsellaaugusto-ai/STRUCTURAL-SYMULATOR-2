@@ -22,6 +22,19 @@ flips it once, for the nodes, the deformed nodes, the load arrows and the
 triad alike. Verified against a screenshot of the app's own canvas at the
 same azimuth and elevation, not against the algebra.
 
+## Second pass, same day: views, nomenclature, isolation
+
+| Request | What it is now |
+|---|---|
+| "the top, left, right, back and front view are important too" | Five orthographic sheets between the general view and the analysis, one per view. Each azimuth/elevation is derived, not guessed — for a camera looking along `d` with `up`, the sheet's horizontal axis is `cross(d, up)`, and a test re-projects the world unit axes to confirm each view really is that view. Plan is az 0 / el 90; front az 0 / el 0; back az 180; right az −90; left az 90. |
+| "nomenclature about the elevation … ghost grid almost invisible" | A background grid at a round 1-2-5 spacing, labelling real world coordinates along the bottom and left edges, plus the axis names (`X (m) →`, `↑ Z (m)`). On the elevations it also draws a dashed line at **every distinct structural Z** with its value (`+0.00`, `+1.74`, `+3.14` …) down the right-hand margin — the levels a structural elevation is read by. Capped at 14 levels, past which the round grid carries it alone. |
+| "to what view we are currently watching" | Three, belt and braces: the sheet title, a bold caption centred under the drawing (`FRONT ELEVATION · looking along +Y`), and the orientation indicator, where the axis that points at the reader can no longer be an arrow. It becomes the draughtsman's **circled dot** (coming at you) or **circled cross** (going away), chosen from the sign of the view depth, with `X toward you` / `Y away from you` spelled out beneath. |
+| "a PDF of any given selection or selected group in isolation" | **PDF of Selection…** in the output toolbar. `submodel()` cuts the selected bars and nodes out of the model with every parallel array — `node_res`, `member_res`, `reactions`, the member checks — filtered and renumbered to match, so the report is built by the same code path as a whole model, and the rest of the structure is *absent* rather than dimmed. Selected rods define the group; with only nodes selected it takes the rods whose both ends are selected, which is what lassoing a region means. |
+| "put the name of the file and group being analyzed" | The title block grows a **GROUP** and a **FILE** field (and widens to fit six columns), sheet 1's panel opens `SELECTED GROUP` with both names and the line *shown in isolation — the rest of the model is not drawn*. |
+| "make the scale indicator horizontal for all cases" | Always level now. On an orthographic sheet that is free and exactly true, because the sheet's horizontal axis **is** a world axis: the bar says `5 m · true to scale`. On the axonometric sheet nothing is horizontal in world terms, so it is drawn at the length one metre of X projects to and says `5 m · along X (foreshortened)` rather than pretending. |
+
+One honesty note that came with the isolation feature: an isolated group is a **cut** through a structure, so its reactions cannot balance its applied load — the bars that used to carry force across the cut are gone. The reactions sheet says exactly that instead of reporting the difference as a solver error.
+
 ## Sheet by sheet
 
 Every sheet: a frame, an **ISO 7200-style title block** bottom-right
@@ -30,39 +43,45 @@ colour key top-left, the stats panel top-right, the scale bar bottom-left
 and the orientation triad bottom-right. The drawing is fitted into what is
 left of the sheet, so no panel ever lands on the structure.
 
-**1 — General view: model and load case.** Bars coloured by connection
+**1 — General view: model and load case.** (axonometric) Bars coloured by connection
 (pin / rigid), supports as blue squares, and one arrow per loaded node
 along that node's own net force direction, length ∝ |F|^0.6 of the largest
 load. Stats: node/bar/support counts, the pin-rigid split, bounding-box
 extents, degree of static indeterminacy, the applied load total, and the
 headline results.
 
-**2 — Axial force (kN).** Red tension / blue compression, the same ramp
+**2–6 — Plan, front, back, right and left.** The model over its ghost
+dimension grid, each true to scale, each captioned with what you are
+looking at and which way the third axis runs. The elevations carry the
+structural levels. Pass `ortho_views=False` to `export_pdf` for a short
+report without them.
+
+**7 — Axial force (kN).** Red tension / blue compression, the same ramp
 as the canvas. Over-capacity bars are dashed. Stats: how many bars are in
 tension, in compression and near zero; the max tension and max compression
 with the bar identified by BOTH its end nodes and its midpoint; the mean |N|.
 
-**3 — Member utilization.** Only when a member carries a section. Green /
+**8 — Member utilization.** Only when a member carries a section. Green /
 amber / red against the absolute CIRSOC-301 thresholds, with a capacity
 rule drawn across the ramp at 1.0. Stats: governing utilisation and which
 bar, median, mean, the count over capacity, and a one-line **verdict**.
 
-**4 — Nodal moments (kN·m).** Orange hogging / violet sagging on the
+**9 — Nodal moments (kN·m).** Orange hogging / violet sagging on the
 joints, bars faded to a backdrop. On a fully pin-jointed model there is
 nothing to plot, and the sheet says so in words instead of drawing white
 dots under a ±0.00 key — which is what it used to do.
 
-**5 — Deformed shape.** The undeformed geometry as a ghost, the deformed
+**10 — Deformed shape.** The undeformed geometry as a ghost, the deformed
 one coloured by displacement, exaggeration factor stated in the caption.
 Stats: max |u| with its node and its ux/uy/uz components, the longest bar,
 and the deflection as an **L / n** ratio.
 
-**6 — Support reactions and equilibrium.** Every restrained node's Fx, Fy,
+**11 — Support reactions and equilibrium.** Every restrained node's Fx, Fy,
 Fz, Mx, My, Mz, then Σ reaction, Σ applied and the **residual** between
 them, with a verdict. A solved model that does not close on its own
 equilibrium is wrong, and that check belongs in the report.
 
-**7 — Governing members.** The most utilised bars ranked, with length,
+**12 — Governing members.** The most utilised bars ranked, with length,
 axial force, check mode, utilisation, KL/r and OK/OVER. Without sections
 assigned it ranks by |N| instead and says why there is no code check.
 

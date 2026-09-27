@@ -1334,6 +1334,8 @@ PDF_SHEET_IN = (11.69, 8.27)        # A4 landscape (ISO 5457 / ISO 216)
 PDF_FRAME = (0.026, 0.030, 0.974, 0.970)    # x0, y0, x1, y1, figure fraction
 PDF_TITLE_H = 0.128                 # title-block height, figure fraction
 PDF_TITLE_W = 0.560                 # title-block width, figure fraction
+PDF_TITLE_W_WIDE = 0.720            # ...and when a GROUP field is present too
+PDF_TITLE_FIELD_GUTTER = 2.2        # blank characters between field columns
 PDF_APP_NAME = 'Stereo Structure Calculator'
 PDF_CODE_BASIS = 'CIRSOC 301 / AISC 360'
 
@@ -1406,6 +1408,83 @@ def _pdf_nice_length(raw):
     return base
 
 
+def _pdf_view_depth(vx, vy, vz, az_rad, el_rad):
+    """How far a world direction points AWAY from the reader.
+
+    Positive = into the sheet, negative = out of it, ~0 = lying in the
+    sheet plane. Same quantity StereoViewMixin._project returns as its
+    third value, and what decides whether a vanishing axis is drawn as the
+    draughtsman's circled dot (coming at you) or circled cross (going
+    away) on an orthographic sheet.
+    """
+    import math
+    sa, ca = math.sin(az_rad), math.cos(az_rad)
+    se, ce = math.sin(el_rad), math.cos(el_rad)
+    yr = vx * sa + vy * ca
+    return yr * ce - vz * se
+
+
+# The five orthographic views, each as the azimuth/elevation that produces
+# it. Derived, not guessed: for a camera looking along `d` with `up`, the
+# sheet's horizontal axis is cross(d, up), and _iso_project's own algebra
+# then pins the azimuth. Checked by test_stereo_reports.py against both
+# the resulting projection AND the sign of _pdf_view_depth.
+#
+#   plan   viewer above,  looking down  -Z : X right, Y up,  Z at the reader
+#   front  viewer at -Y,  looking along +Y : X right, Z up,  Y away
+#   back   viewer at +Y,  looking along -Y : X left,  Z up,  Y at the reader
+#   right  viewer at +X,  looking along -X : Y right, Z up,  X at the reader
+#   left   viewer at -X,  looking along +X : Y left,  Z up,  X away
+PDF_ORTHO_VIEWS = (
+    ('plan', {
+        'az': 0.0, 'el': 90.0,
+        'title': 'Plan — view from above',
+        'caption': 'PLAN  ·  looking down (−Z)',
+        'h': 'X', 'v': 'Y', 'normal': 'Z', 'kind': 'plan'}),
+    ('front', {
+        'az': 0.0, 'el': 0.0,
+        'title': 'Front elevation',
+        'caption': 'FRONT ELEVATION  ·  looking along +Y',
+        'h': 'X', 'v': 'Z', 'normal': 'Y', 'kind': 'elevation'}),
+    ('back', {
+        'az': 180.0, 'el': 0.0,
+        'title': 'Back elevation',
+        'caption': 'BACK ELEVATION  ·  looking along −Y',
+        'h': 'X', 'v': 'Z', 'normal': 'Y', 'kind': 'elevation'}),
+    ('right', {
+        'az': -90.0, 'el': 0.0,
+        'title': 'Right side elevation',
+        'caption': 'RIGHT ELEVATION  ·  looking along −X',
+        'h': 'Y', 'v': 'Z', 'normal': 'X', 'kind': 'elevation'}),
+    ('left', {
+        'az': 90.0, 'el': 0.0,
+        'title': 'Left side elevation',
+        'caption': 'LEFT ELEVATION  ·  looking along +X',
+        'h': 'Y', 'v': 'Z', 'normal': 'X', 'kind': 'elevation'}),
+)
+
+PDF_AXIS_UNIT = {'X': (1.0, 0.0, 0.0), 'Y': (0.0, 1.0, 0.0),
+                 'Z': (0.0, 0.0, 1.0)}
+
+PDF_GHOST_LINE = '#e3e6ea'      # the dimension grid: present, not competing
+PDF_GHOST_TEXT = '#9aa2ab'
+PDF_LEVEL_LINE = '#c9d2db'      # a named structural level, a shade stronger
+PDF_MAX_LEVELS = 14             # past this a level line per storey is noise
+
+
+def _pdf_ortho_frame(az_rad, el_rad, h_axis, v_axis):
+    """(h_sign, v_sign) mapping sheet coordinates back to world ones.
+
+    On an orthographic sheet each drawn axis IS a world axis, up to a
+    sign: data_x = h_sign * world_h, data_y = v_sign * world_v. The ghost
+    grid labels world coordinates, so it needs that sign rather than
+    assuming the view happens to be the un-mirrored one.
+    """
+    hx, _ = _pdf_project(*PDF_AXIS_UNIT[h_axis], az_rad, el_rad)
+    _, vy = _pdf_project(*PDF_AXIS_UNIT[v_axis], az_rad, el_rad)
+    return (1.0 if hx >= 0 else -1.0), (1.0 if vy >= 0 else -1.0)
+
+
 def _pdf_axis_dirs(az_rad, el_rad):
     """Where one world metre along each axis lands on the sheet.
 
@@ -1456,19 +1535,23 @@ def _pdf_sheet(fig, sheet_no, sheet_total, title, meta):
                              facecolor='none', edgecolor=PDF_RULE, linewidth=0.9,
                              zorder=5))
 
-    tb_x = x1 - PDF_TITLE_W
+    # A selection's block carries a GROUP field on top of the usual five,
+    # and six columns in the narrow block ran every value into the next.
+    tb_w = PDF_TITLE_W_WIDE if len(meta or ()) > 5 else PDF_TITLE_W
+    tb_x = x1 - tb_w
     tb_y = y0
-    fig.add_artist(Rectangle((tb_x, tb_y), PDF_TITLE_W, PDF_TITLE_H,
+    fig.add_artist(Rectangle((tb_x, tb_y), tb_w, PDF_TITLE_H,
                              transform=fig.transFigure, facecolor='#fbfbfc',
                              edgecolor=PDF_RULE, linewidth=0.9, zorder=6))
 
     band = tb_y + PDF_TITLE_H * 0.46
-    fig.add_artist(Rectangle((tb_x, band), PDF_TITLE_W, 0.0,
+    fig.add_artist(Rectangle((tb_x, band), tb_w, 0.0,
                              transform=fig.transFigure, facecolor='none',
                              edgecolor=PDF_RULE, linewidth=0.7, zorder=7))
 
     pad = 0.010
-    fig.text(tb_x + pad, tb_y + PDF_TITLE_H * 0.74, title, fontsize=11,
+    fig.text(tb_x + pad, tb_y + PDF_TITLE_H * 0.74, title,
+             fontsize=11 if tb_w <= PDF_TITLE_W else 12,
              fontweight='bold', color='#1a1a1a', va='center', ha='left',
              zorder=8)
     fig.text(x1 - pad, tb_y + PDF_TITLE_H * 0.74,
@@ -1479,33 +1562,53 @@ def _pdf_sheet(fig, sheet_no, sheet_total, title, meta):
     # equal columns ran 'CIRSOC 301 / AISC 360' straight into the date
     # beside it.
     if meta:
-        weights = [max(len(str(v)), len(str(c)) + 2) for c, v in meta]
+        # Each column is as wide as its own longest line PLUS a gutter, so
+        # neighbouring values cannot touch however long one of them is.
+        weights = [max(len(str(v)), len(str(c)) + 2) + PDF_TITLE_FIELD_GUTTER
+                   for c, v in meta]
         total_w = float(sum(weights)) or 1.0
-        avail = PDF_TITLE_W - 2 * pad
+        avail = tb_w - 2 * pad
+        fs = 6.6 if len(meta) <= 5 else 6.0
         acc = 0.0
         for (cap, val), wt in zip(meta, weights):
             fx = tb_x + pad + (acc / total_w) * avail
             acc += wt
             fig.text(fx, tb_y + PDF_TITLE_H * 0.30, cap, fontsize=5.6,
                      color='#7a8087', va='center', ha='left', zorder=8)
-            fig.text(fx, tb_y + PDF_TITLE_H * 0.12, val, fontsize=6.6,
+            fig.text(fx, tb_y + PDF_TITLE_H * 0.12, val, fontsize=fs,
                      color=PDF_INK, va='center', ha='left', zorder=8,
                      fontfamily=PDF_MONO)
 
 
 def _pdf_sheet_meta(nodes, members, meta=None):
-    """The title-block fields shared by every sheet of one report."""
+    """The title-block fields shared by every sheet of one report.
+
+    When the report covers a SELECTION, the block carries two names, not
+    one: the file the group came out of and the group itself. A sheet
+    showing part of a structure that names only the part is not traceable
+    back to anything.
+    """
     import time
     family = ''
+    group = ''
+    parent = ''
     if meta:
         family = meta.get('grid_family') or meta.get('typology') or ''
-    return [
-        ('MODEL', (str(family)[:22] or 'user model')),
+        group = meta.get('group') or ''
+        parent = meta.get('subset_of') or ''
+    fields = []
+    if group:
+        fields.append(('GROUP', str(group)[:20]))
+        fields.append(('FILE', str(parent or family)[:20] or 'user model'))
+    else:
+        fields.append(('MODEL', (str(family)[:22] or 'user model')))
+    fields += [
         ('SIZE', f'{len(nodes)} nodes / {len(members)} bars'),
         ('UNITS', 'm, kN, mm'),
         ('CODE', PDF_CODE_BASIS),
         ('DATE', time.strftime('%Y-%m-%d %H:%M')),
     ]
+    return fields
 
 
 class _PdfKey:
@@ -1687,55 +1790,49 @@ def _pdf_stats_panel(ax, lines, x=PDF_STATS_X, y=PDF_STATS_Y):
                       linewidth=0.6))
 
 
-def _pdf_scale_bar(ax, az_rad, el_rad, model_span_m, xy, divisions=PDF_SCALE_DIVISIONS):
-    """A chequered graphic scale bar laid along the projected +X axis.
+def _pdf_scale_bar(ax, model_span_m, xy, unit_len_data=1.0, ref_axis='X',
+                   exact=True, divisions=PDF_SCALE_DIVISIONS):
+    """A HORIZONTAL chequered graphic scale bar.
 
-    Drawn ALONG X, not horizontally, because a parallel projection
-    foreshortens each axis by its own factor: a horizontal bar would be
-    true for no direction at all. Along a named axis it is exactly true
-    for everything parallel to that axis, and the label says so.
+    Horizontal in every view, which is how a scale bar is read. On an
+    orthographic sheet that costs nothing: the sheet's own horizontal axis
+    IS a world axis, so the bar is exactly true and `exact` says so. On the
+    axonometric sheet nothing is horizontal in world terms, so the bar is
+    drawn at the length ONE metre of `ref_axis` projects to and labelled
+    with that axis -- true for everything parallel to it, and the key
+    carries the other two foreshortening factors.
 
-    Returns the round length it chose, in metres (0.0 if the model is
-    degenerate and no honest bar can be drawn).
+    `unit_len_data` is how long one metre of `ref_axis` is in the axes'
+    own data units. Returns the round length chosen, in metres (0.0 when
+    the model is degenerate and no honest bar can be drawn).
     """
-    import math
-    from matplotlib.patches import Polygon
+    from matplotlib.patches import Rectangle
 
     length_m = _pdf_nice_length(model_span_m * PDF_SCALE_TARGET)
-    if length_m <= 0.0:
+    if length_m <= 0.0 or unit_len_data <= 0.0:
         return 0.0
 
-    dx, dy = _pdf_axis_dirs(az_rad, el_rad)['X']
-    norm = math.hypot(dx, dy)
-    if norm < 1e-12:
-        return 0.0
-    # the bar's thickness runs perpendicular to it, in projected units
-    tx, ty = -dy / norm, dx / norm
-    thick = model_span_m * 0.012
-
+    drawn = length_m * unit_len_data
+    thick = model_span_m * 0.011
     bx, by = xy
-    seg = length_m / divisions
+    seg = drawn / divisions
     for i in range(divisions):
-        p0 = (bx + dx * seg * i, by + dy * seg * i)
-        p1 = (bx + dx * seg * (i + 1), by + dy * seg * (i + 1))
-        quad = [p0, p1,
-                (p1[0] + tx * thick, p1[1] + ty * thick),
-                (p0[0] + tx * thick, p0[1] + ty * thick)]
-        ax.add_patch(Polygon(quad, closed=True,
-                             facecolor=('#333333' if i % 2 == 0 else '#ffffff'),
-                             edgecolor='#333333', linewidth=0.6, zorder=15))
-
-    ex, ey = bx + dx * length_m, by + dy * length_m
-    ax.text(bx - tx * thick * 0.6, by - ty * thick * 0.6, '0',
+        ax.add_patch(Rectangle((bx + seg * i, by), seg, thick,
+                               facecolor=('#333333' if i % 2 == 0 else '#ffffff'),
+                               edgecolor='#333333', linewidth=0.6, zorder=15))
+    ax.text(bx, by - thick * 0.45, '0', fontsize=PDF_KEY_FS - 0.5,
+            color=PDF_INK, ha='center', va='top', zorder=16)
+    ax.text(bx + drawn, by - thick * 0.45, f'{length_m:g}',
             fontsize=PDF_KEY_FS - 0.5, color=PDF_INK, ha='center', va='top',
             zorder=16)
-    ax.text(ex + tx * thick * 1.9, ey + ty * thick * 1.9,
-            f'{length_m:g} m  (true along X)', fontsize=PDF_KEY_FS,
-            color=PDF_INK, ha='center', va='bottom', zorder=16)
+    note = 'true to scale' if exact else f'along {ref_axis} (foreshortened)'
+    ax.text(bx + drawn / 2.0, by + thick * 1.5, f'{length_m:g} m · {note}',
+            fontsize=PDF_KEY_FS, color=PDF_INK, ha='center', va='bottom',
+            zorder=16)
     return length_m
 
 
-def _pdf_orientation_triad(ax, az_rad, el_rad, arm_m, xy):
+def _pdf_orientation_triad(ax, az_rad, el_rad, arm_m, xy, caption_y=None):
     """The X/Y/Z triad, every arm the same world length.
 
     This is what lets a reader orient the structure in 3D space from the
@@ -1749,11 +1846,21 @@ def _pdf_orientation_triad(ax, az_rad, el_rad, arm_m, xy):
     from apps.stereo.stereo_app_constants import (
         AXIS_COLOR_X, AXIS_COLOR_Y, AXIS_COLOR_Z,
     )
+    from matplotlib.patches import Circle
     dirs = _pdf_axis_dirs(az_rad, el_rad)
     cols = {'X': AXIS_COLOR_X, 'Y': AXIS_COLOR_Y, 'Z': AXIS_COLOR_Z}
     ox, oy = xy
+    flat = []
     for name in ('X', 'Y', 'Z'):
         dx, dy = dirs[name]
+        if math.hypot(dx, dy) < 1e-6:
+            # An axis pointing straight at (or straight away from) the
+            # reader projects to nothing, which is exactly the case on
+            # every orthographic sheet. Drawing a zero-length arrow there
+            # would read as a bug; the draughtsman's circled dot (coming
+            # at you) and circled cross (going away) say it properly.
+            flat.append(name)
+            continue
         ex, ey = ox + dx * arm_m, oy + dy * arm_m
         ax.annotate('', xy=(ex, ey), xytext=(ox, oy),
                     arrowprops=dict(arrowstyle='-|>', color=cols[name],
@@ -1764,53 +1871,201 @@ def _pdf_orientation_triad(ax, az_rad, el_rad, arm_m, xy):
         label = name + (' (N)' if name == 'Y' else '')
         ax.text(lx, ly, label, fontsize=PDF_KEY_FS + 0.6, fontweight='bold',
                 color=cols[name], ha='center', va='center', zorder=17)
-    ax.plot([ox], [oy], marker='o', markersize=2.0, color='#444444',
-            linestyle='none', zorder=17)
-    # Below the LOWEST arm, not below the origin: at a shallow elevation
-    # the −Z end of the triad reaches well past the origin and the caption
-    # landed on top of the Z label.
-    low = min(oy + d[1] * arm_m * 1.45 for d in dirs.values())
-    ax.text(ox, min(low, oy - arm_m * 0.45),
-            f'arms = {arm_m:g} m (all three)\n'
+
+    notes = []
+    for i, name in enumerate(flat):
+        col = cols[name]
+        r = arm_m * 0.16
+        # Down-left of the origin, never ON it: the two axes that DO
+        # project leave the origin pointing right and up in every
+        # orthographic view, so the symbol drawn at the origin had an
+        # arrow running straight through it.
+        cx = ox - arm_m * 0.62 - (i * r * 3.2)
+        cy = oy
+        ax.add_patch(Circle((cx, cy), r, facecolor='white', edgecolor=col,
+                            linewidth=1.2, zorder=17))
+        away = _pdf_view_depth(*PDF_AXIS_UNIT[name], az_rad, el_rad) > 0
+        if away:
+            k = r * 0.66
+            ax.plot([cx - k, cx + k], [cy - k, cy + k], color=col,
+                    linewidth=1.0, zorder=18)
+            ax.plot([cx - k, cx + k], [cy + k, cy - k], color=col,
+                    linewidth=1.0, zorder=18)
+            notes.append(f'{name} away from you')
+        else:
+            ax.plot([cx], [cy], marker='o', markersize=2.6, color=col,
+                    linestyle='none', zorder=18)
+            notes.append(f'{name} toward you')
+        ax.text(cx, cy + r * 1.9, name, fontsize=PDF_KEY_FS + 0.6,
+                fontweight='bold', color=col, ha='center', va='bottom',
+                zorder=18)
+    if not flat:
+        ax.plot([ox], [oy], marker='o', markersize=2.0, color='#444444',
+                linestyle='none', zorder=17)
+
+    # On a fixed line of the furniture band, not derived from the arm
+    # geometry: deriving it put the caption through the middle of the
+    # flat-axis symbol on every elevation.
+    head = (f'arms = {arm_m:g} m (all three)' if not flat
+            else ' · '.join(notes))
+    cap_y = caption_y if caption_y is not None else oy - arm_m * 0.9
+    ax.text(ox - arm_m * 0.3, cap_y,
+            head + '\n'
             f'az {math.degrees(az_rad):.0f}° · el {math.degrees(el_rad):.0f}° '
             f'· parallel projection',
             fontsize=PDF_KEY_FS - 1.0, color='#5f6368', ha='center', va='top',
             linespacing=1.5, zorder=17)
 
 
-PDF_FURNITURE_BAND = 0.17      # bottom of the sheet held for bar + triad
+# Bottom of the sheet held clear for the grid ruler, the view caption, the
+# scale bar and the orientation indicator -- four things that all used to
+# be crowded into the same strip and landed on top of one another.
+PDF_FURNITURE_BAND = 0.26
+# The axonometric sheets carry no grid ruler and no view caption, so they
+# need only the two rows the band always has and should not give up the
+# drawing area the orthographic ones do.
+PDF_FURNITURE_BAND_ISO = 0.20
+PDF_BAND_RULER = 0.005         # grid ruler numbers, at the floor
+PDF_BAND_CAPTION = 0.042       # the view's name, centred
+PDF_BAND_TRIAD_TEXT = 0.072    # what the orientation indicator says, right
+PDF_BAND_SCALE = 0.105         # scale bar, left
+PDF_BAND_TRIAD = 0.135         # orientation indicator's origin, right
+# Longest triad arm that still fits inside the band, as a fraction of the
+# window height. Without this the arm was sized from the MODEL and its +Z
+# tip reached up out of the band and into the drawing.
+PDF_TRIAD_ARM_MAX = 0.075
+
+
+def _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view):
+    """The almost-invisible dimension grid behind an orthographic view.
+
+    Two things a bare wireframe cannot tell you: HOW BIG it is and WHERE
+    the parts sit. The grid answers both by labelling real world
+    coordinates along the bottom and left edges at a round spacing, and on
+    an elevation it also draws a line at every distinct structural Z with
+    its value -- the levels a structural elevation is read by.
+
+    Drawn at PDF_GHOST_LINE, light enough that the structure stays the
+    subject; that is what "ghost" means here.
+
+    Returns (spacing_m, n_levels) so the caller can say so in its panel.
+    """
+    x0, y0, x1, y1 = win
+    h_axis, v_axis = view['h'], view['v']
+    h_sign, v_sign = _pdf_ortho_frame(az_rad, el_rad, h_axis, v_axis)
+
+    spacing = _pdf_nice_length(max(x1 - x0, y1 - y0) * 0.12)
+    if spacing <= 0.0:
+        return 0.0, 0
+
+    def world_range(lo, hi, sign):
+        a, b = lo * sign, hi * sign
+        return (a, b) if a <= b else (b, a)
+
+    import math
+    wh0, wh1 = world_range(x0, x1, h_sign)
+    wv0, wv1 = world_range(y0, y1, v_sign)
+
+    for k in range(int(math.floor(wh0 / spacing)),
+                   int(math.ceil(wh1 / spacing)) + 1):
+        wh = k * spacing
+        dxp = wh * h_sign
+        if not (x0 <= dxp <= x1):
+            continue
+        ax.plot([dxp, dxp], [y0, y1], color=PDF_GHOST_LINE, linewidth=0.5,
+                zorder=0)
+        ax.text(dxp, y0 + (y1 - y0) * PDF_BAND_RULER, f'{wh:g}',
+                fontsize=PDF_KEY_FS - 1.4, color=PDF_GHOST_TEXT, ha='center',
+                va='bottom', zorder=1)
+
+    for k in range(int(math.floor(wv0 / spacing)),
+                   int(math.ceil(wv1 / spacing)) + 1):
+        wv = k * spacing
+        dyp = wv * v_sign
+        if not (y0 <= dyp <= y1):
+            continue
+        ax.plot([x0, x1], [dyp, dyp], color=PDF_GHOST_LINE, linewidth=0.5,
+                zorder=0)
+        ax.text(x0 + (x1 - x0) * 0.006, dyp, f'{wv:g}',
+                fontsize=PDF_KEY_FS - 1.4, color=PDF_GHOST_TEXT, ha='left',
+                va='bottom', zorder=1)
+
+    # The axis NAMES sit a line above the ruler numbers, not among them.
+    ax.text(x1 - (x1 - x0) * 0.004, y0 + (y1 - y0) * (PDF_BAND_RULER + 0.026),
+            f'{h_axis} (m) \u2192', fontsize=PDF_KEY_FS - 1.0,
+            color=PDF_GHOST_TEXT, ha='right', va='bottom', zorder=1)
+    ax.text(x0 + (x1 - x0) * 0.006, y1 - (y1 - y0) * 0.008,
+            f'\u2191 {v_axis} (m)', fontsize=PDF_KEY_FS - 1.0,
+            color=PDF_GHOST_TEXT, ha='left', va='top', zorder=1)
+
+    # Named levels: the structure's own distinct heights, which is what an
+    # elevation drawing exists to let you read off.
+    n_levels = 0
+    if view.get('kind') == 'elevation' and nodes:
+        levels = sorted({round(n[2], 4) for n in nodes})
+        if len(levels) <= PDF_MAX_LEVELS:
+            for z in levels:
+                dyp = z * v_sign
+                if not (y0 <= dyp <= y1):
+                    continue
+                ax.plot([x0, x1], [dyp, dyp], color=PDF_LEVEL_LINE,
+                        linewidth=0.7, linestyle=(0, (6, 3)), zorder=1)
+                ax.text(x1 - (x1 - x0) * 0.004, dyp, f'  {z:+.2f} ',
+                        fontsize=PDF_KEY_FS - 0.8, color='#6b7680',
+                        ha='right', va='bottom', zorder=2)
+                n_levels += 1
+    return spacing, n_levels
 
 
 def _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad, extra_pts=(),
-                 reserve_top=0.0):
-    """Fit the view, then hang the scale bar and the triad below it.
+                 reserve_top=0.0, view=None):
+    """Fit the view, then hang the grid, the scale bar and the triad on it.
 
     `reserve_top` is how much of the axes the colour key and the stats
     panel have already claimed, so the drawing can be fitted UNDER them
-    rather than behind them.
+    rather than behind them. `view` is one of PDF_ORTHO_VIEWS' specs when
+    this is an orthographic sheet, and None for the axonometric one.
 
-    Returns (window, scale_len_m, arm_m) so a caller can quote the scale in
-    its own stats panel.
+    Returns (window, scale_len_m, arm_m, grid) where grid is
+    (spacing_m, n_levels) or (0.0, 0).
     """
+    band = PDF_FURNITURE_BAND if view is not None else PDF_FURNITURE_BAND_ISO
     win = _pdf_fit_window(ax, list(proj_2d) + list(extra_pts),
-                          reserve_top=reserve_top,
-                          reserve_bottom=PDF_FURNITURE_BAND)
+                          reserve_top=reserve_top, reserve_bottom=band)
     x0, y0, x1, y1 = win
     w, h = x1 - x0, y1 - y0
     dx, dy, dz = _pdf_model_extents(nodes)
     span = max(dx, dy, dz, 1e-6)
 
-    bar_xy = (x0 + w * 0.045, y0 + h * 0.085)
-    scale_len = _pdf_scale_bar(ax, az_rad, el_rad, span, bar_xy)
+    grid = (0.0, 0)
+    if view is not None:
+        grid = _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view)
 
-    arm = _pdf_nice_length(span * 0.16) or max(span * 0.16, 1e-3)
-    triad_xy = (x1 - w * 0.115, y0 + h * 0.115)
-    _pdf_orientation_triad(ax, az_rad, el_rad, arm, triad_xy)
-    return win, scale_len, arm
+    # On an orthographic sheet the drawn horizontal axis IS a world axis,
+    # so one metre of it is one data unit and the bar is exactly true. On
+    # the axonometric sheet it is X, foreshortened, and the label says so.
+    import math
+    ref = view['h'] if view is not None else 'X'
+    unit = math.hypot(*_pdf_project(*PDF_AXIS_UNIT[ref], az_rad, el_rad))
+    bar_xy = (x0 + w * 0.045, y0 + h * PDF_BAND_SCALE)
+    scale_len = _pdf_scale_bar(ax, span, bar_xy, unit_len_data=unit,
+                               ref_axis=ref, exact=view is not None)
+
+    want = min(span * 0.16, h * PDF_TRIAD_ARM_MAX)
+    arm = _pdf_nice_length(want) or max(want, 1e-3)
+    triad_xy = (x1 - w * 0.12, y0 + h * PDF_BAND_TRIAD)
+    _pdf_orientation_triad(ax, az_rad, el_rad, arm, triad_xy,
+                           caption_y=y0 + h * PDF_BAND_TRIAD_TEXT)
+
+    if view is not None:
+        ax.text((x0 + x1) / 2.0, y0 + h * PDF_BAND_CAPTION, view['caption'],
+                fontsize=PDF_KEY_FS + 2.0, fontweight='bold', color='#2b3138',
+                ha='center', va='bottom', zorder=18)
+    return win, scale_len, arm, grid
 
 
 def _pdf_finish_view(ax, nodes, proj_2d, az_rad, el_rad, key, stats,
-                     extra_pts=()):
+                     extra_pts=(), view=None):
     """Close one view sheet.
 
     The order matters and is the whole point: the key and the stats panel
@@ -1823,7 +2078,7 @@ def _pdf_finish_view(ax, nodes, proj_2d, az_rad, el_rad, key, stats,
     key.finish()
     _pdf_stats_panel(ax, stats)
     return _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad,
-                        extra_pts=extra_pts, reserve_top=reserve)
+                        extra_pts=extra_pts, reserve_top=reserve, view=view)
 
 
 def _pdf_members(ax, members, proj_2d, color_fn, linewidth=1.0, zorder=3,
@@ -2147,6 +2402,70 @@ def _pdf_deform_stats(nodes, node_res, disps, scale_factor, span_m):
     ]
 
 
+def submodel(nodes, members, loads, supports, results=None, checks=None,
+             member_idx=None, node_idx=None):
+    """A self-contained copy of PART of a model, re-indexed from zero.
+
+    What makes a selection reportable on its own: the rest of the
+    structure is not dimmed or pushed behind anything, it is simply absent
+    from what comes back, so nothing can obstruct the group being looked
+    at. Every parallel array travels with it -- node_res, member_res,
+    reactions and the member checks are filtered and renumbered to match,
+    so `export_pdf` reports a selection by exactly the same code path it
+    reports a whole model.
+
+    `member_idx` and `node_idx` are indices into the ORIGINAL model; either
+    may be None for "all". A selected member always brings both of its end
+    nodes, whether or not they were selected, since a bar with one end is
+    not a bar.
+
+    Returns (nodes, members, loads, supports, results, checks, node_map).
+    """
+    keep_m = (sorted(set(member_idx)) if member_idx is not None
+              else list(range(len(members))))
+    keep_m = [i for i in keep_m if 0 <= i < len(members)]
+
+    keep_n = {i for i in (node_idx or ()) if 0 <= i < len(nodes)}
+    for i in keep_m:
+        keep_n.add(members[i]['a'])
+        keep_n.add(members[i]['b'])
+    keep_n = sorted(keep_n)
+    node_map = {old: new for new, old in enumerate(keep_n)}
+
+    sub_nodes = [tuple(nodes[i]) for i in keep_n]
+    sub_members = []
+    for i in keep_m:
+        m = dict(members[i])
+        m['a'] = node_map[members[i]['a']]
+        m['b'] = node_map[members[i]['b']]
+        m['_source_index'] = i      # so a report can still name the bar
+        sub_members.append(m)
+
+    sub_loads = [dict(ld, node=node_map[ld['node']]) for ld in (loads or ())
+                 if ld.get('node') in node_map]
+    sub_supports = [dict(s, node=node_map[s['node']]) for s in (supports or ())
+                    if s.get('node') in node_map]
+
+    sub_results = None
+    if results is not None:
+        node_res = results.get('node_res') or []
+        member_res = results.get('member_res') or []
+        reactions = results.get('reactions') or {}
+        sub_results = {
+            'node_res': [node_res[i] for i in keep_n if i < len(node_res)],
+            'member_res': [member_res[i] for i in keep_m if i < len(member_res)],
+            'reactions': {node_map[i]: r for i, r in reactions.items()
+                          if i in node_map},
+        }
+
+    sub_checks = None
+    if checks is not None:
+        sub_checks = [checks[i] for i in keep_m if i < len(checks)]
+
+    return (sub_nodes, sub_members, sub_loads, sub_supports, sub_results,
+            sub_checks, node_map)
+
+
 def _pdf_equilibrium(loads, reactions):
     """Applied load vs. reaction totals, and the residual between them.
 
@@ -2250,17 +2569,28 @@ def _pdf_table_page(fig, title, headers, rows, widths, note='', tail_rows=()):
 # ── the report itself ─────────────────────────────────────────────────────
 
 def export_pdf(nodes, members, loads, supports, results, path, checks=None,
-               meta=None, az_deg=30, el_deg=25):
+               meta=None, az_deg=30, el_deg=25, ortho_views=True):
     """Generate the multi-sheet PDF analysis report.
 
-    Sheets: 1) model, load case and general view; then, once the model has
-    been analysed, 2) axial force, 3) utilisation (when members carry a
-    section), 4) nodal moments, 5) deformed shape, 6) support reactions and
-    the equilibrium check, 7) the governing-member schedule.
+    Sheets: 1) the general (axonometric) view with the load case, then the
+    five orthographic views -- plan, front, back, right, left -- each over
+    its own dimension grid; then, once the model has been analysed, axial
+    force, utilisation (when members carry a section), nodal moments,
+    deformed shape, support reactions with the equilibrium check, and the
+    governing-member schedule.
 
-    Every sheet carries a frame, a title block, a graphic scale bar, an
-    orientation triad and one colour key; see this section's own header for
-    why each of those is there.
+    Every sheet carries a frame, a title block, a horizontal graphic scale
+    bar, an orientation indicator and one colour key; see this section's
+    own header for why each of those is there.
+
+    `meta` may carry 'group' and 'subset_of' when this report covers a
+    SELECTION rather than a whole model (see submodel()): the title block
+    then names both the file and the group, and the equilibrium check says
+    that its residual is the force the rest of the structure carries
+    across the cut rather than a solver error.
+
+    `ortho_views=False` drops the five orthographic sheets, for a short
+    report.
     """
     from common import _ensure_matplotlib
     if not _ensure_matplotlib():
@@ -2291,7 +2621,11 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
 
     n_rigid = sum(1 for m in members if m.get('conn') == 'rigid')
     have_checks = bool(checks) and any(c.get('checked') for c in checks)
-    total = 1 if results is None else (6 + (1 if have_checks else 0))
+    views = list(PDF_ORTHO_VIEWS) if ortho_views else []
+    group = (meta or {}).get('group')
+    subset_of = (meta or {}).get('subset_of')
+    total = (1 + len(views)) + (0 if results is None
+                                else (5 + (1 if have_checks else 0)))
     sheet = [0]
 
     def new_sheet(title):
@@ -2323,10 +2657,17 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
             key.row(LOAD_COLOR, 'applied load, along its own direction')
             key.note('arrow length ∝ |F|^0.6 of the largest load')
 
-        info = ['MODEL']
+        info = ['SELECTED GROUP' if group else 'MODEL']
+        if group:
+            info.append(f'group           {group}')
+            if subset_of:
+                info.append(f'from file       {subset_of}')
+            info.append('shown in isolation — the rest')
+            info.append('of the model is not drawn')
+            info.append('')
         if meta:
             fam = meta.get('grid_family') or meta.get('typology')
-            if fam:
+            if fam and not group:
                 info.append(f'family          {fam}')
         info += [
             f'nodes           {len(nodes)}',
@@ -2358,6 +2699,59 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
 
         pdf.savefig(fig)
         plt.close(fig)
+
+        # ── The five orthographic views ─────────────────────────────────
+        #
+        # An axonometric view shows the whole shape at once but measures
+        # nothing: every axis is foreshortened and depth hides geometry
+        # behind geometry. These are the views a structure is actually
+        # dimensioned and checked in, each over a ghost grid that labels
+        # real world coordinates, and each elevation carrying a line at
+        # every distinct structural level.
+        for _name, view in views:
+            v_az = math.radians(view['az'])
+            v_el = math.radians(view['el'])
+            v_proj = [_pdf_project(x, y, z, v_az, v_el) for x, y, z in nodes]
+            fig = new_sheet(view['title'])
+            ax = _pdf_view_axes(fig)
+            _pdf_members(ax, members, v_proj, conn_color, linewidth=0.8)
+            _pdf_supports(ax, supports, v_proj)
+
+            vkey = _PdfKey(ax)
+            vkey.caption('References')
+            vkey.row(MEMBER_PIN_COLOR, 'bar, pin connection')
+            if n_rigid:
+                vkey.row(MEMBER_RIGID_COLOR, 'bar, rigid (moment) connection')
+            vkey.row(SUPPORT_COLOR, 'support (restrained node)', marker='s')
+            vkey.row(PDF_GHOST_LINE, 'dimension grid (world coordinates)')
+            if view['kind'] == 'elevation':
+                vkey.row(PDF_LEVEL_LINE, 'structural level, labelled at right',
+                         dashed=True)
+            vkey.note('orthographic — this view is true to scale')
+
+            h_i = 'XYZ'.index(view['h'])
+            v_i = 'XYZ'.index(view['v'])
+            n_i = 'XYZ'.index(view['normal'])
+            vstats = [
+                view['caption'].split('  \u00b7  ')[0],
+                f"across    {view['h']}   {ext[h_i]:.2f} m",
+                f"up        {view['v']}   {ext[v_i]:.2f} m",
+                f"depth     {view['normal']}   {ext[n_i]:.2f} m  (into the sheet)",
+                '',
+                f'nodes     {len(nodes)}',
+                f'bars      {len(members)}',
+                f'supports  {len(supports)}',
+            ]
+            if view['kind'] == 'elevation' and nodes:
+                levels = sorted({round(n[2], 4) for n in nodes})
+                vstats += ['',
+                           f'levels    {len(levels)}',
+                           f'  lowest  {levels[0]:+.2f} m',
+                           f'  highest {levels[-1]:+.2f} m']
+            _pdf_finish_view(ax, nodes, v_proj, v_az, v_el, vkey, vstats,
+                             view=view)
+            pdf.savefig(fig)
+            plt.close(fig)
 
         if results is None:
             return
@@ -2573,9 +2967,17 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
         ]
         worst_res = max(abs(v) for v in resid)
         scale_ref = max(abs(v) for v in ap) or 1.0
-        verdict = ('equilibrium satisfied'
-                   if worst_res <= max(1e-6, scale_ref * 1e-6)
-                   else f'residual {worst_res:.3e} kN — CHECK THE MODEL')
+        if group:
+            # An isolated group is a CUT through a structure: the bars that
+            # used to carry load across the cut are gone, so the residual is
+            # exactly that transferred force. Calling it a solver error, as
+            # the whole-model wording does, would be wrong.
+            verdict = (f'residual {worst_res:,.2f} kN is the force the rest of '
+                       f'the structure carries across this cut, not an error')
+        else:
+            verdict = ('equilibrium satisfied'
+                       if worst_res <= max(1e-6, scale_ref * 1e-6)
+                       else f'residual {worst_res:.3e} kN — CHECK THE MODEL')
         _pdf_table_page(
             fig, 'Support reactions (kN, kN·m)',
             ['node', 'x', 'y', 'z', 'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz'],

@@ -212,15 +212,19 @@ def test_export_pdf_without_results():
         assert os.path.isfile(path)
 
 
-def test_export_pdf_unanalysed_report_is_one_sheet_only():
-    """Without results there is nothing to plot but the model itself, and
-    the title block's 'Sheet 1 / N' must not promise sheets that the file
-    does not contain."""
+def test_export_pdf_unanalysed_report_has_the_geometry_sheets_only():
+    """Without results there is nothing to plot but the model itself --
+    the general view and the five orthographic ones -- and the title
+    block's 'Sheet 1 / N' must not promise sheets the file does not have."""
     nodes, members, loads, supports = _built_model()
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, 'report.pdf')
         sr.export_pdf(nodes, members, loads, supports, None, path)
-        assert _pdf_page_count(path) == 1
+        assert _pdf_page_count(path) == 6
+        bare = os.path.join(d, 'bare.pdf')
+        sr.export_pdf(nodes, members, loads, supports, None, bare,
+                      ortho_views=False)
+        assert _pdf_page_count(bare) == 1
 
 
 def test_export_pdf_with_checks_has_the_utilization_sheet():
@@ -236,8 +240,10 @@ def test_export_pdf_with_checks_has_the_utilization_sheet():
         sr.export_pdf(nodes, members, loads, supports, res, with_checks,
                       checks=checks)
         sr.export_pdf(nodes, members, loads, supports, res, without)
-        assert _pdf_page_count(with_checks) == 7
-        assert _pdf_page_count(without) == 6
+        # 1 general + 5 orthographic + 4 analysis + 2 tables, and one more
+        # analysis sheet when the members carry a checkable section
+        assert _pdf_page_count(with_checks) == 12
+        assert _pdf_page_count(without) == 11
 
 
 # ── 6.1  PDF sheet furniture ──────────────────────────────────────────────
@@ -262,6 +268,241 @@ def test_pdf_projection_puts_z_up_for_matplotlib():
     sx_pdf, sy_pdf = sr._pdf_project(3.0, -2.0, 1.5, az, el)
     assert sx_pdf == pytest.approx(sx_iso)
     assert sy_pdf == pytest.approx(-sy_iso)
+
+
+# ── the five orthographic views ───────────────────────────────────────────
+
+def test_the_five_named_views_are_all_there():
+    names = [n for n, _ in sr.PDF_ORTHO_VIEWS]
+    assert names == ['plan', 'front', 'back', 'right', 'left']
+
+
+def test_each_orthographic_view_puts_the_right_world_axes_on_the_sheet():
+    """The whole point of a named view is that it IS that view. Checked by
+    projecting the world unit axes and reading where they land, not by
+    trusting the azimuth table."""
+    import math
+    expect = {
+        # view:   (horizontal axis and its sheet direction, vertical, normal)
+        'plan':  ('X', +1, 'Y', +1),
+        'front': ('X', +1, 'Z', +1),
+        'back':  ('X', -1, 'Z', +1),
+        'right': ('Y', +1, 'Z', +1),
+        'left':  ('Y', -1, 'Z', +1),
+    }
+    for name, view in sr.PDF_ORTHO_VIEWS:
+        az, el = math.radians(view['az']), math.radians(view['el'])
+        h_axis, h_dir, v_axis, v_dir = expect[name]
+        assert (view['h'], view['v']) == (h_axis, v_axis), name
+
+        hx, hy = sr._pdf_project(*sr.PDF_AXIS_UNIT[h_axis], az, el)
+        assert hx == pytest.approx(h_dir, abs=1e-9), f'{name}: {h_axis} across'
+        assert hy == pytest.approx(0.0, abs=1e-9), f'{name}: {h_axis} is level'
+
+        vx, vy = sr._pdf_project(*sr.PDF_AXIS_UNIT[v_axis], az, el)
+        assert vy == pytest.approx(v_dir, abs=1e-9), f'{name}: {v_axis} up'
+        assert vx == pytest.approx(0.0, abs=1e-9), f'{name}: {v_axis} is plumb'
+
+        # and the third axis must vanish -- that is what makes it orthographic
+        nx, ny = sr._pdf_project(*sr.PDF_AXIS_UNIT[view['normal']], az, el)
+        assert math.hypot(nx, ny) == pytest.approx(0.0, abs=1e-9), name
+
+
+def test_the_vanishing_axis_is_marked_toward_or_away_correctly():
+    """A circled dot means "coming at you", a circled cross "going away".
+    Getting that backwards would mirror the reader's mental model of the
+    structure, so the sign is pinned per view."""
+    import math
+    away = {'plan': False,    # you are above; +Z points back up at you
+            'front': True,    # you look along +Y, so +Y runs away
+            'back': False,    # you look along -Y, so +Y comes at you
+            'right': False,   # you look along -X, so +X comes at you
+            'left': True}     # you look along +X, so +X runs away
+    for name, view in sr.PDF_ORTHO_VIEWS:
+        az, el = math.radians(view['az']), math.radians(view['el'])
+        d = sr._pdf_view_depth(*sr.PDF_AXIS_UNIT[view['normal']], az, el)
+        assert (d > 0) is away[name], f'{name}: depth {d}'
+        assert abs(d) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_ortho_frame_reports_the_mirrored_views_as_mirrored():
+    """The ghost grid labels world coordinates, so it has to know that the
+    back and left views run their horizontal axis the other way."""
+    import math
+    for name, view in sr.PDF_ORTHO_VIEWS:
+        az, el = math.radians(view['az']), math.radians(view['el'])
+        h_sign, v_sign = sr._pdf_ortho_frame(az, el, view['h'], view['v'])
+        assert v_sign == 1.0, name
+        assert h_sign == (-1.0 if name in ('back', 'left') else 1.0), name
+
+
+def test_the_report_carries_a_sheet_for_every_view():
+    nodes, members, loads, supports, res = _analysed_model()
+    checks = sk.check_all_members(nodes, members, res['member_res'])
+    with tempfile.TemporaryDirectory() as d:
+        full = os.path.join(d, 'full.pdf')
+        short = os.path.join(d, 'short.pdf')
+        sr.export_pdf(nodes, members, loads, supports, res, full, checks=checks)
+        sr.export_pdf(nodes, members, loads, supports, res, short,
+                      checks=checks, ortho_views=False)
+        # 1 general + 5 orthographic + 4 analysis + 2 tables
+        assert _pdf_page_count(full) == 12
+        assert _pdf_page_count(short) == 7
+        assert _pdf_page_count(full) - _pdf_page_count(short) == 5
+
+
+def test_an_unanalysed_report_still_carries_the_views():
+    nodes, members, loads, supports = _built_model()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'r.pdf')
+        sr.export_pdf(nodes, members, loads, supports, None, path)
+        assert _pdf_page_count(path) == 6      # general + five views
+
+
+# ── the isolated selection ────────────────────────────────────────────────
+
+def test_submodel_keeps_only_what_was_selected_and_renumbers_it():
+    nodes, members, loads, supports, res = _analysed_model()
+    checks = sk.check_all_members(nodes, members, res['member_res'])
+    picked = [0, 5, 9]
+    (s_nodes, s_members, s_loads, s_supports, s_res, s_checks,
+     node_map) = sr.submodel(nodes, members, loads, supports, res, checks,
+                             member_idx=picked)
+
+    assert len(s_members) == len(picked)
+    # every kept bar brought both of its own ends, and nothing else
+    expected_nodes = set()
+    for i in picked:
+        expected_nodes.add(members[i]['a'])
+        expected_nodes.add(members[i]['b'])
+    assert set(node_map) == expected_nodes
+    assert len(s_nodes) == len(expected_nodes)
+
+    # the indices are re-based, and they still point at the same geometry
+    for new_m, old_i in zip(s_members, picked):
+        assert 0 <= new_m['a'] < len(s_nodes)
+        assert 0 <= new_m['b'] < len(s_nodes)
+        assert s_nodes[new_m['a']] == pytest.approx(nodes[members[old_i]['a']])
+        assert s_nodes[new_m['b']] == pytest.approx(nodes[members[old_i]['b']])
+        assert new_m['_source_index'] == old_i
+
+    # and every parallel array came with them
+    assert len(s_res['member_res']) == len(picked)
+    assert len(s_res['node_res']) == len(s_nodes)
+    assert len(s_checks) == len(picked)
+    for new_i, old_i in enumerate(picked):
+        assert s_res['member_res'][new_i]['N'] == res['member_res'][old_i]['N']
+
+
+def test_submodel_drops_the_loads_and_supports_of_nodes_it_left_behind():
+    nodes, members, loads, supports, res = _analysed_model()
+    picked = [0]
+    s_nodes, s_members, s_loads, s_supports, s_res, _, node_map = sr.submodel(
+        nodes, members, loads, supports, res, None, member_idx=picked)
+    assert len(s_loads) < len(loads)
+    for ld in s_loads:
+        assert 0 <= ld['node'] < len(s_nodes)
+    for sp in s_supports:
+        assert 0 <= sp['node'] < len(s_nodes)
+    for n in s_res['reactions']:
+        assert 0 <= n < len(s_nodes)
+
+
+def test_submodel_carries_a_lone_selected_node():
+    """A joint picked on its own still has to travel, or an isolated node
+    could never be reported."""
+    nodes, members, loads, supports = _built_model()
+    s_nodes, s_members, _, _, _, _, node_map = sr.submodel(
+        nodes, members, loads, supports, member_idx=[], node_idx=[3])
+    assert s_members == []
+    assert len(s_nodes) == 1
+    assert s_nodes[0] == pytest.approx(nodes[3])
+
+
+def test_submodel_with_nothing_specified_is_the_whole_model():
+    nodes, members, loads, supports, res = _analysed_model()
+    s_nodes, s_members, s_loads, s_supports, s_res, _, _ = sr.submodel(
+        nodes, members, loads, supports, res)
+    assert len(s_nodes) == len(nodes)
+    assert len(s_members) == len(members)
+    assert len(s_loads) == len(loads)
+    assert len(s_supports) == len(supports)
+
+
+def test_a_selection_report_names_both_the_file_and_the_group():
+    nodes, members, loads, supports, res = _analysed_model()
+    s = sr.submodel(nodes, members, loads, supports, res, None,
+                    member_idx=[0, 1, 2])
+    meta = {'group': 'North bay ribs', 'subset_of': 'roof_v3.xlsx'}
+    fields = dict(sr._pdf_sheet_meta(s[0], s[1], meta))
+    assert fields['GROUP'] == 'North bay ribs'
+    assert fields['FILE'] == 'roof_v3.xlsx'
+    assert 'MODEL' not in fields, 'a group names its file, not a family'
+
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'group.pdf')
+        sr.export_pdf(s[0], s[1], s[2], s[3], s[4], path, checks=s[5],
+                      meta=meta)
+        assert os.path.isfile(path)
+        assert _pdf_page_count(path) == 11   # no checks -> no utilisation sheet
+
+
+def test_a_whole_model_report_still_names_the_model():
+    fields = dict(sr._pdf_sheet_meta([], [], {'grid_family': 'dome'}))
+    assert fields['MODEL'] == 'dome'
+    assert 'GROUP' not in fields
+
+
+# ── the scale bar ─────────────────────────────────────────────────────────
+
+def test_the_scale_bar_is_horizontal_and_exact_on_an_orthographic_view():
+    """It is read as a ruler, so it is drawn level in every view. On an
+    orthographic sheet that costs nothing, because the sheet's horizontal
+    axis IS a world axis -- one metre of it is one data unit."""
+    import math
+    for name, view in sr.PDF_ORTHO_VIEWS:
+        az, el = math.radians(view['az']), math.radians(view['el'])
+        unit = math.hypot(*sr._pdf_project(*sr.PDF_AXIS_UNIT[view['h']],
+                                           az, el))
+        assert unit == pytest.approx(1.0, abs=1e-9), name
+
+
+def test_the_axonometric_scale_bar_is_foreshortened_and_says_so():
+    import math
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    az, el = math.radians(35.0), math.radians(22.0)
+    unit = math.hypot(*sr._pdf_project(*sr.PDF_AXIS_UNIT['X'], az, el))
+    assert unit < 1.0, 'X is foreshortened on an axonometric view'
+
+    fig = plt.figure(figsize=sr.PDF_SHEET_IN)
+    ax = fig.add_subplot(111)
+    chosen = sr._pdf_scale_bar(ax, 20.0, (0.0, 0.0), unit_len_data=unit,
+                               ref_axis='X', exact=False)
+    texts = [t.get_text() for t in ax.texts]
+    ys = [p.get_y() for p in ax.patches]
+    plt.close(fig)
+
+    assert chosen > 0
+    assert any('foreshortened' in t for t in texts)
+    assert any('along X' in t for t in texts)
+    # every chequer sits on the SAME baseline: the bar is level
+    assert len(ys) == sr.PDF_SCALE_DIVISIONS
+    assert len({round(y, 9) for y in ys}) == 1
+
+
+def test_the_scale_bar_says_true_to_scale_when_it_is():
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    fig = plt.figure(figsize=sr.PDF_SHEET_IN)
+    ax = fig.add_subplot(111)
+    sr._pdf_scale_bar(ax, 20.0, (0.0, 0.0), unit_len_data=1.0, exact=True)
+    texts = [t.get_text() for t in ax.texts]
+    plt.close(fig)
+    assert any('true to scale' in t for t in texts)
 
 
 def test_pdf_nice_length_rounds_to_1_2_or_5():

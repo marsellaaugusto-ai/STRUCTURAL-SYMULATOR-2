@@ -12,6 +12,7 @@ section split, and an area-load feature -- see stereo_app.py's own
 docstring for the reasoning.
 """
 import math
+import os
 import time
 
 import tkinter as tk
@@ -5528,3 +5529,100 @@ class TestExportedReportsNameTheModel:
                             lambda *a, **kw: path)
         app._import_excel()
         assert app._model_name() == 'my_roof.xlsx'
+
+
+class TestPdfOfSelection:
+    """A report on the selected group ALONE. The rest of the structure is
+    cut out of the model the report is built from, not dimmed behind it,
+    so nothing can obstruct the view of what is being analysed."""
+
+    def test_the_button_exists_and_is_an_advanced_tool(self, app):
+        assert hasattr(app, '_btn_export_sel_pdf')
+        assert app._btn_export_sel_pdf in app._output_advanced_widgets
+
+    def test_it_says_so_when_nothing_is_selected(self, app, dialogs):
+        app.selected_members = set()
+        app.selected_nodes = set()
+        app._export_selection_pdf()
+        assert any('Nothing is selected' in str(d) for d in dialogs)
+
+    def test_selected_rods_are_what_gets_reported(self, app):
+        app.selected_members = {0, 3, 7}
+        assert app._selection_member_idx() == {0, 3, 7}
+
+    def test_a_lassoed_node_region_means_the_rods_inside_it(self, app):
+        """With no rod selected, the group is the rods whose BOTH ends are
+        selected nodes -- what lassoing a region of the grid means."""
+        app.selected_members = set()
+        app.selected_nodes = {app.members[0]['a'], app.members[0]['b']}
+        idx = app._selection_member_idx()
+        assert 0 in idx
+        for i in idx:
+            assert app.members[i]['a'] in app.selected_nodes
+            assert app.members[i]['b'] in app.selected_nodes
+
+    def test_the_report_holds_only_the_group(self, app, tmp_path, monkeypatch):
+        app._analyze()
+        app.selected_members = {0, 1, 2}
+        seen = {}
+        real = sr_module.export_pdf
+        monkeypatch.setattr(sr_module, 'export_pdf',
+                            lambda n, m, l, s, r, p, **kw: (
+                                seen.update(nodes=n, members=m, supports=s,
+                                            results=r, meta=kw.get('meta')),
+                                real(n, m, l, s, r, p, **kw))[1])
+        monkeypatch.setattr('tkinter.simpledialog.askstring',
+                            lambda *a, **kw: 'North bay')
+        path = str(tmp_path / 'group.pdf')
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: path)
+        app._export_selection_pdf()
+
+        assert os.path.isfile(path)
+        assert len(seen['members']) == 3
+        assert len(seen['members']) < len(app.members)
+        assert len(seen['nodes']) < len(app.nodes)
+        # the group's own solved numbers travelled with it
+        assert len(seen['results']['member_res']) == 3
+        assert len(seen['results']['node_res']) == len(seen['nodes'])
+        for i, mi in enumerate(sorted(app.selected_members)):
+            assert seen['results']['member_res'][i]['N'] == \
+                app.results['member_res'][mi]['N']
+
+    def test_the_sheet_names_the_group_and_the_file(self, app, tmp_path,
+                                                     monkeypatch):
+        from apps.stereo import stereo_examples as sx
+        label, builder = sx.EXAMPLES[7]
+        app._load_example(builder, label)
+        app._analyze()
+        app.selected_members = {0, 1, 2, 3}
+        seen = {}
+        real = sr_module.export_pdf
+        monkeypatch.setattr(sr_module, 'export_pdf',
+                            lambda n, m, l, s, r, p, **kw: (
+                                seen.update(meta=kw.get('meta')),
+                                real(n, m, l, s, r, p, **kw))[1])
+        monkeypatch.setattr('tkinter.simpledialog.askstring',
+                            lambda *a, **kw: 'Ring beam')
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: str(tmp_path / 'g.pdf'))
+        app._export_selection_pdf()
+
+        assert seen['meta']['group'] == 'Ring beam'
+        assert seen['meta']['subset_of'] == label
+        fields = dict(sr_module._pdf_sheet_meta(app.nodes, app.members,
+                                                seen['meta']))
+        assert fields['GROUP'] == 'Ring beam'
+        assert fields['FILE'] == label[:20]
+
+    def test_cancelling_the_name_writes_nothing(self, app, tmp_path,
+                                                 monkeypatch):
+        app._analyze()
+        app.selected_members = {0}
+        path = tmp_path / 'never.pdf'
+        monkeypatch.setattr('tkinter.simpledialog.askstring',
+                            lambda *a, **kw: None)
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: str(path))
+        app._export_selection_pdf()
+        assert not path.exists()

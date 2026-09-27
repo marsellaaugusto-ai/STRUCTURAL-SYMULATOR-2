@@ -238,6 +238,80 @@ class StereoReportsMixin:
             'add them in the panel before analyzing.')
 
     # ── PDF export ────────────────────────────────────────────────────────────
+    def _selection_member_idx(self):
+        """Which members the current selection means.
+
+        Selected rods when there are any; otherwise the rods whose BOTH
+        ends are selected nodes, which is what lassoing a region of the
+        grid and asking for "this group" means. A node selected on its own
+        still travels (see submodel's node_idx), so an isolated joint can
+        be reported too.
+        """
+        if self.selected_members:
+            return set(self.selected_members)
+        sel_n = set(self.selected_nodes)
+        if not sel_n:
+            return set()
+        return {i for i, m in enumerate(self.members)
+                if m['a'] in sel_n and m['b'] in sel_n}
+
+    def _export_selection_pdf(self):
+        """A report on the selected group ALONE.
+
+        The rest of the structure is not dimmed or pushed behind the
+        group, it is cut out of the model the report is built from, so
+        nothing can obstruct the view of what is being analysed. The
+        title block then has to carry two names -- the file and the group
+        -- or the sheet cannot be traced back to anything.
+        """
+        from tkinter import simpledialog
+        if not self.nodes or not self.members:
+            messagebox.showinfo('PDF of Selection', 'No model to export.')
+            return
+        member_idx = self._selection_member_idx()
+        node_idx = set(self.selected_nodes)
+        if not member_idx and not node_idx:
+            messagebox.showinfo(
+                'PDF of Selection',
+                'Nothing is selected.\n\n'
+                'Click a rod, or left-drag a lasso over the nodes of the '
+                'group you want reported, then try again.')
+            return
+
+        n_m, n_n = len(member_idx), len(node_idx)
+        suggestion = (f'Group of {n_m} bars' if n_m
+                      else f'Group of {n_n} nodes')
+        name = simpledialog.askstring('PDF of Selection',
+                                      'Name this group:', parent=self.root,
+                                      initialvalue=suggestion)
+        if not name:
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension='.pdf',
+            filetypes=[('PDF document', '*.pdf')])
+        if not path:
+            return
+        try:
+            sub = sr.submodel(self.nodes, self.members, self._all_loads(),
+                              self._active_supports(), self.results,
+                              self.member_checks,
+                              member_idx=member_idx, node_idx=node_idx)
+            s_nodes, s_members, s_loads, s_supports, s_res, s_checks, _ = sub
+            sr.export_pdf(s_nodes, s_members, s_loads, s_supports, s_res, path,
+                          checks=s_checks,
+                          meta={'group': name,
+                                'subset_of': self._model_name(),
+                                'grid_family': self._model_name()},
+                          az_deg=self.azimuth, el_deg=self.elevation)
+        except Exception as exc:
+            messagebox.showerror('Export failed', str(exc))
+            return
+        messagebox.showinfo(
+            'PDF of Selection',
+            f'Saved to {path}\n\n'
+            f'Group "{name}": {len(s_members)} bar(s), {len(s_nodes)} node(s), '
+            f'shown in isolation.')
+
     def _export_pdf(self):
         if not self.nodes or not self.members:
             messagebox.showinfo('Export PDF', 'No model to export.')

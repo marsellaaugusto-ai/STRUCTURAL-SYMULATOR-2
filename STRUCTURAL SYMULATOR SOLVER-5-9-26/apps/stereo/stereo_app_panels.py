@@ -336,6 +336,9 @@ class StereoPanelsMixin(_ToolbarModes):
         self._btn_export_pdf = tk.Button(g, text='Export PDF…',
                                          command=self._export_pdf)
         self._btn_export_pdf.pack(side='left', padx=2)
+        self._btn_export_sel_pdf = tk.Button(g, text='PDF of Selection…',
+                                              command=self._export_selection_pdf)
+        self._btn_export_sel_pdf.pack(side='left', padx=2)
         self._btn_export_3d = tk.Button(g, text='Export 3D…',
                                          command=self._export_3d_model)
         self._btn_export_3d.pack(side='left', padx=2)
@@ -360,6 +363,7 @@ class StereoPanelsMixin(_ToolbarModes):
         self._output_advanced_widgets = [self._btn_member_report,
                                           self._btn_export_excel,
                                           self._btn_export_pdf,
+                                          self._btn_export_sel_pdf,
                                           self._btn_export_3d,
                                           self._btn_export_rb,
                                           self._btn_export_ifc,

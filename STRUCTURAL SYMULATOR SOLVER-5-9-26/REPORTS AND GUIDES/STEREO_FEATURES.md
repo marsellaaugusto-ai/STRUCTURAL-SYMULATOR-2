@@ -312,12 +312,19 @@ legends and colourbar tick values.
   applying the previous mesh's tributary areas — and it switches the area
   load and self-weight generators off, because the exported `[LOADS]`
   table is already the complete case.
-- **PDF report** — seven A4-landscape sheets: general view with the load
-  case, axial force, utilisation, nodal moments, deformed shape, support
-  reactions with an equilibrium check, and the governing-member schedule.
-  Each carries a title block, a graphic scale bar, an X/Y/Z orientation
-  triad, one compact colour key mirroring the on-screen legend, and its
-  own statistics panel. See `PDF_REPORT_GUIDE_2026-09-27.md`.
+- **PDF report** — twelve A4-landscape sheets: the general (axonometric)
+  view with the load case; **plan, front, back, right and left** over a
+  ghost dimension grid, with every structural level named on the
+  elevations; then axial force, utilisation, nodal moments, deformed
+  shape, support reactions with an equilibrium check, and the
+  governing-member schedule. Each carries a title block, a horizontal
+  graphic scale bar, an orientation indicator (arrows, or the circled
+  dot / circled cross for the axis pointing at the reader), one compact
+  colour key mirroring the on-screen legend, and its own statistics
+  panel. See `PDF_REPORT_GUIDE_2026-09-27.md`.
+- **PDF of Selection** — the same report for the selected group **alone**,
+  with the rest of the model cut out rather than dimmed, so nothing
+  obstructs it. The title block names both the file and the group.
 - **SketchUp `.rb` export** and **IFC 2x3 export** for BIM handover; the
   `CoordinateCoordinatorTrussAppAMAC` SketchUp extension imports Stereo
   models and exports picked geometry back.

@@ -5725,13 +5725,13 @@ class TestPdfSheetChooser:
 
         def fake_wait(win):
             # tick the checkbuttons the caller wants, then press Export
-            for w in _descendants(win):
+            for w in _descendants(win, tk.Widget):
                 if w.winfo_class() == 'Checkbutton':
                     label = w.cget('text')
                     key = [k for k, lab, _ in app.PDF_GROUP_LABELS
                            if lab == label][0]
                     (w.select if key in chosen else w.deselect)()
-            [b for b in _descendants(win)
+            [b for b in _descendants(win, tk.Widget)
              if b.winfo_class() == 'Button'
              and b.cget('text').startswith('Export')][0].invoke()
 
@@ -5749,11 +5749,11 @@ class TestPdfSheetChooser:
         seen = {}
 
         def fake_wait(win):
-            labels = [w for w in _descendants(win)
+            labels = [w for w in _descendants(win, tk.Widget)
                       if w.winfo_class() == 'Label'
                       and w.cget('text').endswith(('sheet', 'sheets'))]
             seen['all'] = labels[0].cget('text')
-            for w in _descendants(win):
+            for w in _descendants(win, tk.Widget):
                 if w.winfo_class() == 'Checkbutton':
                     w.deselect()
             win.update_idletasks()
@@ -5765,11 +5765,3 @@ class TestPdfSheetChooser:
         n_all = len(sr_module.plan_sheets(app.results, app.member_checks, 0))
         assert seen['all'] == f'{n_all} sheets'
         assert seen['none'] == '1 sheet'
-
-
-def _descendants(widget):
-    out = []
-    for child in widget.winfo_children():
-        out.append(child)
-        out.extend(_descendants(child))
-    return out

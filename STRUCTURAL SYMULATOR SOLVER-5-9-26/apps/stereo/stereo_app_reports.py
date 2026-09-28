@@ -336,7 +336,21 @@ class StereoReportsMixin:
             side='left', padx=4)
 
         win.grab_set()
-        self.root.wait_window(win)
+        try:
+            self.root.wait_window(win)
+        finally:
+            # A modal dialog that outlives the wait keeps its grab, and a
+            # grabbed window blocks every other window in the process. In
+            # the app that costs an unclosable dialog; in a test run it
+            # stops the whole suite on whichever test leaked it, which is
+            # exactly what happened here -- a run sat at 0.2% CPU for
+            # three hours holding one.
+            try:
+                if win.winfo_exists():
+                    win.grab_release()
+                    win.destroy()
+            except tk.TclError:
+                pass
         if out['groups'] is not None:
             self._pdf_groups = set(out['groups'])
         return out['groups']

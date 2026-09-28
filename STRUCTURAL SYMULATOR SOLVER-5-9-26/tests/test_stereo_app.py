@@ -5765,3 +5765,39 @@ class TestPdfSheetChooser:
         n_all = len(sr_module.plan_sheets(app.results, app.member_checks, 0))
         assert seen['all'] == f'{n_all} sheets'
         assert seen['none'] == '1 sheet'
+
+
+def test_the_sheet_chooser_never_leaves_its_grab_behind(app, monkeypatch):
+    """A modal dialog that outlives the wait keeps its grab, and a grabbed
+    window blocks every other window in the process. In the app that is an
+    unclosable dialog; in a test run it stops the suite on whichever test
+    leaked it, which is how a run here sat at 0.2% CPU for three hours.
+    """
+    app._analyze()
+    leaked = {}
+
+    def wait_and_do_nothing(win):
+        leaked['win'] = win          # neither Export nor Cancel pressed
+
+    monkeypatch.setattr(app.root, 'wait_window', wait_and_do_nothing)
+    got = app._pdf_sheet_dialog('Export PDF', app.results, app.member_checks, 0)
+    assert got is None               # nothing was chosen
+    assert not leaked['win'].winfo_exists(), 'the dialog outlived the wait'
+    # and the next dialog can still be opened and driven
+    monkeypatch.setattr(app.root, 'wait_window', lambda w: w.destroy())
+    assert app._pdf_sheet_dialog('Export PDF', app.results,
+                                 app.member_checks, 0) is None
+
+
+def test_the_sheet_chooser_cleans_up_even_when_the_wait_raises(app,
+                                                               monkeypatch):
+    def wait_and_explode(win):
+        raise RuntimeError('boom')
+
+    app._analyze()
+    monkeypatch.setattr(app.root, 'wait_window', wait_and_explode)
+    with pytest.raises(RuntimeError):
+        app._pdf_sheet_dialog('Export PDF', app.results, app.member_checks, 0)
+    # the window is gone, so nothing is holding a grab
+    assert not [w for w in _toplevels(app.root)
+                if w.title() == 'Export PDF']

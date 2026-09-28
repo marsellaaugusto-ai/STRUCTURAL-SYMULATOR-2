@@ -1,0 +1,55 @@
+# Fix for the startup hang described in STEREO_ROADMAP_V2_FULL_ACCOUNT_2026-09-28.md section 4.
+#
+# Apply from inside the app folder (the one containing common.py and main.py):
+#     patch -p1 < 'REPORTS AND GUIDES/launch_hang_fix_common_py.patch'
+#
+# Verified against structural_simulator_shell_domain.zip on 2026-09-28:
+#   before: App() never returns, ~95% of one core, no window (killed at 45s)
+#   after:  App() returns in 0.64s, all 8 tabs build and open, 1.52s total
+#
+--- a/common.py
++++ b/common.py
+@@ -755,7 +755,20 @@
+             return
+         self._pending = True
+         try:
+-            self.bar.after_idle(self.relayout)
++            # A TIMER, deliberately, not after_idle. A relayout repacks the
++            # bar, which fires <Configure>, which lands back here -- so an
++            # idle-queued relayout re-enqueues itself from inside whatever
++            # drained the queue. ScrollPanel.fit_to_content() calls
++            # update_idletasks(), and that call does not return until the
++            # idle queue is empty, so the two together never terminated:
++            # building the Beam tab after the Truss tab hung the app forever
++            # at 100% CPU before the window ever appeared. (It needed the
++            # toplevel to have no explicit geometry -- as main.py starts it --
++            # so the bar's width never settled and the cycle had no fixed
++            # point.) A timer callback is not idle work, so update_idletasks()
++            # can always drain, while the relayout still follows the resize
++            # within one frame. Do not "simplify" this back to after_idle.
++            self.bar.after(16, self.relayout)
+         except Exception:
+             self._pending = False
+ 
+@@ -1135,7 +1148,20 @@
+             return
+         self._pending = True
+         try:
+-            self.bar.after_idle(self.relayout)
++            # A TIMER, deliberately, not after_idle. A relayout repacks the
++            # bar, which fires <Configure>, which lands back here -- so an
++            # idle-queued relayout re-enqueues itself from inside whatever
++            # drained the queue. ScrollPanel.fit_to_content() calls
++            # update_idletasks(), and that call does not return until the
++            # idle queue is empty, so the two together never terminated:
++            # building the Beam tab after the Truss tab hung the app forever
++            # at 100% CPU before the window ever appeared. (It needed the
++            # toplevel to have no explicit geometry -- as main.py starts it --
++            # so the bar's width never settled and the cycle had no fixed
++            # point.) A timer callback is not idle work, so update_idletasks()
++            # can always drain, while the relayout still follows the resize
++            # within one frame. Do not "simplify" this back to after_idle.
++            self.bar.after(16, self.relayout)
+         except Exception:
+             self._pending = False
+ 

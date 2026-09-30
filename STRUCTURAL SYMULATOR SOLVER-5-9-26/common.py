@@ -755,7 +755,23 @@ class FlowBar:
             return
         self._pending = True
         try:
-            self.bar.after_idle(self.relayout)
+            # A TIMER, deliberately, not after_idle. A relayout repacks the
+            # bar, which fires <Configure>, which lands back here -- so an
+            # idle-queued relayout re-enqueues itself from inside whatever
+            # drained the queue. ScrollPanel.fit_to_content() calls
+            # update_idletasks(), and that call does not return until the idle
+            # queue is empty, so the two together never terminated: building
+            # the Beam tab after the Truss tab hung the app forever at 100%
+            # CPU before the window ever appeared. (It needed the toplevel to
+            # have no explicit geometry -- as main.py starts it -- so the
+            # bar's width never settled and the cycle had no fixed point.)
+            # A timer callback is not idle work, so update_idletasks() can
+            # always drain, while the relayout still follows the resize within
+            # one frame. Note this adds NO width cache: caching on width is
+            # what locked in a wrong layout before (MANIFESTO sec 3c), and
+            # that bug must not come back. Do not "simplify" this to
+            # after_idle.
+            self.bar.after(16, self.relayout)
         except Exception:
             self._pending = False
 
@@ -960,6 +976,8 @@ class ScrollPanel(tk.Frame):
         self.pack_propagate(False)
         self.grid_propagate(False)
         self._syncing = False
+        self._last_toplevel_w = None
+        self._tl_pending = False
 
         self.vsb = tk.Scrollbar(self, orient='vertical')
         self.hsb = tk.Scrollbar(self, orient='horizontal')
@@ -1033,11 +1051,52 @@ class ScrollPanel(tk.Frame):
         finally:
             self._syncing = False
 
-    def _on_toplevel_resize(self, _event=None):
+    def _on_toplevel_resize(self, event=None):
+        """Re-fit this panel when the WINDOW is resized -- on a timer.
+
+        Two traps here, both of which hung the app at 100% CPU before any
+        window appeared:
+
+        1. This is bound on the TOPLEVEL, and every widget's bindtags include
+           its toplevel, so a <Configure> binding there fires for EVERY
+           descendant's resize, not just the window's own. Hence the widget
+           guard below.
+        2. Even restricted to the toplevel's own Configure, the work cannot be
+           done inline. Setting this panel's width changes the toplevel's
+           REQUESTED size, which resizes the toplevel, which fires Configure
+           again -- with a different width every time while the window is
+           still growing to fit its content, so no "width unchanged" cache can
+           break it. Meanwhile fit_to_content() is inside update_idletasks(),
+           which does not return until the idle queue is empty. Six tabs call
+           fit_to_content, so six of these handlers fed that queue.
+
+        A timer callback is not idle work, so update_idletasks() can always
+        drain and the resize still lands within one frame. Same reasoning as
+        FlowBar._schedule above; do not inline this.
+        """
         try:
+            top = self.winfo_toplevel()
+            if event is not None and getattr(event, 'widget', None) is not top:
+                return
+            if self._tl_pending:
+                return
+            self._tl_pending = True
+            self.after(16, self._apply_toplevel_width)
+        except Exception:
+            self._tl_pending = False
+
+    def _apply_toplevel_width(self):
+        """The body of _on_toplevel_resize, off the idle queue."""
+        self._tl_pending = False
+        try:
+            if not self.winfo_exists():
+                return
             win_w = self.winfo_toplevel().winfo_width()
             if win_w < 2:
                 return
+            if self._last_toplevel_w == win_w:
+                return
+            self._last_toplevel_w = win_w
             share = max(120, int(win_w * self.MAX_WINDOW_SHARE))
             w = min(int(self.base_width * self.MAX_GROW), share)
             if int(self.cget('width')) != w:
@@ -1149,7 +1208,23 @@ class WrapBar:
             return
         self._pending = True
         try:
-            self.bar.after_idle(self.relayout)
+            # A TIMER, deliberately, not after_idle. A relayout repacks the
+            # bar, which fires <Configure>, which lands back here -- so an
+            # idle-queued relayout re-enqueues itself from inside whatever
+            # drained the queue. ScrollPanel.fit_to_content() calls
+            # update_idletasks(), and that call does not return until the idle
+            # queue is empty, so the two together never terminated: building
+            # the Beam tab after the Truss tab hung the app forever at 100%
+            # CPU before the window ever appeared. (It needed the toplevel to
+            # have no explicit geometry -- as main.py starts it -- so the
+            # bar's width never settled and the cycle had no fixed point.)
+            # A timer callback is not idle work, so update_idletasks() can
+            # always drain, while the relayout still follows the resize within
+            # one frame. Note this adds NO width cache: caching on width is
+            # what locked in a wrong layout before (MANIFESTO sec 3c), and
+            # that bug must not come back. Do not "simplify" this to
+            # after_idle.
+            self.bar.after(16, self.relayout)
         except Exception:
             self._pending = False
 

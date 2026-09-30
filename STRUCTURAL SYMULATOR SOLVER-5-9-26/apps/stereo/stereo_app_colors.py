@@ -94,18 +94,39 @@ def deform_color(disp_mm, max_disp_mm):
     return _lerp_hex(DEFORM_LOW, DEFORM_HIGH, frac)
 
 
-def util_color(util):
+def util_color(util, top=1.0):
     """Green-amber-red heat-map for a member's utilization (demand/
-    capacity ratio): green at 0, amber at 0.5, red at 1.0 and beyond --
-    unlike force_color (which reads sign and relative magnitude within
-    THIS model's own force range), this reads an ABSOLUTE, code-defined
-    threshold that is the same from one model to the next, so "red" always
-    means the same thing: at or over capacity."""
+    capacity ratio): green at 0, amber at `top`/2, red at `top` and beyond.
+
+    `top` is the utilization that maps to full red, and it selects between
+    the two things a user can mean by "colour by utilization":
+
+    top=1.0 (the default) is the ABSOLUTE, code-defined scale -- unlike
+    force_color (which reads sign and relative magnitude within THIS
+    model's own force range), it is the same from one model to the next,
+    so "red" always means the same thing: at or over capacity. That is the
+    right default for a capacity check, and it is deliberately NOT a
+    contrast-maximising scale: a structure whose worst member sits at 2%
+    of capacity is supposed to come out uniformly green, because every one
+    of its members really is in the bottom 2% of the bar. The picture is
+    honest; it just has nothing to say about how that 2% is distributed.
+
+    Passing this model's own peak utilization as `top` answers the other
+    question instead -- WHERE the demand concentrates, regardless of how
+    much capacity is spare -- by stretching the same green-amber-red ramp
+    across only the range this model actually occupies. That makes the
+    colour relative, so red no longer means "at capacity" and the legend
+    must say so (see _draw_legend, which prints the real utilization at
+    each tick). The over-capacity dashed styling is keyed off the true
+    utilization and not off this ramp, so an overloaded member is still
+    unmistakable at any scale."""
     util = max(0.0, util)
-    if util <= 0.5:
-        return _lerp_hex(UTIL_LOW, UTIL_MID, util / 0.5)
-    if util <= 1.0:
-        return _lerp_hex(UTIL_MID, UTIL_HIGH, (util - 0.5) / 0.5)
+    top = max(float(top), 1e-12)
+    frac = util / top
+    if frac <= 0.5:
+        return _lerp_hex(UTIL_LOW, UTIL_MID, frac / 0.5)
+    if frac <= 1.0:
+        return _lerp_hex(UTIL_MID, UTIL_HIGH, (frac - 0.5) / 0.5)
     return UTIL_HIGH
 
 
@@ -191,3 +212,19 @@ def moment_color(m_signed, max_abs_m):
     if m_signed >= 0:
         return _lerp_hex(MOMENT_ZERO_COLOR, MOMENT_POS_HIGH, frac)
     return _lerp_hex(MOMENT_ZERO_COLOR, MOMENT_NEG_HIGH, frac)
+
+
+def surface_preview_color(frac, tint=0):
+    """A point on the surface preview, low to high across that surface's own
+    z range.
+
+    Its OWN ramp rather than force_color's or moment_color's: those mean
+    something (tension/compression, hogging/sagging) and reusing one here
+    would invite the preview to be read as a result. This is geometry, so it
+    says only "higher" and "lower", and `tint` gives the second surface of a
+    pair a different pair of ends so the two never look like one surface
+    folded.
+    """
+    from apps.stereo.stereo_app_constants import SURFACE_PREVIEW_TINTS
+    lo, hi = SURFACE_PREVIEW_TINTS[tint % len(SURFACE_PREVIEW_TINTS)]
+    return _lerp_hex(lo, hi, max(0.0, min(1.0, frac)))

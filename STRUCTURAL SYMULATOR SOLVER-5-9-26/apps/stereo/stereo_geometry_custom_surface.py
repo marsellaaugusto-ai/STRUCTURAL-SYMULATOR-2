@@ -23,6 +23,37 @@ from apps.stereo import expr_math
 from apps.stereo.stereo_geometry_core import _NodeBank, _add_member
 
 
+def make_domain_fn(expr, ctx=None):
+    """Compile a "keep this part of the plan?" rule into f(x, y) -> bool.
+
+    The grid generators all lay out a RECTANGLE (or, in polar, an annular
+    sector), because that is what a pair of ranges describes. Real roofs
+    are not rectangles: they have a round plan, an L, a courtyard cut out
+    of the middle. The mask is how a rectangle becomes those, without
+    every generator having to learn about shapes:
+
+        x**2 + y**2 < 36              a circular plan of radius 6
+        not (x > 6 and y > 6)         an L, with one quadrant removed
+        hypot(x, y) > 3               a ring, open at the middle
+
+    `ctx` is an optional dict of extra named constants the rule may use
+    (e.g. {'Lx': 12.0}), so a rule can be written in terms of the domain
+    it will be applied to rather than in raw metres.
+
+    An empty expression means "keep everything" and returns None, which
+    `apply_domain_mask` passes straight through -- the no-mask case costs
+    nothing and needs no special-casing at the call site.
+    """
+    text = (expr or '').strip()
+    if not text:
+        return None
+    ctx = dict(ctx or {})
+    names = ('x', 'y') + tuple(ctx)
+    inner = expr_math.compile_expression(text, names)
+    extra = tuple(ctx[k] for k in ctx)
+    return lambda x, y: bool(inner(x, y, *extra))
+
+
 def make_height_field_surface(expr_z):
     """A height-field surface z = f(x, y) from a typed expression, wrapped
     to the shared surface(p, q) -> (x, y, z) shape used everywhere below
@@ -470,6 +501,20 @@ def custom_surface_grid(surface, coord='cartesian', pattern='square',
         raise ValueError(f"module must be '2d' or '3d', got {module!r}")
     if offset_side not in ('top', 'bottom'):
         raise ValueError(f"offset_side must be 'top' or 'bottom', got {offset_side!r}")
+    if pattern == PATTERN_ISOMETRIC:
+        # One isometric implementation, not two. _domain_lattice lays the
+        # triangular module out in an OBLIQUE basis, which shears the whole
+        # lattice across the Cartesian rectangle it was asked for: on a
+        # 12 m domain it ran 6.75 m past the far edge (a 106% overshoot)
+        # and left a third of the nodes outside. isometric_lattice staggers
+        # the rows inside the rectangle and clamps the ends onto the edge
+        # instead. That fix reached the Shape panel (which goes through
+        # custom_surface_lattice) but NOT this function or
+        # custom_surface_between, so the Custom Surface Wizard -- which
+        # calls these two directly -- still built the sheared version.
+        return isometric_lattice(surface, None, coord=coord, p_range=p_range,
+                                 q_range=q_range, n1=n1, depth=depth,
+                                 pole=pole, double=(module == '3d'))
 
     grid_pq, imax, jmax, wrap_j = _domain_lattice(coord, pattern, p_range, q_range, n1, n2)
     bank = _NodeBank()
@@ -538,6 +583,13 @@ def custom_surface_between(surface_top, surface_bottom, coord='cartesian', patte
     Returns the shared {'nodes','members','support_candidates','load_nodes'}
     dict, exactly like custom_surface_grid's own '3d' module.
     """
+    if pattern == PATTERN_ISOMETRIC:
+        # Same delegation, same reason, as custom_surface_grid above: the
+        # oblique-basis isometric shears out of the domain, and the wizard
+        # reaches this function directly.
+        return isometric_lattice(surface_top, surface_bottom, coord=coord,
+                                 p_range=p_range, q_range=q_range, n1=n1,
+                                 pole=pole, double=True)
     where = surfaces_cross(surface_top, surface_bottom, coord=coord,
                            p_range=p_range, q_range=q_range, n1=n1, n2=n2,
                            pole=pole)
@@ -595,3 +647,402 @@ def _domain_cell_areas(grid_pq, coord, imax, jmax, wrap_j, layer):
                 area *= p0 if p0 > 0 else 0.0
             load_nodes[layer[(i, j)]] = area
     return load_nodes
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Lattice types -- how the two layers relate to each other
+# ═══════════════════════════════════════════════════════════════════════════
+# This is a different question from SHAPE (which surface) and from PATTERN
+# (how one layer's own nodes connect). It asks how the top layer and the
+# bottom layer are registered against each other, and it is the question
+# that actually names a space frame in practice.
+#
+# The first version of this tab had exactly these four and called them its
+# grid families, which was right: on a two-surface grid they matter more
+# than the surfaces do. A square-on-square offset and a diagonal-on-diagonal
+# over the SAME pair of surfaces are different structures -- different rod
+# counts, different rod lengths, different load paths, different buildability.
+#
+#   SINGLE          one layer lying on the surface. A 2-way grillage.
+#                   Note that a FLAT one is a mechanism when pin-jointed --
+#                   a plane grid of pinned bars has no out-of-plane
+#                   stiffness at all -- so it wants either curvature (which
+#                   gives it shell action) or rigid joints. That is physics,
+#                   not a defect, and the app reports it rather than quietly
+#                   bracing it.
+#   SOS_OFFSET      top orthogonal; bottom orthogonal, offset half a module
+#                   in both directions so each bottom node sits under the
+#                   CENTRE of a top square and ties to its four corners.
+#                   The classic space frame, and the one most systems build.
+#   SQ_ON_DIAG      the same offset bottom layer, but its chords run
+#                   diagonally. Fewer, longer bottom chords; the top layer
+#                   stays square, which is what a deck or glazing wants.
+#   DIAG_ON_DIAG    both layers diagonal. The lightest of the three for a
+#                   given depth and the hardest to detail, because nothing
+#                   is orthogonal to anything.
+LATTICE_SINGLE = 'Single layer (2-way grillage)'
+LATTICE_SOS_OFFSET = 'Square on square, offset'
+LATTICE_SQ_ON_DIAG = 'Square on diagonal'
+LATTICE_DIAG_ON_DIAG = 'Diagonal on diagonal'
+LATTICE_ALIGNED = 'Double layer, aligned'
+
+# The MODULE shape, which is a separate question from how the two LAYERS
+# register (that is what LATTICE_TYPES answers). Defined here, beside the
+# lattice names, because custom_surface_lattice takes one as a DEFAULT
+# argument and a default is evaluated at import time.
+PATTERN_SQUARE = 'square'
+PATTERN_DIAGONAL = 'diagonal'
+PATTERN_ISOMETRIC = 'isometric'
+LATTICE_PATTERNS = (PATTERN_SQUARE, PATTERN_DIAGONAL, PATTERN_ISOMETRIC)
+
+_SIN60 = math.sin(math.radians(60.0))
+LATTICE_TYPES = (LATTICE_SOS_OFFSET, LATTICE_SQ_ON_DIAG,
+                 LATTICE_DIAG_ON_DIAG, LATTICE_ALIGNED, LATTICE_SINGLE)
+
+# (top layer diagonal?, bottom layer diagonal?) per type; SINGLE has no
+# bottom layer at all and is handled before this table is consulted.
+_LATTICE_DIAGONALS = {
+    LATTICE_SOS_OFFSET: (False, False),
+    LATTICE_SQ_ON_DIAG: (False, True),
+    LATTICE_DIAG_ON_DIAG: (True, True),
+}
+
+
+def _orthogonal_chords(members, seen, grid, imax, jmax, role):
+    for (i, j), n in grid.items():
+        for nb in ((i + 1, j), (i, j + 1)):
+            if nb in grid:
+                _add_member(members, seen, n, grid[nb], role=role)
+
+
+def _diagonal_chords(members, seen, grid, imax, jmax, role):
+    """Both diagonals of every cell, plus the perimeter closed orthogonally.
+
+    Without the perimeter the free edges are a mechanism: a corner node of a
+    purely diagonal lattice is held by one bar in one direction only.
+    """
+    for i in range(imax):
+        for j in range(jmax):
+            if all(k in grid for k in ((i, j), (i + 1, j), (i, j + 1), (i + 1, j + 1))):
+                _add_member(members, seen, grid[(i, j)], grid[(i + 1, j + 1)], role=role)
+                _add_member(members, seen, grid[(i + 1, j)], grid[(i, j + 1)], role=role)
+    for i in range(imax):
+        for j in (0, jmax):
+            if (i, j) in grid and (i + 1, j) in grid:
+                _add_member(members, seen, grid[(i, j)], grid[(i + 1, j)], role=role)
+    for j in range(jmax):
+        for i in (0, imax):
+            if (i, j) in grid and (i, j + 1) in grid:
+                _add_member(members, seen, grid[(i, j)], grid[(i, j + 1)], role=role)
+
+
+def custom_surface_lattice(surface_top, surface_bottom=None, coord='cartesian',
+                           lattice=LATTICE_SOS_OFFSET, p_range=(0.0, 1.0),
+                           q_range=(0.0, 1.0), n1=8, n2=8, depth=1.0,
+                           pole=(0.0, 0.0), pattern=PATTERN_SQUARE):
+    """A double-layer grid whose bottom layer is OFFSET half a module.
+
+    custom_surface_grid and custom_surface_between both sample their two
+    layers at the same (i, j), so every web is a vertical post and the two
+    layers are the same lattice twice. That is one real space frame among
+    several, and not the common one: in the classic offset frame each bottom
+    node sits under the centre of a top square and ties to its four corners,
+    which is what turns two flat grids into something with depth-action.
+
+    `surface_bottom` may be another surface callable, or None to derive the
+    bottom layer by dropping `depth` along the top surface's own normal.
+
+    Returns the usual {'nodes', 'members', 'support_candidates',
+    'load_nodes'} dict.
+    """
+    if lattice not in LATTICE_TYPES:
+        raise ValueError(f'unknown lattice type {lattice!r}')
+    if pattern not in LATTICE_PATTERNS:
+        raise ValueError(f'unknown module pattern {pattern!r}')
+
+    # Lattice and pattern are two independent questions -- how the two
+    # LAYERS register, and what shape the MODULE is -- but not every pair
+    # of answers describes a real space frame, and the ones that do not are
+    # refused here rather than approximated into something that looks
+    # buildable and is not.
+    if lattice == LATTICE_ALIGNED:
+        if pattern == PATTERN_ISOMETRIC:
+            return isometric_lattice(surface_top, surface_bottom, coord=coord,
+                                     p_range=p_range, q_range=q_range, n1=n1,
+                                     depth=depth, pole=pole, double=True)
+        # Square/diagonal aligned layers are exactly what custom_surface_grid
+        # and custom_surface_between already build, so this delegates rather
+        # than growing a fourth copy of the same top/bottom/web scheme.
+        if surface_bottom is None:
+            return custom_surface_grid(surface_top, coord=coord, pattern=pattern,
+                                       p_range=p_range, q_range=q_range, n1=n1, n2=n2,
+                                       module='3d', depth=depth, pole=pole)
+        return custom_surface_between(surface_top, surface_bottom, coord=coord,
+                                      pattern=pattern, p_range=p_range, q_range=q_range,
+                                      n1=n1, n2=n2, pole=pole)
+    if pattern == PATTERN_ISOMETRIC:
+        if lattice != LATTICE_SINGLE:
+            raise ValueError(
+                f'{lattice!r} cannot be built on an isometric module. An offset '
+                'lattice needs a half-module to offset INTO, and a triangular '
+                'grid has no such thing -- the centre of a triangle is not a '
+                'lattice point of the triangle below it. Use "Single layer" or '
+                f'"{LATTICE_ALIGNED}" for an isometric module.')
+        return isometric_lattice(surface_top, None, coord=coord, p_range=p_range,
+                                 q_range=q_range, n1=n1, depth=depth, pole=pole,
+                                 double=False)
+    if pattern == PATTERN_DIAGONAL and lattice != LATTICE_SINGLE:
+        # The four named double-layer lattices ALREADY encode which layer
+        # runs diagonally (that is what their names mean), so a separate
+        # 'diagonal' pattern on top of them would be saying it twice and
+        # would contradict three of the four.
+        raise ValueError(
+            f'{lattice!r} already says which layer runs diagonally -- that is '
+            'what its name means. The diagonal MODULE pattern applies to a '
+            'single layer.')
+    n1 = max(1, int(n1))
+    n2 = max(1, int(n2))
+    p0, p1 = p_range
+    q0, q1 = q_range
+    dp = (p1 - p0) / n1
+    dq = (q1 - q0) / n2
+
+    bank = _NodeBank()
+    members = []
+    seen = set()
+
+    def place_top(p, q):
+        x, y = _domain_to_xy(coord, p, q, pole)
+        return bank.add(*surface_top(x, y))
+
+    top = {}
+    for i in range(n1 + 1):
+        for j in range(n2 + 1):
+            top[(i, j)] = place_top(p0 + i * dp, q0 + j * dq)
+
+    if lattice == LATTICE_SINGLE:
+        (_diagonal_chords if pattern == PATTERN_DIAGONAL else _orthogonal_chords)(
+            members, seen, top, n1, n2, 'surface_chord')
+        support_candidates = _boundary_nodes(top, n1, n2, False)
+        grid_pq = {ij: (p0 + ij[0] * dp, q0 + ij[1] * dq) for ij in top}
+        load_nodes = _domain_cell_areas(grid_pq, coord, n1, n2, False, top)
+        return {'nodes': bank.nodes, 'members': members,
+                'support_candidates': support_candidates, 'load_nodes': load_nodes}
+
+    if surface_bottom is None:
+        def surface_bottom(x, y, d=depth):
+            sx, sy, sz = surface_top(x, y)
+            nx, ny, nz = _surface_normal(surface_top, x, y)
+            return (sx - nx * d, sy - ny * d, sz - nz * d)
+
+    where = surfaces_cross(surface_top, surface_bottom, coord=coord,
+                           p_range=p_range, q_range=q_range, n1=n1, n2=n2, pole=pole)
+    if where is not None:
+        raise ValueError(_crossing_message(where, coord))
+
+    # the offset layer: one node under the CENTRE of every top cell
+    bottom = {}
+    for i in range(n1):
+        for j in range(n2):
+            x, y = _domain_to_xy(coord, p0 + (i + 0.5) * dp, q0 + (j + 0.5) * dq, pole)
+            bottom[(i, j)] = bank.add(*surface_bottom(x, y))
+
+    top_diag, bot_diag = _LATTICE_DIAGONALS[lattice]
+    (_diagonal_chords if top_diag else _orthogonal_chords)(
+        members, seen, top, n1, n2, 'outer_rib')
+    (_diagonal_chords if bot_diag else _orthogonal_chords)(
+        members, seen, bottom, n1 - 1, n2 - 1, 'inner_rib')
+
+    # the webs: every bottom node to the four top corners of its own cell.
+    # This is what gives the frame its depth-action and what makes every
+    # node part of a closed 3D assembly rather than a flat grid with posts.
+    for (i, j), b in bottom.items():
+        for corner in ((i, j), (i + 1, j), (i, j + 1), (i + 1, j + 1)):
+            _add_member(members, seen, b, top[corner], role='web')
+
+    support_candidates = sorted(set(_boundary_nodes(top, n1, n2, False))
+                                | set(_boundary_nodes(bottom, n1 - 1, n2 - 1, False)))
+    grid_pq = {ij: (p0 + ij[0] * dp, q0 + ij[1] * dq) for ij in top}
+    load_nodes = _domain_cell_areas(grid_pq, coord, n1, n2, False, top)
+    return {'nodes': bank.nodes, 'members': members,
+            'support_candidates': support_candidates, 'load_nodes': load_nodes}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Isometric (equilateral-triangle) lattice on a CARTESIAN domain
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def staggered_rows(p0, p1, q0, q1, n1):
+    """The (p, q) point rows of an equilateral-triangle lattice laid out
+    INSIDE the rectangle [p0, p1] x [q0, q1] -- never across it.
+
+    _domain_lattice's own 'isometric' does something different and, on a
+    Cartesian domain, wrong: it builds the lattice on an OBLIQUE basis, so
+    every row is shifted sideways by half a cell MORE than the row below,
+    and the whole lattice shears out of the rectangle. On a 12 m domain
+    divided six ways it runs 7 m past the right-hand edge and leaves a
+    matching triangular hole on the left -- 19 of its 56 nodes land outside
+    the domain that was asked for. That is the right construction for a
+    lattice that is allowed to be a parallelogram, and the wrong one for a
+    plan that has to stay a rectangle.
+
+    The fix is to stagger ROWS rather than shear the basis:
+
+      even rows   p0, p0+c, p0+2c, ... p1            (n1 + 1 points)
+      odd rows    p0, p0+c/2, p0+3c/2, ... p1        (n1 + 2 points)
+
+    so the half-cell offset that makes the triangles equilateral happens
+    INSIDE the row, and every row still begins exactly on p0 and ends
+    exactly on p1. Both side boundaries are straight lines, which is what
+    lets a plan-shape rule, a support line or an edge beam follow them.
+
+    The price -- and it is a real one, not a rounding error -- is the pair
+    of HALF-WIDTH triangles at each end of every odd row, where the
+    boundary node at p0 (or p1) sits only c/2 from its neighbour instead of
+    c. Everything away from those two columns is equilateral to within the
+    row-height rounding below. The alternative is a zig-zag boundary, and a
+    straight edge is worth more than two regular triangles per row.
+
+    Row spacing is c * sin(60), rounded to a whole number of rows so the
+    last row lands exactly on q1; that rounding is why the triangles are
+    equilateral to a few percent rather than exactly. Returns
+    (rows, q_values) where rows[j] is the list of p positions in row j.
+    """
+    n1 = max(1, int(n1))
+    cell = (p1 - p0) / n1
+    span_q = q1 - q0
+    if abs(cell) < 1e-12:
+        raise ValueError('the x range of an isometric domain cannot be zero')
+    nrows = max(1, int(round(abs(span_q) / (abs(cell) * _SIN60))))
+    q_values = [q0 + span_q * j / nrows for j in range(nrows + 1)]
+
+    rows = []
+    for j in range(nrows + 1):
+        if j % 2 == 0:
+            rows.append([p0 + i * cell for i in range(n1 + 1)])
+        else:
+            inner = [p0 + (i + 0.5) * cell for i in range(n1)]
+            rows.append([p0] + inner + [p1])
+    return rows, q_values
+
+
+def _stagger_links(row_a, row_b):
+    """Which (index_in_a, index_in_b) pairs to connect between two adjacent
+    staggered rows: every node to the two nodes of the other row nearest it
+    in p, taken from BOTH sides so the result is symmetric.
+
+    Chosen by POSITION rather than by index arithmetic. The two rows have
+    different lengths (n1+1 against n1+2) and different offsets, so an
+    index rule has to special-case both ends of both parities -- four cases
+    that are easy to get subtly wrong and produce a crossed member or a
+    missing triangle. Nearest-in-p is one rule, is obviously right, and the
+    triangulation test checks the result rather than the reasoning.
+    """
+    links = set()
+    for ia, pa in enumerate(row_a):
+        order = sorted(range(len(row_b)), key=lambda ib: abs(row_b[ib] - pa))
+        for ib in order[:2]:
+            links.add((ia, ib))
+    for ib, pb in enumerate(row_b):
+        order = sorted(range(len(row_a)), key=lambda ia: abs(row_a[ia] - pb))
+        for ia in order[:2]:
+            links.add((ia, ib))
+    return sorted(links)
+
+
+def isometric_lattice(surface_top, surface_bottom=None, coord='cartesian',
+                      p_range=(0.0, 1.0), q_range=(0.0, 1.0), n1=8,
+                      depth=1.0, pole=(0.0, 0.0), double=False):
+    """An equilateral-triangle lattice on `surface_top`, laid out inside the
+    Cartesian rectangle rather than sheared across it (see staggered_rows).
+
+    `double=False` gives a single layer. Because the lattice is already
+    fully triangulated in its own surface, that single layer is stable on
+    a curved surface without any web system -- which is the practical
+    reason to reach for isometric in the first place, and what the square
+    and diagonal patterns cannot promise (see custom_surface_grid's own
+    note on why a 2D square module is not self-bracing).
+
+    `double=True` adds a second layer on `surface_bottom` (or `depth` below
+    the top surface along its own normal), sampled at the SAME (p, q), plus
+    a post at every node and one diagonal per chord. Aligned, not offset:
+    an offset lattice needs a half-module to offset INTO, and a triangular
+    grid has no such thing -- the centre of a triangle is not a lattice
+    point of the triangle below it. That is why the offset/square-on-
+    diagonal/diagonal-on-diagonal lattices are refused for this pattern
+    rather than silently approximated.
+
+    Returns the usual {'nodes', 'members', 'support_candidates',
+    'load_nodes'} dict.
+    """
+    p0, p1 = p_range
+    q0, q1 = q_range
+    rows, q_values = staggered_rows(p0, p1, q0, q1, n1)
+
+    bank = _NodeBank()
+    members = []
+    seen = set()
+
+    if double and surface_bottom is None:
+        def surface_bottom(x, y, d=depth):
+            sx, sy, sz = surface_top(x, y)
+            nx, ny, nz = _surface_normal(surface_top, x, y)
+            return (sx - nx * d, sy - ny * d, sz - nz * d)
+
+    top, bottom = {}, {}
+    for j, row in enumerate(rows):
+        for i, p in enumerate(row):
+            x, y = _domain_to_xy(coord, p, q_values[j], pole)
+            top[(i, j)] = bank.add(*surface_top(x, y))
+            if double:
+                bottom[(i, j)] = bank.add(*surface_bottom(x, y))
+
+    def chords(layer, role):
+        edges = []
+        for j, row in enumerate(rows):
+            for i in range(len(row) - 1):
+                edges.append(((i, j), (i + 1, j)))
+            if j + 1 < len(rows):
+                for ia, ib in _stagger_links(row, rows[j + 1]):
+                    edges.append(((ia, j), (ib, j + 1)))
+        for u, v in edges:
+            _add_member(members, seen, layer[u], layer[v], role=role)
+        return edges
+
+    edges = chords(top, 'outer_rib' if double else 'surface_chord')
+    if double:
+        chords(bottom, 'inner_rib')
+        for ij, node in top.items():
+            _add_member(members, seen, node, bottom[ij], role='web')
+        # One diagonal per chord turns each vertical quad into two
+        # triangles. Posts alone leave the two layers free to rack
+        # sideways relative to each other -- every post is parallel to
+        # every other, exactly the failure _surface_webs documents.
+        for u, v in edges:
+            _add_member(members, seen, top[u], bottom[v], role='web_diag')
+
+    boundary = set()
+    last = len(rows) - 1
+    for j, row in enumerate(rows):
+        for i in range(len(row)):
+            if j in (0, last) or i in (0, len(row) - 1):
+                boundary.add(top[(i, j)])
+                if double:
+                    boundary.add(bottom[(i, j)])
+
+    # Tributary area: half the p-gap either side, times half the row height
+    # either side. Ragged rows make a closed form awkward and this is the
+    # thing a closed form would have to reproduce anyway -- it sums to the
+    # domain rectangle exactly, which the test checks.
+    load_nodes = {}
+    for j, row in enumerate(rows):
+        dq_up = (q_values[j + 1] - q_values[j]) / 2.0 if j < last else 0.0
+        dq_dn = (q_values[j] - q_values[j - 1]) / 2.0 if j > 0 else 0.0
+        height = abs(dq_up) + abs(dq_dn)
+        for i, p in enumerate(row):
+            left = (p - row[i - 1]) / 2.0 if i > 0 else 0.0
+            right = (row[i + 1] - p) / 2.0 if i < len(row) - 1 else 0.0
+            load_nodes[top[(i, j)]] = abs(left + right) * height
+    return {'nodes': bank.nodes, 'members': members,
+            'support_candidates': sorted(boundary), 'load_nodes': load_nodes}

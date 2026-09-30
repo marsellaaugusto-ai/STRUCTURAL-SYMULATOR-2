@@ -16,6 +16,10 @@ and nothing here can change an answer -- only how that answer is written down.
     area     m^2                            cm^2, mm^2, in^2
     inertia  m^4                            cm^4, mm^4, in^4
     section length m                        cm, mm, in   (a fibre distance)
+    area load N/m^2                         kN/m^2, psf
+    moment per length N*m/m                 kN*m/m, kip*ft/ft
+    steel per length m^2/m                  cm^2/m, mm^2/m, in^2/ft
+    unit weight N/m^3                       kN/m^3, pcf
 
 ## What the five conventions actually differ in
 
@@ -48,8 +52,18 @@ and do not belong here. `cirsoc_301.py` is where that kind of thing lives.
 # a CIRSOC or Eurocode drawing says an 8 mm plate, never a 0.8 cm one -- while
 # the same code writes a fibre distance in cm. They are the same physical
 # quantity and never the same unit on a drawing, so they are separate here.
+#
+# The last four were added 2026-09-14 for the Shell tab, whose results are
+# per metre of surface rather than per member:
+#   'area_load'         a load per unit area (snow, wind pressure)   kN/m², psf
+#   'moment_per_length' a shell bending moment, kN·m per metre       kN·m/m
+#   'steel_per_length'  reinforcement area per metre of width        cm²/m
+#   'unit_weight'       a material's weight per volume (concrete)    kN/m³
+# A shell's membrane force (kN per metre of edge) is dimensionally a line
+# load and uses 'line_load'.
 QUANTITIES = ('length', 'section_length', 'detail_length', 'force', 'moment',
-              'line_load', 'stress', 'modulus', 'area', 'inertia', 'deflection')
+              'line_load', 'stress', 'modulus', 'area', 'inertia', 'deflection',
+              'area_load', 'moment_per_length', 'steel_per_length', 'unit_weight')
 
 
 class Unit:
@@ -173,9 +187,21 @@ CM4 = Unit('cm⁴', _CM4)
 MM4 = Unit('mm⁴', _MM4)
 IN4 = Unit('in⁴', _IN4)
 
+# Shell-tab quantities (2026-09-14). The US ones are again derived from the
+# three exact definitions: 1 psf = 1 lbf/ft², 1 pcf = 1 lbf/ft³.
+KN_M2 = Unit('kN/m²', _KN)                          # N/m²  -> kN/m²
+PSF = Unit('psf', _M_PER_FT ** 2 / _N_PER_LBF)      # N/m²  -> lbf/ft²
+KN_M_PER_M = Unit('kN·m/m', _KN)                    # N·m/m -> kN·m/m
+KIP_FT_PER_FT = Unit('kip·ft/ft', _KIP)             # N·m/m -> kip·ft/ft (= kip)
+CM2_PER_M = Unit('cm²/m', _CM2)                     # m²/m  -> cm²/m
+MM2_PER_M = Unit('mm²/m', _MM2)                     # m²/m  -> mm²/m
+IN2_PER_FT = Unit('in²/ft', _IN2 * _M_PER_FT)       # m²/m  -> in²/ft
+KN_M3 = Unit('kN/m³', _KN)                          # N/m³  -> kN/m³
+PCF = Unit('pcf', _M_PER_FT ** 3 / _N_PER_LBF)      # N/m³  -> lbf/ft³
+
 
 def _si_profile(key, name, note, area, inertia, modulus, section_length,
-                stress=None):
+                stress=None, steel_per_length=CM2_PER_M):
     """The four SI conventions differ only in these few sub-units, so they are
     built from one place rather than written out four times -- if they were
     copied, they would drift."""
@@ -192,6 +218,10 @@ def _si_profile(key, name, note, area, inertia, modulus, section_length,
         area=area,
         inertia=inertia,
         deflection=MM,
+        area_load=KN_M2,
+        moment_per_length=KN_M_PER_M,
+        steel_per_length=steel_per_length,
+        unit_weight=KN_M3,
     )
 
 
@@ -214,7 +244,8 @@ SYSTEMS = {
     'csa': _si_profile(
         'csa', 'CSA S16 (Canada)',
         'SI. Section properties in mm², mm⁴ and modulus in MPa, as CSA tabulates.',
-        area=MM2, inertia=MM4, modulus=MPA, section_length=MM),
+        area=MM2, inertia=MM4, modulus=MPA, section_length=MM,
+        steel_per_length=MM2_PER_M),
 
     'aisc': UnitSystem(
         'aisc', 'AISC 360 (US customary)',
@@ -229,7 +260,11 @@ SYSTEMS = {
         modulus=KSI,
         area=IN2,
         inertia=IN4,
-        deflection=IN),
+        deflection=IN,
+        area_load=PSF,
+        moment_per_length=KIP_FT_PER_FT,
+        steel_per_length=IN2_PER_FT,
+        unit_weight=PCF),
 }
 
 # What the tabs have ALWAYS held in their own state and workbooks: kN, m,
@@ -254,6 +289,10 @@ STORAGE = UnitSystem(
     area=CM2,
     inertia=CM4,
     deflection=MM,
+    area_load=KN_M2,
+    moment_per_length=KN_M_PER_M,
+    steel_per_length=CM2_PER_M,
+    unit_weight=KN_M3,
 )
 
 def storage_like(name='app storage', **overrides):

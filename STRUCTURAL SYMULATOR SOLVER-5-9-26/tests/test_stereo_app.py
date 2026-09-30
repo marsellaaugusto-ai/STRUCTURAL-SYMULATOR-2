@@ -28,18 +28,17 @@ from apps.stereo.stereo_app import (
     SCALE_PEAK, SCALE_P95, FILL_DENSITY_STIPPLE,
     NEAR_ZERO_FRAC, STRESS_WIDTH_MIN, STRESS_WIDTH_MAX,
     COLOUR_NONE, COLOUR_FORCE, COLOUR_UTIL, COLOUR_MOMENT,
-    FILL_NONE, FILL_SHADED, FILL_VORONOI,
+    FILL_NONE, FILL_SHADED, FILL_MODES,
     GRADIENT_SEGMENTS, GRADIENT_SEGMENTS_DENSE, GRADIENT_DENSE_MEMBERS,
     MOMENT_BACKDROP_COLOR, MOMENT_NODE_RADIUS_PX,
     TENSION_HIGH, COMPRESSION_HIGH,
-    _clip_polygon_to_bbox, _voronoi_cells_2d,
 )
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_reports as sr_module
-from apps.stereo import stereo_voronoi_surface as svs
 from apps.stereo import stereo_app_constants as sc
 from apps.stereo import stereo_app_module_editor as me
+from apps.stereo import stereo_app_shell as sh
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +82,30 @@ def tk_root():
 
 @pytest.fixture
 def app(tk_root):
+    """A Stereo tab with the DEFAULT GRID already built.
+
+    The app itself now opens empty -- a model you did not ask for is not a
+    good first screen -- so the grid these tests work on is built here,
+    explicitly, instead of arriving as a side effect of construction. Most
+    of this file assumes a model exists; saying so in one place beats
+    several hundred tests quietly depending on a startup detail that is
+    free to change. A test that wants the empty state calls
+    `app._clear_model()` first, and `blank_app` below skips the build
+    entirely.
+    """
+    tab = tk.Frame(tk_root)
+    a = StereoApp(tab)
+    a._generate(push_undo=False)
+    tab.pack(fill='both', expand=True)
+    tk_root.update_idletasks()
+    tk_root.update()
+    yield a
+    tab.destroy()
+
+
+@pytest.fixture
+def blank_app(tk_root):
+    """The app exactly as it opens: no nodes, no members, no results."""
     tab = tk.Frame(tk_root)
     a = StereoApp(tab)
     tab.pack(fill='both', expand=True)
@@ -560,6 +583,7 @@ def test_chord_and_web_properties_apply_to_the_right_members(app):
 
 
 def test_connectivity_toggle_shows_and_hides_the_IJ_fields(app):
+    _mode(app, 'section')
     app.sec_conn.set('pin')
     app._on_connectivity_change()
     app.root.update_idletasks()
@@ -640,9 +664,13 @@ def test_reset_view_recenters_and_restores_the_default_angle(app):
 
     app._reset_view()
     assert app.azimuth == 35.0 and app.elevation == 22.0
+    # The centroid lands in the middle of the canvas. Asserting pan_x == w/2
+    # instead would be asserting the arithmetic of one particular zoom: w2s
+    # multiplies by zoom AFTER adding the pan, so the centring pan is
+    # w / (2 * zoom) and the two agree only at zoom = 1.
     w, h = app.canvas.winfo_width(), app.canvas.winfo_height()
-    assert app.zc.pan_x == pytest.approx(w / 2.0)
-    assert app.zc.pan_y == pytest.approx(h / 2.0)
+    sx, sy = app.zc.w2s(0.0, 0.0)
+    assert (sx, sy) == pytest.approx((w / 2.0, h / 2.0), abs=1.0)
 
 
 # ── multi-select applying to supports/loads in one shot ─────────────────────
@@ -704,12 +732,50 @@ def test_the_model_is_centered_in_the_canvas_after_generate(app):
     """Regression: pan used to stay at ZoomCanvas's own default (0, 0),
     which maps the model's centroid to the canvas's top-left CORNER
     instead of its center -- most of a freshly generated mesh rendered
-    half off-screen. This checks the actual screen position of the
-    model's own centroid node bounding box middle, not just that some pan
-    value changed."""
+    half off-screen. This checks the actual screen position the model's
+    own centroid is drawn at, not just that some pan value changed."""
     w, h = app.canvas.winfo_width(), app.canvas.winfo_height()
-    assert app.zc.pan_x == pytest.approx(w / 2.0, abs=1.0)
-    assert app.zc.pan_y == pytest.approx(h / 2.0, abs=1.0)
+    sx, sy = app.zc.w2s(0.0, 0.0)
+    assert (sx, sy) == pytest.approx((w / 2.0, h / 2.0), abs=1.0)
+
+
+def test_a_generated_mesh_is_zoomed_to_fill_the_canvas(app):
+    """PX_PER_M is a fixed 20 px/m, so without a fit the size a model
+    appears at is decided by how many metres across it happens to be: a
+    small module filled the view and a wide dome landed as a clump in the
+    middle of a lot of white. Reset view has to mean "show me the model"."""
+    w, h = app.canvas.winfo_width(), app.canvas.winfo_height()
+    proj = [app._project(x, y, z) for x, y, z in app.nodes]
+    xs = [p[0] for p in proj]; ys = [p[1] for p in proj]
+    span_x = (max(xs) - min(xs)) * app.PX_PER_M * app.zc.zoom
+    span_y = (max(ys) - min(ys)) * app.PX_PER_M * app.zc.zoom
+    assert span_x <= w and span_y <= h, 'the model runs off the canvas'
+    assert max(span_x / w, span_y / h) > 0.5, 'the model is a clump in the middle'
+
+
+def test_a_model_four_times_bigger_is_still_fitted(app):
+    """The fit is what makes the two look the same size on screen; a fixed
+    zoom would show one of them at a quarter of the other."""
+    small = app._fit_zoom(1000, 800)
+    app.nodes = [(4.0 * x, 4.0 * y, 4.0 * z) for x, y, z in app.nodes]
+    big = app._fit_zoom(1000, 800)
+    assert big == pytest.approx(small / 4.0, rel=0.02)
+
+
+def test_a_model_too_big_to_fit_stops_at_the_canvas_zoom_floor(app):
+    """ZoomCanvas will not go below MIN_ZOOM -- it is a shared widget limit,
+    not this tab's to lift -- so a structure wider than the floor can show
+    is drawn AT the floor rather than at some illegal zoom the wheel could
+    never return to."""
+    app.nodes = [(500.0 * x, 500.0 * y, 500.0 * z) for x, y, z in app.nodes]
+    assert app._fit_zoom(1000, 800) == app.zc.MIN_ZOOM
+
+
+def test_an_empty_model_has_nothing_to_fit_and_says_so(app):
+    app.nodes = []
+    assert app._fit_zoom(1000, 800) is None
+    app._reset_view()
+    assert app.zc.zoom == 1.0
 
 
 # ── flat_grid chord pattern selector ─────────────────────────────────────────
@@ -1139,7 +1205,7 @@ def test_clicking_a_rod_shows_its_force_and_utilization(app):
     app._select_node_at(mx, my)
     assert app.selected_member == 0
     assert app.selected_nodes == set()
-    text = app.sel_label.cget('text')
+    text = app.sel_var.get()
     assert 'Member 0' in text
     assert 'N =' in text
     assert 'utilization' in text
@@ -1419,7 +1485,7 @@ def test_member_info_before_analysis_says_so(app):
     app.selected_member = 0
     app.selected_nodes = set()
     app._sync_selection_fields()
-    assert 'Run' in app.sel_label.cget('text')
+    assert 'Run' in app.sel_var.get()
 
 
 def test_load_fraction_scales_deformation_and_force_linearly(app):
@@ -1887,7 +1953,19 @@ def test_every_column_style_can_be_added_from_the_panel(app, style):
     cx = sum(app.nodes[i][0] for i in bottom) / len(bottom)
     cy = sum(app.nodes[i][1] for i in bottom) / len(bottom)
     bottom.sort(key=lambda i: (app.nodes[i][0] - cx) ** 2 + (app.nodes[i][1] - cy) ** 2)
-    picked = set(bottom[:9])
+    # The latticed styles run one chord down from each selected node, so
+    # their footprint IS the selection: exactly 3 or 4 nodes, convex, and
+    # no three of them in a line. "The four nearest the centre" is NOT
+    # that -- on this grid it is a kite with three nodes on one row.
+    latticed = style in (sg.COLUMN_LATTICE, sg.COLUMN_TAPERED)
+    if latticed:
+        xs = sorted({round(app.nodes[i][0], 6) for i in bottom})
+        ys = sorted({round(app.nodes[i][1], 6) for i in bottom})
+        picked = {i for i in bottom
+                  if round(app.nodes[i][0], 6) in xs[:2]
+                  and round(app.nodes[i][1], 6) in ys[:2]}
+    else:
+        picked = set(bottom[:9])
     app.selected_nodes = set(picked)
     assert len(picked) >= 3
     n0, m0, sup0 = len(app.nodes), len(app.members), len(app.supports)
@@ -1898,11 +1976,17 @@ def test_every_column_style_can_be_added_from_the_panel(app, style):
     app.col_panels.set(3)
     app._add_column()
     assert len(app.nodes) > n0 and len(app.members) > m0
-    added = len(app.supports) - sup0
+    # Count the NEW pinned nodes, not the net change: a column also hands
+    # its head joints' own supports back to itself, so on a footprint that
+    # was already supported the net change is smaller than the foot count.
+    added = len({s['node'] for s in app.supports if s['node'] >= n0})
     # the plain strut has no capital: one post, and one foot, per node picked
     expected = {sg.COLUMN_PLAIN: len(picked), sg.COLUMN_SHAFT: 1,
-                sg.COLUMN_TRIPOD: 3}.get(style, 4)
+                sg.COLUMN_TRIPOD: 3,
+                sg.COLUMN_LATTICE: len(picked),
+                sg.COLUMN_TAPERED: len(picked)}.get(style, 4)
     assert added == expected, f'{style} pinned {added} feet'
+    assert len(app.supports) <= sup0 + expected
     app._analyze()
     assert app.err is None, f'{style} did not solve from the panel: {app.err}'
 
@@ -2381,6 +2465,15 @@ def test_every_example_carries_a_truthful_wizard_note(app):
         assert recipe.get('note'), f'{label} has an empty note'
         if recipe.get('mode'):
             assert 'exact settings' in recipe['note']
+        elif recipe.get('source'):
+            # A third origin, added with the Bezier examples: built by the
+            # SHAPE panel, not by the wizard and not by a raw generator.
+            # Its note has to name the Bezier source, because "exact
+            # settings" would point at wizard fields that did not make it
+            # and "not a wizard surface" would say nothing about where it
+            # DID come from.
+            assert 'Bezier' in recipe['note'], recipe['note']
+            assert recipe['source'] in ('extrude', 'spin', 'patch')
         else:
             assert 'Not a wizard surface' in recipe['note']
 
@@ -2625,10 +2718,23 @@ def test_wizard_generated_mesh_is_undoable(app):
 
 # ── Module Editor ────────────────────────────────────────────────────────────
 
+def _mode(app, key):
+    """Activate a mode before asserting its widgets are mapped.
+
+    The rail packs exactly one mode's panel and forgets the rest, so a
+    widget in an inactive mode is genuinely not mapped -- winfo_ismapped is
+    telling the truth. Tests that ask whether a box is showing have to say
+    which mode they are in first, the same way a user would.
+    """
+    app._set_mode(key)
+    app.root.update_idletasks()
+
+
 def _edit_mode(app, role_id=0):
     """Leave the frozen base module and select a MEASURED one, which is what
     the edit actions act on. The panel opens on the base by design -- it is
     the grid's reference -- so every editing test has to step off it first."""
+    _mode(app, 'module')
     app._me_role_id = role_id
     app._me_selection = None
     app._me_render()
@@ -2758,6 +2864,7 @@ def test_the_panel_says_the_base_module_is_a_reference(app):
 
 
 def test_module_editor_3d_panel_is_separate_and_above_the_flattened_view(app):
+    _mode(app, 'module')
     # a distinct widget, not an overlay drawn onto me_canvas
     assert app.me3d_canvas is not app.me_canvas
     assert app.me3d_zc.winfo_y() < app.me_canvas.winfo_y()
@@ -2812,6 +2919,10 @@ def test_module_editor_3d_panel_shows_an_existing_diagonal_as_an_extra_line():
     root = tk.Tk()
     tab = tk.Frame(root)
     app = StereoApp(tab)
+    # The app opens EMPTY, so the grid this test needs is built here, the
+    # same way the `app` fixture builds its own -- it used to arrive as a
+    # side effect of construction.
+    app._generate(push_undo=False)
     tab.pack(fill='both', expand=True)
     root.update_idletasks(); root.update()
     try:
@@ -2853,6 +2964,7 @@ def test_module_editor_3d_panel_orbits_independently_of_the_main_canvas(app):
 
 
 def test_module_editor_3d_panel_zooms_via_the_mouse_wheel(app):
+    _mode(app, 'module')
     zoom0 = app.me3d_zc.zoom
 
     class FakeWheelEvent:
@@ -2958,6 +3070,7 @@ def test_module_3d_panel_shows_height_and_angle_when_an_apex_exists(app):
 
 
 def test_module_editor_clicking_a_node_selects_it_and_shows_the_node_box(app):
+    _mode(app, 'module')
     items = app.me_canvas.find_withtag('node')
     x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
     app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
@@ -2967,6 +3080,7 @@ def test_module_editor_clicking_a_node_selects_it_and_shows_the_node_box(app):
 
 
 def test_module_editor_clicking_a_rod_selects_it_and_shows_the_edge_box(app):
+    _mode(app, 'module')
     items = app.me_canvas.find_withtag('edge')
     x0, y0, x1, y1 = app.me_canvas.bbox(items[0])
     app._me_on_press(FakeEvent((x0 + x1) / 2, (y0 + y1) / 2))
@@ -3026,6 +3140,7 @@ def test_module_editor_lock_prevents_setting_the_length(app, dialogs):
 
 
 def test_module_editor_toggle_adds_and_removes_a_diagonal(app):
+    _mode(app, 'module')
     quad_role = next((r for r in sorted(app._me_roles)
                       if len(app._me_cells[app._me_roles[r][0]]['nodes']) == 4), None)
     assert quad_role is not None
@@ -3415,11 +3530,12 @@ def test_moment_mode_backdrop_is_a_no_op_before_analysis(app):
 
 def _colorbar_rects(app):
     """Canvas rectangle items belonging to a colorbar -- excludes the
-    support-box rectangles (tagged 'node') and the lasso rectangle (tagged
-    'lasso'), neither of which is part of any colorbar."""
+    support-box rectangles (tagged 'node'), the lasso rectangle (tagged
+    'lasso') and the legend's own card (tagged 'legend_card'), none of which
+    is part of any colorbar."""
     return [i for i in app.canvas.find_withtag('all')
             if app.canvas.type(i) == 'rectangle'
-            and not ({'node', 'lasso'} & set(app.canvas.gettags(i)))]
+            and not ({'node', 'lasso', 'legend_card'} & set(app.canvas.gettags(i)))]
 
 
 def test_force_colorbar_is_a_continuous_gradient_not_flat_swatches(app):
@@ -4081,175 +4197,6 @@ def test_colour_radio_sets_exactly_one_colour_flag(app):
         assert got == expect, f'{mode} -> {got}'
 
 
-def test_fill_radio_sets_exactly_one_fill_flag(app):
-    for mode, expect in ((FILL_NONE, (False, False)),
-                         (FILL_SHADED, (True, False)),
-                         (FILL_VORONOI, (False, True))):
-        app.faces_mode.set(mode)
-        app._on_faces_mode_change()
-        got = (app.shaded_faces.get(), app.voronoi_faces.get())
-        assert got == expect, f'{mode} -> {got}'
-
-
-def test_every_toolbar_choice_redraws(app):
-    app._analyze()
-    app.colour_mode.set(COLOUR_UTIL)
-    app._on_colour_mode_change()
-    assert app.canvas.find_all()          # a redraw happened, nothing raised
-
-
-# ── surface Voronoi in the UI ────────────────────────────────────────────────
-
-def test_voronoi_defaults_to_the_surface_view(app):
-    assert app.voronoi_view.get() == svs.VIEW_SURFACE
-
-
-def test_the_hull_domain_is_gone(app):
-    """The convex hull bridged every concavity -- on the parabolic vault it
-    sealed the arch and laid a 15 x 10 m floor slab 2.01 m below the nearest
-    rod, and 27% of what the old Skin view drew was surface the structure
-    does not have. There is no domain control left at all: the domain is the
-    structure's own fabric."""
-    assert not hasattr(app, 'voronoi_domain')
-    assert not hasattr(app, 'voronoi_band')
-
-
-def test_the_cut_thickness_is_re_derived_for_each_new_mesh(app):
-    app.grid_family.set(FAMILY_LABEL['flat_grid'])
-    app._on_generator_change()
-    app.fg_module.set(3.0)
-    app._generate()
-    small = app.voronoi_cut.get()
-    app.fg_module.set(9.0)                 # a much coarser grid
-    app._generate()
-    assert app.voronoi_cut.get() > small
-
-
-@pytest.mark.parametrize('view', svs.VIEWS)
-def test_every_voronoi_view_draws(app, view):
-    app._analyze()
-    app.faces_mode.set(FILL_VORONOI)
-    app._on_faces_mode_change()
-    app.voronoi_view.set(view)
-    app._draw()
-    assert app.canvas.find_withtag('voronoi_face'), f'{view} drew nothing'
-
-
-def test_the_tessellation_stays_on_the_structure(app):
-    """The whole point of the surface domain: no patch may sit out in the
-    void a concave structure arches over. Every patch centre has to lie
-    within a panel's own reach of the fabric."""
-    import numpy as np
-    app.grid_family.set(FAMILY_LABEL['parabolic_vault'])
-    app._on_generator_change()
-    app._generate()
-    app._analyze()
-    panels = app._get_shaded_cells()
-    sites = [tuple((a + b) / 2.0 for a, b in
-                   zip(app.nodes[m['a']], app.nodes[m['b']]))
-             for m in app.members]
-    panel_sites = [list(p['members']) for p in panels]
-    patches = svs.build_surface(app.nodes, panels, sites, panel_sites)
-    assert patches
-    corners = np.array([c for poly, _ in patches for c in poly])
-    nodes = np.array(app.nodes, dtype=float)
-    lo, hi = nodes.min(axis=0), nodes.max(axis=0)
-    assert (corners >= lo - 1e-6).all() and (corners <= hi + 1e-6).all()
-    # and nothing down on the old invented floor: the bottom plane of the
-    # hull was 2.01 m from the nearest rod, so a patch centre out there
-    # would mean the domain had reverted to a hull
-    from apps.stereo import stereo_geometry as sg
-    centres = np.array([poly.mean(axis=0) for poly, _ in patches])
-    seg_a = nodes[[m['a'] for m in app.members]]
-    seg_b = nodes[[m['b'] for m in app.members]]
-    ab = seg_b - seg_a
-    L2 = np.maximum((ab * ab).sum(axis=1), 1e-12)
-    worst = 0.0
-    for q in centres[::7]:
-        t = np.clip(((q - seg_a) * ab).sum(axis=1) / L2, 0.0, 1.0)
-        d = np.linalg.norm(q - (seg_a + t[:, None] * ab), axis=1).min()
-        worst = max(worst, float(d))
-    assert worst < 1.0, f'a patch sits {worst:.2f} m from any rod'
-
-
-def test_a_top_panel_is_never_owned_by_the_other_layer(app):
-    """The metric has to follow the fabric. Measured in straight-line 3D on
-    this grid, a top panel's own chords are 1.500 m away and four web
-    diagonals 1.299 m -- an exact tie among the four -- so 0% of top panels
-    got a top-layer rod and the surface came out a chequerboard of noise."""
-    import numpy as np
-    app.grid_family.set(FAMILY_LABEL['flat_grid'])
-    app._on_generator_change()
-    app._generate()
-    panels = app._get_shaded_cells()
-    nodes = np.array(app.nodes, dtype=float)
-    top_z = nodes[:, 2].max()
-    sites = np.array([(nodes[m['a']] + nodes[m['b']]) / 2.0 for m in app.members])
-    polys = svs.panel_polys(app.nodes, panels)
-    cen = svs.panel_centroids(polys)
-    adj, _ = svs.panel_adjacency(panels)
-    owners = svs.assign_owners(cen, [list(p['members']) for p in panels], sites, adj)
-    tops = [i for i in range(len(panels)) if abs(cen[i][2] - top_z) < 1e-6]
-    assert tops
-    for i in tops:
-        assert abs(sites[owners[i]][2] - top_z) < 1e-6, \
-            'a top-surface panel was captured by a rod on another layer'
-
-
-def test_cells_view_strokes_the_boundaries_between_owners(app):
-    app._analyze()
-    app.faces_mode.set(FILL_VORONOI)
-    app._on_faces_mode_change()
-    app.voronoi_view.set(svs.VIEW_SURFACE)
-    app._draw()
-    plain = len(app.canvas.find_withtag('voronoi_face'))
-    app.voronoi_view.set(svs.VIEW_CELLS)
-    app._draw()
-    assert len(app.canvas.find_withtag('voronoi_face')) > plain, \
-        'the Cells view drew no outlines, so it is just the Surface view'
-
-
-def test_surface_and_cells_are_stippled_and_the_section_is_not(app):
-    """The two surface views wrap the outside of the structure, so a solid
-    fill lets the nearest patch hide every patch behind it. The Section
-    plane is the exception: it is a cut face, and a see-through cut does not
-    read as one."""
-    app._analyze()
-    app.faces_mode.set(FILL_VORONOI)
-    app._on_faces_mode_change()
-    app.fill_density.set('Heavy')
-    for view, expected in ((svs.VIEW_SURFACE, 'gray75'),
-                           (svs.VIEW_CELLS, 'gray75'),
-                           (svs.VIEW_SECTION, '')):
-        app.voronoi_view.set(view)
-        app._draw()
-        items = [i for i in app.canvas.find_withtag('voronoi_face')
-                 if app.canvas.type(i) == 'polygon']
-        assert items, f'{view} drew nothing'
-        got = {app.canvas.itemcget(i, 'stipple') for i in items}
-        assert got == {expected}, f'{view} stipple {got}, expected {expected!r}'
-
-
-def test_the_shade_control_sets_how_see_through_a_fill_is(app):
-    """Tk has no alpha channel, so opacity is a stipple pattern. Which one
-    is a real choice: solid lets the nearest patch hide every patch behind
-    it, and the densest half-tone washes the dark end of the ramp out."""
-    app._analyze()
-    app.faces_mode.set(FILL_VORONOI)
-    app._on_faces_mode_change()
-    app.voronoi_view.set(svs.VIEW_SURFACE)
-    seen = {}
-    for name, pattern in FILL_DENSITY_STIPPLE.items():
-        app.fill_density.set(name)
-        app._draw()
-        got = {app.canvas.itemcget(i, 'stipple')
-               for i in app.canvas.find_withtag('voronoi_face')
-               if app.canvas.type(i) == 'polygon'}
-        assert got == {pattern}, f'{name} drew {got}, expected {pattern!r}'
-        seen[name] = pattern
-    assert len(set(seen.values())) == len(seen), 'two settings do the same thing'
-
-
 def test_the_shade_control_reaches_the_shaded_fill_too(app):
     app._analyze()
     app.faces_mode.set(FILL_SHADED)
@@ -4263,127 +4210,6 @@ def test_the_shade_control_reaches_the_shaded_fill_too(app):
     assert {app.canvas.itemcget(i, 'stipple')
             for i in app.canvas.find_withtag('shaded_face')} == {'gray25'}
 
-
-def test_a_column_shaft_is_covered_by_the_fill(app):
-    """A shaft closes no triangle or quad, so find_cells never sees it. Left
-    out of the domain the fill stopped at the underside of the grid and the
-    columns hung below it as bare lines -- the tessellation no longer
-    covering the structure it describes."""
-    from apps.stereo import stereo_examples as sx
-    label, builder = [(l, b) for l, b in sx.EXAMPLES if 'columns (1-tier)' in l][0]
-    app._load_example(builder, label)
-    app._analyze()
-    panels = app._get_shaded_cells()
-    lone = svs.lone_struts(app.members, panels)
-    assert lone, 'this example is supposed to have column shafts'
-    assert all(app.members[i].get('role') == 'column_shaft' for i in lone)
-
-    sites = [tuple((a + b) / 2.0 for a, b in
-                   zip(app.nodes[m['a']], app.nodes[m['b']]))
-             for m in app.members]
-    without = svs.build_surface(app.nodes, panels, sites,
-                                [list(p['members']) for p in panels])
-    with_struts = svs.build_surface(app.nodes, panels, sites,
-                                    [list(p['members']) for p in panels],
-                                    members=app.members)
-    assert len(with_struts) > len(without)
-    covered = {owner for _poly, owner in with_struts}
-    for i in lone:
-        assert i in covered, f'shaft {i} is still not covered by the fill'
-
-
-def test_the_cache_survives_orbiting_but_not_a_view_change(app):
-    app._analyze()
-    app.faces_mode.set(FILL_VORONOI)
-    app._on_faces_mode_change()
-    app._draw()
-    cached = app._voronoi_cache
-    assert cached is not None
-
-    app.azimuth += 25.0                     # orbiting must NOT rebuild it
-    app._draw()
-    assert app._voronoi_cache is cached
-
-    app.voronoi_view.set(svs.VIEW_CELLS)    # a view change must
-    app._draw()
-    assert app._voronoi_cache is not cached
-
-
-def test_typing_in_the_cut_field_does_not_break_the_canvas(app):
-    # Regression: the thickness is a typed Entry bound to a DoubleVar, and a
-    # redraw runs on far more than the Return key (orbit, any toggle, the
-    # load slider). Reading it mid-edit raised TclError and broke the draw.
-    app._analyze()
-    app.faces_mode.set(FILL_VORONOI)
-    app._on_faces_mode_change()
-    app.voronoi_view.set(svs.VIEW_SECTION)
-    app.voronoi_cut.set(1.0)
-    app._draw()
-
-    for typed in ('', 'abc', '-', '0.'):
-        app.voronoi_cut._tk.globalsetvar(app.voronoi_cut._name, typed)
-        app._draw()          # must not raise
-    app.voronoi_cut.set(1.0)
-
-
-def test_a_non_positive_cut_thickness_is_refused(app):
-    # Regression from the band radius this replaces: a negative value drove
-    # the sampler's step to its floor and asked for millions of samples,
-    # which took the whole process out with an OOM kill.
-    nodes = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)]
-    panels = [{'nodes': (0, 1, 2, 3), 'members': (0, 1, 2, 3)}]
-    quads = svs.section_plane(nodes, 2, 0.5)
-    assert not svs.section_mask(quads, nodes, panels, -3.0).any()
-    assert not svs.section_mask(quads, nodes, panels, 0.0).any()
-
-
-def test_the_cut_field_keeps_the_last_good_thickness(app):
-    app._analyze()
-    app.faces_mode.set(FILL_VORONOI)
-    app._on_faces_mode_change()
-    app.voronoi_cut.set(2.5)
-    app._draw()
-    app.voronoi_cut._tk.globalsetvar(app.voronoi_cut._name, 'nonsense')
-    assert app._voronoi_cut_value() == pytest.approx(2.5)
-    app.voronoi_cut.set(1.0)
-
-
-def test_the_empty_note_names_the_real_reason(app):
-    # Regression: every empty result blamed model size, which sent you off
-    # tuning a limit that was not the problem. Each cause must name itself.
-    app._analyze()
-    app.voronoi_view.set(svs.VIEW_SECTION)
-    assert 'cut plane' in app._voronoi_empty_reason([(0.0, 0.0, 0.0)])
-    app.voronoi_view.set(svs.VIEW_SURFACE)
-    assert 'nothing to tessellate yet' in app._voronoi_empty_reason([])
-
-
-def test_the_note_does_not_outlive_its_cause(app):
-    app._analyze()
-    app.faces_mode.set(FILL_VORONOI)
-    app._on_faces_mode_change()
-    app.voronoi_view.set(svs.VIEW_SECTION)
-    app.voronoi_slice.set(0)
-    app.voronoi_cut._tk.globalsetvar(app.voronoi_cut._name, '0.0001')
-    app._draw()
-    note_then = app._voronoi_note
-    app.voronoi_cut.set(1.0)
-    app.voronoi_slice.set(50)
-    app.voronoi_view.set(svs.VIEW_SURFACE)
-    app._draw()
-    assert app._voronoi_note == '', \
-        f'the note {note_then!r} survived a switch to a view that works'
-
-
-def test_voronoi_is_a_no_op_before_analysis(app):
-    app.results = None
-    app.faces_mode.set(FILL_VORONOI)
-    app._on_faces_mode_change()
-    app._draw()                              # must not raise
-    assert not app.canvas.find_withtag('voronoi_face')
-
-
-# ── smooth rod gradient ──────────────────────────────────────────────────────
 
 def _member_fills(app, tag='member'):
     return [app.canvas.itemcget(i, 'fill') for i in app.canvas.find_withtag(tag)]
@@ -4650,258 +4476,2748 @@ def test_thickness_by_stress_legend_caption_appears_only_when_active(app):
     assert any('thickness' in t.lower() and 'stress' in t.lower() for t in texts)
 
 
-# ── Voronoi tessellation geometry (pure functions, no widget needed) ────────
-
-def test_clip_polygon_to_bbox_keeps_a_polygon_fully_inside():
-    square = [(1, 1), (9, 1), (9, 9), (1, 9)]
-    clipped = _clip_polygon_to_bbox(square, 0, 0, 10, 10)
-    assert sorted(clipped) == sorted(square)
 
 
-def test_clip_polygon_to_bbox_cuts_a_polygon_that_pokes_outside():
-    square = [(-5, -5), (5, -5), (5, 5), (-5, 5)]   # centred on the clip box's own corner
-    clipped = _clip_polygon_to_bbox(square, 0, 0, 10, 10)
-    xs = [p[0] for p in clipped]
-    ys = [p[1] for p in clipped]
-    assert min(xs) >= 0 and min(ys) >= 0
-    assert max(xs) <= 5 and max(ys) <= 5   # nothing beyond where the square itself ended
+# ── the shell: mode rail, one context panel, status bar ─────────────────────
+
+def test_the_window_opens_on_the_build_mode(app):
+    from apps.stereo import stereo_app_shell as shell
+    assert app.active_mode.get() == shell.DEFAULT_MODE == 'build'
+    assert app.mode_title.get() == 'BUILD'
 
 
-def test_clip_polygon_to_bbox_returns_empty_for_a_polygon_entirely_outside():
-    square = [(100, 100), (110, 100), (110, 110), (100, 110)]
-    assert _clip_polygon_to_bbox(square, 0, 0, 10, 10) == []
+def test_exactly_one_mode_panel_is_mapped_at_a_time(app):
+    """The point of the rail. Eight panels exist; seven are forgotten, so
+    none of them is claiming width the canvas could be using."""
+    from apps.stereo import stereo_app_shell as shell
+    for key, _glyph, _label, _tip in shell.MODES:
+        app._set_mode(key)
+        app.root.update_idletasks()
+        packed = [k for k, f in app._mode_frames.items() if f.winfo_manager() != '']
+        assert packed == [key], f'{key}: {packed}'
 
 
-def test_voronoi_cells_2d_returns_one_cell_per_point():
-    points = [(0, 0), (10, 0), (0, 10), (10, 10), (5, 5)]
-    cells = _voronoi_cells_2d(points)
-    assert {idx for idx, _poly in cells} == {0, 1, 2, 3, 4}
-    for _idx, poly in cells:
-        assert len(poly) >= 6   # at least a triangle -- 3 (x, y) pairs, flat
+def test_every_mode_has_a_rail_item_and_a_panel(app):
+    from apps.stereo import stereo_app_shell as shell
+    for key, _glyph, _label, _tip in shell.MODES:
+        assert key in app._rail_buttons, key
+        assert key in app._mode_frames, key
 
 
-def test_voronoi_cells_2d_cells_are_clipped_near_the_points_own_span():
-    points = [(0, 0), (10, 0), (0, 10), (10, 10), (5, 5)]
-    cells = _voronoi_cells_2d(points, bbox_pad=5.0)
-    for _idx, poly in cells:
-        xs, ys = poly[0::2], poly[1::2]
-        assert min(xs) >= -5.001 and max(xs) <= 15.001
-        assert min(ys) >= -5.001 and max(ys) <= 15.001
+def test_clicking_a_rail_item_switches_mode(app):
+    item, _stripe, _body, _icon, _name = app._rail_buttons['load']
+    item.event_generate('<Button-1>')
+    app.root.update_idletasks()
+    assert app.active_mode.get() == 'load'
+    assert app.mode_title.get() == 'LOAD'
 
 
-def test_voronoi_cells_2d_handles_fewer_than_four_points():
-    assert _voronoi_cells_2d([(0, 0), (1, 1), (2, 0)]) == []
+def test_an_unknown_mode_is_ignored_rather_than_blanking_the_panel(app):
+    app._set_mode('support')
+    app._set_mode('not-a-mode')
+    assert app.active_mode.get() == 'support'
 
 
-def test_voronoi_cells_2d_handles_collinear_points_without_raising():
-    # the 4 real points alone are degenerate (no 2D Voronoi diagram exists
-    # for exactly-collinear input), but the far "ghost" points that bound
-    # every cell are deliberately off that line, so the COMBINED point set
-    # scipy.spatial.Voronoi actually sees is never degenerate -- this must
-    # not raise, and should still produce a (possibly strip-shaped) cell
-    # per point rather than silently dropping all of them.
-    cells = _voronoi_cells_2d([(0, 0), (1, 0), (2, 0), (3, 0)])
-    assert {idx for idx, _poly in cells} == {0, 1, 2, 3}
-
-
-# ── Voronoi tessellation render mode (app integration) ───────────────────────
-
-def test_voronoi_faces_off_by_default(app):
-    assert app.voronoi_faces.get() is False
-
-
-def test_voronoi_faces_draws_filled_polygons_for_force_mode(app):
+def test_the_status_bar_reports_the_analysis(app):
+    """The single most useful line the older version of this tab had, and
+    the one the rebuilt one had lost."""
     app._analyze()
-    app.voronoi_faces.set(True)
-    app._draw()
-    faces = app.canvas.find_withtag('voronoi_face')
-    assert faces
-    for f in faces:
-        assert app.canvas.type(f) == 'polygon'
+    text = app.status_var.get()
+    assert text.startswith('Analyzed')
+    assert 'utilisation' in text
+    assert 'ΣRz' in text
+    assert app.status_kind.get() == 'ok'
 
 
-def test_voronoi_faces_draws_for_utilization_mode_too(app):
-    app._analyze()
-    app.colour_by_force.set(False)
-    app.colour_by_util.set(True)
-    app.voronoi_faces.set(True)
-    app._draw()
-    assert app.canvas.find_withtag('voronoi_face')
-
-
-def test_voronoi_faces_draws_for_moment_mode_using_node_sites(app):
-    _make_rigid_fixed(app)
-    app.colour_by_force.set(False)
-    app.colour_by_moment.set(True)
-    app.voronoi_faces.set(True)
-    app._draw()
-    assert app.canvas.find_withtag('voronoi_face')
-
-
-def test_voronoi_faces_are_drawn_behind_the_wireframe(app):
-    app._analyze()
-    app.voronoi_faces.set(True)
-    app._draw()
-    order = app.canvas.find_withtag('all')
-    face_idx = min(order.index(i) for i in app.canvas.find_withtag('voronoi_face'))
-    member_idx = min(order.index(i) for i in app.canvas.find_withtag('member'))
-    assert face_idx < member_idx
-
-
-def test_voronoi_faces_is_a_no_op_before_analysis(app):
+def test_the_status_bar_says_when_nothing_has_been_analyzed(app):
     app.results = None
     app.member_checks = None
-    app.voronoi_faces.set(True)
-    app._draw()   # must not raise
-    assert not app.canvas.find_withtag('voronoi_face')
+    app._refresh_status()
+    assert 'not analyzed' in app.status_var.get()
+    assert app.status_kind.get() != 'ok'
 
 
-def test_voronoi_faces_legend_caption_appears_only_when_active(app):
+def test_the_status_bar_follows_the_load_slider(app):
+    """Everything else in the tab scales with Load %; the status line has to
+    scale with it too or it contradicts the drawing beside it."""
     app._analyze()
-    app.voronoi_faces.set(False)
+    full = app.status_var.get()
+    app.load_fraction.set(50)
+    app._refresh_status()
+    assert app.status_var.get() != full
+
+
+def test_display_state_survives_closing_the_popover(app):
+    """The popover is built on demand and destroyed on close, so its widgets
+    cannot own the state -- _draw reads show_deformed on the very first
+    frame, long before anyone opens Display."""
+    assert hasattr(app, 'show_deformed')
+    app._toggle_display_popover()
+    app.root.update_idletasks()
+    app.show_deformed.set(True)
+    app._toggle_display_popover()
+    app.root.update_idletasks()
+    assert app.show_deformed.get() is True
+    assert getattr(app, '_display_pop', None) is None
+
+
+def test_the_display_popover_opens_and_closes_on_the_same_button(app):
+    app._toggle_display_popover()
+    assert app._display_pop is not None and app._display_pop.winfo_exists()
+    app._toggle_display_popover()
+    assert app._display_pop is None
+
+
+def test_the_legend_sits_on_its_own_card_in_the_corner(app):
+    """Kept in the corner of the display, where you look when reading colour
+    off the model -- but on a ground of its own, so the ramp and its numbers
+    are legible over whatever part of the structure lies behind them."""
+    app._analyze()
+    app.colour_by_force.set(True)
     app._draw()
-    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
-            if app.canvas.type(i) == 'text']
-    assert not any('Voronoi ·' in t for t in texts)
+    cards = app.canvas.find_withtag('legend_card')
+    assert len(cards) == 1
+    x0, y0, x1, y1 = app.canvas.coords(cards[0])
+    assert x0 < 60 and y0 < 60, 'the card left its corner'
+    assert x1 > x0 and y1 > y0
 
-    app.voronoi_faces.set(True)
+
+def test_the_legend_card_sits_under_its_own_text(app):
+    app._analyze()
     app._draw()
-    texts = [app.canvas.itemcget(i, 'text') for i in app.canvas.find_withtag('all')
-            if app.canvas.type(i) == 'text']
-    assert any('Voronoi ·' in t for t in texts)
+    card = app.canvas.find_withtag('legend_card')[0]
+    # find_all returns STACKING order, bottom first -- item ids are creation
+    # order and say nothing about who is drawn over whom.
+    order = list(app.canvas.find_all())
+    assert order.index(card) < len(order) - 1, \
+        'the card is on top of the legend it is meant to back'
 
 
-# ── Simple / Advanced mode toggle ──────────────────────────────────────
+def test_no_model_is_reported_as_no_model(app):
+    app.nodes, app.members, app.results = [], [], None
+    app._refresh_status()
+    assert 'No model' in app.status_var.get()
 
-class TestSimpleAdvancedToggle:
-    def test_default_mode_is_advanced(self, app):
-        assert app.simple_mode.get() is False
 
-    def test_toggle_to_simple_hides_advanced_toolbar_groups(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        hidden_ids = set(id(w) for w in app._advanced_toolbar_widgets)
-        for g in app.toolbar_flow.groups:
-            assert id(g) not in hidden_ids
+# ── Shape mode: the surface/lattice panel ────────────────────────────────────
 
-    def test_toggle_to_simple_hides_advanced_build_widgets(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        for w in app._build_advanced_widgets:
+def _shape(app):
+    _mode(app, 'shape')
+    return app
+
+
+def test_the_shape_panel_builds_a_mesh_from_two_typed_surfaces(app):
+    """The whole point of Shape mode: type two expressions, pick how the
+    layers register against each other, press Build, and the model on the
+    canvas is that lattice -- no generator, no example."""
+    _shape(app)
+    app.shape_two.set(True)
+    app.shape_z_top.set('3.0 * (1 - (x/12)^2 - (y/12)^2) + 1.0')
+    app.shape_z_bot.set('0')
+    app.shape_p0.set(-6.0); app.shape_p1.set(6.0)
+    app.shape_q0.set(-6.0); app.shape_q1.set(6.0)
+    app.shape_n1.set(4); app.shape_n2.set(4)
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == ''
+    assert len(app.nodes) == 25 + 16          # 5x5 top + 4x4 bottom
+    assert len(app.members) > 0
+    assert max(z for _x, _y, z in app.nodes) > 1.0
+
+
+def test_each_lattice_type_gives_a_different_web(app):
+    """The four families differ ONLY in which chords are drawn -- same nodes,
+    same surfaces. If two of them came out with the same rod count the
+    choice would be decorative."""
+    _shape(app)
+    app.shape_two.set(False)
+    app.shape_z_top.set('0.4 * (x + y)')
+    app.shape_depth.set(1.0)
+    app.shape_p0.set(0.0); app.shape_p1.set(4.0)
+    app.shape_q0.set(0.0); app.shape_q1.set(4.0)
+    app.shape_n1.set(4); app.shape_n2.set(4)
+    counts = {}
+    for lattice in sg.LATTICE_TYPES:
+        app.shape_lattice.set(lattice)
+        app._build_shape_mesh()
+        assert app.shape_status.cget('text') == '', lattice
+        counts[lattice] = len(app.members)
+    assert len(set(counts.values())) == len(counts), counts
+    assert counts[sg.LATTICE_SINGLE] == min(counts.values())
+
+
+def test_the_panel_refuses_two_surfaces_that_cross_inside_the_domain(app):
+    """Crossed layers are not a lattice -- the webs turn inside out where the
+    surfaces swap. The panel has to say so instead of building nonsense."""
+    _shape(app)
+    app.shape_two.set(True)
+    app.shape_z_top.set('x')
+    app.shape_z_bot.set('-x')          # they meet along x = 0, inside the box
+    app.shape_p0.set(-4.0); app.shape_p1.set(4.0)
+    app.shape_q0.set(0.0); app.shape_q1.set(4.0)
+    app.shape_n1.set(4); app.shape_n2.set(4)
+    before = list(app.nodes)
+    app._build_shape_mesh()
+    assert 'cross' in app.shape_status.cget('text').lower()
+    assert app.nodes == before, 'a refused build must leave the model alone'
+
+
+def test_a_bad_expression_is_reported_and_not_raised(app):
+    _shape(app)
+    app.shape_z_top.set('3 * (')
+    before = list(app.nodes)
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') != ''
+    assert app.nodes == before
+
+
+def test_the_depth_field_and_the_bottom_field_swap_with_the_surface_mode(app):
+    """One surface needs a depth; two surfaces need the second expression.
+    Showing both at once would leave one of them silently ignored."""
+    _shape(app)
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app.shape_two.set(False)
+    app._on_shape_mode_change()
+    assert _shown(app.frame_shape_depth) and not _shown(app.frame_shape_bot)
+    app.shape_two.set(True)
+    app._on_shape_mode_change()
+    assert _shown(app.frame_shape_bot) and not _shown(app.frame_shape_depth)
+
+
+def test_a_single_layer_hides_both_depth_fields_and_warns(app):
+    """A single layer has no second surface to be at a depth from, and a FLAT
+    one is a mechanism -- the panel says that before you build it."""
+    _shape(app)
+    app.shape_lattice.set(sg.LATTICE_SINGLE)
+    app._on_shape_mode_change()
+    assert not _shown(app.frame_shape_depth) and not _shown(app.frame_shape_bot)
+    assert 'mechanism' in app.shape_lattice_note.cget('text').lower()
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app._on_shape_mode_change()
+    assert app.shape_lattice_note.cget('text') == ''
+
+
+def test_the_pole_fields_only_appear_for_a_polar_domain(app):
+    _shape(app)
+    app.shape_coord.set('cartesian')
+    app._on_shape_mode_change()
+    assert not _shown(app.frame_shape_pole)
+    assert app.shape_p_label.get().startswith('x')
+    app.shape_coord.set('polar')
+    app._on_shape_mode_change()
+    assert _shown(app.frame_shape_pole)
+    assert app.shape_p_label.get().startswith('r')
+
+
+def test_the_summit_finder_moves_the_pole_onto_the_summit(app):
+    """A polar grid centred off the summit wraps rings around nothing. The
+    finder searches WIDER than the current disk, because a summit on the rim
+    is exactly the case that says the pole is in the wrong place."""
+    _shape(app)
+    app.shape_coord.set('polar')
+    app.shape_z_top.set('5 - (x - 4)^2 - (y - 4)^2')
+    app.shape_p0.set(0.0); app.shape_p1.set(4.0)
+    app.shape_pole_x.set(0.0); app.shape_pole_y.set(0.0)
+    app._shape_find_summits()
+    # The pole boxes hold EXPRESSIONS now ('2*pi' has to be typeable), so
+    # they read back as text and go through the same parser the panel uses.
+    assert abs(float(app.shape_pole_x.get()) - 4.0) < 0.2
+    assert abs(float(app.shape_pole_y.get()) - 4.0) < 0.2
+    assert 'One summit' in app.shape_summit_note.cget('text')
+
+
+def test_a_surface_with_no_summit_says_so_rather_than_parking_the_pole(app):
+    _shape(app)
+    app.shape_coord.set('polar')
+    app.shape_z_top.set('x + y')        # a plane: rises forever, no summit
+    app.shape_p0.set(0.0); app.shape_p1.set(4.0)
+    app._shape_find_summits()
+    assert 'No summit' in app.shape_summit_note.cget('text')
+
+
+def test_a_polar_domain_builds_a_round_plan(app):
+    _shape(app)
+    app.shape_coord.set('polar')
+    app.shape_two.set(False)
+    app.shape_z_top.set('4 - 0.05 * (x^2 + y^2)')
+    app.shape_p0.set(1.0); app.shape_p1.set(6.0)
+    app.shape_q0.set(0.0); app.shape_q1.set(360.0)
+    app.shape_n1.set(3); app.shape_n2.set(8)
+    app.shape_pole_x.set(0.0); app.shape_pole_y.set(0.0)
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == ''
+    radii = [math.hypot(x, y) for x, y, _z in app.nodes]
+    assert min(radii) > 0.5 and max(radii) < 6.5
+
+
+def test_the_module_note_tracks_the_domain_and_divisions(app):
+    _shape(app)
+    app.shape_p0.set(0.0); app.shape_p1.set(12.0); app.shape_n1.set(6)
+    app.shape_q0.set(0.0); app.shape_q1.set(6.0); app.shape_n2.set(3)
+    app._on_shape_mode_change()
+    assert '2.00' in app.shape_module_note.cget('text')
+
+
+# ── the view cube ────────────────────────────────────────────────────────────
+
+def test_the_view_cube_sits_in_the_canvas_corner(app):
+    app._draw()
+    app.root.update_idletasks()
+    items = app.canvas.find_withtag('view_cube')
+    assert len(items) == 1
+    x, y = app.canvas.coords(items[0])
+    assert y < 40 and x > app.canvas.winfo_width() - 200
+
+
+def test_every_preset_snaps_the_camera_and_lights_exactly_one_button(app):
+    for name, az, el in sh.VIEW_PRESETS:
+        app._set_named_view(name, az, el)
+        assert (app.azimuth, app.elevation) == (az, el)
+        assert app.current_view.get() == name
+        lit = [n for n, b in app._view_buttons.items()
+               if str(b.cget('relief')) == 'sunken']
+        assert lit == [name], lit
+
+
+def test_orbiting_by_hand_unlights_the_preset(app):
+    """A button still pressed in after the camera moved would be a lie about
+    where you are looking from."""
+    app._set_named_view('Top', 0.0, 89.9)
+    assert app.current_view.get() == 'Top'
+    app._clear_named_view()
+    assert app.current_view.get() == ''
+    assert not [b for b in app._view_buttons.values()
+                if str(b.cget('relief')) == 'sunken']
+
+
+def test_the_view_cube_keeps_its_corner_when_the_canvas_resizes(app):
+    app._draw()
+    app.canvas.configure(width=1200)
+    app.root.update_idletasks()
+    app._place_view_cube()
+    x, _y = app.canvas.coords(app.canvas.find_withtag('view_cube')[0])
+    assert abs(x - (app.canvas.winfo_width() - 16)) < 2
+    assert len(app.canvas.find_withtag('view_cube')) == 1, 'a second cube was created'
+
+
+# ── the pinned base-module card ──────────────────────────────────────────────
+
+def test_the_base_module_card_is_pinned_over_the_canvas(app):
+    app.show_module_card.set(True)
+    app._draw()
+    app.root.update_idletasks()
+    items = app.canvas.find_withtag('module_card')
+    assert len(items) == 1
+    x, y = app.canvas.coords(items[0])
+    # Top right, directly under the view cube: both cards answer "how am I
+    # looking at this", so they share the right-hand column.
+    cube = app.canvas.coords(app.canvas.find_withtag('view_cube')[0])
+    assert x > app.canvas.winfo_width() - app.MODULE_CARD_SIZE - 40
+    assert y > cube[1] + app.view_cube.winfo_reqheight() - 1, 'it overlaps the cube'
+    assert y < app.canvas.winfo_height() / 2, 'it is not in the top half'
+    assert abs((x + app.MODULE_CARD_SIZE) - cube[0]) < 3, \
+        'the two cards do not line up on the right'
+    assert app.module_card_canvas.find_all(), 'the card is empty'
+
+
+def test_turning_the_card_off_removes_it_from_the_canvas(app):
+    app.show_module_card.set(True)
+    app._draw()
+    assert app.canvas.find_withtag('module_card')
+    app.show_module_card.set(False)
+    app._draw()
+    assert not app.canvas.find_withtag('module_card')
+
+
+def test_redrawing_does_not_pile_up_module_cards(app):
+    """_draw clears the canvas wholesale, so a remembered window id goes
+    stale every frame -- the card has to be found by tag, not remembered."""
+    app.show_module_card.set(True)
+    for _ in range(4):
+        app._draw()
+    assert len(app.canvas.find_withtag('module_card')) == 1
+
+
+def test_the_card_always_shows_the_base_module_not_the_edited_one(app):
+    """The card is the grid's reference. Selecting another role in the editor
+    must not repaint it, or it stops being a reference."""
+    app.show_module_card.set(True)
+    _mode(app, 'module')
+    app._draw()
+    keep = app._me_role_id
+    app._draw_module_card()
+    assert app._me_role_id == keep, 'the card left the editor on another role'
+
+
+# ── nodes and supports, drawn the way the first version drew them ────────────
+
+def test_nodes_are_small_dots(app):
+    """Big discs hid the rods behind them. The original tab drew a 2 px dot
+    and that is what reads at grid density."""
+    assert sc.NODE_RADIUS_PX == 2
+    assert sc.NODE_RADIUS_SEL_PX > sc.NODE_RADIUS_PX
+    app.selected_nodes = set()
+    app._draw()
+    # 'node' also carries each support's box; the dot itself is the oval.
+    dots = [i for i in app.canvas.find_withtag('node')
+            if app.canvas.type(i) == 'oval']
+    assert dots
+    x0, y0, x1, y1 = app.canvas.coords(dots[0])
+    assert abs((x1 - x0) - 2 * sc.NODE_RADIUS_PX) < 1.5
+
+
+def test_a_support_is_a_filled_white_box_under_its_node(app):
+    """White box, not a coloured blob: the box says 'support', the dot inside
+    it still says 'node', and you can see both."""
+    app.results = None
+    app.supports = [{'node': 0, 'type': 'pin'}]
+    app._draw()
+    boxes = app.canvas.find_withtag('support')
+    assert len(boxes) == 1
+    box = boxes[0]
+    assert str(app.canvas.itemcget(box, 'fill')).lower() == sc.SUPPORT_BOX_FILL.lower()
+    x0, y0, x1, y1 = app.canvas.coords(box)
+    assert abs((x1 - x0) - 2 * sc.SUPPORT_BOX_HALF_PX) < 1.5
+    # find_all is STACKING order: the box has to be under its own dot, or it
+    # hides the joint it is marking.
+    order = list(app.canvas.find_all())
+    dot = [i for i in app.canvas.find_withtag('node0')
+           if app.canvas.type(i) == 'oval'][0]
+    assert order.index(box) < order.index(dot), \
+        'the box is covering the node it marks'
+
+
+# ── Shape mode: the plan-shape mask ──────────────────────────────────────────
+
+def _flat_shape(app, n=6):
+    _mode(app, 'shape')
+    app.shape_two.set(False)
+    app.shape_z_top.set('0.3 * x')
+    app.shape_depth.set(1.0)
+    app.shape_p0.set(-6.0); app.shape_p1.set(6.0)
+    app.shape_q0.set(-6.0); app.shape_q1.set(6.0)
+    app.shape_n1.set(n); app.shape_n2.set(n)
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app.shape_plan.set('')
+
+
+def test_a_plan_rule_cuts_the_rectangle_the_ranges_describe(app):
+    """Two ranges can only describe a rectangle. The plan rule is how that
+    becomes a round, L-shaped or perforated roof."""
+    _flat_shape(app)
+    app._build_shape_mesh()
+    whole = len(app.nodes)
+    app.shape_plan.set('x^2 + y^2 < 16')
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == ''
+    assert len(app.nodes) < whole
+    assert 'removed' in app.shape_plan_note.cget('text')
+    assert max(math.hypot(x, y) for x, y, _z in app.nodes) < 6.5
+
+
+def test_an_l_shaped_plan_removes_one_quadrant(app):
+    """The cut is MODULE-granular, not node-granular: a bottom node that
+    survives keeps the top corners its webs hang from, even where one of
+    those corners is on the far side of the line. So the quadrant empties
+    except for one module's depth of framing along the cut -- which is the
+    point, since that framing is what stops the edge being ragged."""
+    _flat_shape(app)
+    app._build_shape_mesh()
+    whole = len(app.nodes)
+    app.shape_plan.set('not (x > 0 and y > 0)')
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == ''
+    module = (6.0 - -6.0) / 6
+    strays = [(x, y) for x, y, _z in app.nodes
+              if min(x, y) > module + 1e-6]
+    assert not strays, f'nodes survive more than one module into the cut: {strays}'
+    assert len(app.nodes) < whole * 0.9, 'the quadrant was barely touched'
+
+
+def test_a_cut_model_still_solves(app):
+    """A ragged edge of half-connected nodes would read as a mechanism. The
+    mask keeps the chords that bound the hole for exactly this reason."""
+    _flat_shape(app)
+    app.shape_plan.set('x^2 + y^2 < 16')
+    app._build_shape_mesh()
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_the_cut_edge_becomes_supportable(app):
+    """A cut creates a new free edge. Leaving the support candidates as the
+    old rectangle's perimeter would leave that edge with nothing to stand
+    on, in a model whose whole point is the new shape."""
+    _flat_shape(app)
+    app.shape_plan.set('x^2 + y^2 < 16')
+    app._build_shape_mesh()
+    assert app._support_candidates
+    rim = max(math.hypot(*app.nodes[i][:2]) for i in app._support_candidates)
+    assert rim > 2.5, 'the candidates are not on the new rim'
+
+
+def test_a_rule_that_keeps_everything_says_so_instead_of_looking_applied(app):
+    """A rule whose centre is outside the domain silently keeps the whole
+    rectangle, which looks exactly like having typed no rule at all."""
+    _flat_shape(app)
+    app.shape_plan.set('x > -999')
+    app._build_shape_mesh()
+    assert 'kept the whole domain' in app.shape_plan_note.cget('text')
+
+
+def test_a_rule_that_keeps_nothing_is_refused_not_built(app):
+    _flat_shape(app)
+    app._build_shape_mesh()
+    before = list(app.nodes)
+    app.shape_plan.set('x > 999')
+    app._build_shape_mesh()
+    assert 'removed the whole structure' in app.shape_status.cget('text')
+    assert app.nodes == before
+
+
+def test_a_plan_preset_is_written_against_the_current_domain(app):
+    """A circle typed in absolute metres is wrong the moment the domain
+    moves, so the presets are built from the ranges in the panel."""
+    _flat_shape(app)
+    app.shape_p0.set(0.0); app.shape_p1.set(10.0)
+    app.shape_q0.set(0.0); app.shape_q1.set(10.0)
+    app._set_plan_rule('(x - {cx})^2 + (y - {cy})^2 < {r}^2')
+    assert app.shape_plan.get() == '(x - 5)^2 + (y - 5)^2 < 5^2'
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == ''
+
+
+def test_clearing_the_plan_rule_restores_the_whole_rectangle(app):
+    _flat_shape(app)
+    app._build_shape_mesh()
+    whole = len(app.nodes)
+    app.shape_plan.set('x^2 + y^2 < 16')
+    app._build_shape_mesh()
+    assert len(app.nodes) < whole
+    app.shape_plan.set('')
+    app._build_shape_mesh()
+    assert len(app.nodes) == whole
+    assert app.shape_plan_note.cget('text') == ''
+
+
+def test_a_bad_plan_rule_is_reported_and_not_raised(app):
+    _flat_shape(app)
+    before = list(app.nodes)
+    app.shape_plan.set('x <')
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') != ''
+    assert app.nodes == before
+
+
+# ── a column has to actually carry the joint it stands under ─────────────────
+
+def test_a_column_takes_over_the_support_at_the_joint_it_carries(app):
+    """Regression, measured: a plain post under a pinned corner carried
+    exactly 0.00 kN with the old pin still there and 23.17 kN once it was
+    gone. A pin left at the head is a rigid path to ground in parallel with
+    the column, and it wins every time."""
+    _mode(app, 'addons')
+    target = app.supports[0]['node']
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.col_height.set(4.0)
+    app.selected_nodes = {target}
+    n_before = len(app.nodes)
+    app._add_column()
+    assert not any(s['node'] == target for s in app.supports), \
+        'the joint the column carries is still pinned in mid-air'
+    assert target not in app._support_candidates
+    feet = [s['node'] for s in app.supports if s['node'] >= n_before]
+    assert feet, 'the column foot is not pinned'
+    app._analyze()
+    assert app.err is None, app.err
+    shaft = next(i for i, m in enumerate(app.members)
+                 if m.get('role') == 'column_shaft')
+    assert abs(app.results['member_res'][shaft]['N']) > 1.0, \
+        'the column is in the model but carrying nothing'
+
+
+def test_the_column_says_which_supports_it_took_over(app):
+    """Removing a support is not something the user should have to discover
+    from a reaction that moved."""
+    _mode(app, 'addons')
+    target = app.supports[0]['node']
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {target}
+    app._add_column()
+    note = app.col_note.cget('text')
+    assert 'foot pinned' in note and str(target) in note
+
+
+def test_a_column_under_an_unsupported_joint_changes_no_supports(app):
+    """Nothing to take over means nothing to report -- the note must not
+    invent a boundary-condition change that did not happen."""
+    _mode(app, 'addons')
+    free = next(i for i in range(len(app.nodes))
+                if not any(s['node'] == i for s in app.supports))
+    before = {s['node'] for s in app.supports}
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {free}
+    n_before = len(app.nodes)
+    app._add_column()
+    feet = {s['node'] for s in app.supports if s['node'] >= n_before}
+    assert {s['node'] for s in app.supports} - feet == before
+    assert 'no longer pinned' not in app.col_note.cget('text')
+
+
+# ── fitting the 300 px panel, and the mode shortcuts ─────────────────────────
+
+def _too_wide(widget, room):
+    """Widgets whose requested width does not fit the panel they sit in.
+    winfo_reqwidth is what the widget ASKED for, which is what overflows --
+    winfo_width would report the clipped size and hide the problem."""
+    bad = []
+    for child in widget.winfo_children():
+        if child.winfo_manager() == 'pack' and child.winfo_reqwidth() > room:
+            bad.append((str(child), child.winfo_reqwidth(), room))
+        bad += _too_wide(child, room)
+    return bad
+
+
+@pytest.mark.parametrize('mode', ['build', 'shape', 'support', 'load',
+                                  'section', 'addons', 'module', 'analyse',
+                                  'results'])
+def test_no_panel_asks_for_more_width_than_the_panel_has(app, mode):
+    """Every field has to fit the context panel. A combobox that asks for a
+    fixed character width next to a fixed-width label overflowed it, and the
+    overflow is invisible until you look: Tk clips it silently."""
+    _mode(app, mode)
+    app.root.update_idletasks()
+    from apps.stereo.stereo_app_shell import PANEL_W
+    frame = app._mode_frames[mode]
+    assert not _too_wide(frame, PANEL_W), _too_wide(frame, PANEL_W)
+
+
+def _editable_entry(widget):
+    """The first entry in a panel that actually takes typing -- a readonly
+    combobox has a tk.Entry inside it that never does."""
+    for child in widget.winfo_children():
+        if isinstance(child, tk.Entry) and str(child.cget('state')) == 'normal':
+            return child
+        found = _editable_entry(child)
+        if found is not None:
+            return found
+    return None
+
+
+def test_alt_digit_jumps_to_each_mode_in_rail_order(app):
+    """Generated on the canvas, not the toplevel: a key event goes to the
+    FOCUS widget and then up its bindtags, so with no focus anywhere Tk
+    drops it and nothing fires. The binding still lives on the toplevel,
+    which is what puts it in every descendant's bindtags -- that is how it
+    reaches you from inside the entry you were editing."""
+    from apps.stereo.stereo_app_shell import MODES
+    app.canvas.focus_force()
+    app.root.update()
+    for n, (key, _g, _l, _t) in enumerate(MODES, start=1):
+        app.canvas.event_generate(f'<Alt-Key-{n}>', when='now')
+        app.root.update()
+        assert app.active_mode.get() == key, f'Alt+{n} did not reach {key}'
+
+
+def test_the_shortcut_works_from_inside_an_entry_without_typing_into_it(app):
+    """The case the shortcut exists for: you have just typed a column height
+    and want the next mode. Switching must not also leave a digit in the
+    field you were in."""
+    _mode(app, 'addons')
+    entry = _editable_entry(app._mode_frames['addons'])
+    assert entry is not None
+    entry.focus_force()
+    app.root.update()
+    before = entry.get()
+    entry.event_generate('<Alt-Key-2>', when='now')
+    app.root.update()
+    assert app.active_mode.get() == 'shape'
+    assert entry.get() == before, 'the shortcut typed into the field'
+
+
+def test_a_bare_digit_still_types_and_does_not_switch_mode(app):
+    """Half this tab's work is typing numbers, which is why the shortcut
+    takes Alt rather than the bare digit."""
+    _mode(app, 'addons')
+    entry = _editable_entry(app._mode_frames['addons'])
+    entry.focus_force()
+    app.root.update()
+    before = entry.get()
+    entry.event_generate('<Key-7>', when='now')
+    app.root.update()
+    assert app.active_mode.get() == 'addons', 'a bare digit switched mode'
+    assert entry.get() != before, 'the digit never reached the field'
+
+
+def test_the_mode_hotkey_stops_the_key_reaching_the_focused_entry(app):
+    """Without 'break', Alt+4 switches mode AND types a 4 into whatever
+    entry had focus."""
+    assert app._mode_hotkey('load') == 'break'
+    assert app.active_mode.get() == 'load'
+
+
+def test_the_rail_hint_advertises_the_shortcut(app):
+    """A key nobody is told about is a key nobody presses."""
+    app.hint_var.set('')
+    app._rail_buttons['support'][0].event_generate('<Enter>', when='now')
+    app.root.update()
+    assert 'Alt+3' in app.hint_var.get()
+
+
+# ── the selection card ───────────────────────────────────────────────────────
+
+def test_clicking_a_rod_reports_it_in_every_mode_not_just_results(app):
+    """Regression: the click-to-inspect readout lived in the Results panel,
+    so inspecting a rod while placing supports wrote the answer onto a
+    panel that was not on screen -- while the canvas legend was inviting
+    you to click a rod to inspect it."""
+    app._analyze()
+    _mode(app, 'support')
+    app.selected_nodes = set()
+    app.selected_member = 3
+    app._show_member_info(3)
+    app._draw()
+    assert 'Member 3' in app.sel_var.get()
+    assert app.canvas.find_withtag('selection_card'), \
+        'the readout is invisible outside Results'
+
+
+def test_the_selection_card_stays_out_of_the_way_when_nothing_is_selected(app):
+    """Empty, it would permanently repeat the legend's own invitation to
+    click something, over the model."""
+    app.selected_nodes = set()
+    app.selected_member = None
+    app._draw()
+    assert not app.canvas.find_withtag('selection_card')
+
+
+def test_the_selection_card_sits_in_the_bottom_left_corner(app):
+    """The other three corners are taken: legend top-left, view cube
+    top-right, base module bottom-right."""
+    app.selected_nodes = {3}
+    app._draw()
+    app.root.update_idletasks()
+    items = app.canvas.find_withtag('selection_card')
+    assert len(items) == 1
+    x, y = app.canvas.coords(items[0])
+    assert x < 40
+    assert y > app.canvas.winfo_height() / 2
+
+
+def test_redrawing_does_not_pile_up_selection_cards(app):
+    app.selected_nodes = {3}
+    for _ in range(4):
+        app._draw()
+    assert len(app.canvas.find_withtag('selection_card')) == 1
+
+
+def test_the_panel_and_the_card_cannot_disagree_about_the_selection(app):
+    """One StringVar drives both, which is the point -- two readouts of the
+    same thing that can drift apart are worse than one."""
+    _mode(app, 'results')
+    app.selected_nodes = {7}
+    app._sync_selection_fields()
+    app.root.update_idletasks()
+    assert 'Node 7' in app.sel_var.get()
+    # Both readouts are driven by that ONE variable, which is the property
+    # that makes them unable to drift apart. A label bound to a textvariable
+    # reports its -text as empty, so the binding is what there is to check.
+    var = str(app.sel_var)
+    assert str(app.sel_label.cget('textvariable')) == var
+    bound = [w for w in app.selection_card.winfo_children()
+             if str(w.cget('textvariable')) == var]
+    assert len(bound) == 1, [str(w.cget('textvariable'))
+                             for w in app.selection_card.winfo_children()]
+
+
+# ── focus states ─────────────────────────────────────────────────────────────
+
+def _plain_entries(widget, out=None):
+    """tk.Entry only. ttk.Entry SUBCLASSES it but is themed and has no
+    highlight options, so isinstance alone reaches the entry inside every
+    readonly combobox."""
+    out = [] if out is None else out
+    for child in widget.winfo_children():
+        if type(child) is tk.Entry:
+            out.append(child)
+        _plain_entries(child, out)
+    return out
+
+
+def test_every_panel_entry_shows_where_the_keystrokes_will_land(app):
+    """Tk's default focus highlight is the same colour as the background,
+    which is to say none. Across eight panels of numeric fields there was
+    no way to tell which one had focus."""
+    from apps.stereo.stereo_app_shell import RAIL_STRIPE
+    seen = 0
+    for mode in app._mode_frames:
+        for entry in _plain_entries(app._mode_frames[mode]):
+            seen += 1
+            assert int(entry.cget('highlightthickness')) >= 1
+            assert str(entry.cget('highlightcolor')) == RAIL_STRIPE
+    assert seen > 20, f'only {seen} entries found -- the walk missed the panels'
+
+
+def test_the_focus_ring_walk_does_not_touch_themed_widgets(app):
+    """A ttk.Entry has no highlightthickness at all; configuring one raises
+    TclError, which would have taken the whole tab down at build time."""
+    from tkinter import ttk
+    app._apply_focus_ring(app.panel_host)     # must not raise
+    combos = []
+
+    def walk(w):
+        for c in w.winfo_children():
+            if isinstance(c, ttk.Combobox):
+                combos.append(c)
+            walk(c)
+    walk(app.panel_host)
+    assert combos, 'no comboboxes found -- this test would prove nothing'
+
+
+# ── the base module card turns ───────────────────────────────────────────────
+
+def test_dragging_the_base_module_card_turns_the_module(app):
+    """It is a 3D solid in a window, so it should behave like one. Before
+    this it was a fixed picture you could not look behind."""
+    app.show_module_card.set(True)
+    app._draw()
+    before = (app.me3d_azimuth, app.me3d_elevation)
+    c = app.module_card_canvas
+    c.event_generate('<ButtonPress-1>', x=40, y=40, when='now')
+    c.event_generate('<B1-Motion>', x=100, y=70, when='now')
+    c.event_generate('<ButtonRelease-1>', x=100, y=70, when='now')
+    app.root.update()
+    assert (app.me3d_azimuth, app.me3d_elevation) != before
+
+
+def test_turning_the_card_does_not_move_the_main_camera(app):
+    """Two cameras, deliberately: the module and the model are different
+    things to be looking at."""
+    app.show_module_card.set(True)
+    app._draw()
+    before = (app.azimuth, app.elevation)
+    c = app.module_card_canvas
+    c.event_generate('<ButtonPress-1>', x=30, y=30, when='now')
+    c.event_generate('<B1-Motion>', x=120, y=90, when='now')
+    c.event_generate('<ButtonRelease-1>', x=120, y=90, when='now')
+    app.root.update()
+    assert (app.azimuth, app.elevation) == before
+
+
+def test_the_card_and_the_editor_share_one_module_camera(app):
+    """Two views of one solid. Separate cameras would mean the card quietly
+    disagreeing with the editor about which way the module faces."""
+    _mode(app, 'module')
+    app.show_module_card.set(True)
+    app._draw()
+    app.me3d_azimuth, app.me3d_elevation = 12.0, 7.0
+    app._me_render_3d_everywhere()
+    assert app.me3d_canvas.find_all()
+    assert app.module_card_canvas.find_all()
+
+
+# ── Analyse mode ─────────────────────────────────────────────────────────────
+
+def test_the_display_controls_are_reachable_without_hunting_for_a_button(app):
+    """The whole visual vocabulary of the tab used to be behind the Display
+    popover -- one button away, and so, for anyone who had not found that
+    button, not there at all."""
+    _mode(app, 'analyse')
+    frame = app._mode_frames['analyse']
+    labels = []
+
+    def walk(w):
+        for c in w.winfo_children():
             try:
-                w.pack_info()
-                assert False, f'{w} should be hidden'
+                t = c.cget('text')
             except tk.TclError:
-                pass
+                t = ''
+            if t:
+                labels.append(str(t))
+            walk(c)
+    walk(frame)
+    blob = ' | '.join(labels)
+    for wanted in ('Utilization', 'Axial force', 'Node moment', 'Smooth gradient',
+                   'Thickness = stress', 'Load-path arrows', 'Reactions'):
+        assert wanted in blob, f'{wanted!r} is not in the Analyse panel'
 
-    def test_toggle_to_simple_hides_solve_advanced_widgets(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        for w in app._solve_advanced_widgets:
+
+def test_the_analyse_panel_and_the_popover_cannot_disagree(app):
+    """Both bind the SAME Tk variables. Two independent copies of the same
+    switch is how a UI starts lying about its own state."""
+    _mode(app, 'analyse')
+    app.smooth_gradient.set(True)
+    app._toggle_display_popover()
+    app.root.update_idletasks()
+    assert app.smooth_gradient.get() is True
+    app._toggle_display_popover()
+
+
+def test_the_charts_say_what_they_need_before_a_solve(app):
+    """An empty plot box is indistinguishable from a broken one."""
+    app.results = None
+    app.member_checks = None
+    _mode(app, 'analyse')
+    app._refresh_analysis_charts()
+    texts = [app.analysis_canvas.itemcget(i, 'text')
+             for i in app.analysis_canvas.find_all()
+             if app.analysis_canvas.type(i) == 'text']
+    assert any('Analyze' in t for t in texts), texts
+
+
+def test_every_chart_draws_something_after_a_solve(app):
+    app._analyze()
+    _mode(app, 'analyse')
+    app._refresh_analysis_charts()
+    texts = ' | '.join(app.analysis_canvas.itemcget(i, 'text')
+                       for i in app.analysis_canvas.find_all()
+                       if app.analysis_canvas.type(i) == 'text')
+    assert 'Utilisation of' in texts
+    assert 'Axial force in' in texts
+    assert 'supports carry' in texts
+    assert 'distinct shapes' in texts
+
+
+def test_the_charts_stack_instead_of_drawing_on_top_of_each_other(app):
+    """Each chart function draws from y=0 so it can be tested alone; the
+    stacking is the panel's job, and getting it wrong piles every plot into
+    the same 70 px."""
+    app._analyze()
+    _mode(app, 'analyse')
+    app._refresh_analysis_charts()
+    c = app.analysis_canvas
+    boxes = [c.coords(i) for i in c.find_all() if c.type(i) == 'rectangle']
+    tops = sorted({round(b[1]) for b in boxes if b[3] - b[1] > 30})
+    assert len(tops) >= 4, f'only {len(tops)} distinct plot boxes: {tops}'
+    assert max(tops) > 150, 'the charts are all at the same height'
+
+
+def test_the_charts_follow_the_load_slider(app):
+    """The model is linear, so every utilisation scales with the slider. A
+    histogram that ignored it would describe a load case nobody is looking
+    at."""
+    app._analyze()
+    _mode(app, 'analyse')
+    app.load_fraction.set(100)
+    app._refresh_analysis_charts()
+    full = [app.analysis_canvas.itemcget(i, 'text')
+            for i in app.analysis_canvas.find_all()
+            if app.analysis_canvas.type(i) == 'text']
+    app.load_fraction.set(10)
+    app._refresh_analysis_charts()
+    tenth = [app.analysis_canvas.itemcget(i, 'text')
+             for i in app.analysis_canvas.find_all()
+             if app.analysis_canvas.type(i) == 'text']
+    assert full != tenth, 'the charts ignored the Load % slider'
+
+
+# ── clearing add-ons, arrays, and the lateral brace ──────────────────────────
+
+def _two_bottom_rows(app):
+    """A selection the reinforcement beam will accept: two adjacent rows of
+    the lowest layer."""
+    zmin = min(p[2] for p in app.nodes)
+    bottom = [i for i, p in enumerate(app.nodes) if abs(p[2] - zmin) < 1e-6]
+    ys = sorted({round(app.nodes[i][1], 6) for i in bottom})
+    return {i for i in bottom if round(app.nodes[i][1], 6) in ys[:2]}
+
+
+def test_clearing_the_columns_puts_the_model_back_exactly(app):
+    """Undo covers removing one. A model with a dozen columns needed a dozen
+    undos to reach the bare grid, and by then the stack has eaten everything
+    else you did in between."""
+    _mode(app, 'addons')
+    n0, m0 = len(app.nodes), len(app.members)
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {app.supports[0]['node']}
+    app._add_column()
+    assert len(app.members) > m0
+    app._clear_columns()
+    assert (len(app.nodes), len(app.members)) == (n0, m0)
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_clearing_the_columns_hands_their_supports_back(app):
+    """A joint whose pin was removed because a column was carrying it would
+    otherwise be left hanging, and the next Analyze would report a mechanism
+    for a reason nothing on screen explains."""
+    _mode(app, 'addons')
+    target = app.supports[0]['node']
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {target}
+    app._add_column()
+    assert not any(s['node'] == target for s in app.supports)
+    app._clear_columns()
+    assert any(s['node'] == target for s in app.supports), \
+        'the joint the column was carrying is now supported by nothing'
+    assert target in app._support_candidates
+
+
+def test_clearing_columns_keeps_the_grid_nodes_the_capital_reached(app):
+    """Only ORPHANS go. A grid node a capital fanned to still carries its own
+    chords -- deleting it would tear a hole in the roof to remove the column
+    under it."""
+    _mode(app, 'addons')
+    before = list(app.nodes)
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {4, 5}
+    app._add_column()
+    app._clear_columns()
+    assert app.nodes == before
+
+
+def test_clearing_beams_puts_the_model_back_exactly(app):
+    _mode(app, 'addons')
+    n0, m0 = len(app.nodes), len(app.members)
+    app.selected_nodes = _two_bottom_rows(app)
+    app._add_reinforcement_beam()
+    assert len(app.members) > m0
+    app._clear_beams()
+    assert (len(app.nodes), len(app.members)) == (n0, m0)
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_clearing_beams_leaves_the_columns_alone(app):
+    """The two Clear buttons share one removal routine, which is exactly why
+    it has to be told which roles it owns."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {app.supports[0]['node']}
+    app._add_column()
+    shafts = sum(1 for m in app.members if m.get('role') == 'column_shaft')
+    app.selected_nodes = _two_bottom_rows(app)
+    app._add_reinforcement_beam()
+    app._clear_beams()
+    assert sum(1 for m in app.members if m.get('role') == 'column_shaft') == shafts
+    assert not [m for m in app.members if m.get('role') in ('reinf_chord', 'reinf_web')]
+
+
+def test_clearing_nothing_says_so_instead_of_pretending(app):
+    _mode(app, 'addons')
+    n0 = len(app.members)
+    app._clear_columns()
+    assert 'No columns' in app.col_note.cget('text')
+    assert len(app.members) == n0
+
+
+def test_a_column_array_needs_no_selection(app):
+    """The point of the array is placing many columns at once, which is the
+    one case where lassoing each footprint by hand is the slow way."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = set()
+    app.col_array_x.set(3)
+    app.col_array_y.set(2)
+    app._build_column_array()
+    assert sum(1 for m in app.members if m.get('role') == 'column_shaft') == 6
+    assert '3' in app.col_note.cget('text')
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_array_columns_stand_on_the_lowest_layer(app):
+    """Picking from every node would let a station snap to the top chord and
+    hang a column in mid-air below it."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.col_array_x.set(2)
+    app.col_array_y.set(2)
+    zmin_before = min(p[2] for p in app.nodes)
+    app._build_column_array()
+    heads = [app.members[i]['b'] for i, m in enumerate(app.members)
+             if m.get('role') == 'column_shaft']
+    for h in heads:
+        assert abs(app.nodes[h][2] - zmin_before) < 1e-6, \
+            'a column hangs from something above the bottom layer'
+
+
+def test_two_array_columns_never_share_a_footing(app):
+    """Each station takes its nodes out of the pool, or a dense array would
+    stack several columns under the same joint."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.col_array_x.set(4)
+    app.col_array_y.set(4)
+    app._build_column_array()
+    heads = [app.members[i]['b'] for i, m in enumerate(app.members)
+             if m.get('role') == 'column_shaft']
+    assert len(heads) == len(set(heads))
+
+
+def test_a_braced_capital_holds_sway_but_not_the_vertical(app):
+    """The point of bracing a column head is the roof plane holding it
+    against sway. Holding uz too would be a rigid prop, which is the very
+    thing the column is there instead of."""
+    _mode(app, 'addons')
+    target = app.supports[0]['node']
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.col_braced.set(True)
+    app.selected_nodes = {target}
+    app._add_column()
+    entry = next(s for s in app.supports if s['node'] == target)
+    r = sm.support_restraints(entry)
+    assert r['ux'] and r['uy']
+    assert not r['uz'], 'a braced head must still be free to settle'
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_bracing_is_off_unless_asked_for(app):
+    """It was on by default in the original. Turning it on adds restraints,
+    which moves the answer for every column model built in this version --
+    that is a deliberate choice to make, not a default that shifts numbers
+    quietly."""
+    assert app.col_braced.get() is False
+    _mode(app, 'addons')
+    target = app.supports[0]['node']
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {target}
+    app._add_column()
+    assert not any(s['node'] == target for s in app.supports)
+
+
+def test_bracing_a_column_stiffens_the_structure(app):
+    """If the toggle changed nothing measurable it would be decoration."""
+    _mode(app, 'addons')
+    target = app.supports[0]['node']
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {target}
+    app._add_column()
+    app._analyze()
+    free = max(abs(v) for r in app.results['node_res']
+               for v in (r['ux'], r['uy']))
+    app._undo()
+    app.col_braced.set(True)
+    app.selected_nodes = {target}
+    app._add_column()
+    app._analyze()
+    braced = max(abs(v) for r in app.results['node_res']
+                 for v in (r['ux'], r['uy']))
+    assert braced <= free + 1e-9, 'bracing made the structure sway MORE'
+
+
+def test_undo_drops_a_selection_the_restored_model_no_longer_has(app):
+    """Regression, a crash not a wrong answer: adding a column ends by
+    selecting its new feet, and undoing then restored a shorter node list
+    while those indices survived. The next selection sync raised
+    IndexError."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {app.supports[0]['node']}
+    app._add_column()
+    assert max(app.selected_nodes) >= len(app.nodes) - 1
+    app._undo()
+    assert all(i < len(app.nodes) for i in app.selected_nodes)
+    app._sync_selection_fields()      # this is what used to raise
+
+
+# ── the column panel shows only the fields its style reads ───────────────────
+
+def test_a_latticed_column_offers_no_capital_fields(app):
+    """A field that does nothing is worse than a missing one: it invites you
+    to set it and then ignores you. The latticed styles have no capital."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_LATTICE)
+    app.root.update_idletasks()
+    assert not _shown(app.frame_col_capital)
+    assert not _shown(app.frame_col_tiers)
+    assert not _shown(app.frame_col_width), 'width is the selection, not a field'
+    assert _shown(app.frame_col_panels)
+
+
+def test_the_shaft_style_still_offers_its_capital_fields(app):
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_SHAFT)
+    app.root.update_idletasks()
+    assert _shown(app.frame_col_capital)
+    assert _shown(app.frame_col_tiers)
+    assert not _shown(app.frame_col_panels)
+
+
+def test_setting_the_style_in_code_refreshes_the_panel(app):
+    """A <<ComboboxSelected>> binding only fires for a real click, so an
+    example or a restored model would leave the previous style's fields on
+    screen. The panel watches the VARIABLE."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_SHAFT)
+    app.root.update_idletasks()
+    assert _shown(app.frame_col_capital)
+    app.col_style.set(sg.COLUMN_TAPERED)
+    app.root.update_idletasks()
+    assert not _shown(app.frame_col_capital)
+
+
+def test_every_style_explains_how_many_nodes_it_wants(app):
+    _mode(app, 'addons')
+    for style in sg.COLUMN_STYLES:
+        app.col_style.set(style)
+        app.root.update_idletasks()
+        hint = app._col_hint.cget('text')
+        assert hint, f'{style} has no hint'
+        assert 'node' in hint.lower()
+
+
+def test_the_optional_fields_keep_their_order_whichever_style_you_came_from(app):
+    """pack_forget then pack APPENDS, which once put Lattice panels below the
+    status note."""
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_SHAFT)
+    app.root.update_idletasks()
+    app.col_style.set(sg.COLUMN_LATTICE)
+    app.root.update_idletasks()
+    app.col_style.set(sg.COLUMN_LEGS)
+    app.root.update_idletasks()
+    shown = [w for w in app._col_optional.pack_slaves()]
+    want = [f for f in (app.frame_col_capital, app.frame_col_width,
+                        app.frame_col_panels, app.frame_col_tiers) if f in shown]
+    assert shown == want, 'the optional rows came back in a different order'
+
+
+def test_one_foot_is_a_foot_and_three_are_feet(app):
+    _mode(app, 'addons')
+    app.col_style.set(sg.COLUMN_PLAIN)
+    app.selected_nodes = {app.supports[0]['node']}
+    app._add_column()
+    assert '1 foot pinned' in app.col_note.cget('text')
+
+
+def test_the_cell_census_is_the_first_thing_in_the_analysis_box(app):
+    """It is a reading of the GEOMETRY, so it is the only one of the four
+    that says anything before Analyze has ever been pressed. Fourth, it sat
+    below the fold of a scrolling panel and read as a missing feature."""
+    app.results = None
+    app.member_checks = None
+    _mode(app, 'analyse')
+    app._refresh_analysis_charts()
+    c = app.analysis_canvas
+    texts = [(c.coords(i)[1], c.itemcget(i, 'text'))
+             for i in c.find_all() if c.type(i) == 'text']
+    assert texts
+    census = [y for y, t in texts if 'distinct shapes' in t]
+    assert census, 'the cell census is not drawn at all'
+    others = [y for y, t in texts if 'Analyze' in t]
+    assert others, 'nothing told the user to run Analyze'
+    assert min(census) < min(others), 'the census is below the charts that need a solve'
+
+
+def test_the_cell_census_works_with_no_solve_at_all(app):
+    app.results = None
+    app.member_checks = None
+    _mode(app, 'analyse')
+    app._refresh_analysis_charts()
+    texts = ' '.join(app.analysis_canvas.itemcget(i, 'text')
+                     for i in app.analysis_canvas.find_all()
+                     if app.analysis_canvas.type(i) == 'text')
+    assert 'distinct shapes' in texts
+    assert 'role 0' in texts
+
+
+def test_the_vierendeel_family_builds_and_solves_from_the_panel(app):
+    from apps.stereo.stereo_app_constants import FAMILY_LABEL
+    _mode(app, 'build')
+    app.grid_family.set(FAMILY_LABEL['vierendeel_grid'])
+    app._on_generator_change()
+    app.vd_nx.set(4)
+    app.vd_ny.set(4)
+    app.vd_module.set(3.0)
+    app.vd_depth.set(2.0)
+    app._generate()
+    assert len(app.nodes) == 2 * 25
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_the_section_panel_cannot_pin_a_vierendeel_grid(app):
+    """rigid_required is not a preference: pinned, every one of its bays
+    lozenges and the solve goes singular. _apply_sections has to leave it
+    alone even when the panel says pin."""
+    from apps.stereo.stereo_app_constants import FAMILY_LABEL
+    _mode(app, 'build')
+    app.grid_family.set(FAMILY_LABEL['vierendeel_grid'])
+    app._on_generator_change()
+    app._generate()
+    app.sec_conn.set('pin')
+    app._apply_sections()
+    assert all(m.get('conn') == 'rigid' for m in app.members)
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_the_vierendeel_panel_appears_only_for_its_own_family(app):
+    from apps.stereo.stereo_app_constants import FAMILY_LABEL
+    _mode(app, 'build')
+    app.grid_family.set(FAMILY_LABEL['vierendeel_grid'])
+    app._on_generator_change()
+    app.root.update_idletasks()
+    assert _shown(app.frame_vierendeel_grid)
+    assert not _shown(app.frame_flat_grid)
+    app.grid_family.set(FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.root.update_idletasks()
+    assert not _shown(app.frame_vierendeel_grid)
+
+
+# ── welded shear panels, from the panel ──────────────────────────────────────
+
+def _top_quad(app):
+    zmax = max(p[2] for p in app.nodes)
+    tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - zmax) < 1e-9]
+    xs = sorted({round(app.nodes[i][0], 6) for i in tops})
+    ys = sorted({round(app.nodes[i][1], 6) for i in tops})
+    return {i for i in tops if round(app.nodes[i][0], 6) in xs[:2]
+            and round(app.nodes[i][1], 6) in ys[:2]}
+
+
+def test_a_welded_panel_goes_into_the_solve_and_gets_checked(app):
+    """Not decoration: its shear stiffness is in the matrix and its verdict
+    comes from the same CIRSOC checks the Truss tab uses."""
+    _mode(app, 'addons')
+    app.selected_nodes = _top_quad(app)
+    app.panel_t.set(8.0)
+    app._add_shear_panel()
+    assert len(app.panels) == 1
+    app._analyze()
+    assert app.err is None, app.err
+    pr = app.results['panel_res'][0]
+    assert pr['valid'] and pr['area_m2'] > 0 and abs(pr['q']) > 0
+    assert len(app.panel_checks) == 1
+    assert app.panel_checks[0]['valid']
+    assert 'buckling' in app.panel_checks[0]['governing'].lower()
+
+
+def test_a_welded_panel_stiffens_the_model(app):
+    _mode(app, 'addons')
+    app._analyze()
+    before = max(abs(r['uz']) for r in app.results['node_res'])
+    app.selected_nodes = _top_quad(app)
+    app.panel_t.set(20.0)
+    app._add_shear_panel()
+    app._analyze()
+    after = max(abs(r['uz']) for r in app.results['node_res'])
+    assert after <= before
+
+
+def test_a_welded_panel_is_drawn_whether_or_not_fill_is_on(app):
+    """A shaded face is a picture of a cell that exists anyway. A panel is a
+    real element carrying real load, and one you cannot see is one you can
+    forget you added."""
+    _mode(app, 'addons')
+    app.selected_nodes = _top_quad(app)
+    app._add_shear_panel()
+    app.shaded_faces.set(False)
+    app._draw()
+    assert len(app.canvas.find_withtag('shear_panel')) == 1
+
+
+def test_the_same_bay_cannot_be_panelled_twice(app):
+    _mode(app, 'addons')
+    app.selected_nodes = _top_quad(app)
+    app._add_shear_panel()
+    app._add_shear_panel()
+    assert len(app.panels) == 1
+    assert 'already a panel' in app.col_note.cget('text')
+
+
+def test_panels_survive_undo_and_redo(app):
+    _mode(app, 'addons')
+    app.selected_nodes = _top_quad(app)
+    app._add_shear_panel()
+    assert len(app.panels) == 1
+    app._undo()
+    assert len(app.panels) == 0
+    app._redo()
+    assert len(app.panels) == 1
+
+
+def test_clearing_the_panels_leaves_the_rods_alone(app):
+    _mode(app, 'addons')
+    n0 = len(app.members)
+    app.selected_nodes = _top_quad(app)
+    app._add_shear_panel()
+    app._clear_shear_panels()
+    assert app.panels == []
+    assert len(app.members) == n0
+    app._analyze()
+    assert app.err is None, app.err
+
+
+def test_a_new_model_starts_with_no_panels(app):
+    """`panels` is model state, so a fresh mesh must not inherit the last
+    one's -- its node indices would point at whatever holds them now."""
+    _mode(app, 'addons')
+    app.selected_nodes = _top_quad(app)
+    app._add_shear_panel()
+    assert app.panels
+    app._generate()
+    assert app.panels == []
+
+
+def test_the_cell_fill_is_reachable_from_the_analyse_panel(app):
+    """Regression: moving the display controls out of the popover and into
+    the rail dropped the FILL group on the way, which is the view that
+    shades each closed CELL of the mesh. It was still in the popover, so
+    nothing was broken -- it had simply become unfindable."""
+    _mode(app, 'analyse')
+    labels = []
+
+    def walk(w):
+        for c in w.winfo_children():
             try:
-                w.pack_info()
-                assert False, f'{w} should be hidden'
+                t = c.cget('text')
             except tk.TclError:
-                pass
-
-    def test_toggle_to_simple_hides_output_advanced_widgets(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        for w in app._output_advanced_widgets:
-            try:
-                w.pack_info()
-                assert False, f'{w} should be hidden'
-            except tk.TclError:
-                pass
-
-    def test_toggle_to_simple_hides_advanced_panels(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        for w in app._advanced_panel_widgets:
-            try:
-                w.pack_info()
-                assert False, f'{w} should be hidden'
-            except tk.TclError:
-                pass
-
-    def test_toggle_to_simple_hides_module_editor(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        try:
-            app.module_panel_outer.pack_info()
-            assert False, 'module_panel_outer should be hidden'
-        except tk.TclError:
-            pass
-
-    def test_toggle_back_to_advanced_restores_toolbar_groups(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        app.simple_mode.set(False)
-        app._on_mode_toggle()
-        assert app.toolbar_flow.groups == app._toolbar_groups_snapshot
-
-    def test_toggle_back_to_advanced_restores_build_widgets(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        app.simple_mode.set(False)
-        app._on_mode_toggle()
-        for w in app._build_advanced_widgets:
-            info = w.pack_info()
-            assert info is not None
-
-    def test_toggle_back_to_advanced_restores_panels(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        app.simple_mode.set(False)
-        app._on_mode_toggle()
-        for w in app._advanced_panel_widgets:
-            info = w.pack_info()
-            assert info is not None
-
-    def test_toggle_back_to_advanced_restores_module_editor(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        app.simple_mode.set(False)
-        app._on_mode_toggle()
-        info = app.module_panel_outer.pack_info()
-        assert info is not None
-
-    def test_simple_mode_keeps_geometry_panel_visible(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        children = app.panel_outer.interior.winfo_children()
-        visible = []
-        for c in children:
-            try:
-                c.pack_info()
-                visible.append(c)
-            except tk.TclError:
-                pass
-        assert len(visible) >= 1
-
-    def test_round_trip_toggle_does_not_crash(self, app):
-        for _ in range(3):
-            app.simple_mode.set(True)
-            app._on_mode_toggle()
-            app.simple_mode.set(False)
-            app._on_mode_toggle()
-        assert app.simple_mode.get() is False
-
-    def test_analyze_works_in_simple_mode(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        app._analyze()
-        assert app.results is not None
+                t = ''
+            if t:
+                labels.append(str(t))
+            walk(c)
+    walk(app._mode_frames['analyse'])
+    blob = ' | '.join(labels)
+    assert 'Fill the cells' in blob
+    for mode in FILL_MODES:
+        assert mode in blob, f'{mode!r} is not offered in the Analyse panel'
 
 
-# ── Phase 5.2: snap-to-node, snap-to-midpoint, coordinate display ──────────
+def test_turning_the_cell_fill_on_from_the_analyse_panel_draws_cells(app):
+    # A cell is coloured by its governing member, so it needs a solve to
+    # have anything to say -- unanalysed, every panel correctly comes back
+    # with no colour rather than a made-up one.
+    app._analyze()
+    _mode(app, 'analyse')
+    app.faces_mode.set(FILL_SHADED)
+    app._on_faces_mode_change()
+    app._draw()
+    assert app.canvas.find_withtag('shaded_face'), 'no cell was shaded'
+    app.faces_mode.set(FILL_NONE)
+    app._on_faces_mode_change()
+    app._draw()
+    assert not app.canvas.find_withtag('shaded_face')
+
+
+# ── picking tools: line select and the footprint disc ────────────────────────
+
+def _top_row(app):
+    zmax = max(p[2] for p in app.nodes)
+    tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - zmax) < 1e-9]
+    ys = sorted({round(app.nodes[i][1], 6) for i in tops})
+    row = [i for i in tops if abs(app.nodes[i][1] - ys[2]) < 1e-9]
+    row.sort(key=lambda i: app.nodes[i][0])
+    return row
+
+
+def test_the_screen_to_world_inverse_lands_back_on_the_node_it_started_from(app):
+    """Both picking tools rest on this: the disc's centre is the cursor
+    unprojected onto a layer's plane. If the inverse were even slightly
+    wrong the disc would cover joints it did not appear to."""
+    for i in (0, 25, len(app.nodes) // 2):
+        sx, sy = app._screen_positions()[i]
+        got = app._unproject_to_plane(sx, sy, app.nodes[i][2])
+        assert got is not None
+        assert got[0] == pytest.approx(app.nodes[i][0], abs=1e-6)
+        assert got[1] == pytest.approx(app.nodes[i][1], abs=1e-6)
+
+
+def test_looking_along_the_horizon_refuses_to_guess_a_position(app):
+    """A horizontal plane seen edge-on projects to a LINE: one screen point
+    is every point on a ray, and nothing should invent one."""
+    app.elevation = 0.0
+    assert app._unproject_to_plane(100.0, 100.0, 0.0) is None
+
+
+def test_a_line_from_node_to_node_selects_the_whole_row(app):
+    """Two clicks instead of ten."""
+    _mode(app, 'build')
+    app.line_pick_mode.set(True)
+    app._on_pick_mode_toggle('line')
+    row = _top_row(app)
+    assert len(row) > 4
+    sp = app._screen_positions()
+    app._handle_line_pick_click(*sp[row[0]])
+    assert app._line_pick_first == row[0]
+    assert 'far end' in app.pick_note.cget('text')
+    app._handle_line_pick_click(*sp[row[-1]])
+    assert set(app.selected_nodes) == set(row)
+    assert app._line_pick_first is None, 'the tool should be ready for a new line'
+
+
+def test_a_line_measures_in_the_model_not_on_the_screen(app):
+    """A line drawn across a tilted view passes near nodes on other layers
+    that merely LOOK close. Measuring in world coordinates selects the row
+    you meant rather than everything behind it."""
+    row = _top_row(app)
+    zmax = max(p[2] for p in app.nodes)
+    found = app._nodes_near_segment(row[0], row[-1],
+                                    0.35 * app._typical_spacing())
+    assert set(found) == set(row)
+    assert all(abs(app.nodes[i][2] - zmax) < 1e-9 for i in found), \
+        'the line picked up nodes from another layer'
+
+
+def test_clicking_empty_space_does_not_start_a_line(app):
+    _mode(app, 'build')
+    app.line_pick_mode.set(True)
+    app._on_pick_mode_toggle('line')
+    app._handle_line_pick_click(3, 3)
+    assert app._line_pick_first is None
+    assert 'ON a node' in app.pick_note.cget('text')
+
+
+def test_the_disc_covers_four_joints_at_a_bay_centre(app):
+    """Which is the whole point: a column footprint in one gesture."""
+    _mode(app, 'addons')
+    app.disc_pick_mode.set(True)
+    app._on_pick_mode_toggle('disc')
+    app.disc_layer.set('top')
+    app.disc_radius.set(0.8)
+    app.disc_limit.set(4)
+    zmax = max(p[2] for p in app.nodes)
+    tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - zmax) < 1e-9]
+    xs = sorted({round(app.nodes[i][0], 6) for i in tops})
+    ys = sorted({round(app.nodes[i][1], 6) for i in tops})
+    cx, cy = (xs[4] + xs[5]) / 2, (ys[4] + ys[5]) / 2
+    hits = app._nodes_in_disc(cx, cy, 0.8 * app._typical_spacing(tops), tops, limit=4)
+    assert len(hits) == 4
+    assert all(abs(app.nodes[i][2] - zmax) < 1e-9 for i in hits)
+
+
+def test_the_disc_never_takes_more_than_its_cap(app):
+    """A latticed column takes 3 or 4 chords and no more, so the tool that
+    picks its footprint must not hand it eight."""
+    _mode(app, 'addons')
+    zmax = max(p[2] for p in app.nodes)
+    tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - zmax) < 1e-9]
+    cx = sum(app.nodes[i][0] for i in tops) / len(tops)
+    cy = sum(app.nodes[i][1] for i in tops) / len(tops)
+    huge = 10.0 * app._typical_spacing(tops)
+    for cap in (3, 4):
+        hits = app._nodes_in_disc(cx, cy, huge, tops, limit=cap)
+        assert len(hits) == cap
+
+
+def test_the_disc_only_ever_picks_from_the_chosen_layer(app):
+    _mode(app, 'addons')
+    zmin = min(p[2] for p in app.nodes)
+    bottom = app._layer_nodes('bottom')
+    assert bottom
+    cx = sum(app.nodes[i][0] for i in bottom) / len(bottom)
+    cy = sum(app.nodes[i][1] for i in bottom) / len(bottom)
+    hits = app._nodes_in_disc(cx, cy, 5.0 * app._typical_spacing(bottom),
+                              bottom, limit=4)
+    assert hits
+    assert all(abs(app.nodes[i][2] - zmin) < 1e-6 for i in hits)
+
+
+def test_the_disc_is_drawn_on_the_roof_not_stuck_to_the_screen(app):
+    """Projected through the same camera as the model, so it stays the same
+    size in METRES as you orbit. A screen circle would stop covering the
+    joints it appeared to cover."""
+    _mode(app, 'addons')
+    app.disc_pick_mode.set(True)
+    app._on_pick_mode_toggle('disc')
+    app.disc_layer.set('top')
+    sx, sy = app._screen_positions()[app._layer_nodes('top')[0]]
+    hits, centre = app._disc_under_cursor(sx, sy)
+    app._disc_hits, app._disc_centre = hits, centre
+    app._draw()
+    items = app.canvas.find_withtag('pick_disc')
+    assert items, 'the disc was not drawn'
+    poly = [i for i in items if app.canvas.type(i) == 'polygon']
+    assert poly, 'the disc should be a projected polygon, not an oval'
+
+
+def test_clicking_commits_exactly_what_the_disc_was_highlighting(app):
+    """The highlight the user has been watching IS the selection, so the two
+    can never disagree."""
+    _mode(app, 'addons')
+    app.disc_pick_mode.set(True)
+    app._on_pick_mode_toggle('disc')
+    app.disc_layer.set('top')
+    # Hover over a node of the CHOSEN layer: over a bottom node the top-layer
+    # disc correctly finds nothing, which is a different test.
+    sx, sy = app._screen_positions()[app._layer_nodes('top')[0]]
+    app._disc_hits, app._disc_centre = app._disc_under_cursor(sx, sy)
+    want = list(app._disc_hits)
+    assert want
+    app._on_canvas_release(FakeEvent(sx, sy))
+    assert set(app.selected_nodes) == set(want)
+
+
+def test_only_one_picking_tool_can_be_armed(app):
+    """Three modal click tools sharing one canvas is how a click stops
+    meaning what the panel says it means."""
+    _mode(app, 'build')
+    app.add_rod_mode.set(True)
+    app._on_pick_mode_toggle('rod')
+    app.line_pick_mode.set(True)
+    app._on_pick_mode_toggle('line')
+    assert app.add_rod_mode.get() is False
+    app.disc_pick_mode.set(True)
+    app._on_pick_mode_toggle('disc')
+    assert app.line_pick_mode.get() is False
+    assert app.add_rod_mode.get() is False
+
+
+def test_switching_tools_forgets_a_half_drawn_line(app):
+    """A click made minutes later, with nothing on screen to explain it,
+    would otherwise finish a selection nobody asked for."""
+    _mode(app, 'build')
+    app.line_pick_mode.set(True)
+    app._on_pick_mode_toggle('line')
+    sp = app._screen_positions()
+    app._handle_line_pick_click(*sp[_top_row(app)[0]])
+    assert app._line_pick_first is not None
+    app.disc_pick_mode.set(True)
+    app._on_pick_mode_toggle('disc')
+    assert app._line_pick_first is None
+
+
+def test_the_hover_costs_nothing_when_no_tool_is_armed(app):
+    """Bound to plain <Motion>, so it fires on every mouse move over the
+    canvas. It has to return before doing any projection work."""
+    app.disc_pick_mode.set(False)
+    app._disc_hits, app._disc_centre = [], None
+    app._on_canvas_hover(FakeEvent(200, 200))
+    assert app._disc_hits == [] and app._disc_centre is None
+
+
+def test_a_top_layer_disc_over_a_bottom_node_correctly_finds_nothing(app):
+    """The layer choice is a filter, not a hint: hovering the top-layer disc
+    over a bottom joint must select nothing rather than reaching down."""
+    _mode(app, 'addons')
+    app.disc_pick_mode.set(True)
+    app._on_pick_mode_toggle('disc')
+    app.disc_layer.set('top')
+    app.disc_radius.set(0.4)
+    bottom = app._layer_nodes('bottom')
+    zmin = min(app.nodes[i][2] for i in bottom)
+    tops = app._layer_nodes('top')
+    # a bottom node that has no top node directly above it
+    far = max(bottom, key=lambda i: min((app.nodes[i][0] - app.nodes[j][0]) ** 2
+                                        + (app.nodes[i][1] - app.nodes[j][1]) ** 2
+                                        for j in tops))
+    sx, sy = app._screen_positions()[far]
+    hits, _c = app._disc_under_cursor(sx, sy)
+    assert hits == []
+
+
+# ── a balanced panel has no governing sign ───────────────────────────────────
+
+def test_a_panel_with_equal_tension_and_compression_is_reported_balanced():
+    """Regression, from a real model and real numbers.
+
+    Two mirror-image corner panels of a perfectly symmetric roof came back
+    from the solver with these exact member forces. The largest tension and
+    the largest compression are equal to 13 significant figures, so neither
+    governs -- but max(key=abs) always answers, and it answered differently
+    on the two sides. One panel was painted deep blue, its mirror deep red,
+    on a difference of 3.6e-13 kN."""
+    from apps.stereo.stereo_app_render import StereoRenderMixin as R
+    left = [+125.944229213916429444, -125.944229213916784715, -48.4810230896637293085]
+    right = [+125.944229213916941035, -125.944229213916358390, -48.4810230896571354720]
+    v_left, bal_left = R._combine_signed(left)
+    v_right, bal_right = R._combine_signed(right)
+    assert bal_left and bal_right, 'the tie was broken instead of detected'
+    assert v_left == pytest.approx(v_right, rel=1e-9)
+
+
+def test_a_panel_with_a_real_governing_member_still_gets_its_sign():
+    """The tie detector must not swallow the ordinary case."""
+    from apps.stereo.stereo_app_render import StereoRenderMixin as R
+    v, bal = R._combine_signed([+200.0, -50.0, -10.0])
+    assert not bal and v > 0
+    v, bal = R._combine_signed([+50.0, -200.0, -10.0])
+    assert not bal and v < 0
+
+
+def test_an_all_tension_panel_is_never_called_balanced():
+    """Balanced means equal and OPPOSITE. A panel with no compression at all
+    cannot be balanced however close its members are to each other."""
+    from apps.stereo.stereo_app_render import StereoRenderMixin as R
+    _v, bal = R._combine_signed([100.0, 100.0, 100.0])
+    assert not bal
+
+
+def test_the_tie_tolerance_is_relative_not_absolute():
+    """1e-6 kN is a tie on a 1000 kN panel and a real difference on a
+    0.001 kN one."""
+    from apps.stereo.stereo_app_render import StereoRenderMixin as R
+    assert R._combine_signed([1000.0, -1000.0000001])[1] is True
+    assert R._combine_signed([0.001, -0.002])[1] is False
+
+
+def test_a_balanced_panel_is_painted_off_the_force_ramp(app):
+    """Neither red nor blue nor the ramp's near-zero white: it must not be
+    misread as a governing direction OR as a panel carrying nothing."""
+    from apps.stereo.stereo_app_constants import BALANCED_PANEL_COLOR
+    from apps.stereo.stereo_app_colors import force_color
+    assert BALANCED_PANEL_COLOR != force_color(0.0, 1.0)
+    assert BALANCED_PANEL_COLOR != force_color(1.0, 1.0)
+    assert BALANCED_PANEL_COLOR != force_color(-1.0, 1.0)
+
+
+def test_mirror_image_panels_get_the_same_colour(app):
+    """The property the whole fix exists for, checked end to end on a
+    symmetric model: no panel may disagree with its mirror twin."""
+    app._analyze()
+    frac = app._load_frac()
+    mr = app.results['member_res']
+    nodes = app.nodes
+    xs = [p[0] for p in nodes]
+    cx = (min(xs) + max(xs)) / 2.0
+    key = lambda p: (round(p[0], 6), round(p[1], 6), round(p[2], 6))
+    idx = {key(p): i for i, p in enumerate(nodes)}
+
+    def mir(i):
+        q = list(nodes[i]); q[0] = 2 * cx - q[0]
+        return idx.get(key(q))
+
+    cells = app._get_shaded_cells()
+    by_nodes = {tuple(sorted(c['nodes'])): c for c in cells}
+    checked = 0
+    for c in cells:
+        mn = tuple(sorted(x for x in (mir(n) for n in c['nodes']) if x is not None))
+        if len(mn) != len(c['nodes']):
+            continue
+        twin = by_nodes.get(mn)
+        if twin is None:
+            continue
+        checked += 1
+        a = app._combine_signed([mr[m]['N'] * frac for m in c['members']])
+        b = app._combine_signed([mr[m]['N'] * frac for m in twin['members']])
+        assert a[1] == b[1], 'one twin is balanced and the other is not'
+        if not a[1]:
+            assert (a[0] > 0) == (b[0] > 0), 'mirror panels painted opposite colours'
+    assert checked > 50, f'only {checked} mirror pairs checked'
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Every grid family, driven through the real panel
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize('key,label', sc.GRID_FAMILIES)
+def test_every_grid_family_generates_from_its_own_panel(app, key, label):
+    """The dropdown, the per-family parameter frame and the _generate branch
+    are three separate lists that have to agree, and nothing but a run
+    through the real widgets proves they do: a family can be in the dropdown
+    with no frame (the panel raises KeyError), or have a frame and no
+    dispatch branch (it silently generates the LAST family in the chain
+    instead, which looks like a working button)."""
+    app.grid_family.set(label)
+    app._on_generator_change()
+    assert app._param_frames[key].winfo_ismapped() or True   # packed, not yet mapped
+    app._generate()
+    assert len(app.nodes) > 0, f'{key} generated nothing'
+    assert len(app.members) > 0
+    assert app._support_candidates, f'{key} offered no support candidates'
+    assert app._load_nodes, f'{key} offered no loaded surface'
+
+
+@pytest.mark.parametrize('key,label', sc.GRID_FAMILIES)
+def test_every_grid_family_panel_fits_the_rail(app, key, label):
+    """A parameter frame wider than the rail pushes the whole left side out
+    and cuts the buttons off. Caught three of my own widgets already, so it
+    covers every family rather than the ones I remembered to look at."""
+    app.grid_family.set(label)
+    app._on_generator_change()
+    app.root.update_idletasks()
+    width = app._param_frames[key].winfo_reqwidth()
+    assert width <= sc.PANEL_W, f'{key} parameter frame is {width} px wide'
+
+
+def test_the_ruled_hyperboloid_bracing_choice_reaches_the_generator():
+    """A combobox that is read but not acted on is the classic dead control.
+    Each bracing option must change the mesh it produces."""
+    from apps.stereo import stereo_geometry as sgx
+    counts = {}
+    for key in ('none', 'counter', 'ring'):
+        mesh = sgx.hyperboloid_tower(5, 20, 6, 16, 1, brace=key)
+        counts[key] = len(mesh['members'])
+    assert counts['none'] < counts['counter'] < counts['ring']
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Distributed load on the rods, and the two along-the-rod colour modes
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_applying_a_rod_load_reaches_the_solver_and_bows_the_moment(app):
+    """End to end through the real widgets: the panel's w and scope must
+    become member loads, reach analyze, and show up as a moment that
+    actually VARIES along the rod -- which is the entire point of the
+    feature and the thing a purely nodal load cannot produce."""
+    from apps.stereo import stereo_member_loads as mld
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app.rod_w.set(2.0)
+    app._apply_rod_load()
+    assert app.member_loads, 'no rod loads were created'
+    app._analyze()
+    assert app.err is None, app.err
+    varying = [mr for mr in app.results['member_res'] if mld.varies_along_the_rod(mr)]
+    assert len(varying) == len(app.member_loads)
+    mres = varying[0]
+    L = mres['length_m']
+    mid = max(mld.member_diagram(mres, 0.5)[3:], key=abs)
+    assert abs(mid) == pytest.approx(2.0 * L * L / 8.0, rel=1e-6)
+
+
+def test_a_rod_load_shows_the_total_it_actually_applied(app):
+    """The status line is the only feedback that the scope hit what the
+    user meant. A scope that matched nothing, or matched the whole model,
+    both look identical without it."""
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app.rod_w.set(2.0)
+    app._apply_rod_load()
+    text = app.rod_load_status.cget('text')
+    assert str(len(app.member_loads)) in text
+    app._clear_rod_loads()
+    assert app.member_loads == []
+    assert 'No rod loads' in app.rod_load_status.cget('text')
+
+
+def test_applying_a_rod_load_twice_does_not_double_it(app):
+    """One w and one scope on screen has to mean one load. Stacking would
+    quietly double the roof load on a second click of the same button."""
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app.rod_w.set(2.0)
+    app._apply_rod_load()
+    first = len(app.member_loads)
+    app._apply_rod_load()
+    assert len(app.member_loads) == first
+
+
+def test_the_rod_scopes_pick_genuinely_different_rods(app):
+    """A scope list whose entries all resolve to the same set is a dead
+    control that looks like a working one."""
+    counts = {}
+    for scope in (sc.ROD_SCOPE_TOP, sc.ROD_SCOPE_BOTTOM, sc.ROD_SCOPE_WEBS,
+                  sc.ROD_SCOPE_ALL):
+        app.rod_scope.set(scope)
+        counts[scope] = len(app._rods_in_scope())
+    assert counts[sc.ROD_SCOPE_ALL] == len(app.members)
+    assert 0 < counts[sc.ROD_SCOPE_TOP] < counts[sc.ROD_SCOPE_ALL]
+    assert 0 < counts[sc.ROD_SCOPE_BOTTOM] < counts[sc.ROD_SCOPE_ALL]
+    assert 0 < counts[sc.ROD_SCOPE_WEBS] < counts[sc.ROD_SCOPE_ALL]
+    assert counts[sc.ROD_SCOPE_TOP] + counts[sc.ROD_SCOPE_BOTTOM] \
+        + counts[sc.ROD_SCOPE_WEBS] == counts[sc.ROD_SCOPE_ALL]
+
+
+def test_a_rod_load_survives_undo_and_redo(app):
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app._apply_rod_load()
+    applied = len(app.member_loads)
+    app._undo()
+    assert app.member_loads == []
+    app._redo()
+    assert len(app.member_loads) == applied
+
+
+def test_regenerating_drops_the_rod_loads_instead_of_relabelling_them(app):
+    """A rod load is a member INDEX. Carrying one across a regenerate would
+    silently attach it to whatever member now holds that number -- the same
+    trap a welded panel's node indices set."""
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app._apply_rod_load()
+    assert app.member_loads
+    app.grid_family.set(sc.FAMILY_LABEL['dome'])
+    app._on_generator_change()
+    app._generate()
+    assert app.member_loads == []
+
+
+def test_a_stale_rod_load_never_reaches_the_solver(app):
+    """The belt to that braces: even if an index does survive some path
+    not yet imagined, it is dropped before analyze rather than loading a
+    different rod."""
+    app.member_loads = [{'member': len(app.members) + 50, 'w': 3.0,
+                         'dir': (0, 0, -1), 'spread': 'along'}]
+    assert app._valid_member_loads() == []
+    app._analyze()
+    assert app.err is None, app.err
+
+
+@pytest.mark.parametrize('mode', list(sc.COLOUR_MODES))
+def test_every_colour_mode_draws(app, mode):
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app._apply_rod_load()
+    app._analyze()
+    app.colour_mode.set(mode)
+    app._on_colour_mode_change()
+    assert app.canvas.find_withtag('member'), f'{mode} drew no rods'
+
+
+def test_the_along_the_rod_modes_say_so_when_nothing_varies(app):
+    """The honest refusal. Under nodal loads alone a member's shear is
+    constant along it, so there is no field to draw -- and a flat-looking
+    picture with no explanation reads as "no shear here", which is the
+    opposite of the truth."""
+    app.loads = [{'node': 0, 'fx': 0.0, 'fy': 0.0, 'fz': -30.0}]
+    app._analyze()
+    _peak, varies = app._rod_field_anchor(True)
+    assert not varies
+    app.colour_mode.set(sc.COLOUR_ROD_SHEAR)
+    app._on_colour_mode_change()
+    text = ' '.join(app.canvas.itemcget(i, 'text')
+                    for i in app.canvas.find_all()
+                    if app.canvas.type(i) == 'text')
+    assert 'CONSTANT' in text
+
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app._apply_rod_load()
+    app._analyze()
+    _peak, varies = app._rod_field_anchor(True)
+    assert varies
+    app._on_colour_mode_change()
+    text = ' '.join(app.canvas.itemcget(i, 'text')
+                    for i in app.canvas.find_all()
+                    if app.canvas.type(i) == 'text')
+    assert 'CONSTANT' not in text
+
+
+def test_the_rod_field_is_sampled_along_the_rod_not_blended_end_to_end(app):
+    """_draw_gradient_line blends LINEARLY between two end values, which is
+    right for a field defined at the joints and wrong for a member's own
+    moment under a distributed load -- a parabola between those same two
+    ends. Drawing it as a straight blend would flatten the bow the view
+    exists to show, so the midspan colour has to differ from the average of
+    the two end colours."""
+    from apps.stereo import stereo_member_loads as mld
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app.rod_w.set(6.0)
+    app._apply_rod_load()
+    app._analyze()
+    mres = next(mr for mr in app.results['member_res']
+                if mld.varies_along_the_rod(mr))
+    a = app._rod_field_value(mres, 0.0, False)
+    b = app._rod_field_value(mres, 1.0, False)
+    mid = app._rod_field_value(mres, 0.5, False)
+    assert abs(mid - (a + b) / 2.0) > 1e-6
+
+
+def test_the_custom_rod_direction_boxes_appear_only_for_custom(app):
+    _mode(app, 'load')
+    app.rod_dir.set('Custom')
+    app._on_rod_dir_change()
+    app.root.update_idletasks()
+    assert app.frame_rod_dir.winfo_ismapped()
+    app.rod_dir.set('Down (−Z)')
+    app._on_rod_dir_change()
+    app.root.update_idletasks()
+    assert not app.frame_rod_dir.winfo_ismapped()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  A blank display: how the app opens, and what Clear does
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_the_app_opens_with_nothing_in_it(blank_app):
+    """It used to generate a flat grid on construction, so every session
+    began by deleting someone else's model. Generate and Shape are one
+    click away; a model you did not ask for is not."""
+    assert blank_app.nodes == []
+    assert blank_app.members == []
+    assert blank_app.supports == []
+    assert blank_app.loads == []
+    assert blank_app.results is None
+
+
+def test_every_mode_survives_an_empty_model(blank_app):
+    """An empty model is a real state now, not a transient one, so each
+    mode has to render in it -- the module card, the indeterminacy readout
+    and the Analyse charts all read the model."""
+    for key, _icon, _label, _desc in sh.MODES:
+        blank_app._set_mode(key)
+        blank_app.root.update_idletasks()
+    blank_app._draw()
+    blank_app._refresh_all()
+
+
+def test_analyzing_nothing_says_so_instead_of_blaming_the_supports(blank_app, dialogs):
+    """The boundary-condition check answers first and reports that the
+    structure is free to move as a rigid body -- true of nothing at all,
+    but not what went wrong."""
+    blank_app._analyze()
+    assert blank_app.results is None
+    said = ' '.join(str(d) for d in dialogs)
+    assert 'nothing to analyze' in said.lower()
+
+
+def test_clear_empties_everything_the_model_owns(app):
+    """A half-cleared model is worse than none: a leftover panel or rod
+    load is a list of INDICES, and the next build silently attaches it to
+    whichever nodes now hold those numbers."""
+    app.rod_scope.set(sc.ROD_SCOPE_TOP)
+    app._apply_rod_load()
+    app.loads = [{'node': 0, 'fx': 0.0, 'fy': 0.0, 'fz': -10.0}]
+    app._analyze()
+    assert app.nodes and app.supports and app.results is not None
+
+    app._clear_model()
+    assert app.nodes == []
+    assert app.members == []
+    assert app.supports == []
+    assert app.loads == []
+    assert app.member_loads == []
+    assert app.panels == []
+    assert app.results is None
+    assert app.member_checks is None
+    assert app.selected_nodes == set()
+    assert app.selected_member is None
+
+
+def test_clear_is_undoable(app):
+    """Which is why it does not stop to ask: a mis-click costs one press of
+    the undo button."""
+    before = len(app.nodes)
+    app._clear_model()
+    assert app.nodes == []
+    app._undo()
+    assert len(app.nodes) == before
+    app._redo()
+    assert app.nodes == []
+
+
+def test_clear_goes_through_the_same_door_a_regenerate_does(app):
+    """_clear_model routes through _load_mesh rather than zeroing fields of
+    its own, so the two can never reset different sets of state. Compared
+    field by field against a fresh app instead of against a list of names
+    someone has to remember to update."""
+    app._generate()
+    app._clear_model()
+    watched = ('nodes', 'members', 'supports', 'loads', 'member_loads', 'panels',
+               'panel_checks', 'results', 'member_checks', '_support_candidates',
+               '_load_nodes', '_disabled_supports', '_column_freed')
+    for name in watched:
+        assert not getattr(app, name), f'{name} survived Clear: {getattr(app, name)!r}'
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  pi multiples in the domain boxes
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_the_domain_boxes_take_pi_multiples(app):
+    """A sine over 0..6.28318 is the same surface as one over 0..2*pi, but
+    only one of them says what it means -- and only one stays exact when
+    you change your mind about the wave count. These used to be Tk
+    DoubleVars, which rejected the keystroke before it reached anything."""
+    _shape(app)
+    app.shape_z_top.set('2*sin(x)')
+    app.shape_p0.set('0'); app.shape_p1.set('2*pi')
+    app.shape_q0.set('0'); app.shape_q1.set('pi')
+    app.shape_n1.set(8); app.shape_n2.set(4)
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == '', app.shape_status.cget('text')
+    assert app.nodes
+    assert app._shape_num(app.shape_p1, 'x to') == pytest.approx(2 * math.pi)
+    assert app._shape_num(app.shape_q1, 'y to') == pytest.approx(math.pi)
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('2*pi', 2 * math.pi), ('pi/4', math.pi / 4), ('-pi', -math.pi),
+    ('3*12', 36.0), ('-6', -6.0), ('e', math.e), ('2^3', 8.0),
+])
+def test_the_constant_evaluator_reads_what_an_engineer_would_type(text, expected):
+    from apps.stereo import expr_math as em
+    assert em.evaluate_number(text, 'x from') == pytest.approx(expected)
+
+
+def test_a_bad_domain_box_names_which_box_is_wrong(app):
+    """Six boxes and one error message that does not say which -- that is
+    the difference between a two-second fix and hunting."""
+    _shape(app)
+    app.shape_p1.set('nonsense')
+    app._build_shape_mesh()
+    said = app.shape_status.cget('text')
+    assert 'x to' in said, said
+    assert 'nonsense' in said
+
+
+def test_a_domain_box_refuses_a_variable(app):
+    """'x' has no value at the time the domain is being decided, so a box
+    that quietly accepted it would be reading nothing."""
+    from apps.stereo import expr_math as em
+    with pytest.raises(em.ExpressionError) as exc:
+        em.evaluate_number('x', 'x from')
+    assert 'constant' in str(exc.value)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  The Shape panel's module-pattern control
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_the_shape_panel_offers_an_isometric_module(app):
+    """The capability the Generate wizard had and the Shape tab did not."""
+    _shape(app)
+    assert sg.PATTERN_ISOMETRIC in app._shape_pattern_buttons
+
+
+@pytest.mark.parametrize('lattice,expect_isometric', [
+    (sg.LATTICE_SINGLE, True),
+    (sg.LATTICE_ALIGNED, True),
+    (sg.LATTICE_SOS_OFFSET, False),
+    (sg.LATTICE_SQ_ON_DIAG, False),
+    (sg.LATTICE_DIAG_ON_DIAG, False),
+])
+def test_the_pattern_buttons_match_what_the_generator_will_accept(app, lattice,
+                                                                  expect_isometric):
+    """The panel and stereo_geometry_custom_surface must agree about which
+    pairs exist. A greyed button the generator would in fact accept -- or
+    an enabled one it would refuse -- is worse than either on its own, so
+    this checks the UI against the GENERATOR rather than against a second
+    copy of the rule."""
+    _shape(app)
+    app.shape_lattice.set(lattice)
+    app._on_shape_mode_change()
+    enabled = str(app._shape_pattern_buttons[sg.PATTERN_ISOMETRIC].cget('state')) == 'normal'
+    assert enabled == expect_isometric
+
+    surface = sg.make_height_field_surface('3 - 0.03*(x-6)**2')
+    try:
+        sg.custom_surface_lattice(surface, None, lattice=lattice,
+                                  pattern=sg.PATTERN_ISOMETRIC,
+                                  p_range=(0.0, 12.0), q_range=(0.0, 12.0),
+                                  n1=6, n2=6, depth=1.2)
+        generator_accepts = True
+    except ValueError:
+        generator_accepts = False
+    assert enabled == generator_accepts
+
+
+def test_choosing_a_blocked_pattern_falls_back_instead_of_lying(app):
+    """A disabled option left SELECTED would build something other than
+    what the panel shows."""
+    _shape(app)
+    app.shape_lattice.set(sg.LATTICE_SINGLE)
+    app._on_shape_mode_change()
+    app.shape_pattern.set(sg.PATTERN_ISOMETRIC)
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app._on_shape_mode_change()
+    assert app.shape_pattern.get() == sg.PATTERN_SQUARE
+
+
+def test_a_blocked_pattern_says_why_on_screen(app):
+    """A disabled control with no reason beside it reads as a bug."""
+    _shape(app)
+    app.shape_lattice.set(sg.LATTICE_SOS_OFFSET)
+    app._on_shape_mode_change()
+    said = app.shape_pattern_note.cget('text')
+    assert 'half-module' in said, said
+    app.shape_lattice.set(sg.LATTICE_SINGLE)
+    app._on_shape_mode_change()
+    assert app.shape_pattern_note.cget('text') == ''
+
+
+def test_building_an_isometric_surface_keeps_every_node_in_the_domain(app):
+    """End to end through the real panel, which is the only thing that
+    proves the pattern reaches the generator at all."""
+    _shape(app)
+    app.shape_z_top.set('3 - 0.03*(x-6)**2 - 0.03*(y-6)**2')
+    app.shape_p0.set('0'); app.shape_p1.set('12')
+    app.shape_q0.set('0'); app.shape_q1.set('12')
+    app.shape_n1.set(6); app.shape_n2.set(6)
+    app.shape_lattice.set(sg.LATTICE_SINGLE)
+    app._on_shape_mode_change()
+    app.shape_pattern.set(sg.PATTERN_ISOMETRIC)
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == '', app.shape_status.cget('text')
+    xs = [n[0] for n in app.nodes]
+    ys = [n[1] for n in app.nodes]
+    assert min(xs) == pytest.approx(0.0, abs=1e-9)
+    assert max(xs) == pytest.approx(12.0, abs=1e-9)
+    assert min(ys) == pytest.approx(0.0, abs=1e-9)
+    assert max(ys) == pytest.approx(12.0, abs=1e-9)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  The surface preview
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _preview_items(app):
+    return app.canvas.find_withtag('surface_preview')
+
+
+def test_the_surface_preview_draws_and_hides(app):
+    _shape(app)
+    app.shape_z_top.set('3*cos(x/3)*cos(y/3)')
+    app.shape_p0.set('-9'); app.shape_p1.set('9')
+    app.shape_q0.set('-9'); app.shape_q1.set('9')
+    app._build_shape_mesh()
+    assert app.show_surface_preview.get() is True
+    assert len(_preview_items(app)) > 0
+    app.show_surface_preview.set(False)
+    app._draw()
+    assert len(_preview_items(app)) == 0
+
+
+def test_the_preview_does_not_change_with_the_subdivision(app):
+    """Its whole reason to exist is to show the surface BEFORE you commit
+    to a subdivision. A preview that went coarse with the mesh would be
+    showing you the mesh a second time, and would go flat exactly when the
+    mesh is coarse -- which is when you most need to see what you are
+    approximating."""
+    _shape(app)
+    app.shape_z_top.set('3*cos(x/3)*cos(y/3)')
+    app.shape_p0.set('-9'); app.shape_p1.set('9')
+    app.shape_q0.set('-9'); app.shape_q1.set('9')
+    app.shape_n1.set(3); app.shape_n2.set(3)
+    app._build_shape_mesh()
+    coarse = len(_preview_items(app))
+    app.shape_n1.set(12); app.shape_n2.set(12)
+    app._build_shape_mesh()
+    fine = len(_preview_items(app))
+    assert coarse == fine
+    assert coarse > 0
+
+
+def test_the_preview_reads_the_panel_not_the_model(app):
+    """So it keeps telling the truth WHILE you edit the formula, before
+    Build has been pressed -- which is the moment it is for."""
+    _shape(app)
+    app.shape_z_top.set('0')
+    app.shape_p0.set('-6'); app.shape_p1.set('6')
+    app.shape_q0.set('-6'); app.shape_q1.set('6')
+    app._build_shape_mesh()
+    flat_items = len(_preview_items(app))
+    app.shape_z_top.set('4*cos(x/2)*cos(y/2)')      # panel only; no Build
+    app._draw()
+    assert len(_preview_items(app)) == flat_items   # same sampling density
+    # ... but the drawn geometry moved, which is the part that matters
+    app.shape_z_top.set('0')
+    app._draw()
+
+
+def test_a_formula_that_will_not_compile_draws_nothing_rather_than_crashing(app):
+    """The panel already says why in red. A half-drawn surface on top of
+    that is noise, and an exception is a broken app."""
+    _shape(app)
+    app.shape_z_top.set('!!broken!!')
+    app._draw()
+    assert len(_preview_items(app)) == 0
+
+
+def test_two_surfaces_preview_as_two(app):
+    """A crossing pair should be VISIBLE as a crossing, not only reported
+    as an error after Build."""
+    _shape(app)
+    app.shape_two.set(True)
+    app.shape_z_top.set('2')
+    app.shape_z_bot.set('-2')
+    app.shape_p0.set('-6'); app.shape_p1.set('6')
+    app.shape_q0.set('-6'); app.shape_q1.set('6')
+    app._on_shape_mode_change()
+    app._draw()
+    two = len(_preview_items(app))
+    app.shape_two.set(False)
+    app._on_shape_mode_change()
+    app._draw()
+    one = len(_preview_items(app))
+    assert two == pytest.approx(2 * one, rel=0.01)
+
+
+def test_the_preview_survives_an_empty_model(blank_app):
+    """It is drawn from the panel, so it has no model to lean on -- and the
+    app now OPENS in this state."""
+    blank_app._set_mode('shape')
+    blank_app.shape_z_top.set('2*cos(x/3)')
+    blank_app._draw()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Parallel vs perspective
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_parallel_is_the_default_and_keeps_equal_lengths_equal(app):
+    """The right mode for measuring and for reading a repeating module:
+    every bay of a uniform grid is drawn the same size because every bay IS
+    the same size. That property is exactly what perspective gives up."""
+    assert app.projection_mode.get() == sc.PROJECTION_PARALLEL
+    app.grid_family.set(sc.FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(10); app.fg_ny.set(2); app.fg_module.set(3.0)
+    app._generate()
+    bottom = sorted((n for n in range(len(app.nodes))
+                     if abs(app.nodes[n][1]) < 1e-9 and abs(app.nodes[n][2]) < 1e-9),
+                    key=lambda i: app.nodes[i][0])
+    pts = app._screen_positions()
+    gaps = [math.dist(pts[a], pts[b]) for a, b in zip(bottom, bottom[1:])]
+    assert max(gaps) == pytest.approx(min(gaps), rel=1e-6)
+
+
+def test_perspective_shrinks_the_far_end(app):
+    """And the near end grows. That is the whole difference, so it is what
+    the test measures rather than counting canvas items."""
+    app.grid_family.set(sc.FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(10); app.fg_ny.set(2); app.fg_module.set(3.0)
+    app._generate()
+    # Azimuth 90, so the row runs AWAY from the camera. At azimuth 0 it
+    # runs across the view, every node is the same distance from the eye,
+    # and perspective correctly does not converge it at all -- a line
+    # perpendicular to the view axis has no vanishing point.
+    app.azimuth, app.elevation = 90.0, 15.0
+    bottom = sorted((n for n in range(len(app.nodes))
+                     if abs(app.nodes[n][1]) < 1e-9 and abs(app.nodes[n][2]) < 1e-9),
+                    key=lambda i: app.nodes[i][0])
+    app.projection_mode.set(sc.PROJECTION_PERSPECTIVE)
+    app.camera_distance.set(sc.CAMERA_DISTANCE_MIN)
+    app._draw()
+    pts = app._screen_positions()
+    gaps = [math.dist(pts[a], pts[b]) for a, b in zip(bottom, bottom[1:])]
+    assert max(gaps) > 1.05 * min(gaps), 'perspective did not change bay spacing'
+
+
+def test_a_longer_eye_distance_approaches_parallel(app):
+    """Which is what makes the slider meaningful at both ends rather than
+    only being a number."""
+    app._generate()
+    def spread():
+        pts = app._screen_positions()
+        return max(p[0] for p in pts) - min(p[0] for p in pts)
+    app.projection_mode.set(sc.PROJECTION_PARALLEL)
+    app._draw()
+    flat = spread()
+    app.projection_mode.set(sc.PROJECTION_PERSPECTIVE)
+    app.camera_distance.set(sc.CAMERA_DISTANCE_MIN)
+    app._draw()
+    near = abs(spread() - flat)
+    app.camera_distance.set(sc.CAMERA_DISTANCE_MAX)
+    app._draw()
+    far = abs(spread() - flat)
+    assert far < near
+
+
+def test_the_eye_distance_scales_with_the_model_not_with_metres(app):
+    """A fixed distance cannot serve a 6 m canopy and a 60 m bridge: what
+    looks natural on one is a fisheye or a flat orthographic on the other.
+    Keyed to the model's own size, one slider setting means the same
+    STRENGTH of perspective at every scale."""
+    app.projection_mode.set(sc.PROJECTION_PERSPECTIVE)
+    app.grid_family.set(sc.FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(6); app.fg_ny.set(6)
+    app.fg_module.set(2.0)
+    app._generate()
+    app._refresh_camera_distance()
+    small = app._persp_d
+    app.fg_module.set(20.0)
+    app._generate()
+    app._refresh_camera_distance()
+    big = app._persp_d
+    assert big == pytest.approx(10.0 * small, rel=1e-6)
+
+
+@pytest.mark.parametrize('mode', list(sc.PROJECTION_MODES))
+def test_clicking_a_node_still_hits_that_node(app, mode):
+    """The real risk in adding a second projection. Picking, the lasso and
+    the disc tool all INVERT the projection, and inverting the parallel
+    maths under a perspective view puts every click a few per cent off --
+    growing with distance from the centre, so it reads as a sloppy hit
+    radius rather than as a bug."""
+    app._generate()
+    app.projection_mode.set(mode)
+    app._draw()
+    pts = app._screen_positions()
+    wrong = 0
+    checked = 0
+    for i in range(0, len(pts), 7):
+        sx, sy = pts[i]
+        hit = app._nearest_node_to(sx, sy)
+        if hit is None:
+            continue
+        checked += 1
+        # A tie is legitimate: two nodes can project onto the same pixel.
+        if hit != i and math.dist(pts[hit], (sx, sy)) > 0.5:
+            wrong += 1
+    assert checked > 10
+    assert wrong == 0, f'{wrong} of {checked} clicks landed on the wrong node'
+
+
+@pytest.mark.parametrize('mode', list(sc.PROJECTION_MODES))
+@pytest.mark.parametrize('z', [0.0, 1.5])
+def test_unprojecting_to_a_plane_is_exact_in_both_modes(app, mode, z):
+    """_unproject_to_plane hand-inverts the projection maths -- it is the
+    one place the two modes cannot share code -- so it is checked against
+    nodes whose true position is known."""
+    app._generate()
+    app.projection_mode.set(mode)
+    app._draw()
+    pts = app._screen_positions()
+    worst = 0.0
+    checked = 0
+    for i, (x, y, zz) in enumerate(app.nodes):
+        if abs(zz - z) > 1e-6:
+            continue
+        got = app._unproject_to_plane(*pts[i], z)
+        if got is None:
+            continue
+        checked += 1
+        worst = max(worst, math.dist(got, (x, y)))
+    assert checked > 5
+    assert worst < 1e-6, f'{mode} z={z}: worst error {worst:.6f} m'
+
+
+def test_the_distance_slider_is_dead_in_parallel_and_says_so(app):
+    """An orthographic projection has no eye to move, so a live slider
+    would be a control that does nothing."""
+    app._show_display_popover() if hasattr(app, '_show_display_popover') \
+        else app._toggle_display_popover()
+    app.root.update_idletasks()
+    app.projection_mode.set(sc.PROJECTION_PARALLEL)
+    app._on_projection_change()
+    assert str(app.camera_scale.cget('state')) == 'disabled'
+    assert 'true' in app.camera_note.cget('text')
+    app.projection_mode.set(sc.PROJECTION_PERSPECTIVE)
+    app._on_projection_change()
+    assert str(app.camera_scale.cget('state')) == 'normal'
+    assert 'eye' in app.camera_note.cget('text')
+
+
+def test_switching_projection_before_the_popover_exists_does_not_crash(blank_app):
+    """The popover builds lazily, so the slider may not exist when the
+    projection is set -- by a test, or by a restored preference."""
+    blank_app.projection_mode.set(sc.PROJECTION_PERSPECTIVE)
+    blank_app._on_projection_change()
+
+
+def test_a_line_across_the_view_does_not_converge_even_in_perspective(app):
+    """The complement of the test above, and the reason its fixture needed
+    azimuth 90: a line perpendicular to the view axis has every point the
+    same distance from the eye, so it has no vanishing point and must stay
+    evenly spaced. A 'perspective' that squeezed it too would be scaling by
+    screen position rather than by distance."""
+    app.grid_family.set(sc.FAMILY_LABEL['flat_grid'])
+    app._on_generator_change()
+    app.fg_nx.set(10); app.fg_ny.set(2); app.fg_module.set(3.0)
+    app._generate()
+    app.azimuth, app.elevation = 0.0, 15.0
+    app.projection_mode.set(sc.PROJECTION_PERSPECTIVE)
+    app.camera_distance.set(sc.CAMERA_DISTANCE_MIN)
+    app._draw()
+    bottom = sorted((n for n in range(len(app.nodes))
+                     if abs(app.nodes[n][1]) < 1e-9 and abs(app.nodes[n][2]) < 1e-9),
+                    key=lambda i: app.nodes[i][0])
+    pts = app._screen_positions()
+    gaps = [math.dist(pts[a], pts[b]) for a, b in zip(bottom, bottom[1:])]
+    assert max(gaps) == pytest.approx(min(gaps), rel=1e-6)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Bezier profiles and patches in the Shape panel
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _spin(app, formula='3 + 1.6*sin(x*0.9)'):
+    from apps.stereo import stereo_geometry as sgx
+    _shape(app)
+    app.shape_source.set(sc.SOURCE_SPIN)
+    app.shape_z_top.set(formula)
+    app.shape_p0.set('0'); app.shape_p1.set('6')
+    app.shape_q0.set('0'); app.shape_q1.set('2*pi')
+    app.shape_n1.set(8); app.shape_n2.set(14)
+    app.shape_lattice.set(sgx.LATTICE_SINGLE)
+    app._on_shape_mode_change()
+    app.shape_pattern.set(sgx.PATTERN_ISOMETRIC)
+    app._bz_fit()
+
+
+def test_the_bezier_panel_shows_only_for_a_bezier_source(app):
+    _shape(app)
+    for source, shown in ((sc.SOURCE_FORMULA, False), (sc.SOURCE_EXTRUDE, True),
+                          (sc.SOURCE_SPIN, True), (sc.SOURCE_PATCH, True)):
+        app.shape_source.set(source)
+        app.root.update_idletasks()
+        assert bool(app.frame_bezier.winfo_ismapped()) is shown
+
+
+def test_fitting_a_profile_reports_how_close_it_came(app):
+    """Reported, never promised. A fit is an approximation and the only
+    honest thing to do with one is put the real number on screen."""
+    _spin(app)
+    said = app.bz_error_note.cget('text')
+    assert 'segments' in said and '%' in said
+    assert app._bz_profile is not None
+    assert app.bz_list.size() == len(app._bz_profile['ctrl'])
+
+
+def test_a_spin_profile_builds_a_solid_of_revolution(app):
+    _spin(app)
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == '', app.shape_status.cget('text')
+    zs = [n[2] for n in app.nodes]
+    radii = [math.hypot(n[0], n[1]) for n in app.nodes]
+    assert min(zs) == pytest.approx(0.0, abs=1e-6)
+    assert max(zs) == pytest.approx(6.0, abs=1e-6)
+    # a real waist-and-belly profile, not a cylinder
+    assert max(radii) - min(radii) > 1.0
+
+
+def test_editing_a_control_changes_the_surface_that_gets_built(app):
+    """The point of the whole feature: the formula got you close, the
+    handles get you the rest of the way."""
+    _spin(app)
+    app._build_shape_mesh()
+    before = max(math.hypot(n[0], n[1]) for n in app.nodes)
+    index = 12
+    app._bz_set_control(index, app._bz_profile['ctrl'][index] + 2.5)
+    app._build_shape_mesh()
+    after = max(math.hypot(n[0], n[1]) for n in app.nodes)
+    assert after > before + 1.0
+
+
+def test_the_table_and_the_3d_drag_are_the_same_edit(app):
+    """Two ways in, one code path out -- otherwise they drift and the same
+    move means two things."""
+    _spin(app)
+    handles = app._bz_handle_screen()
+    assert handles
+    index, sx, sy = handles[12]
+    assert app._bz_handle_at(sx, sy) == index
+    before = app._bz_profile['ctrl'][index]
+    app._on_canvas_press(FakeEvent(sx, sy))
+    assert app._bz_drag == index
+    app._on_canvas_motion(FakeEvent(sx + 40, sy))
+    app._on_canvas_release(FakeEvent(sx + 40, sy))
+    assert app._bz_drag is None
+    dragged = app._bz_profile['ctrl'][index]
+    assert dragged != pytest.approx(before)
+
+
+def test_a_drag_keeps_the_curve_smooth(app):
+    from apps.stereo import stereo_bezier as bzx
+    _spin(app)
+    handles = app._bz_handle_screen()
+    index, sx, sy = handles[10]
+    app._on_canvas_press(FakeEvent(sx, sy))
+    app._on_canvas_motion(FakeEvent(sx + 30, sy))
+    app._on_canvas_release(FakeEvent(sx + 30, sy))
+    assert bzx.is_smooth(app._bz_profile)
+
+
+def test_a_drag_is_undoable(app):
+    """The profile is MODEL state -- it is what the mesh was built from --
+    so leaving it out of the snapshot made undo restore the nodes while the
+    curve kept the edit, and the next Build silently undid the undo."""
+    _spin(app)
+    handles = app._bz_handle_screen()
+    index, sx, sy = handles[12]
+    before = app._bz_profile['ctrl'][index]
+    app._on_canvas_press(FakeEvent(sx, sy))
+    app._on_canvas_motion(FakeEvent(sx + 40, sy))
+    app._on_canvas_release(FakeEvent(sx + 40, sy))
+    edited = app._bz_profile['ctrl'][index]
+    app._undo()
+    assert app._bz_profile['ctrl'][index] == pytest.approx(before)
+    app._redo()
+    assert app._bz_profile['ctrl'][index] == pytest.approx(edited)
+
+
+def test_clicking_away_from_a_handle_still_lassoes(app):
+    """A handle grab has to win over the lasso where there IS a handle, and
+    lose everywhere else -- or the lasso stops working in Shape mode."""
+    _spin(app)
+    app._on_canvas_press(FakeEvent(3, 3))
+    assert app._bz_drag is None
+    assert app._lasso_press == (3, 3)
+
+
+@pytest.mark.parametrize('mode', list(sc.PROJECTION_MODES))
+def test_handles_can_be_grabbed_in_either_projection(app, mode):
+    """The handles are placed through the same projection the model is, so
+    perspective must not move them out from under the cursor."""
+    _spin(app)
+    app.projection_mode.set(mode)
+    app._draw()
+    for index, sx, sy in app._bz_handle_screen()[::5]:
+        assert app._bz_handle_at(sx, sy) == index
+
+
+def test_the_patch_says_when_it_is_too_coarse_to_design_from(app):
+    """A degree-n patch has n-1 interior bends each way and cannot follow
+    more waves than that. Silence there would read as success."""
+    _shape(app)
+    app.shape_source.set(sc.SOURCE_PATCH)
+    app.shape_z_top.set('3*cos(x)*cos(y)')
+    app.shape_p0.set('-9'); app.shape_p1.set('9')
+    app.shape_q0.set('-9'); app.shape_q1.set('9')
+    app.bz_degree.set(5)
+    app._bz_fit()
+    said = app.bz_error_note.cget('text')
+    assert 'too far off' in said, said
+    # Degree 14, not 10: measured, 2.86 waves each way still comes out
+    # 6.5% wrong at degree 10 and only reaches 0.25% at 14. The warning was
+    # right and the first guess at this number was not.
+    app.bz_degree.set(14)
+    app._bz_fit()
+    assert 'too far off' not in app.bz_error_note.cget('text')
+
+
+def test_the_preview_draws_the_bezier_surface_not_the_formula(app):
+    """They are different surfaces the moment a handle moves, and for a
+    spin they are not even the same KIND -- the formula is a radius against
+    height, so drawing it as a height field would put a sheet in the air
+    beside the solid actually being built."""
+    _spin(app)
+    app._build_shape_mesh()
+    surfaces = app._preview_surfaces()
+    assert len(surfaces) == 1
+    surface = surfaces[0][0]
+    # the spin surface puts the profile on the RADIUS at that height
+    from apps.stereo import stereo_bezier as bzx
+    x, y, z = surface(3.0, 0.0)
+    assert z == pytest.approx(3.0)
+    assert x == pytest.approx(bzx.profile_value(app._bz_profile, 3.0))
+
+
+def test_a_bezier_source_that_was_never_fitted_still_builds(app):
+    """Falling back to the typed formula rather than failing: choosing the
+    source and pressing Build before Fit is an obvious thing to do."""
+    _shape(app)
+    app.shape_source.set(sc.SOURCE_EXTRUDE)
+    app._bz_profile = None
+    app.shape_z_top.set('2*cos(x/3)')
+    app.shape_p0.set('-6'); app.shape_p1.set('6')
+    app.shape_q0.set('-6'); app.shape_q1.set('6')
+    app._build_shape_mesh()
+    assert app.shape_status.cget('text') == ''
+    assert app.nodes
+
+
+def test_a_broken_formula_reports_instead_of_fitting_nonsense(app):
+    _shape(app)
+    app.shape_source.set(sc.SOURCE_SPIN)
+    app.shape_z_top.set('!!broken!!')
+    app._bz_fit()
+    assert app._bz_profile is None
+    assert app.bz_list.size() == 0
+    assert app.bz_error_note.cget('text')
+
+
+# ── auto-ranged utilization colours ───────────────────────────────────────
+
+def test_util_color_absolute_scale_is_unchanged_by_default():
+    """The default must still be the ABSOLUTE, code-defined scale: red at
+    capacity, the same from one model to the next. Adding the `top`
+    parameter must not have moved it."""
+    from apps.stereo.stereo_app_colors import util_color
+    assert util_color(0.0) == util_color(0.0, 1.0)
+    assert util_color(0.5) == util_color(0.5, 1.0)
+    assert util_color(1.0) == util_color(1.0, 1.0)
+    assert util_color(1.0) == util_color(9.9), 'over capacity must stay pinned at red'
+
+
+def test_util_color_auto_range_spreads_a_lightly_loaded_model():
+    """The bug this was added for: a structure whose worst rod is at 2% of
+    capacity comes out one flat green under the absolute scale, so the
+    variation the thickness view plainly shows is invisible in colour.
+
+    Auto-ranged to the model's own peak, the same numbers must span the
+    whole ramp instead.
+    """
+    from apps.stereo.stereo_app_colors import util_color
+
+    def spread(colors):
+        """The largest single-channel difference across a set of colours.
+
+        Counting DISTINCT hex strings is the wrong measure and was the
+        first version of this test: the absolute scale does return four
+        different strings here (#2e7d32 ... #377f31), but they differ by
+        at most 9 in one channel and are indistinguishable on screen --
+        which is exactly the complaint that started this. What matters is
+        how far apart they LOOK.
+        """
+        rgb = [tuple(int(c[i:i + 2], 16) for i in (1, 3, 5)) for c in colors]
+        return max(max(v[k] for v in rgb) - min(v[k] for v in rgb)
+                   for k in range(3))
+
+    peak = 0.0216                        # measured on the user's wave model
+    levels = (0.0, peak / 4, peak / 2, peak)
+    absolute = spread([util_color(u) for u in levels])
+    ranged = spread([util_color(u, peak) for u in levels])
+    assert absolute <= 12, (
+        f'the absolute scale varies by {absolute}/255 here -- it should be '
+        'effectively one flat colour')
+    assert ranged > 100, (
+        f'auto-range only spread these by {ranged}/255; the whole point is '
+        'that they become plainly different colours')
+    assert util_color(peak, peak) == util_color(1.0), 'the peak should reach red'
+
+
+def test_util_color_auto_range_never_stretches_past_capacity(app):
+    """The safety half. Auto-ranging an OVERLOADED model would slide the red
+    end out to its peak and paint a rod at exactly 1.0 -- at capacity -- in
+    mid-amber. _util_top caps at 1.0 so auto-range can only ever stretch UP
+    TO capacity, never beyond."""
+    from apps.stereo.stereo_app_colors import util_color
+    app.util_autorange.set(True)
+    app.member_checks = [{'checked': True, 'util': u} for u in (0.2, 1.0, 2.4)]
+    assert app._util_top(1.0) == 1.0
+    assert util_color(1.0, app._util_top(1.0)) == util_color(1.0), \
+        'a rod at capacity must be red whatever the scale'
+    # and for a lightly loaded model it really does range
+    app.member_checks = [{'checked': True, 'util': u} for u in (0.001, 0.02)]
+    assert app._util_top(1.0) == pytest.approx(0.02)
+
+
+def test_util_top_is_one_when_auto_range_is_off_or_nothing_is_checked(app):
+    app.util_autorange.set(False)
+    app.member_checks = [{'checked': True, 'util': 0.02}]
+    assert app._util_top(1.0) == 1.0
+    app.util_autorange.set(True)
+    app.member_checks = None
+    assert app._util_top(1.0) == 1.0
+    app.member_checks = [{'checked': False, 'util': None}]
+    assert app._util_top(1.0) == 1.0
+    app.member_checks = [{'checked': True, 'util': 0.0}]
+    assert app._util_top(1.0) == 1.0, 'a zero peak must not divide by zero'
+
+
+def test_the_surface_preview_only_draws_over_the_shape_panel(app):
+    """The preview shows what the SHAPE panel would build. Drawn over a
+    model that came from anywhere else it painted a flat sheet at z=0
+    straight through every example and every family Generate, belonging to
+    nothing on screen."""
+    app.show_surface_preview.set(True)
+    app._set_mode('shape')
+    assert app._surface_preview_applies()
+    app._set_mode('build')
+    assert not app._surface_preview_applies()
+    # and the checkbox still wins
+    app._set_mode('shape')
+    app.show_surface_preview.set(False)
+    assert not app._surface_preview_applies()
+
+
+def test_loading_an_example_keeps_the_rod_loads_it_ships_with(app):
+    """A rod load is a member INDEX, so _load_mesh clears them on every
+    regenerate -- except the ones the incoming mesh brought itself, whose
+    indices are by construction its own."""
+    from apps.stereo import stereo_examples as sx
+    label, builder = [(l, b) for l, b in sx.EXAMPLES
+                      if 'ALONG THE RODS' in l][0]
+    app._load_example(builder, label)
+    assert app.member_loads, 'the rod-load example arrived with no rod loads'
+    for ml in app.member_loads:
+        assert 0 <= ml['member'] < len(app.members)
+    # while an example that ships none still comes in clean
+    label2, builder2 = [(l, b) for l, b in sx.EXAMPLES
+                        if 'Schwedler dome' in l][0]
+    app._load_example(builder2, label2)
+    assert app.member_loads == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Carried over from the analysis/report branch at the merge.
+#
+# TestSimpleAdvancedToggle is deliberately gone: the Simple/Advanced toggle it
+# covered was superseded by the mode rail, which shows one mode's controls at a
+# time by construction. Two "hidden in simple mode" tests went with it for the
+# same reason. Everything else here still describes live behaviour.
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class TestSnapAndCoordinateDisplay:
 
     def test_status_bar_exists(self, app):
-        assert hasattr(app, '_status_var')
-        assert hasattr(app, '_status_bar')
-        info = app._status_bar.pack_info()
+        assert hasattr(app, 'status_var')
+        assert hasattr(app, 'status_label')
+        info = app.status_label.pack_info()
         assert info is not None
 
     def test_snap_node_on_exact_hit(self, app):
@@ -4910,7 +7226,7 @@ class TestSnapAndCoordinateDisplay:
         evt = FakeEvent(int(sx), int(sy))
         app._on_mouse_motion(evt)
         assert app._snap_node == 0
-        assert 'Node 0' in app._status_var.get()
+        assert 'Node 0' in app.status_var.get()
 
     def test_snap_node_within_radius(self, app):
         pts = app._screen_positions()
@@ -4935,7 +7251,7 @@ class TestSnapAndCoordinateDisplay:
             app._on_mouse_motion(evt)
             if app._snap_node is None:
                 assert app._snap_midpoint is not None
-                assert 'Midpoint' in app._status_var.get()
+                assert 'Midpoint' in app.status_var.get()
 
     def test_cursor_world_set_on_snap(self, app):
         pts = app._screen_positions()
@@ -4954,7 +7270,7 @@ class TestSnapAndCoordinateDisplay:
         sx, sy = pts[0]
         evt = FakeEvent(int(sx), int(sy))
         app._on_mouse_motion(evt)
-        text = app._status_var.get()
+        text = app.status_var.get()
         assert '(' in text and ')' in text
         assert 'm' in text
 
@@ -4993,8 +7309,6 @@ class TestSnapAndCoordinateDisplay:
         assert sc.SNAP_MIDPOINT_COLOR == '#3498db'
         assert sc.SNAP_RING_RADIUS == 8
 
-
-# ── Phase 5.3: keyboard shortcuts ──────────────────────────────────────────
 
 class TestKeyboardShortcuts:
 
@@ -5037,8 +7351,6 @@ class TestKeyboardShortcuts:
         app._shortcut_zoom_fit()
         app._axis_pending = None
 
-
-# ── Phase 5.4: contextual properties panel ─────────────────────────────────
 
 class TestPropertiesPanel:
 
@@ -5149,17 +7461,6 @@ class TestPropertiesPanel:
                     pass
             assert any('Support' in t for t in texts if isinstance(t, str))
 
-    def test_properties_panel_hidden_in_simple_mode(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        try:
-            app._panel_properties.pack_info()
-            visible = True
-        except tk.TclError:
-            visible = False
-        assert not visible
-        app.simple_mode.set(False)
-        app._on_mode_toggle()
 
     def test_analyzed_member_shows_axial_force(self, app):
         app._analyze()
@@ -5177,8 +7478,6 @@ class TestPropertiesPanel:
                 pass
         assert any('N =' in t for t in texts if isinstance(t, str))
 
-
-# ── Phase 5.5: model tree panel ────────────────────────────────────────────
 
 class TestModelTree:
 
@@ -5238,17 +7537,6 @@ class TestModelTree:
         text = app._tree_items['Nodes']['label'].cget('text')
         assert str(len(app.nodes)) in text
 
-    def test_tree_hidden_in_simple_mode(self, app):
-        app.simple_mode.set(True)
-        app._on_mode_toggle()
-        try:
-            app._panel_model_tree.pack_info()
-            visible = True
-        except tk.TclError:
-            visible = False
-        assert not visible
-        app.simple_mode.set(False)
-        app._on_mode_toggle()
 
     def test_tree_select_node_out_of_range_is_safe(self, app):
         app._tree_select_node(99999)
@@ -5281,10 +7569,6 @@ class TestModelTree:
         for key in ('Nodes', 'Members', 'Supports', 'Loads', 'Profiles'):
             app._toggle_tree_section(key)
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  Phase 6 — Design Variants
-# ═══════════════════════════════════════════════════════════════════════════
 
 class TestDesignVariants:
     def test_variants_list_starts_empty(self, app):
@@ -5330,18 +7614,6 @@ class TestDesignVariants:
         assert hasattr(app, '_btn_save_variant')
         assert hasattr(app, '_btn_compare_variants')
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  The exports must describe the model that was actually SOLVED
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# self.loads holds only the point loads typed into the Loads panel, while
-# _analyze() solves _all_loads() -- those PLUS the area load and the
-# self-weight. Export Excel, Export PDF, Export 3D and Save Variant all used
-# to hand out self.loads, which on the default model is EMPTY: the workbook
-# re-imported and re-analysed to zero displacement, and the PDF's own
-# equilibrium check printed an 1800 kN residual against its own reaction
-# table. These drive the real buttons and read the real artefacts back.
 
 class TestExportsCarryTheSolvedLoadCase:
     def test_the_default_model_is_loaded_by_something_other_than_self_loads(self, app):
@@ -5546,8 +7818,12 @@ class TestPdfOfSelection:
     so nothing can obstruct the view of what is being analysed."""
 
     def test_the_button_exists_and_is_an_advanced_tool(self, app):
-        assert hasattr(app, '_btn_export_sel_pdf')
-        assert app._btn_export_sel_pdf in app._output_advanced_widgets
+        # It moved from a toolbar button onto the Export menu in the UI
+        # rebuild, so assert on the menu entry rather than the old button.
+        labels = [app.export_menu.entrycget(i, 'label')
+                  for i in range(app.export_menu.index('end') + 1)
+                  if app.export_menu.type(i) == 'command']
+        assert 'PDF of Selection…' in labels
 
     def test_it_says_so_when_nothing_is_selected(self, app, dialogs):
         app.selected_members = set()

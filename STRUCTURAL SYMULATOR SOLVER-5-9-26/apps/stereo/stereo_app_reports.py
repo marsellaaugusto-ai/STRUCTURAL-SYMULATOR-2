@@ -25,11 +25,6 @@ class StereoReportsMixin:
     def _refresh_all(self):
         self._load_glyphs = self._combined_loads_by_node()
         self._shaded_cells = None
-        self._voronoi_cache = None   # invalidate; recomputed lazily on next
-                                     # draw that actually needs it (see
-                                     # _get_shaded_cells) -- find_cells is
-                                     # O(members x degree^2) and this runs
-                                     # after every mesh edit, not every frame
         self._refresh_support_list()
         self._refresh_load_list()
         self._refresh_results_text()
@@ -38,6 +33,16 @@ class StereoReportsMixin:
         self._update_properties_panel()
         self._refresh_model_tree()
         self._me_maybe_refresh_topology()
+        self._refresh_status()
+        self._refresh_shape_note()
+        # The control table is a view of the profile, so it has to
+        # follow an undo as well as an edit -- otherwise the table
+        # shows a curve that no longer exists.
+        self._bz_refresh_list()
+        # Only when that mode is showing: rebuilding four charts on every
+        # model change costs a cell-detection pass, and nobody is looking.
+        if self.active_mode.get() == 'analyse':
+            self._refresh_analysis_charts()
         self._draw()
 
     def _model_name(self):

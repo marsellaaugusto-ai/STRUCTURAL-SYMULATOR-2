@@ -755,14 +755,20 @@ def test_every_column_style_solves_once_all_its_feet_are_pinned(style):
     one node of it leaves three rotations free and the solver reports a
     mechanism. Every foot the builder returns has to be pinned."""
     mesh, degree = _flat_grid_with_degrees()
-    top = sorted(degree, key=degree.get, reverse=True)[:9]
+    # The latticed styles run one chord down from each selected node, so
+    # their footprint IS the selection and it has to enclose an area.
+    top = (_square_footprint(mesh) if style in (sg.COLUMN_LATTICE, sg.COLUMN_TAPERED)
+           else sorted(degree, key=degree.get, reverse=True)[:9])
     nodes, members, bases, head = sg.add_column(mesh['nodes'], mesh['members'], top,
                                                 height=4.0, style=style,
                                                 capital_height=1.0, width=1.2, panels=3)
     assert bases, 'a column with no foot at all'
-    # the plain strut has no capital: it is one post per selected node
+    # the plain strut has no capital: it is one post per selected node, and
+    # the latticed styles have no capital either -- one chord per node.
     expected_feet = {sg.COLUMN_PLAIN: len(top), sg.COLUMN_SHAFT: 1,
-                     sg.COLUMN_TRIPOD: 3}.get(style, 4)
+                     sg.COLUMN_TRIPOD: 3,
+                     sg.COLUMN_LATTICE: len(top),
+                     sg.COLUMN_TAPERED: len(top)}.get(style, 4)
     assert len(bases) == expected_feet
     assert all(nodes[b][2] < nodes[head][2] for b in bases), 'a foot above the head'
     for m in members:
@@ -820,24 +826,53 @@ def test_the_capital_styles_still_demand_a_footprint():
             sg.add_column(mesh['nodes'], mesh['members'], one, height=3.0, style=style)
 
 
-def test_pinning_only_one_foot_of_a_latticed_column_is_a_mechanism():
-    """The reason add_column returns a LIST of feet rather than one node."""
-    mesh, degree = _flat_grid_with_degrees()
-    top = sorted(degree, key=degree.get, reverse=True)[:9]
+def _square_footprint(mesh, n=4):
+    """n top-layer nodes that enclose a real area in plan -- what a latticed
+    column now needs, since its chords run down from the nodes themselves."""
+    nodes = mesh['nodes']
+    zmax = max(p[2] for p in nodes)
+    tops = [i for i, p in enumerate(nodes) if abs(p[2] - zmax) < 1e-9]
+    xs = sorted({round(nodes[i][0], 6) for i in tops})
+    ys = sorted({round(nodes[i][1], 6) for i in tops})
+    quad = [i for i in tops
+            if round(nodes[i][0], 6) in xs[:2] and round(nodes[i][1], 6) in ys[:2]]
+    return quad[:n]
+
+
+def test_a_roof_standing_only_on_a_latticed_column_needs_every_foot_pinned():
+    """The reason add_column returns a LIST of feet rather than one node.
+
+    Worth stating precisely, because the answer CHANGED when the latticed
+    column stopped going through a capital. The old one hung the whole
+    lattice from a single head node, so one pinned foot left it free to spin
+    about the vertical through that head -- a mechanism even with the grid
+    fully supported around it. The new one lands on three or four separate
+    grid joints, so a grid that is itself supported now braces the column,
+    and one foot is enough.
+
+    The property that survives is the one that matters in practice: a roof
+    carried ONLY by its columns, which is what a column is for, is a
+    mechanism unless every foot is restrained."""
+    mesh, _degree = _flat_grid_with_degrees()
+    top = _square_footprint(mesh)
     nodes, members, bases, _head = sg.add_column(mesh['nodes'], mesh['members'], top,
                                                  height=4.0, style=sg.COLUMN_LATTICE)
     for m in members:
         m.setdefault('E', 200e3); m.setdefault('A', 20.0)
-    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
-    supports.append({'node': bases[0], 'type': 'pin'})
     loads = sm.self_weight_loads(nodes, members, unit_weight_kN_m3=78.5)
-    _res, err = sm.analyze(nodes, members, loads, supports)
-    assert err is not None
+
+    one = [{'node': bases[0], 'type': 'pin'}]
+    _res, err = sm.analyze(nodes, members, loads, one)
+    assert err is not None, 'one foot held a whole roof up on its own'
+
+    every = [{'node': b, 'type': 'pin'} for b in bases]
+    _res, err = sm.analyze(nodes, members, loads, every)
+    assert err is None, err
 
 
 def test_a_tapered_column_is_narrower_at_its_feet_than_at_its_head():
     mesh, degree = _flat_grid_with_degrees()
-    top = sorted(degree, key=degree.get, reverse=True)[:9]
+    top = _square_footprint(mesh)
     out = {}
     for style in (sg.COLUMN_LATTICE, sg.COLUMN_TAPERED):
         nodes, _members, bases, _head = sg.add_column(
@@ -1917,3 +1952,1072 @@ def test_the_dish_example_clears_the_plane_at_its_own_corners():
     for x, y in ((-6.0, -6.0), (6.0, -6.0), (-6.0, 6.0), (6.0, 6.0)):
         assert top(x, y)[2] > 2.0, 'the dish dips towards the plane at a corner'
     assert top(0.0, 0.0)[2] == pytest.approx(4.0)
+
+
+# ── lattice types: how the two layers register against each other ───────────
+
+def _flat():
+    return sg.make_height_field_surface('0')
+
+
+@pytest.mark.parametrize('lattice', sg.LATTICE_TYPES)
+def test_every_lattice_type_builds(lattice):
+    mesh = sg.custom_surface_lattice(_flat(), coord='cartesian', lattice=lattice,
+                                     p_range=(0.0, 12.0), q_range=(0.0, 12.0),
+                                     n1=4, n2=4, depth=1.5)
+    assert mesh['nodes'] and mesh['members']
+    assert mesh['support_candidates']
+    assert all(0 <= m['a'] < len(mesh['nodes']) and 0 <= m['b'] < len(mesh['nodes'])
+               for m in mesh['members'])
+
+
+def test_the_offset_layer_sits_under_the_centre_of_a_top_cell():
+    """The whole point of an offset frame: a bottom node under the middle of
+    a top square, tying its four corners. Sample them at the same (i, j) and
+    every web is a vertical post and the two layers are one lattice twice."""
+    mesh = sg.custom_surface_lattice(_flat(), lattice=sg.LATTICE_SOS_OFFSET,
+                                     p_range=(0.0, 12.0), q_range=(0.0, 12.0),
+                                     n1=4, n2=4, depth=1.5)
+    tops = [n for n in mesh['nodes'] if n[2] == pytest.approx(0.0)]
+    bots = [n for n in mesh['nodes'] if n[2] == pytest.approx(-1.5)]
+    assert len(tops) == 25 and len(bots) == 16
+    # every bottom node lands on a half-module offset in BOTH directions
+    for x, y, _z in bots:
+        assert (x / 3.0 - 0.5) == pytest.approx(round(x / 3.0 - 0.5))
+        assert (y / 3.0 - 0.5) == pytest.approx(round(y / 3.0 - 0.5))
+
+
+def test_every_bottom_node_ties_to_four_top_corners():
+    mesh = sg.custom_surface_lattice(_flat(), lattice=sg.LATTICE_SOS_OFFSET,
+                                     p_range=(0.0, 9.0), q_range=(0.0, 9.0),
+                                     n1=3, n2=3, depth=1.5)
+    webs = [m for m in mesh['members'] if m.get('role') == 'web']
+    assert len(webs) == 9 * 4
+    from collections import Counter
+    per_bottom = Counter()
+    for m in webs:
+        lo = m['a'] if mesh['nodes'][m['a']][2] < mesh['nodes'][m['b']][2] else m['b']
+        per_bottom[lo] += 1
+    assert set(per_bottom.values()) == {4}
+
+
+def test_the_three_double_layer_lattices_differ_in_rod_count():
+    """They are genuinely different structures over the same surfaces --
+    different rod counts, lengths and load paths -- which is why the choice
+    belongs in the UI rather than being fixed."""
+    counts = {}
+    for lattice in (sg.LATTICE_SOS_OFFSET, sg.LATTICE_SQ_ON_DIAG, sg.LATTICE_DIAG_ON_DIAG):
+        mesh = sg.custom_surface_lattice(_flat(), lattice=lattice,
+                                         p_range=(0.0, 12.0), q_range=(0.0, 12.0),
+                                         n1=4, n2=4, depth=1.5)
+        counts[lattice] = len(mesh['members'])
+    assert len(set(counts.values())) == 3, counts
+    assert counts[sg.LATTICE_SOS_OFFSET] < counts[sg.LATTICE_DIAG_ON_DIAG]
+
+
+@pytest.mark.parametrize('lattice', [sg.LATTICE_SOS_OFFSET, sg.LATTICE_SQ_ON_DIAG,
+                                     sg.LATTICE_DIAG_ON_DIAG])
+def test_every_double_layer_lattice_solves_under_self_weight(lattice):
+    mesh = sg.custom_surface_lattice(_flat(), lattice=lattice,
+                                     p_range=(0.0, 12.0), q_range=(0.0, 12.0),
+                                     n1=4, n2=4, depth=1.5)
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    _res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+    assert err is None, f'{lattice}: {err}'
+
+
+def test_a_flat_single_layer_of_pinned_bars_is_honestly_a_mechanism():
+    """Physics, not a defect. A plane grid of pinned bars has no
+    out-of-plane stiffness; the app reports it rather than quietly bracing
+    something the user did not ask for."""
+    mesh = sg.custom_surface_lattice(_flat(), lattice=sg.LATTICE_SINGLE,
+                                     p_range=(0.0, 12.0), q_range=(0.0, 12.0), n1=4, n2=4)
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    _res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+    assert err is not None and 'mechanism' in err.lower()
+
+
+def test_a_curved_single_layer_stands_up_on_its_own():
+    """The same lattice on a curved surface has shell action and solves."""
+    dome = sg.make_height_field_surface('4 - 0.05*(x**2 + y**2)')
+    mesh = sg.custom_surface_lattice(dome, lattice=sg.LATTICE_SINGLE,
+                                     p_range=(-6.0, 6.0), q_range=(-6.0, 6.0), n1=5, n2=5)
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    _res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+    assert err is None, err
+
+
+def test_a_lattice_over_two_surfaces_keeps_the_crossing_check():
+    top = sg.make_height_field_surface('3.0*(1-(x/6)**2-(y/6)**2)+1.0')
+    with pytest.raises(ValueError) as exc:
+        sg.custom_surface_lattice(top, sg.make_height_field_surface('0'),
+                                  p_range=(-6.0, 6.0), q_range=(-6.0, 6.0), n1=4, n2=4)
+    assert 'cross' in str(exc.value)
+
+
+def test_an_unknown_lattice_is_refused():
+    with pytest.raises(ValueError):
+        sg.custom_surface_lattice(_flat(), lattice='herringbone')
+
+
+def test_a_polar_lattice_is_built_about_its_pole():
+    dome = sg.make_height_field_surface('3 - 0.1*((x-4)**2 + (y-4)**2)')
+    mesh = sg.custom_surface_lattice(dome, coord='polar', lattice=sg.LATTICE_SOS_OFFSET,
+                                     p_range=(0.01, 4.0), q_range=(0.0, 2.0 * math.pi),
+                                     n1=4, n2=12, depth=1.0, pole=(4.0, 4.0))
+    assert max(n[2] for n in mesh['nodes']) == pytest.approx(3.0, abs=1e-3)
+
+
+# ── plan-shape domain mask ───────────────────────────────────────────────────
+
+def _lattice_12m(n=6):
+    # The top must stay clear of the bottom across the WHOLE domain, or the
+    # crossing check refuses the pair before any of this gets a chance to
+    # run: 0.2*x over -6..6 reaches -1.2, so a bottom at -1.0 would meet it.
+    top = sg.make_height_field_surface('0.2 * x')
+    bot = sg.make_height_field_surface('-3.0')
+    return sg.custom_surface_lattice(top, bot, lattice=sg.LATTICE_SOS_OFFSET,
+                                     p_range=(-6.0, 6.0), q_range=(-6.0, 6.0),
+                                     n1=n, n2=n)
+
+
+def test_an_empty_rule_is_no_rule_at_all():
+    """The no-mask case has to cost nothing, so every generator can pipe
+    through apply_domain_mask without checking first."""
+    assert sg.make_domain_fn('') is None
+    assert sg.make_domain_fn(None) is None
+    mesh = _lattice_12m()
+    assert sg.apply_domain_mask(mesh, None) is mesh
+
+
+def test_a_circular_rule_cuts_the_corners_off_a_square_domain():
+    mesh = _lattice_12m()
+    cut = sg.apply_domain_mask(mesh, sg.make_domain_fn('x^2 + y^2 < 16'))
+    assert len(cut['nodes']) < len(mesh['nodes'])
+    assert all(math.hypot(x, y) < 8.0 for x, y, _z in cut['nodes'])
+
+
+def test_the_mask_keeps_the_chords_that_frame_the_hole():
+    """A member survives only if BOTH ends do, and a node with no member
+    left is dropped -- which is what stops the cut leaving a rim of
+    half-connected nodes the solver would call a mechanism."""
+    mesh = _lattice_12m()
+    cut = sg.apply_domain_mask(mesh, sg.make_domain_fn('x^2 + y^2 < 16'))
+    n = len(cut['nodes'])
+    assert all(0 <= m['a'] < n and 0 <= m['b'] < n for m in cut['members'])
+    attached = set()
+    for m in cut['members']:
+        attached.add(m['a'])
+        attached.add(m['b'])
+    assert attached == set(range(n)), 'a node survived with nothing attached'
+
+
+def test_the_cut_edge_becomes_a_support_candidate():
+    """A cut makes a NEW free edge. Keeping only the old rectangle's
+    perimeter would leave the new rim with nothing to stand on."""
+    mesh = _lattice_12m()
+    cut = sg.apply_domain_mask(mesh, sg.make_domain_fn('x^2 + y^2 < 16'))
+    assert cut['support_candidates']
+    rim = [math.hypot(*cut['nodes'][i][:2]) for i in cut['support_candidates']]
+    assert max(rim) > 3.0
+
+
+def test_load_areas_follow_their_nodes_through_the_renumbering():
+    mesh = _lattice_12m()
+    cut = sg.apply_domain_mask(mesh, sg.make_domain_fn('x^2 + y^2 < 16'))
+    assert cut['load_nodes']
+    assert all(0 <= i < len(cut['nodes']) for i in cut['load_nodes'])
+    assert all(a > 0 for a in cut['load_nodes'].values())
+
+
+def test_a_rule_that_keeps_nothing_is_an_error_not_an_empty_mesh():
+    mesh = _lattice_12m()
+    with pytest.raises(ValueError, match='removed the whole structure'):
+        sg.apply_domain_mask(mesh, lambda x, y: False)
+
+
+def test_the_cut_is_module_granular_not_node_granular():
+    """A surviving bottom node keeps the top corners its webs hang from,
+    even across the line. The overshoot is bounded by one module -- that is
+    the framing around the opening, not a leak."""
+    mesh = _lattice_12m(n=6)
+    cut = sg.apply_domain_mask(mesh, sg.make_domain_fn('x < 0'))
+    module = 12.0 / 6
+    assert max(x for x, _y, _z in cut['nodes']) <= module + 1e-6
+
+
+def test_a_masked_lattice_still_solves():
+    mesh = _lattice_12m()
+    cut = sg.apply_domain_mask(mesh, sg.make_domain_fn('x^2 + y^2 < 16'))
+    members = [dict(m, A=20.0, E=200.0, Fy=235.0, r_gyr=4.0) for m in cut['members']]
+    loads = [{'node': i, 'fz': -5.0} for i in range(len(cut['nodes']))]
+    supports = [{'node': i, 'type': 'pin'} for i in cut['support_candidates']]
+    _res, err = sm.analyze(cut['nodes'], members, loads, supports)
+    assert err is None, err
+
+
+def test_a_domain_rule_may_name_the_domain_it_is_written_against():
+    keep = sg.make_domain_fn('x < Lx / 2', {'Lx': 12.0})
+    assert keep(5.0, 0.0) and not keep(7.0, 0.0)
+
+
+# ── the latticed column, rebuilt ─────────────────────────────────────────────
+
+def test_a_latticed_columns_chords_run_straight_down_from_the_nodes_it_carries():
+    """The first version stood on an invented square of its own `width` near
+    the centroid, which is not under the joints it carries at all."""
+    mesh, _degree = _flat_grid_with_degrees()
+    top = _square_footprint(mesh)
+    want = sorted((round(mesh['nodes'][j][0], 6), round(mesh['nodes'][j][1], 6))
+                  for j in top)
+    nodes, _members, bases, _head = sg.add_column(
+        mesh['nodes'], mesh['members'], top, height=4.0, style=sg.COLUMN_LATTICE)
+    got = sorted((round(nodes[b][0], 6), round(nodes[b][1], 6)) for b in bases)
+    assert got == want, 'the feet are not under the nodes the column carries'
+
+
+def test_a_latticed_column_has_no_capital_at_all():
+    """A capital exists to stop a column piercing the grid through ONE joint.
+    A latticed column already arrives at three or four separate joints, so a
+    capital squeezed all of them back through one node on the way -- the very
+    thing it is there to avoid."""
+    mesh, _degree = _flat_grid_with_degrees()
+    top = _square_footprint(mesh)
+    m0 = len(mesh['members'])
+    _nodes, members, _bases, _head = sg.add_column(
+        mesh['nodes'], mesh['members'], top, height=4.0, style=sg.COLUMN_LATTICE)
+    new = members[m0:]
+    assert new, 'the column added nothing'
+    assert not [m for m in new if str(m.get('role', '')).startswith('capital')]
+
+
+def test_a_latticed_column_can_have_three_chords():
+    mesh, _degree = _flat_grid_with_degrees()
+    tri = _square_footprint(mesh, n=3)
+    nodes, members, bases, _head = sg.add_column(
+        mesh['nodes'], mesh['members'], tri, height=4.0,
+        style=sg.COLUMN_LATTICE, panels=3)
+    assert len(bases) == 3
+    chords = [m for m in members if m.get('role') == 'column_chord']
+    assert len(chords) == 3 * 3, '3 chords over 3 panels'
+    want = sorted((round(mesh['nodes'][j][0], 6), round(mesh['nodes'][j][1], 6))
+                  for j in tri)
+    got = sorted((round(nodes[b][0], 6), round(nodes[b][1], 6)) for b in bases)
+    assert got == want
+
+
+@pytest.mark.parametrize('count', [1, 2, 5, 9])
+def test_a_latticed_column_refuses_anything_but_three_or_four_nodes(count):
+    """One chord per node it carries is the whole idea; five nodes is not a
+    column, it is a request the shape cannot answer."""
+    mesh, degree = _flat_grid_with_degrees()
+    top = sorted(degree, key=degree.get, reverse=True)[:count]
+    with pytest.raises(ValueError, match='3 or 4'):
+        sg.add_column(mesh['nodes'], mesh['members'], top, height=4.0,
+                      style=sg.COLUMN_LATTICE)
+
+
+def test_a_latticed_column_refuses_a_collinear_footprint():
+    """Three nodes in a line enclose no area, so the column can fold about
+    that line however it is braced."""
+    mesh, _degree = _flat_grid_with_degrees()
+    nodes = mesh['nodes']
+    zmax = max(p[2] for p in nodes)
+    row_y = min(p[1] for p in nodes if abs(p[2] - zmax) < 1e-9)
+    line = [i for i, p in enumerate(nodes)
+            if abs(p[2] - zmax) < 1e-9 and abs(p[1] - row_y) < 1e-9][:3]
+    assert len(line) == 3
+    with pytest.raises(ValueError, match='straight line'):
+        sg.add_column(nodes, mesh['members'], line, height=4.0,
+                      style=sg.COLUMN_LATTICE)
+
+
+def test_the_bracing_joins_neighbours_not_opposite_corners():
+    """Taken in selection order a four-node footprint can come out as a
+    bow-tie, and the X bracing then crosses the middle of the column instead
+    of lying on its faces."""
+    mesh, _degree = _flat_grid_with_degrees()
+    top = _square_footprint(mesh)
+    scrambled = [top[0], top[3], top[1], top[2]]
+    nodes, members, bases, _head = sg.add_column(
+        mesh['nodes'], mesh['members'], scrambled, height=4.0,
+        style=sg.COLUMN_LATTICE, panels=1)
+    side = min(math.dist(nodes[a][:2], nodes[b][:2])
+               for a in bases for b in bases if a != b)
+    ties = [m for m in members if m.get('role') == 'column_tie'
+            and m['a'] in bases and m['b'] in bases]
+    assert ties
+    for m in ties:
+        d = math.dist(nodes[m['a']][:2], nodes[m['b']][:2])
+        assert d < side * 1.3, 'a tie crosses the footprint diagonally'
+
+
+def test_a_tapered_latticed_column_keeps_the_selections_plan_shape():
+    """Narrowed, not a different footprint: every foot moves toward the
+    centroid by the same fraction."""
+    mesh, _degree = _flat_grid_with_degrees()
+    top = _square_footprint(mesh)
+    nodes, _m, bases, _h = sg.add_column(
+        mesh['nodes'], mesh['members'], top, height=4.0, style=sg.COLUMN_TAPERED)
+    cx = sum(mesh['nodes'][j][0] for j in top) / len(top)
+    cy = sum(mesh['nodes'][j][1] for j in top) / len(top)
+    ratios = []
+    for b in bases:
+        r_top = max(math.dist((mesh['nodes'][j][0], mesh['nodes'][j][1]), (cx, cy))
+                    for j in top)
+        ratios.append(math.dist((nodes[b][0], nodes[b][1]), (cx, cy)) / r_top)
+    assert max(ratios) - min(ratios) < 1e-9, 'the footprint changed shape'
+    assert 0.0 < ratios[0] < 1.0
+
+
+def test_a_footprint_with_three_nodes_in_a_line_is_refused():
+    """Plan area alone is not enough. A kite -- which is exactly what "the
+    four bottom nodes nearest the centre" gives on an odd grid -- encloses a
+    real area while three of its corners sit on one line. The two faces
+    meeting at that middle corner are then coplanar, their bracing lies in
+    one plane, and the column hinges about the line. The solver called that
+    a singular matrix, which tells nobody which four nodes to pick instead.
+    """
+    mesh, _degree = _flat_grid_with_degrees()
+    nodes = mesh['nodes']
+    zmax = max(p[2] for p in nodes)
+
+    def near(px, py):
+        return min((i for i, p in enumerate(nodes) if abs(p[2] - zmax) < 1e-9),
+                   key=lambda i: (nodes[i][0] - px) ** 2 + (nodes[i][1] - py) ** 2)
+
+    xs = sorted({round(p[0], 6) for p in nodes if abs(p[2] - zmax) < 1e-9})
+    ys = sorted({round(p[1], 6) for p in nodes if abs(p[2] - zmax) < 1e-9})
+    x0, x1, x2 = xs[0], xs[1], xs[2]
+    y0, y1 = ys[0], ys[1]
+    kite = [near(x0, y1), near(x1, y1), near(x2, y1), near(x1, y0)]
+    assert len(set(kite)) == 4
+    with pytest.raises(ValueError, match='straight line'):
+        sg.add_column(nodes, mesh['members'], kite, height=4.0,
+                      style=sg.COLUMN_LATTICE)
+
+
+def test_a_footprint_with_a_node_inside_the_others_is_refused():
+    """It would brace across its own middle instead of round its faces."""
+    mesh, _degree = _flat_grid_with_degrees()
+    nodes = mesh['nodes']
+    zmax = max(p[2] for p in nodes)
+
+    def near(px, py):
+        return min((i for i, p in enumerate(nodes) if abs(p[2] - zmax) < 1e-9),
+                   key=lambda i: (nodes[i][0] - px) ** 2 + (nodes[i][1] - py) ** 2)
+
+    xs = sorted({round(p[0], 6) for p in nodes if abs(p[2] - zmax) < 1e-9})
+    ys = sorted({round(p[1], 6) for p in nodes if abs(p[2] - zmax) < 1e-9})
+    inside = [near(xs[0], ys[0]), near(xs[2], ys[0]), near(xs[1], ys[2]),
+              near(xs[1], ys[1])]
+    assert len(set(inside)) == 4
+    with pytest.raises(ValueError, match='convex'):
+        sg.add_column(nodes, mesh['members'], inside, height=4.0,
+                      style=sg.COLUMN_LATTICE)
+
+
+def test_a_square_and_a_diamond_footprint_are_both_accepted():
+    """The guard must not become "axis-aligned squares only"."""
+    mesh, _degree = _flat_grid_with_degrees()
+    nodes = mesh['nodes']
+    zmax = max(p[2] for p in nodes)
+
+    def near(px, py):
+        return min((i for i, p in enumerate(nodes) if abs(p[2] - zmax) < 1e-9),
+                   key=lambda i: (nodes[i][0] - px) ** 2 + (nodes[i][1] - py) ** 2)
+
+    xs = sorted({round(p[0], 6) for p in nodes if abs(p[2] - zmax) < 1e-9})
+    ys = sorted({round(p[1], 6) for p in nodes if abs(p[2] - zmax) < 1e-9})
+    square = [near(xs[0], ys[0]), near(xs[1], ys[0]),
+              near(xs[1], ys[1]), near(xs[0], ys[1])]
+    diamond = [near(xs[1], ys[0]), near(xs[2], ys[1]),
+               near(xs[1], ys[2]), near(xs[0], ys[1])]
+    for footprint in (square, diamond):
+        assert len(set(footprint)) == 4
+        _n, _m, bases, _h = sg.add_column(nodes, mesh['members'], footprint,
+                                          height=4.0, style=sg.COLUMN_LATTICE)
+        assert len(bases) == 4
+
+
+# ── the Vierendeel grid family ───────────────────────────────────────────────
+
+def _vierendeel(**kw):
+    kw.setdefault('span_x', 12.0)
+    kw.setdefault('span_y', 12.0)
+    kw.setdefault('depth', 1.5)
+    kw.setdefault('module', 3.0)
+    return sg.vierendeel_grid(**kw)
+
+
+def test_a_vierendeel_grid_has_no_diagonal_anywhere():
+    """That is the entire point of it: rectangular openings you can run a
+    duct, a walkway or a person through."""
+    mesh = _vierendeel()
+    for m in mesh['members']:
+        a, b = mesh['nodes'][m['a']], mesh['nodes'][m['b']]
+        moves = sum(1 for k in range(3) if abs(a[k] - b[k]) > 1e-9)
+        assert moves == 1, f'member {m} runs diagonally'
+
+
+def test_its_two_layers_are_aligned_and_joined_by_vertical_posts():
+    mesh = _vierendeel(depth=2.0)
+    posts = [m for m in mesh['members'] if m.get('role') == 'web']
+    assert posts
+    for m in posts:
+        a, b = mesh['nodes'][m['a']], mesh['nodes'][m['b']]
+        assert abs(a[0] - b[0]) < 1e-9 and abs(a[1] - b[1]) < 1e-9
+        assert abs(abs(a[2] - b[2]) - 2.0) < 1e-9
+
+
+def test_every_vierendeel_member_demands_rigid_joints():
+    """Not a preference. Pinned, a rectangle of four bars lozenges, so the
+    tag is the difference between a frame and a pile of loose bars."""
+    mesh = _vierendeel()
+    assert mesh['members']
+    for m in mesh['members']:
+        assert m.get('conn') == 'rigid'
+        assert m.get('rigid_required') is True
+
+
+def test_a_vierendeel_grid_solves_rigid_and_is_a_mechanism_pinned():
+    """The claim in the docstring, measured rather than asserted."""
+    mesh = _vierendeel()
+    sup = [{'node': i, 'type': 'fixed'} for i in mesh['support_candidates']]
+    loads = [{'node': n, 'fz': -2.0 * a} for n, a in mesh['load_nodes'].items()]
+
+    rigid = [dict(m, E=200.0, A=20.0, I=1000.0, J=500.0) for m in mesh['members']]
+    _res, err = sm.analyze(mesh['nodes'], rigid, loads, sup)
+    assert err is None, err
+
+    pinned = [dict(m, conn='pin', E=200.0, A=20.0) for m in mesh['members']]
+    _res, err = sm.analyze(mesh['nodes'], pinned, loads, sup)
+    assert err is not None, 'a pinned Vierendeel should be a mechanism'
+
+
+def test_a_vierendeel_grid_is_far_more_flexible_than_a_triangulated_one():
+    """The price of the openings, and the number a designer has to weigh.
+    Measured at the same span, depth, module and section."""
+    common = dict(span_x=12.0, span_y=12.0, depth=1.5, module=3.0)
+    vd = sg.vierendeel_grid(**common)
+    tri = sg.flat_grid(**common)
+
+    def peak(mesh, conn):
+        mem = [dict(m, E=200.0, A=20.0, I=1000.0, J=500.0) for m in mesh['members']]
+        sup = [{'node': i, 'type': 'fixed' if conn == 'rigid' else 'pin'}
+               for i in mesh['support_candidates']]
+        loads = [{'node': n, 'fz': -2.0 * a} for n, a in mesh['load_nodes'].items()]
+        res, err = sm.analyze(mesh['nodes'], mem, loads, sup)
+        assert err is None, err
+        return max(abs(r['uz']) for r in res['node_res'])
+
+    assert peak(vd, 'rigid') > 3.0 * peak(tri, 'pin')
+
+
+def test_the_vierendeel_perimeter_is_offered_as_the_support_line():
+    mesh = _vierendeel()
+    assert mesh['support_candidates']
+    zmin = min(p[2] for p in mesh['nodes'])
+    for i in mesh['support_candidates']:
+        assert abs(mesh['nodes'][i][2] - zmin) < 1e-9, 'a support candidate is not on the bottom layer'
+
+
+def test_vierendeel_load_areas_cover_the_whole_plan():
+    """Half a cell along an edge, a quarter at a corner -- the areas have to
+    add up to the plan or the roof is loaded by the wrong total."""
+    mesh = _vierendeel(span_x=12.0, span_y=9.0)
+    assert abs(sum(mesh['load_nodes'].values()) - 12.0 * 9.0) < 1e-6
+
+
+@pytest.mark.parametrize('bad', [{'span_x': 0.0}, {'module': 0.0}, {'depth': 0.0},
+                                 {'depth': -1.0}])
+def test_a_vierendeel_grid_refuses_a_degenerate_size(bad):
+    with pytest.raises(ValueError):
+        _vierendeel(**bad)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  The ten geometrically-controlled families
+# ═══════════════════════════════════════════════════════════════════════════
+
+# key -> a set of arguments that is representative rather than minimal: the
+# same values the app's own parameter panel opens with, so a test failure
+# here is a failure the user would actually have hit.
+NEW_FAMILY_CASES = {
+    'elliptic_paraboloid_shell': dict(span_x=18, span_y=18, depth=1.2, module=3, rise=4),
+    'elliptic_hypar_shell': dict(span_x=18, span_y=18, depth=1.2, module=3,
+                                 rise_x=3, rise_y=2),
+    'conoid_shell': dict(span_x=18, span_y=12, depth=1.2, module=3, rise=4),
+    'monkey_saddle_shell': dict(span_x=18, span_y=18, depth=1.2, module=3, rise=1.5),
+    'wave_shell': dict(span_x=24, span_y=12, depth=1.0, module=2, rise=3, waves=2.0),
+    'billow_shell': dict(span_x=24, span_y=24, depth=1.2, module=2, rise=4,
+                         waves_x=2.0, waves_y=2.0),
+    'catenary_vault': dict(span=12, rise=5, length=18, n_arch=8, n_bays=8,
+                           double_layer=True, depth=0.6),
+    'torus_segment': dict(major_radius=14, tube_radius=5, sweep_deg=180, arc_deg=180,
+                          n_sweep=16, n_arc=6, depth=0.6),
+    'hyperboloid_tower': dict(radius=5, height=24, n_rings=6, n_sectors=16, twist=1),
+    'elliptic_hyperboloid': dict(radius_x=6, radius_y=3.5, height=20, n_rings=6,
+                                 n_sectors=16, twist=1),
+    'helicoid_ramp': dict(inner_radius=4, outer_radius=9, turns=1.0, rise_per_turn=3.2,
+                          n_radial=4, n_along=24, depth=0.8),
+}
+
+
+@pytest.mark.parametrize('key', sorted(NEW_FAMILY_CASES))
+def test_every_new_family_builds_a_sane_mesh(key):
+    _assert_mesh_is_sane(sg.GENERATORS[key](**NEW_FAMILY_CASES[key]))
+
+
+@pytest.mark.parametrize('key', sorted(NEW_FAMILY_CASES))
+def test_every_new_family_actually_analyzes(key):
+    """The library's standing rule: a mesh can look structurally sane -- no
+    zero-length members, no duplicates, every index in range -- and still be
+    a mechanism. Every new family is run through the real solver under its
+    own self-weight before it is allowed in the dropdown."""
+    mesh = sg.GENERATORS[key](**NEW_FAMILY_CASES[key])
+    rigid = any(m.get('conn') == 'rigid' for m in mesh['members'])
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+        m.setdefault('I', 500.0)
+        m.setdefault('J', 1000.0)
+    supports = [{'node': i, 'type': 'fixed' if rigid else 'pin'}
+                for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+    assert err is None, f'{key}: {err}'
+    worst = max(abs(c) for nr in res['node_res']
+                for c in (nr['ux'], nr['uy'], nr['uz']))
+    # Not a serviceability check -- a sanity one. A metre of deflection
+    # under self weight alone means the mesh is riding a mechanism the
+    # solver did not happen to catch, which is exactly how the pinned
+    # single-layer helicoid was found.
+    assert worst < 200.0, f'{key}: {worst:.0f} mm under self weight alone'
+
+
+# ── the five height-field shells: the surface each one claims to be ────────
+
+def _z_at(mesh, x, y, tol=1e-6):
+    """The lowest-layer z of the node at plan (x, y) -- the height field's
+    own value there, since flat_grid places the bottom layer ON it."""
+    hits = [n[2] for n in mesh['nodes']
+            if abs(n[0] - x) < tol and abs(n[1] - y) < tol]
+    assert hits, f'no node at plan ({x}, {y})'
+    return min(hits)
+
+
+def test_the_elliptic_paraboloid_is_zero_at_the_corners_and_rise_at_the_crown():
+    mesh = sg.elliptic_paraboloid_shell(span_x=12, span_y=12, depth=1.0, module=3, rise=4)
+    for corner in ((0, 0), (12, 0), (0, 12), (12, 12)):
+        assert _z_at(mesh, *corner) == pytest.approx(0.0, abs=1e-9)
+    assert _z_at(mesh, 6, 6) == pytest.approx(4.0, abs=1e-9)
+    # halfway along an edge it stands at rise/2, which is the documented
+    # consequence of a quadratic that is zero at all four corners
+    assert _z_at(mesh, 6, 0) == pytest.approx(2.0, abs=1e-9)
+
+
+def test_the_elliptic_hypar_arches_one_way_and_hangs_the_other():
+    mesh = sg.elliptic_hypar_shell(span_x=12, span_y=12, depth=1.0, module=3,
+                                   rise_x=3, rise_y=2)
+    assert _z_at(mesh, 6, 6) == pytest.approx(0.0, abs=1e-9)
+    assert _z_at(mesh, 0, 6) == pytest.approx(+3.0, abs=1e-9)   # up along x
+    assert _z_at(mesh, 12, 6) == pytest.approx(+3.0, abs=1e-9)
+    assert _z_at(mesh, 6, 0) == pytest.approx(-2.0, abs=1e-9)   # down along y
+    assert _z_at(mesh, 6, 12) == pytest.approx(-2.0, abs=1e-9)
+
+
+def test_the_conoid_is_ruled_every_line_of_constant_x_is_straight():
+    """The property the shape exists for: z is LINEAR in y, so each
+    y-direction line is a straight generator."""
+    mesh = sg.conoid_shell(span_x=12, span_y=12, depth=1.0, module=3, rise=4)
+    for x in (3, 6, 9):
+        zs = [_z_at(mesh, x, y) for y in (0, 3, 6, 9, 12)]
+        step = zs[1] - zs[0]
+        for a, b in zip(zs, zs[1:]):
+            assert b - a == pytest.approx(step, abs=1e-9)
+    assert _z_at(mesh, 6, 0) == pytest.approx(0.0, abs=1e-9)    # straight edge
+    assert _z_at(mesh, 6, 12) == pytest.approx(4.0, abs=1e-9)   # arch crown
+
+
+def test_the_monkey_saddle_has_three_rises_and_three_falls():
+    """Its defining feature, and the reason it is a cautionary shape: six
+    alternating sectors round a centre where BOTH curvatures vanish."""
+    mesh = sg.monkey_saddle_shell(span_x=12, span_y=12, depth=1.0, module=1, rise=1.0)
+    assert _z_at(mesh, 6, 6) == pytest.approx(0.0, abs=1e-9)
+    signs = []
+    for k in range(12):
+        ang = 2.0 * math.pi * k / 12 + math.pi / 12.0
+        u, v = 0.8 * math.cos(ang), 0.8 * math.sin(ang)
+        signs.append(1 if (u ** 3 - 3.0 * u * v * v) > 0 else -1)
+    # six sign changes round a full turn == three rises and three falls
+    changes = sum(1 for a, b in zip(signs, signs[1:] + signs[:1]) if a != b)
+    assert changes == 6
+
+
+def test_the_wave_shell_touches_zero_at_every_trough_and_rise_at_every_crest():
+    mesh = sg.wave_shell(span_x=24, span_y=6, depth=1.0, module=1.5, rise=3, waves=2.0)
+    for trough_x in (0, 12, 24):
+        assert _z_at(mesh, trough_x, 0) == pytest.approx(0.0, abs=1e-9)
+    for crest_x in (6, 18):
+        assert _z_at(mesh, crest_x, 0) == pytest.approx(3.0, abs=1e-9)
+    # dead straight along y -- a developable surface, as documented
+    for y in (0, 1.5, 3.0, 4.5, 6.0):
+        assert _z_at(mesh, 6, y) == pytest.approx(3.0, abs=1e-9)
+
+
+# ── the catenary vault ─────────────────────────────────────────────────────
+
+def test_the_catenary_vault_is_a_catenary_not_a_parabola():
+    """Both curves are zero at the springings and `rise` at the crown, so the
+    end points prove nothing. What separates them is everywhere else: at the
+    quarter point a catenary of shape 2 sits measurably higher than the
+    parabola of the same span and rise."""
+    span, rise, shape = 12.0, 5.0, 2.0
+    mesh = sg.catenary_vault(span, rise, 6, n_arch=8, n_bays=2,
+                             double_layer=False, depth=0.0, shape=shape)
+    zs = {round(n[1], 6): n[2] for n in mesh['nodes'] if abs(n[0]) < 1e-9}
+    assert zs[-6.0] == pytest.approx(0.0, abs=1e-9)
+    assert zs[6.0] == pytest.approx(0.0, abs=1e-9)
+    assert zs[0.0] == pytest.approx(rise, abs=1e-9)
+    t = 0.5
+    expected = rise * (math.cosh(shape) - math.cosh(shape * t)) / (math.cosh(shape) - 1.0)
+    assert zs[3.0] == pytest.approx(expected, abs=1e-9)
+    parabola = rise * (1.0 - t * t)
+    assert zs[3.0] > parabola
+
+
+def test_the_catenary_shape_parameter_must_be_positive():
+    with pytest.raises(ValueError):
+        sg.catenary_vault(12, 5, 6, shape=0.0)
+
+
+# ── the ruled hyperboloid: the straightness claim, measured ────────────────
+
+def _generator_deviation(mesh, n_rings, n_sectors, step):
+    """The largest distance any intermediate node of a would-be generator
+    line sits off the straight line joining that line's two end nodes.
+    Nodes are banked ring by ring, sector by sector, so node (i, j) is
+    index i * n_sectors + j."""
+    nodes = mesh['nodes']
+    worst = 0.0
+    for j in range(n_sectors):
+        pts = [nodes[i * n_sectors + (j + step * i) % n_sectors]
+               for i in range(n_rings + 1)]
+        a, b = pts[0], pts[-1]
+        d = [b[k] - a[k] for k in range(3)]
+        L = math.dist(a, b)
+        for p in pts[1:-1]:
+            v = [p[k] - a[k] for k in range(3)]
+            cross = (v[1] * d[2] - v[2] * d[1],
+                     v[2] * d[0] - v[0] * d[2],
+                     v[0] * d[1] - v[1] * d[0])
+            worst = max(worst, math.hypot(*cross) / L)
+    return worst
+
+
+@pytest.mark.parametrize('n_rings,n_sectors,twist', [(6, 16, 1), (4, 24, 3), (8, 20, 2)])
+def test_both_hyperboloid_generator_families_are_exactly_straight(n_rings, n_sectors, twist):
+    """The whole point of the shape, and the one claim in the library that
+    is EXACT rather than a secant approximation: through every node run two
+    straight lines lying entirely in the surface, and the lattice's
+    diagonals ARE those lines. Measured, not assumed -- and it only holds
+    because the rings step by equal amounts of the Gudermannian angle and
+    the twist is a whole number of sectors."""
+    mesh = sg.hyperboloid_tower(5, 20, n_rings, n_sectors, twist, brace='none')
+    assert _generator_deviation(mesh, n_rings, n_sectors, 0) < 1e-9
+    assert _generator_deviation(mesh, n_rings, n_sectors, -twist) < 1e-9
+
+
+def test_the_elliptic_hyperboloid_is_still_doubly_ruled():
+    """An ellipse is a circle under an affine map, and an affine map takes
+    straight lines to straight lines -- so the squash costs nothing."""
+    mesh = sg.elliptic_hyperboloid(6, 3.5, 20, 6, 16, 1, brace='none')
+    assert _generator_deviation(mesh, 6, 16, 0) < 1e-9
+    assert _generator_deviation(mesh, 6, 16, -1) < 1e-9
+
+
+def _mechanism_count(mesh):
+    """Mechanisms of a PINNED bar assembly: free translational DOF minus the
+    rank of its compatibility matrix. The honest test for a structure that
+    is exactly on the Maxwell count, where counting bars tells you nothing."""
+    import numpy as np
+    nodes = mesh['nodes']
+    n = len(nodes)
+    held = set(mesh['support_candidates'])
+    rows = []
+    for m in mesh['members']:
+        a, b = m['a'], m['b']
+        v = np.array(nodes[b]) - np.array(nodes[a])
+        e = v / np.linalg.norm(v)
+        r = np.zeros(3 * n)
+        r[3 * a:3 * a + 3] = -e
+        r[3 * b:3 * b + 3] = e
+        rows.append(r)
+    free = [d for i in range(n) if i not in held for d in (3 * i, 3 * i + 1, 3 * i + 2)]
+    B = np.array(rows)[:, free]
+    sv = np.linalg.svd(B, compute_uv=False)
+    return B.shape[1] - int((sv > sv[0] * 1e-9).sum())
+
+
+@pytest.mark.parametrize('n_rings,n_sectors', [(6, 16), (8, 24), (5, 12)])
+def test_the_bare_shukhov_lattice_is_maxwell_critical(n_rings, n_sectors):
+    """Hoops plus two generator families put this lattice EXACTLY on the
+    Maxwell count, which is the one case where the count proves nothing.
+    Measured on the compatibility matrix, the bare lattice has precisely one
+    inextensional mechanism per ring course -- the reason `brace` exists and
+    defaults to adding members."""
+    mesh = sg.hyperboloid_tower(5, 20, n_rings, n_sectors, 1, brace='none')
+    assert _mechanism_count(mesh) == n_rings
+
+
+@pytest.mark.parametrize('brace', ['counter', 'ring'])
+def test_either_bracing_removes_every_hyperboloid_mechanism(brace):
+    mesh = sg.hyperboloid_tower(5, 20, 6, 16, 1, brace=brace)
+    assert _mechanism_count(mesh) == 0
+
+
+def test_the_unbraced_hyperboloid_is_far_softer_than_the_braced_one():
+    """Why 'none' is not a safe default even though the solver accepts it: a
+    symmetric self-weight load happens to be orthogonal to the inextensional
+    modes, so a bare lattice returns a perfectly plausible answer that is
+    an order of magnitude too flexible."""
+    def worst(brace):
+        mesh = sg.hyperboloid_tower(5, 24, 6, 16, 1, brace=brace)
+        for m in mesh['members']:
+            m.setdefault('E', 200.0)
+            m.setdefault('A', 20.0)
+        supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+        loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+        res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+        assert err is None
+        return max(abs(c) for nr in res['node_res'] for c in (nr['ux'], nr['uy'], nr['uz']))
+    assert worst('none') > 10.0 * worst('counter')
+
+
+def test_a_hyperboloid_that_would_flare_past_ninety_degrees_is_refused():
+    with pytest.raises(ValueError) as exc:
+        sg.hyperboloid_tower(5, 20, n_rings=10, n_sectors=16, twist=2)
+    assert 'flare' in str(exc.value).lower()
+
+
+def test_the_hyperboloid_waist_and_ends_land_where_the_flare_says():
+    n_rings, n_sectors, twist, radius, height = 6, 16, 1, 5.0, 24.0
+    mesh = sg.hyperboloid_tower(radius, height, n_rings, n_sectors, twist)
+    psi_max = n_rings * twist * math.pi / n_sectors / 2.0
+    plan = [(math.hypot(x, y), z) for x, y, z in mesh['nodes']]
+    assert min(r for r, _z in plan) == pytest.approx(radius, abs=1e-9)
+    assert max(r for r, _z in plan) == pytest.approx(radius / math.cos(psi_max), abs=1e-9)
+    assert min(z for _r, z in plan) == pytest.approx(0.0, abs=1e-9)
+    assert max(z for _r, z in plan) == pytest.approx(height, abs=1e-9)
+
+
+def test_a_bad_hyperboloid_brace_name_is_refused():
+    with pytest.raises(ValueError):
+        sg.hyperboloid_tower(5, 20, 6, 16, 1, brace='diagonal')
+
+
+# ── the torus segment ──────────────────────────────────────────────────────
+
+def test_a_full_torus_sweep_closes_its_seam_instead_of_duplicating_it():
+    """Exactly 360 degrees must join back to the start, not lay a second ring
+    of nodes on top of the first -- the same closed-seam convention dome()
+    and circular_flat_grid() use for a full turn."""
+    half = sg.torus_segment(14, 5, sweep_deg=180, arc_deg=180, n_sweep=12, n_arc=4, depth=0.5)
+    full = sg.torus_segment(14, 5, sweep_deg=360, arc_deg=180, n_sweep=24, n_arc=4, depth=0.5)
+    # 24 sweep stations wrapped == 24 columns, vs 12 bays == 13 columns
+    assert len(full['nodes']) == len(half['nodes']) // 13 * 24
+    _assert_mesh_is_sane(full)
+
+
+def test_the_torus_springings_sit_on_the_base_plane():
+    mesh = sg.torus_segment(14, 5, sweep_deg=180, arc_deg=180, n_sweep=8, n_arc=4, depth=0.0)
+    for i in mesh['support_candidates']:
+        assert mesh['nodes'][i][2] == pytest.approx(0.0, abs=1e-9)
+    assert max(n[2] for n in mesh['nodes']) == pytest.approx(5.0, abs=1e-9)
+
+
+def test_the_torus_tributary_areas_sum_to_the_true_swept_area():
+    """A torus's own area element is (R + r*sin(u)) dtau * r du, and the
+    lumped node areas must add back up to its integral -- an exact check,
+    not an approximation, because the surface is a genuine surface of
+    revolution in both directions."""
+    R, r = 14.0, 5.0
+    mesh = sg.torus_segment(R, r, sweep_deg=180, arc_deg=180, n_sweep=20, n_arc=8, depth=0.0)
+    exact = math.pi * r * (math.pi * R)   # integral over tau in [0,pi], u in [-pi/2,pi/2]
+    assert sum(mesh['load_nodes'].values()) == pytest.approx(exact, rel=1e-9)
+
+
+def test_a_torus_layer_depth_must_stay_inside_its_own_tube():
+    with pytest.raises(ValueError):
+        sg.torus_segment(14, 5, depth=5.0)
+
+
+# ── the helicoid ramp ──────────────────────────────────────────────────────
+
+def test_the_helicoid_climbs_exactly_one_rise_per_turn():
+    mesh = sg.helicoid_ramp(4, 9, turns=2.0, rise_per_turn=3.2, n_radial=3,
+                            n_along=24, depth=0.0)
+    zs = [n[2] for n in mesh['nodes']]
+    assert min(zs) == pytest.approx(0.0, abs=1e-9)
+    assert max(zs) == pytest.approx(6.4, abs=1e-9)
+
+
+def test_the_helicoid_tributary_areas_sum_to_the_swept_annulus():
+    mesh = sg.helicoid_ramp(4, 9, turns=1.0, rise_per_turn=3.2, n_radial=5,
+                            n_along=24, depth=0.0)
+    exact = math.pi * (9.0 ** 2 - 4.0 ** 2)
+    assert sum(mesh['load_nodes'].values()) == pytest.approx(exact, rel=1e-9)
+
+
+def test_a_single_layer_helicoid_is_forced_rigid_and_says_so():
+    """A pinned single-layer helicoid has no stiffness worth the name -- its
+    radial lines are straight and level -- and modelling it as a truss gives
+    a metre of fictitious deflection rather than an answer. Every member is
+    tagged rigid_required, exactly as vierendeel_grid's are, so the Section
+    panel cannot quietly pin it back."""
+    mesh = sg.helicoid_ramp(4, 9, turns=1.0, rise_per_turn=3.2, n_radial=4,
+                            n_along=24, depth=0.0)
+    assert all(m['conn'] == 'rigid' for m in mesh['members'])
+    assert all(m['rigid_required'] for m in mesh['members'])
+    # the DOUBLE layer is a truss and must stay one
+    both = sg.helicoid_ramp(4, 9, turns=1.0, rise_per_turn=3.2, n_radial=4,
+                            n_along=24, depth=0.8)
+    assert all(m.get('conn', 'pin') == 'pin' for m in both['members'])
+
+
+def test_a_helicoid_on_the_axis_itself_is_refused():
+    with pytest.raises(ValueError):
+        sg.helicoid_ramp(0.0, 9, turns=1.0)
+    with pytest.raises(ValueError):
+        sg.helicoid_ramp(9.0, 4.0, turns=1.0)
+
+
+def test_the_billow_shell_dips_at_the_edge_midpoints_and_flies_at_the_corners():
+    """The 2-by-2 case, which is the configuration the built examples use:
+    the roof comes to the ground at the MIDDLE OF EACH EDGE and soars at
+    all four corners and at the centre. Getting the half-wave count's phase
+    wrong swaps those two, which is a different building entirely."""
+    span, rise = 24.0, 4.0
+    mesh = sg.billow_shell(span, span, depth=1.0, module=2, rise=rise,
+                           waves_x=2.0, waves_y=2.0)
+    for corner in ((0, 0), (span, 0), (0, span), (span, span)):
+        assert _z_at(mesh, *corner) == pytest.approx(+rise, abs=1e-9)
+    for edge_mid in ((span / 2, 0), (0, span / 2), (span, span / 2), (span / 2, span)):
+        assert _z_at(mesh, *edge_mid) == pytest.approx(-rise, abs=1e-9)
+    assert _z_at(mesh, span / 2, span / 2) == pytest.approx(+rise, abs=1e-9)
+    # the sign-reversal lines, a quarter and three quarters across each span
+    assert _z_at(mesh, span / 4, span / 4) == pytest.approx(0.0, abs=1e-9)
+    assert _z_at(mesh, 3 * span / 4, span / 4) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_one_by_one_billow_is_a_single_bubble_zero_all_round_its_edge():
+    span, rise = 12.0, 3.0
+    mesh = sg.billow_shell(span, span, depth=1.0, module=1.5, rise=rise,
+                           waves_x=1.0, waves_y=1.0)
+    assert _z_at(mesh, span / 2, span / 2) == pytest.approx(+rise, abs=1e-9)
+    for edge in ((0, 3.0), (span, 6.0), (4.5, 0), (7.5, span)):
+        assert _z_at(mesh, *edge) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_the_billow_waves_in_both_directions_where_the_one_way_wave_does_not():
+    """The whole reason both exist. wave_shell is dead straight along y -- a
+    developable surface -- and the billow is not, which is what gives it
+    curvature everywhere instead of a row of parallel arches."""
+    # One x station, every node on it. The offset top layer sits at
+    # half-module x positions, so a bottom-layer x like 6.0 holds only
+    # bottom-layer nodes -- which is the point: if the surface is straight
+    # along y, every one of them is at the SAME height.
+    flat = sg.wave_shell(24, 24, depth=1.0, module=2, rise=4, waves=2.0)
+    along_y = {round(n[2], 9) for n in flat['nodes'] if abs(n[0] - 6.0) < 1e-9}
+    assert len(along_y) == 1, 'the one-way wave must be dead straight along y'
+
+    # Probed at x = 0, an ANTINODE of the x factor. At x = 6 the 2-half-wave
+    # x factor is exactly zero, so z is zero for every y there and the
+    # station says nothing about whether the surface waves along y -- a
+    # degenerate probe that passes for a flat roof too.
+    billow = sg.billow_shell(24, 24, depth=1.0, module=2, rise=4,
+                             waves_x=2.0, waves_y=2.0)
+    heights = {round(n[2], 6) for n in billow['nodes'] if abs(n[0]) < 1e-9}
+    assert len(heights) > 4, 'the billow must vary along y as well as along x'
+
+
+def test_the_billow_shell_stands_on_its_four_edge_midpoint_lows_alone():
+    """Supporting it there and nowhere else is what makes the corners fly,
+    and it has to actually solve that way -- four pinned points is twelve
+    restraints, and whether the rest of the roof hangs together off them is
+    a question about the mesh, not about the count."""
+    span, rise = 24.0, 4.0
+    mesh = sg.billow_shell(span, span, depth=1.2, module=2, rise=rise,
+                           waves_x=2.0, waves_y=2.0)
+    lows = [i for i, (x, y, z) in enumerate(mesh['nodes'])
+            if z < -rise * 0.9 and i in mesh['support_candidates']]
+    assert len(lows) == 4, f'expected four edge-midpoint lows, found {len(lows)}'
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    res, err = sm.analyze(mesh['nodes'], mesh['members'], loads,
+                          [{'node': i, 'type': 'pin'} for i in lows])
+    assert err is None, err
+    worst = max(abs(c) for nr in res['node_res'] for c in (nr['ux'], nr['uy'], nr['uz']))
+    assert worst < 200.0, f'{worst:.0f} mm under self weight alone'
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Isometric module on a Cartesian domain
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _flat_surface():
+    return sg.make_height_field_surface('0')
+
+
+def _dome_surface():
+    return sg.make_height_field_surface('3 - 0.03*(x-6)**2 - 0.03*(y-6)**2')
+
+
+def test_the_isometric_lattice_stays_inside_the_domain_it_was_given():
+    """The whole point of the rewrite. _domain_lattice's oblique-basis
+    isometric SHEARS: on a 12 m domain divided six ways it runs 7 m past
+    the right edge and leaves a matching hole on the left, putting 19 of
+    its 56 nodes outside the rectangle that was asked for. The staggered
+    form keeps every node in."""
+    mesh = sg.isometric_lattice(_flat_surface(), p_range=(0.0, 12.0),
+                                q_range=(0.0, 12.0), n1=6)
+    xs = [n[0] for n in mesh['nodes']]
+    ys = [n[1] for n in mesh['nodes']]
+    assert min(xs) == pytest.approx(0.0, abs=1e-9)
+    assert max(xs) == pytest.approx(12.0, abs=1e-9)
+    assert min(ys) == pytest.approx(0.0, abs=1e-9)
+    assert max(ys) == pytest.approx(12.0, abs=1e-9)
+
+
+def test_the_old_oblique_isometric_really_did_leave_the_domain():
+    """Kept as the reason the staggered form exists. _domain_lattice is
+    still right for a lattice allowed to BE a parallelogram (a polar sweep,
+    say); it is wrong for a plan that has to stay a rectangle."""
+    from apps.stereo.stereo_geometry_custom_surface import _domain_lattice
+    grid, _n1, _n2, _wrap = _domain_lattice('cartesian', 'isometric',
+                                            (0.0, 12.0), (0.0, 12.0), 6, 6)
+    ps = [p for p, _q in grid.values()]
+    assert max(ps) > 12.0 + 1.0, 'the oblique basis is expected to overshoot'
+    outside = sum(1 for p, q in grid.values()
+                  if not (-1e-9 <= p <= 12.0 + 1e-9 and -1e-9 <= q <= 12.0 + 1e-9))
+    assert outside > 0
+
+
+def test_every_isometric_row_starts_and_ends_on_the_domain_edge():
+    """What makes both side boundaries straight lines -- which is what lets
+    a plan-shape rule, a support line or an edge beam follow them."""
+    rows, q_values = sg.staggered_rows(0.0, 12.0, 0.0, 9.0, 6)
+    assert len(rows) == len(q_values)
+    for row in rows:
+        assert row[0] == pytest.approx(0.0, abs=1e-12)
+        assert row[-1] == pytest.approx(12.0, abs=1e-12)
+    # odd rows carry the half-cell offset INSIDE the row
+    assert len(rows[0]) == 7          # n1 + 1
+    assert len(rows[1]) == 8          # n1 + 2: both edges plus the staggered run
+
+
+def test_the_isometric_triangles_are_equilateral_away_from_the_edges():
+    """Not a claim about every member: the two boundary columns carry a
+    half-width cell by construction (that is the documented price of a
+    straight edge). Everything else should be within a few percent."""
+    mesh = sg.isometric_lattice(_flat_surface(), p_range=(0.0, 12.0),
+                                q_range=(0.0, 12.0), n1=6)
+    cell = 12.0 / 6
+    lengths = []
+    for m in mesh['members']:
+        a, b = mesh['nodes'][m['a']], mesh['nodes'][m['b']]
+        lengths.append(math.dist(a, b))
+    near = [L for L in lengths if abs(L - cell) < 0.02 * cell]
+    assert len(near) > 0.7 * len(lengths), \
+        f'only {len(near)} of {len(lengths)} members are within 2% of the cell'
+
+
+def test_the_isometric_tributary_areas_sum_to_the_domain_exactly():
+    mesh = sg.isometric_lattice(_flat_surface(), p_range=(0.0, 12.0),
+                                q_range=(0.0, 9.0), n1=6)
+    assert sum(mesh['load_nodes'].values()) == pytest.approx(12.0 * 9.0, rel=1e-9)
+
+
+@pytest.mark.parametrize('double', [False, True])
+def test_an_isometric_lattice_actually_analyzes(double):
+    """A single layer needs NO web system here: the triangular module is
+    already fully braced in its own surface, which is the practical reason
+    to reach for isometric at all."""
+    mesh = sg.isometric_lattice(_dome_surface(), p_range=(0.0, 12.0),
+                                q_range=(0.0, 12.0), n1=6, depth=1.2, double=double)
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+    assert err is None, err
+    worst = max(abs(c) for nr in res['node_res'] for c in (nr['ux'], nr['uy'], nr['uz']))
+    assert worst < 200.0
+
+
+def test_an_isometric_double_layer_is_braced_against_racking():
+    """Posts alone leave the two layers free to slide sideways relative to
+    each other -- every post is parallel to every other one. The diagonal
+    webs are what stop it, so they have to be there."""
+    mesh = sg.isometric_lattice(_dome_surface(), p_range=(0.0, 12.0),
+                                q_range=(0.0, 12.0), n1=6, depth=1.2, double=True)
+    roles = {m.get('role') for m in mesh['members']}
+    assert 'web' in roles
+    assert 'web_diag' in roles
+
+
+@pytest.mark.parametrize('lattice', [sg.LATTICE_SOS_OFFSET, sg.LATTICE_SQ_ON_DIAG,
+                                     sg.LATTICE_DIAG_ON_DIAG])
+def test_an_offset_lattice_refuses_an_isometric_module_with_the_reason(lattice):
+    """Refused, not approximated. An offset lattice has to offset INTO a
+    half-module, and a triangular grid has no such thing -- the centre of a
+    triangle is not a lattice point of the triangle below it."""
+    with pytest.raises(ValueError) as exc:
+        sg.custom_surface_lattice(_dome_surface(), None, lattice=lattice,
+                                  pattern=sg.PATTERN_ISOMETRIC,
+                                  p_range=(0.0, 12.0), q_range=(0.0, 12.0), n1=6, n2=6)
+    assert 'half-module' in str(exc.value)
+
+
+@pytest.mark.parametrize('lattice,pattern', [
+    (sg.LATTICE_SINGLE, sg.PATTERN_SQUARE),
+    (sg.LATTICE_SINGLE, sg.PATTERN_DIAGONAL),
+    (sg.LATTICE_SINGLE, sg.PATTERN_ISOMETRIC),
+    (sg.LATTICE_ALIGNED, sg.PATTERN_SQUARE),
+    (sg.LATTICE_ALIGNED, sg.PATTERN_DIAGONAL),
+    (sg.LATTICE_ALIGNED, sg.PATTERN_ISOMETRIC),
+    (sg.LATTICE_SOS_OFFSET, sg.PATTERN_SQUARE),
+    (sg.LATTICE_SQ_ON_DIAG, sg.PATTERN_SQUARE),
+    (sg.LATTICE_DIAG_ON_DIAG, sg.PATTERN_SQUARE),
+])
+def test_every_buildable_lattice_and_pattern_pair_solves(lattice, pattern):
+    mesh = sg.custom_surface_lattice(_dome_surface(), None, lattice=lattice,
+                                     pattern=pattern, p_range=(0.0, 12.0),
+                                     q_range=(0.0, 12.0), n1=6, n2=6, depth=1.2)
+    xs = [n[0] for n in mesh['nodes']]
+    ys = [n[1] for n in mesh['nodes']]
+    assert min(xs) >= -1e-9 and max(xs) <= 12.0 + 1e-9
+    assert min(ys) >= -1e-9 and max(ys) <= 12.0 + 1e-9
+    for m in mesh['members']:
+        m.setdefault('E', 200.0)
+        m.setdefault('A', 20.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(mesh['nodes'], mesh['members'], 78.5)
+    _res, err = sm.analyze(mesh['nodes'], mesh['members'], loads, supports)
+    assert err is None, f'{lattice} x {pattern}: {err}'

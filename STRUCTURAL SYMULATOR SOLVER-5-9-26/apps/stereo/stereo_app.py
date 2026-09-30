@@ -17,8 +17,7 @@ thousands of lines and the name says what is inside:
 
   stereo_app_constants.py     shared colours, sizes and label tables
   stereo_app_colors.py        the four colour spectra, as pure functions
-  stereo_app_canvas_geom.py   screen-space geometry (hit test, clip,
-                              Voronoi)
+  stereo_app_canvas_geom.py   screen-space geometry (hit test, clipping)
   stereo_app_panels.py        toolbar, canvas and sidebar panel layout
   stereo_app_model.py         generate / support / load / analyze commands
   stereo_app_view.py          camera, projection, picking, rod tool
@@ -72,8 +71,9 @@ from apps.stereo.stereo_app_colors import (             # noqa: F401
     reaction_moment_signed,
 )
 from apps.stereo.stereo_app_canvas_geom import (        # noqa: F401
-    _point_segment_distance, _clip_polygon_to_bbox, _voronoi_cells_2d,
+    _point_segment_distance,
 )
+from apps.stereo.stereo_app_shell import StereoShellMixin
 from apps.stereo.stereo_app_panels import StereoPanelsMixin
 from apps.stereo.stereo_app_model import StereoModelMixin
 from apps.stereo.stereo_app_view import StereoViewMixin
@@ -82,13 +82,14 @@ from apps.stereo.stereo_app_module_editor import StereoModuleEditorMixin
 from apps.stereo.stereo_app_wizard import StereoWizardMixin
 from apps.stereo.stereo_app_addons import StereoAddonsMixin
 from apps.stereo.stereo_app_reports import StereoReportsMixin
+from apps.stereo.stereo_app_inspector import StereoInspectorMixin
 from apps.stereo.stereo_reports import STORAGE_UNITS as sr_storage_units
 
 
-class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
+class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
                 StereoRenderMixin, StereoModuleEditorMixin,
                 StereoWizardMixin, StereoAddonsMixin, StereoReportsMixin,
-                UnitsMixin):
+                StereoInspectorMixin, UnitsMixin):
     """The Stereo tab.
 
     Holds the model (nodes, members, supports, loads), every Tk variable
@@ -106,6 +107,15 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         self.nodes = []
         self.members = []
         self.loads = []
+        self.member_loads = []
+        self._bz_profile = None    # the fitted, then edited, Bezier chain
+        self._bz_grid = None       # or the fitted patch's control heights
+        self._bz_drag = None       # the control currently being dragged
+        self.panels = []
+        self.panel_checks = []
+        self._line_pick_first = None
+        self._disc_hits = []
+        self._disc_centre = None
         self.supports = []
         # What the current model is CALLED, when it has a name of its own:
         # an example's title, an imported file, a loaded variant. None means
@@ -140,12 +150,9 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         self._snap_midpoint = None   # (sx, sy, x, y, z, member_idx) of nearest midpoint, or None
         self._cursor_world = None    # (x, y, z) world coords under cursor
         self._shaded_cells = None    # lazy cache, see _get_shaded_cells
-        # The 3D Voronoi tessellation is expensive to build and independent
+        # (cache slot kept free for any future expensive overlay)
         # of the camera, so it is cached against everything it really depends
         # on (geometry, domain, view, slice) and reused while orbiting.
-        self._voronoi_cache = None
-        self._voronoi_note = ''
-        self._voronoi_cut_last = 1.0   # last section thickness that was a real length
         self._wizard_recipe = None     # the Custom Surface Wizard settings
                                         # behind the model now loaded, if any
 
@@ -190,7 +197,12 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
 
         self._build_ui()
         self.init_units(repaint=self._on_units_changed)
-        self._generate(push_undo=False)
+        # The app opens EMPTY. It used to generate a flat grid here, which
+        # meant every session started by deleting someone else's model
+        # before building your own -- and made "what am I looking at?" the
+        # first question rather than the last. Generate and Shape are one
+        # click away; a model you did not ask for is not.
+        self._clear_model(push_undo=False)
 
     @property
     def selected_node(self):
@@ -208,7 +220,16 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
     def _model_snapshot(self):
         return {'nodes': copy.deepcopy(self.nodes), 'members': copy.deepcopy(self.members),
                 'loads': copy.deepcopy(self.loads), 'supports': copy.deepcopy(self.supports),
-                'profiles': copy.deepcopy(self.profiles)}
+                'profiles': copy.deepcopy(self.profiles),
+                'panels': copy.deepcopy(self.panels),
+                'member_loads': copy.deepcopy(self.member_loads),
+                # The Bezier profile is model state, not panel state: it is
+                # what the mesh was built FROM, and every drag of a handle
+                # is a model change. Leaving it out made undo restore the
+                # nodes while the curve that produced them kept the edit --
+                # so the next Build silently undid the undo.
+                'bz_profile': copy.deepcopy(self._bz_profile),
+                'bz_grid': copy.deepcopy(self._bz_grid)}
 
     def _restore_snapshot(self, snap):
         self.nodes = snap['nodes']
@@ -216,8 +237,33 @@ class StereoApp(StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
         self.loads = snap['loads']
         self.supports = snap['supports']
         self.profiles = snap.get('profiles', self.profiles)
+        self.panels = snap.get('panels', [])
+        self.member_loads = snap.get('member_loads', [])
+        self._bz_profile = copy.deepcopy(snap.get('bz_profile'))
+        self._bz_grid = copy.deepcopy(snap.get('bz_grid'))
+        self._bz_drag = None
         self.results = None
         self.member_checks = None
+        self.panel_checks = []
+        # The SELECTION is not part of the snapshot, and an undo can restore
+        # a smaller model than the one the selection was made in: add a
+        # column, whose last act is to select its new feet, then undo, and
+        # those indices point past the end of the node list. The very next
+        # selection sync then raises IndexError, which is a crash rather
+        # than a wrong answer. Drop whatever no longer exists.
+        # A rod load is a member index, so it needs the same clamp for the
+        # same reason: an undo can restore a shorter member list, and a
+        # stale index would silently load a different rod.
+        nm = len(self.members)
+        self.member_loads = [ld for ld in self.member_loads if 0 <= ld['member'] < nm]
+        n = len(self.nodes)
+        self.selected_nodes = {i for i in self.selected_nodes if i < n}
+        if self.selected_member is not None and \
+                self.selected_member >= len(self.members):
+            self.selected_member = None
+        self._disabled_supports = {i for i in self._disabled_supports if i < n}
+        self._add_rod_first = (self._add_rod_first
+                               if (self._add_rod_first or 0) < n else None)
 
     def _push_undo(self, label=''):
         self._undo_stack.append((label, self._model_snapshot()))

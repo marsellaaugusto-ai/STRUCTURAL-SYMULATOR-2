@@ -32,7 +32,16 @@ would be a poor advertisement for the feature it demonstrates.
 """
 import math
 
+from apps.stereo import stereo_bezier as _bz
 from apps.stereo import stereo_geometry as sg
+
+
+def _fit(expr, lo, hi, segments):
+    """Fit a Bezier profile to a typed expression over [lo, hi] -- the same
+    two steps the Shape panel's Fit button takes, so an example and a
+    hand-driven fit cannot produce different curves."""
+    surface = sg.make_height_field_surface(expr)
+    return _bz.fit_profile(lambda t: surface(t, 0.0)[2], lo, hi, segments)
 
 
 def _nodes_near(nodes, x, y, z=None, k=4):
@@ -330,6 +339,163 @@ def truss_bridge_example():
         'stereo_geometry.truss_bridge(span=42, depth=5.5, width=8, n_panels=7)')
 
 
+# ── the features added in the two UI stages, and the rod load ─────────────
+
+def two_surface_isometric():
+    """The isometric (60-degree, equilateral-triangle) module pattern in the
+    TWO-surface interface -- a shallow dish over a flat plane, the same pair
+    as two_surface_truss_1, triangulated instead of squared.
+
+    The point of the example is what the domain does, not what the surface
+    does: the pattern is isometric but the DOMAIN stays Cartesian and is
+    sliced along its own x and y lines, so the mesh still fills the
+    rectangle asked for instead of running past two of its edges. An
+    oblique basis laid over a 12 m domain overshoots it by about 7 m; rows
+    are staggered and clamped onto the edge instead, which is why the
+    boundary rows here are half-cells rather than a ragged fringe.
+    """
+    top = sg.make_height_field_surface('2.6 - (x^2 + y^2)/34')
+    bottom = sg.make_height_field_surface('-1.4')
+    # Through custom_surface_lattice, which is the entry point the Shape
+    # panel itself uses, so the example and a hand-driven build cannot
+    # produce different meshes. LATTICE_ALIGNED is the only lattice an
+    # isometric module can take: an offset lattice needs a half-module to
+    # offset INTO, and the centre of a triangle is not a lattice point of
+    # the triangle below it.
+    mesh = sg.custom_surface_lattice(top, bottom, coord='cartesian',
+                                     lattice=sg.LATTICE_ALIGNED,
+                                     pattern=sg.PATTERN_ISOMETRIC,
+                                     p_range=(-6.0, 6.0), q_range=(-6.0, 6.0),
+                                     n1=8, n2=8, depth=1.0)
+    return _wizard(mesh,
+                   'Built by the wizard. These are its exact settings.',
+                   mode='two', kind='height', z='2.6 - (x^2 + y^2)/34',
+                   z_bottom='-1.4', coord='cartesian',
+                   pattern=sg.PATTERN_ISOMETRIC, lattice=sg.LATTICE_ALIGNED,
+                   p_range=(-6.0, 6.0), q_range=(-6.0, 6.0), n1=8, n2=8)
+
+
+def bezier_extruded_vault():
+    """A barrel-ish vault whose cross-section is a FITTED Bezier profile,
+    extruded along y -- the "type what you can describe, then edit what you
+    could not" path.
+
+    The formula is a plain cosine arch, which a height field already
+    expresses perfectly; that is the point. Fitting it costs almost nothing
+    in accuracy (a cubic Hermite chain over 8 segments lands within a
+    fraction of a percent) and buys every control point as a handle, so the
+    crown can be flattened or one haunch pulled out afterwards -- a change
+    no edit to the formula makes without changing the rest of the curve too.
+    """
+    profile = _fit('3.2 * cos(pi * x / 18)', -9.0, 9.0, segments=8)
+    surface = _bz.extruded_surface(profile)
+    mesh = sg.custom_surface_lattice(surface, coord='cartesian',
+                                     lattice=sg.LATTICE_SOS_OFFSET,
+                                     p_range=(-9.0, 9.0), q_range=(0.0, 14.0),
+                                     n1=9, n2=7, depth=1.1)
+    return _wizard(mesh, 'Fitted Bezier profile, extruded. Open Shape to edit '
+                         'its control points.',
+                   source='extrude', formula='3.2 * cos(pi * x / 18)',
+                   segments=8, p_range=(-9.0, 9.0), q_range=(0.0, 14.0),
+                   n1=9, n2=7, depth=1.1, lattice=sg.LATTICE_SOS_OFFSET)
+
+
+def bezier_spun_tower():
+    """A surface of REVOLUTION from a fitted Bezier profile: the formula is
+    read as a RADIUS against height, not as a height against plan position,
+    and spun about the vertical axis.
+
+    That re-reading is the whole difference between this and the extruded
+    example above, and it is why the Shape panel says so in its own note:
+    the same typed expression means a different shape under the two
+    sources. Here it gives a waisted tower -- wide at the base, pinched at
+    mid-height, flaring again at the top -- which no height field z=f(x,y)
+    can express at all, since the surface is vertical at the waist.
+    """
+    profile = _fit('3.4 - 1.6*sin(pi * x / 9)', 0.0, 9.0, segments=8)
+    surface = _bz.spin_surface(profile)
+    mesh = sg.custom_surface_grid(surface, coord='cartesian',
+                                  pattern=sg.PATTERN_SQUARE,
+                                  p_range=(0.0, 9.0), q_range=(0.0, 2.0 * math.pi),
+                                  n1=8, n2=14, module='3d', depth=0.6,
+                                  offset_side='top')
+    return _wizard(mesh, 'Fitted Bezier profile, spun. The formula is the '
+                         'RADIUS at each height.',
+                   source='spin', formula='3.4 - 1.6*sin(pi * x / 9)',
+                   segments=8, p_range=(0.0, 9.0),
+                   q_range=(0.0, 2.0 * math.pi), n1=8, n2=14, depth=0.6)
+
+
+def bezier_patch_dish():
+    """A tensor-product Bezier PATCH fitted to a shallow dish -- a grid of
+    control heights, every one of them draggable.
+
+    Deliberately a shallow, single-hump surface. A patch of degree n has
+    only n-1 interior bends per direction, so it follows a dish like this
+    one closely at degree 6 (49 controls) while a two-wave surface at the
+    same degree is off by tens of percent -- measured, and reported by the
+    panel's own error note rather than left to be discovered. When a shape
+    needs more waves than the degree can carry, a spin or an extrude buys
+    the same accuracy for far fewer controls.
+    """
+    f = lambda x, y: 3.0 - (x * x + y * y) / 26.0
+    grid = _bz.fit_patch(f, (-6.0, 6.0), (-6.0, 6.0), 6, 6)
+    surface = _bz.patch_surface(grid, (-6.0, 6.0), (-6.0, 6.0))
+    mesh = sg.custom_surface_lattice(surface, coord='cartesian',
+                                     lattice=sg.LATTICE_SOS_OFFSET,
+                                     p_range=(-6.0, 6.0), q_range=(-6.0, 6.0),
+                                     n1=8, n2=8, depth=1.0)
+    return _wizard(mesh, 'Fitted Bezier patch (7x7 control heights). Open '
+                         'Shape to drag any of them.',
+                   source='patch', formula='3 - (x^2 + y^2)/26', degree=6,
+                   p_range=(-6.0, 6.0), q_range=(-6.0, 6.0), n1=8, n2=8,
+                   depth=1.0, lattice=sg.LATTICE_SOS_OFFSET)
+
+
+def rod_load_purlin_roof():
+    """A flat double-layer grid carrying a DISTRIBUTED LOAD ALONG ITS TOP
+    RODS -- the one thing that makes shear vary along a member at all.
+
+    Under nodal loads alone every rod has a constant shear and a moment
+    that runs straight from one end to the other, so the moment- and
+    shear-along-rod views have nothing to show: one value per rod is not a
+    field along it. Put 4 kN/m on the top chords, as a purlin line or a
+    cladding rail would, and the shear ramps across each rod while the
+    moment bends into a parabola. Load this example, then colour by
+    "Moment along rod" with the smooth gradient on.
+
+    The load is PER METRE OF ROD (not per plan metre) and is carried on the
+    top-layer members only, which is where a real roof skin would put it.
+    """
+    mesh = sg.flat_grid(12.0, 12.0, 1.2, 2.0, offset=True, pattern='square')
+    nodes = mesh['nodes']
+    z_top = max(n[2] for n in nodes)
+    top_rods = [k for k, m in enumerate(mesh['members'])
+                if abs(nodes[m['a']][2] - z_top) < 1e-9
+                and abs(nodes[m['b']][2] - z_top) < 1e-9]
+    mesh['member_loads'] = [{'member': k, 'w': 4.0, 'dir': (0.0, 0.0, -1.0),
+                             'spread': 'along'} for k in top_rods]
+    return _wizard(mesh,
+                   'Not a wizard surface -- stereo_geometry.flat_grid(12, 12,\n'
+                   '1.2, 2.0), with 4 kN/m along each of its top-layer rods.')
+
+
+def billow_shell_chapel():
+    """The billowing, doubly-curved shell -- the one that reads like a
+    chapel roof whose edges lift at the corners and dip between them.
+
+    Distinct from wave_shell, which corrugates in ONE direction only: this
+    one multiplies a cosine in x by a cosine in y, so every point is curved
+    both ways and the boundary alternates between high corners and low
+    mid-edges instead of running as straight parallel ridges.
+    """
+    mesh = sg.billow_shell(span_x=18.0, span_y=18.0, depth=1.2, module=2.0,
+                           rise=3.0, waves_x=1.0, waves_y=1.0)
+    return _wizard(mesh,
+                   'Not a wizard surface -- stereo_geometry.billow_shell(\n'
+                   'span 18x18, depth 1.2, module 2.0, rise 3.0, 1x1 waves)')
+
+
 EXAMPLES = (
     ('Planar grid + columns (1-tier) + beam', planar_grid_with_columns_1),
     ('Planar grid + columns (2-tier) + multilayer beam', planar_grid_with_columns_2),
@@ -342,4 +508,10 @@ EXAMPLES = (
     ('Conical roof, pinned at the base ring', cone_roof_example),
     ('Groin (cross) vault, pinned at the full base perimeter', groin_vault_example),
     ('Truss bridge (Warren/Pratt-style), pinned at the four bearings', truss_bridge_example),
+    ('Two-surface truss: dish over plane, ISOMETRIC pattern', two_surface_isometric),
+    ('Bezier profile EXTRUDED: fitted cosine vault', bezier_extruded_vault),
+    ('Bezier profile SPUN: waisted tower (formula = radius)', bezier_spun_tower),
+    ('Bezier PATCH: fitted dish, 7x7 draggable controls', bezier_patch_dish),
+    ('Distributed load ALONG THE RODS: purlin-loaded flat grid', rod_load_purlin_roof),
+    ('Billowing doubly-curved shell (chapel-like)', billow_shell_chapel),
 )

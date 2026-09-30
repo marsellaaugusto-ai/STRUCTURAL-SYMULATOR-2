@@ -2,12 +2,12 @@
 the main canvas.
 
 _draw is the single entry point and runs the whole pass in painter order:
-optional shaded or Voronoi faces behind, then members, then nodes,
+optional shaded faces behind, then members, then nodes,
 supports, load and reaction arrows, the axis gizmo, the deformed overlay
 and finally the legend.
 
 Four colour spectra can drive it (axial force, utilisation, moment,
-deformation) and two fill modes can back it (shaded cell faces, Voronoi
+deformation) and an optional shaded-cell fill can back it
 tessellation); the colour ramps themselves are in stereo_app_colors.py, so
 the legend's numeric colourbar samples the exact same functions the
 wireframe uses instead of reimplementing them.
@@ -23,29 +23,38 @@ from common import declutter_text, LoadScale
 
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
+from apps.stereo import stereo_member_loads as mld
+from apps.stereo import stereo_bezier as bz
+from apps.stereo import expr_math as em
 from apps.stereo.stereo_app_colors import (
+    surface_preview_color,
     load_path_color,
     force_color, deform_color, util_color, moment_color,
     reaction_moment_signed,
 )
-from apps.stereo import stereo_voronoi_surface as svs
 from apps.stereo.stereo_app_constants import (
     NODE_COLOR, NODE_SEL_COLOR, ADD_ROD_PENDING_COLOR, AXIS_EXTEND_COLOR,
     AXIS_COLOR_X as _AXIS_COLOR_X, AXIS_COLOR_Y as _AXIS_COLOR_Y,
     AXIS_COLOR_Z as _AXIS_COLOR_Z,
     SUPPORT_COLOR, SUPPORT_DISABLED_COLOR, SUPPORT_BOX_HALF_PX,
+    PANEL_UNCHECKED_COLOR, PANEL_EDGE_COLOR,
+    DISC_FILL, DISC_EDGE, LINE_PICK_COLOR, BALANCED_PANEL_COLOR,
+    SUPPORT_BOX_FILL, NODE_RADIUS_PX, NODE_RADIUS_SEL_PX,
     MEMBER_PIN_COLOR, MEMBER_RIGID_COLOR, MEMBER_SEL_COLOR,
     TENSION_HIGH, COMPRESSION_HIGH, LOAD_COLOR, REACTION_COLOR, NEAR_ZERO_FRAC,
     NEAR_ZERO_COLOR,
     DEFORM_MODE_FORCE, SLENDER_HALO_COLOR, SLENDERNESS_LIMIT,
     LOAD_PATH_NEAR_ZERO_FRAC, LOAD_PATH_ARROW_HALF_PX,
     LOAD_PATH_ANIM_TICKS, STRESS_WIDTH_MIN, STRESS_WIDTH_MAX,
+    LEGEND_CARD_BG, LEGEND_CARD_EDGE,
     GRADIENT_SEGMENTS, GRADIENT_SEGMENTS_DENSE, GRADIENT_DENSE_MEMBERS,
     GRADIENT_DISABLE_MEMBERS, LABEL_DISABLE_NODES, LOAD_PATH_DISABLE_MEMBERS,
+    ROD_FIELD_SEGMENTS,
+    SURFACE_PREVIEW_STEPS, SURFACE_PREVIEW_STIPPLE, SURFACE_PREVIEW_LINE,
+    BZ_HANDLE_COLOR, BZ_HANDLE_KNOT_COLOR, BZ_POLYGON_COLOR,
     MOMENT_ZERO_COLOR, MOMENT_NODE_OUTLINE, MOMENT_BACKDROP_COLOR,
     MOMENT_NODE_RADIUS_PX,
     SCALE_P95, FORCE_SCALE_PERCENTILE, CLIP_MARK_COLOR, CLIP_MARK_DASH,
-    CELL_EDGE_COLOR, CELL_EDGE_WIDTH,
     FILL_DENSITY_STIPPLE, FILL_DENSITY_DEFAULT,
     SNAP_NODE_COLOR, SNAP_MIDPOINT_COLOR, SNAP_RING_RADIUS,
 )
@@ -212,6 +221,109 @@ class StereoRenderMixin:
                 kw['dash'] = dash
             c.create_line(x0, y0, x1, y1, **kw)
 
+    def _draw_field_line(self, c, sx0, sy0, sx1, sy1, value_at, color_fn,
+                         width, tags, dash=None, segments=None):
+        """One rod drawn as a colour blend sampled from `value_at(t)` along
+        it, rather than interpolated between two end values.
+
+        _draw_gradient_line above cannot do this and must not be stretched
+        to: it blends LINEARLY from end to end, which is exactly right for
+        a field that is defined at the joints, and exactly wrong for a
+        member's own moment under a distributed load, which is a PARABOLA
+        between the same two end values. Drawing that as a straight blend
+        would hide the whole effect the view exists to show -- the bow in
+        the middle of the rod.
+        """
+        n = segments or max(self._gradient_segments(), ROD_FIELD_SEGMENTS)
+        for k in range(n):
+            t0, t1 = k / n, (k + 1) / n
+            x0, y0 = sx0 + (sx1 - sx0) * t0, sy0 + (sy1 - sy0) * t0
+            x1, y1 = sx0 + (sx1 - sx0) * t1, sy0 + (sy1 - sy0) * t1
+            kw = {'fill': color_fn(value_at((t0 + t1) / 2.0)),
+                  'width': width, 'tags': tags, 'capstyle': tk.ROUND}
+            if dash:
+                kw['dash'] = dash
+            c.create_line(x0, y0, x1, y1, **kw)
+
+    @staticmethod
+    def _rod_field_value(mres, t, shear):
+        """The signed along-the-rod shear or moment at station `t`.
+
+        Signed, not absolute, and that is the point of the view: a member
+        with fixed-ish ends hogs at the ends and sags in the middle, and a
+        diverging ramp shows the inflection as a line of white across the
+        rod where an absolute one would show a meaningless dip to zero and
+        back.
+
+        Two bending planes, one colour: the component with the larger
+        magnitude governs, and its sign is the one drawn -- the same
+        largest-wins rule node_moment_vectors uses at a joint. For the
+        ordinary case of a load in one plane the other component is zero
+        and the choice never arises.
+        """
+        _N, Vy, Vz, My, Mz = mld.member_diagram(mres, t)
+        pair = (Vy, Vz) if shear else (My, Mz)
+        return max(pair, key=abs)
+
+    def _rod_field_anchor(self, shear):
+        """The peak |value| the along-the-rod ramp is pinned to, and whether
+        ANY member's value actually varies along it.
+
+        The second half matters more than the first. Under nodal loads
+        alone a member's shear is constant and its moment is a straight
+        line between its end values -- there is nothing along the rod to
+        show, and a ramp drawn over it would be a picture of one number per
+        member dressed up as a field. The view says so rather than drawing
+        it (see _draw_legend), which is why this returns the flag rather
+        than leaving the caller to guess from a flat-looking result.
+        """
+        if self.results is None:
+            return 0.0, False
+        peak = 0.0
+        varies = False
+        for mres in self.results['member_res']:
+            if mld.varies_along_the_rod(mres):
+                varies = True
+            worst_v, worst_m = mld.diagram_extremes(mres)
+            peak = max(peak, (worst_v if shear else worst_m))
+        # NOT scaled by 'Load %', exactly as _force_anchor is not: the
+        # drawn VALUE carries the factor, so stepping the slider down moves
+        # the whole model toward the pale middle of a ramp whose numbers
+        # stay pinned to the full-load peak. Scaling both would cancel and
+        # the slider would do nothing at all here.
+        return peak, varies
+
+    def _util_top(self, frac=1.0):
+        """The utilization that the colour ramp's red end is pinned to.
+
+        1.0 -- at capacity -- unless 'Auto-range utilization' is on, in
+        which case this model's own peak, so the ramp spans only the range
+        the model actually occupies. Returns 1.0 rather than 0 for a model
+        with no checked member (or a peak of exactly zero) so the ramp
+        stays well-defined and every rod simply comes out at the green end,
+        instead of a divide-by-zero painting an unloaded model solid red.
+
+        This is the ONLY place the choice is made: every util_color call in
+        the renderer, the cell fill, the rod gradient and the legend all
+        read it, so the legend can never disagree with the picture.
+        """
+        if not self.util_autorange.get() or self.member_checks is None:
+            return 1.0
+        peak = max((c['util'] * frac for c in self.member_checks
+                    if c and c.get('checked') and c.get('util') is not None),
+                   default=0.0)
+        if peak <= 1e-12:
+            return 1.0
+        # Never stretch the ramp PAST capacity. Auto-ranging a model whose
+        # peak is over 1.0 would slide the red end out to that peak and
+        # paint a rod sitting at exactly 1.0 -- at capacity -- in mid-amber,
+        # which reads as "moderate" (measured: a peak of 2.4 put util 1.0 at
+        # #d7a127). Capping at 1.0 means auto-range can only ever stretch
+        # the ramp UP TO capacity, never beyond it: for an overloaded model
+        # it falls back to the absolute scale, which is the one that already
+        # has plenty of contrast and where red means what it says.
+        return min(peak, 1.0)
+
     def _force_anchor(self):
         """The value the axial-force colour ramp's two ends are pinned to.
 
@@ -320,6 +432,7 @@ class StereoRenderMixin:
         # green overlay in parallel (see _draw_deformed_overlay), it never
         # replaces this, so the real structure stays exactly where clicks,
         # the lasso and everything else expect to find it.
+        self._refresh_camera_distance()
         proj = [self._project(x, y, z) for x, y, z in self.nodes]
 
         xs = [p[0] for p in proj]; ys = [p[1] for p in proj]
@@ -335,6 +448,17 @@ class StereoRenderMixin:
         # UNLESS "Deformed only" asks to see the deformed shape by itself,
         # in which case the reference structure (and everything keyed to
         # it -- labels, load arrows) is skipped entirely below.
+        # Underneath everything, including the deformed overlay: the
+        # preview is the surface the model was CUT FROM, so it belongs
+        # behind the model in the same way a drawing board is behind the
+        # drawing.
+        if self._surface_preview_applies():
+            self._draw_surface_preview(c, to_screen)
+        # ON TOP of the preview but under the model: the handles are the
+        # thing being manipulated, so they must be visible and clickable,
+        # while the rods stay readable through them.
+        self._draw_bezier_handles(c)
+
         show_def = self.show_deformed.get() and self.results is not None
         deformed_only = show_def and self.deformed_only.get()
         if show_def:
@@ -344,6 +468,11 @@ class StereoRenderMixin:
         by_util = self.colour_by_util.get() and self.member_checks is not None
         by_force = self.colour_by_force.get() and self.results is not None and not by_util
         by_moment = self.colour_by_moment.get() and self.results is not None
+        by_rod_moment = self.colour_by_rod_moment.get() and self.results is not None
+        by_rod_shear = self.colour_by_rod_shear.get() and self.results is not None
+        rod_field = by_rod_moment or by_rod_shear
+        rod_peak, rod_varies = (self._rod_field_anchor(by_rod_shear)
+                                if rod_field else (0.0, False))
         max_abs_N = 0.0
         max_abs_moment = 0.0   # stays 0.0 unless by_moment computes it below;
                                 # declared here (not inside the deformed_only-
@@ -397,7 +526,8 @@ class StereoRenderMixin:
                           and self.member_checks[i].get('checked') else 0.0)
                          for i in range(len(self.members))]
                 grad_values = self._nodal_average(n_nodes, self.members, utils)
-                grad_color_fn = util_color
+                util_top = self._util_top(frac)
+                grad_color_fn = lambda v: util_color(v, util_top)
             elif by_force:
                 forces = [mr['N'] * frac for mr in self.results['member_res']]
                 grad_values = self._nodal_average(n_nodes, self.members, forces)
@@ -467,7 +597,7 @@ class StereoRenderMixin:
                     color = MOMENT_BACKDROP_COLOR
                 elif by_util:
                     util = chk['util'] * frac if chk and chk.get('checked') else 0.0
-                    color = util_color(util)
+                    color = util_color(util, self._util_top(frac))
                 elif by_force:
                     N = self.results['member_res'][i]['N'] * frac
                     color = force_color(N, max_abs_N)
@@ -497,7 +627,19 @@ class StereoRenderMixin:
                         and chk.get('slenderness', 0.0) > SLENDERNESS_LIMIT:
                     c.create_line(sx0, sy0, sx1, sy1, fill=SLENDER_HALO_COLOR,
                                  width=width + 5, dash=(4, 3), tags='member')
-                if grad_values is not None and ref_grey is None:
+                if rod_field and ref_grey is None:
+                    # The one colour mode whose value changes WITHIN the
+                    # rod: sampled along it rather than blended between its
+                    # ends, because the moment under a distributed load is
+                    # a parabola and a straight blend would flatten exactly
+                    # the bow this view exists to show.
+                    mres = self.results['member_res'][i]
+                    self._draw_field_line(
+                        c, sx0, sy0, sx1, sy1,
+                        lambda t, _m=mres: self._rod_field_value(_m, t, by_rod_shear) * frac,
+                        lambda v: moment_color(v, rod_peak), width, 'member',
+                        dash=(5, 3) if over else None)
+                elif grad_values is not None and ref_grey is None:
                     self._draw_gradient_line(c, sx0, sy0, sx1, sy1,
                                              grad_values[m['a']], grad_values[m['b']],
                                              grad_color_fn, width, 'member',
@@ -576,7 +718,7 @@ class StereoRenderMixin:
                 if by_moment and i in moment_by_node:
                     r = MOMENT_NODE_RADIUS_PX + 1 if sel else MOMENT_NODE_RADIUS_PX
                 else:
-                    r = 5 if sel else 4
+                    r = NODE_RADIUS_SEL_PX if sel else NODE_RADIUS_PX
                 if sel:
                     color = NODE_SEL_COLOR
                 elif i in self._disabled_supports and i in support_nodes:
@@ -621,8 +763,14 @@ class StereoRenderMixin:
                     else:
                         box_color = SUPPORT_COLOR
                     kw = {'dash': (3, 2)} if disabled else {}
-                    c.create_rectangle(sx - h, sy - h, sx + h, sy + h, outline=box_color,
-                                       width=2, tags=('node', f'node{i}'), **kw)
+                    # Filled, and drawn BEFORE the dot is raised back over it,
+                    # so the box reads as an object at the joint rather than
+                    # as a wire frame with the structure showing through.
+                    box = c.create_rectangle(sx - h, sy - h, sx + h, sy + h,
+                                             outline=box_color, fill=SUPPORT_BOX_FILL,
+                                             width=2,
+                                             tags=('node', 'support', f'node{i}'), **kw)
+                    c.tag_lower(box, f'node{i}')
 
             if self.add_rod_mode.get() and self._add_rod_first is not None \
                     and self._add_rod_first < len(proj):
@@ -682,10 +830,12 @@ class StereoRenderMixin:
             if self.shaded_faces.get():
                 self._draw_shaded_faces(c, proj, to_screen, frac, by_util, by_force,
                                         max_abs_N, by_moment, moment_by_node, max_abs_moment)
+            self._draw_shear_panels(c, proj, to_screen, frac)
+            self._draw_pick_overlay(c, proj, to_screen)
 
-            if self.voronoi_faces.get():
-                self._draw_voronoi_faces(c, proj, to_screen, frac, by_util, by_force,
-                                         max_abs_N, by_moment, moment_by_node, max_abs_moment)
+            self._place_module_card()
+            self._place_view_cube()
+            self._place_selection_card()
 
             n_nodes = len(self.nodes)
             if self.show_node_labels.get() and n_nodes <= LABEL_DISABLE_NODES:
@@ -724,6 +874,8 @@ class StereoRenderMixin:
                                stipple='gray12', fill='#333333', tags='lasso')
 
         self._draw_legend(c, by_force, show_def, deformed_only, by_util,
+                          rod_shear=by_rod_shear, rod_moment=by_rod_moment,
+                          rod_peak=rod_peak, rod_varies=rod_varies,
                           max_abs_N=max_abs_N, max_abs_moment=max_abs_moment,
                           frac=frac, clipped=clipped)
         self._to_screen_cache = to_screen   # for hit-testing on click
@@ -739,6 +891,259 @@ class StereoRenderMixin:
         if self._shaded_cells is None:
             self._shaded_cells = sg.find_cells(self.nodes, self.members)
         return self._shaded_cells
+
+    DISC_STEPS = 48
+
+    def _draw_bezier_handles(self, c):
+        """The profile's control polygon and its handles, drawn where they
+        can be grabbed.
+
+        Knots are drawn differently from tangent handles because they mean
+        different things and behave differently when dragged -- a knot is a
+        point the curve goes THROUGH and takes its handles with it; a
+        handle only bends the curve toward itself. Same distinction the
+        numeric table makes, so the two read as one feature.
+
+        The curve itself is drawn too, at a finer step than the lattice, so
+        you can see what you are shaping BEFORE rebuilding the mesh -- which
+        is the same argument the surface preview makes, one dimension down.
+        """
+        handles = self._bz_handle_screen()
+        if not handles:
+            return
+        profile = getattr(self, '_bz_profile', None)
+        if profile is None:
+            return
+        points = {i: (sx, sy) for i, sx, sy in handles}
+        ordered = [points[i] for i in sorted(points)]
+        if len(ordered) >= 2:
+            flat = [v for point in ordered for v in point]
+            c.create_line(*flat, fill=BZ_POLYGON_COLOR, width=1, dash=(3, 2),
+                          tags='bezier')
+        knots = set(bz.knot_indices(profile))
+        for index, sx, sy in handles:
+            knot = index in knots
+            r = 5 if knot else 3
+            c.create_oval(sx - r, sy - r, sx + r, sy + r,
+                          fill=BZ_HANDLE_KNOT_COLOR if knot else BZ_HANDLE_COLOR,
+                          outline='#ffffff', width=1, tags='bezier')
+
+    def _draw_surface_preview(self, c, to_screen):
+        """The CONTINUOUS surface behind the lattice, the way GeoGebra 3D
+        draws one: shaded quads plus iso-lines.
+
+        Sampled at its own fixed density, deliberately NOT at the
+        subdivision the mesh uses. The whole reason to draw it is to see
+        the surface BEFORE committing to a subdivision -- a preview that
+        changed resolution with n1/n2 would be showing you the mesh a
+        second time and would go flat exactly when the mesh is coarse,
+        which is when you most need to see what you are approximating.
+
+        Drawn from the Shape panel's own expressions rather than from the
+        model, so it keeps telling the truth while you edit the formula and
+        before you press Build. Anything that will not compile simply draws
+        nothing -- the panel already says why in red, and a half-drawn
+        surface on top of that would be noise.
+        """
+        surfaces = self._preview_surfaces()
+        if not surfaces:
+            return
+        try:
+            p0 = self._shape_num(self.shape_p0, 'x from')
+            p1 = self._shape_num(self.shape_p1, 'x to')
+            q0 = self._shape_num(self.shape_q0, 'y from')
+            q1 = self._shape_num(self.shape_q1, 'y to')
+        except em.ExpressionError:
+            return
+        polar = self.shape_coord.get() == 'polar'
+        try:
+            pole = (self._shape_num(self.shape_pole_x, 'pole x'),
+                    self._shape_num(self.shape_pole_y, 'pole y'))
+        except em.ExpressionError:
+            pole = (0.0, 0.0)
+
+        n = SURFACE_PREVIEW_STEPS
+        quads = []
+        for surface, tint in surfaces:
+            try:
+                grid = [[self._preview_point(surface, p0, p1, q0, q1, i, j, n,
+                                             polar, pole)
+                         for j in range(n + 1)] for i in range(n + 1)]
+            except (em.ExpressionError, ValueError, OverflowError, ZeroDivisionError):
+                continue
+            zs = [pt[2] for row in grid for pt in row if pt is not None]
+            if not zs:
+                continue
+            lo, hi = min(zs), max(zs)
+            span = (hi - lo) or 1.0
+            for i in range(n):
+                for j in range(n):
+                    corners = (grid[i][j], grid[i + 1][j],
+                               grid[i + 1][j + 1], grid[i][j + 1])
+                    if any(pt is None for pt in corners):
+                        continue
+                    projected = [self._project(*pt) for pt in corners]
+                    mid_z = sum(pt[2] for pt in corners) / 4.0
+                    depth = sum(pr[2] for pr in projected) / 4.0
+                    quads.append((depth, projected,
+                                  surface_preview_color((mid_z - lo) / span, tint)))
+        # No z-buffer on a Tk canvas, so the painter's algorithm: farthest
+        # first. Without this the near face of a fold is painted over by
+        # the far one and the surface reads inside out.
+        quads.sort(key=lambda item: -item[0])
+        for _depth, projected, colour in quads:
+            pts = []
+            for px, py, _d in projected:
+                pts.extend(to_screen(px, py))
+            c.create_polygon(*pts, fill=colour, outline=colour,
+                             stipple=SURFACE_PREVIEW_STIPPLE, tags='surface_preview')
+
+        # Iso-lines every other station: the wireframe that makes the shape
+        # readable where the shading alone is ambiguous.
+        for surface, _tint in surfaces:
+            for along_i in (True, False):
+                for k in range(0, n + 1, 2):
+                    pts = []
+                    for m in range(n + 1):
+                        i, j = (k, m) if along_i else (m, k)
+                        try:
+                            pt = self._preview_point(surface, p0, p1, q0, q1, i, j, n,
+                                                     polar, pole)
+                        except (em.ExpressionError, ValueError, OverflowError,
+                                ZeroDivisionError):
+                            pt = None
+                        if pt is None:
+                            continue
+                        px, py, _d = self._project(*pt)
+                        pts.extend(to_screen(px, py))
+                    if len(pts) >= 4:
+                        c.create_line(*pts, fill=SURFACE_PREVIEW_LINE, width=1,
+                                      tags='surface_preview')
+
+    def _preview_point(self, surface, p0, p1, q0, q1, i, j, n, polar, pole):
+        p = p0 + (p1 - p0) * i / n
+        q = q0 + (q1 - q0) * j / n
+        x, y = sg._domain_to_xy('polar' if polar else 'cartesian', p, q, pole)
+        return surface(x, y)
+
+    def _surface_preview_applies(self):
+        """Whether the surface preview should be drawn at all.
+
+        Its own checkbox is not enough. The preview shows the surface the
+        SHAPE panel would build -- a design aid for deciding a subdivision
+        before committing to it -- and the Shape panel always holds some
+        expression, defaulting to '0'. Drawn unconditionally, that painted
+        a flat sheet at z=0 straight through every model that did not come
+        from the Shape panel: every ready-made example, and every Generate
+        from a family panel. The plane belonged to no part of what was on
+        screen, which makes it worse than absent.
+
+        So it is drawn only while the Shape panel is the one in front,
+        which is exactly when it is a preview of something. Switching modes
+        does not disturb the checkbox, so a user who turned it off keeps it
+        off when they come back.
+        """
+        if not self.show_surface_preview.get():
+            return False
+        mode = getattr(self, 'active_mode', None)
+        return mode is not None and mode.get() == 'shape'
+
+    def _preview_surfaces(self):
+        """[(surface, tint)] for the preview: the top surface, plus the
+        bottom one in two-surface mode so a crossing pair is VISIBLE as a
+        crossing rather than only reported as an error after Build.
+
+        A Bezier source draws the FITTED AND EDITED surface, not the
+        formula it came from. Those are different surfaces the moment a
+        handle moves, and for a spin they are not even the same KIND of
+        surface -- the formula is a radius against height, so drawing it as
+        a height field would put a sheet in the air next to the solid of
+        revolution actually being built. A preview that does not show what
+        Build will make is worse than no preview.
+        """
+        built = self._bz_surface()
+        if built is not None:
+            return [(built, 0)]
+        try:
+            top = sg.make_height_field_surface(self.shape_z_top.get())
+        except em.ExpressionError:
+            return []
+        out = [(top, 0)]
+        if self.shape_two.get():
+            try:
+                out.append((sg.make_height_field_surface(self.shape_z_bot.get()), 1))
+            except em.ExpressionError:
+                pass
+        return out
+
+    def _draw_pick_overlay(self, c, proj, to_screen):
+        """The footprint disc, and the pending end of a line pick.
+
+        The disc is drawn as a real circle lying IN the layer's plane --
+        projected through the same camera as everything else -- so it reads
+        as a shadow cast on the roof rather than as a ring stuck to the
+        glass. A screen-space circle would keep its size as the model was
+        orbited and stop covering the joints it appeared to cover.
+        """
+        if self._disc_centre is not None and self.disc_pick_mode.get():
+            cx, cy, z, radius = self._disc_centre
+            pts = []
+            for k in range(self.DISC_STEPS):
+                a = 2.0 * math.pi * k / self.DISC_STEPS
+                px, py, _d = self._project(cx + radius * math.cos(a),
+                                           cy + radius * math.sin(a), z)
+                pts.extend(to_screen(px, py))
+            c.create_polygon(*pts, fill=DISC_FILL, outline=DISC_EDGE,
+                             width=2, stipple='gray25', tags='pick_disc')
+        for i in (self._disc_hits or []):
+            if i < len(proj):
+                sx, sy = to_screen(proj[i][0], proj[i][1])
+                c.create_oval(sx - 6, sy - 6, sx + 6, sy + 6, outline=DISC_EDGE,
+                              width=2, tags='pick_disc')
+        first = getattr(self, '_line_pick_first', None)
+        if first is not None and first < len(proj) and self.line_pick_mode.get():
+            sx, sy = to_screen(proj[first][0], proj[first][1])
+            c.create_oval(sx - 7, sy - 7, sx + 7, sy + 7, outline=LINE_PICK_COLOR,
+                          width=2, dash=(3, 2), tags='pick_line')
+
+    def _draw_shear_panels(self, c, proj, to_screen, frac):
+        """Every welded panel, always -- not behind the Fill toggle.
+
+        A shaded face is a picture of a cell that exists anyway; a shear
+        panel is a REAL element carrying real load, and one you cannot see
+        is one you can forget you added. Drawn back to front for the same
+        reason the shaded faces are (Tk has no z-buffer), and hatched rather
+        than solid so the rods welded to it still read through.
+
+        Coloured by its utilisation once it has been checked, so an
+        overstressed plate is visible without opening a table -- and grey
+        before that, because a panel with no check behind it has no verdict
+        to report.
+        """
+        if not getattr(self, 'panels', None):
+            return
+        checks = getattr(self, 'panel_checks', None) or []
+        drawn = []
+        for pi, panel in enumerate(self.panels):
+            loop = panel.get('nodes') or []
+            if any(not (0 <= n < len(proj)) for n in loop) or len(loop) < 3:
+                continue
+            pts, depth = [], 0.0
+            for n in loop:
+                px, py, d = proj[n]
+                sx, sy = to_screen(px, py)
+                pts.extend((sx, sy))
+                depth += d
+            chk = checks[pi] if pi < len(checks) else None
+            if chk and chk.get('valid') and chk.get('util') is not None:
+                color = util_color(chk['util'] * frac, self._util_top(frac))
+            else:
+                color = PANEL_UNCHECKED_COLOR
+            drawn.append((depth / len(loop), pts, color))
+        drawn.sort(key=lambda t: -t[0])
+        for _depth, pts, color in drawn:
+            c.create_polygon(*pts, fill=color, outline=PANEL_EDGE_COLOR,
+                             width=2, stipple='gray50', tags='shear_panel')
 
     def _draw_shaded_faces(self, c, proj, to_screen, frac, by_util, by_force, max_abs_N,
                            by_moment, moment_by_node, max_abs_moment):
@@ -818,211 +1223,84 @@ class StereoRenderMixin:
                      for mi in cell['members']
                      if mi < len(self.member_checks)
                      and self.member_checks[mi].get('checked')]
-            return util_color(sum(utils) / len(utils)) if utils else None
+            return (util_color(sum(utils) / len(utils), self._util_top(frac))
+                    if utils else None)
         if by_force and self.results is not None:
             member_res = self.results['member_res']
             forces = [member_res[mi]['N'] * frac for mi in cell['members']
                       if mi < len(member_res)]
-            return force_color(self._combine_signed(forces), max_abs_N) if forces else None
+            if not forces:
+                return None
+            value, balanced = self._combine_signed(forces)
+            return BALANCED_PANEL_COLOR if balanced else force_color(value, max_abs_N)
         if by_moment and moment_by_node:
             vals = [moment_by_node[n] for n in cell['nodes'] if n in moment_by_node]
-            return (moment_color(self._combine_signed(vals), max_abs_moment)
-                    if vals else None)
+            if not vals:
+                return None
+            value, balanced = self._combine_signed(vals)
+            return (BALANCED_PANEL_COLOR if balanced
+                    else moment_color(value, max_abs_moment))
         return None
 
-    @staticmethod
-    def _combine_signed(values):
-        """Mean magnitude, signed by the largest contributor -- see
-        _panel_color for why a plain signed mean is wrong here."""
+    def _balanced_panel_count(self, frac, by_util, by_force):
+        """How many panels carry equal and opposite force, for the legend.
+        A neutral panel with no explanation looks like a panel carrying
+        nothing, which is the opposite of what it means.
+
+        Force only: utilisation is unsigned so nothing can cancel, and the
+        moment spectrum colours panels from NODE values, which the legend
+        does not receive."""
+        if by_util or not by_force or self.results is None:
+            return 0
+        mr = self.results['member_res']
+        n = 0
+        for cell in self._get_shaded_cells():
+            vals = [mr[mi]['N'] * frac for mi in cell['members'] if mi < len(mr)]
+            if vals and self._combine_signed(vals)[1]:
+                n += 1
+        return n
+
+    # How close the biggest tension and the biggest compression on a panel
+    # have to be before the panel counts as BALANCED and has no governing
+    # sign at all. Relative, so it means the same on a 1 kN panel and a
+    # 1000 kN one.
+    PANEL_TIE_REL = 1e-6
+
+    @classmethod
+    def _combine_signed(cls, values):
+        """(mean magnitude signed by the largest contributor, balanced?).
+
+        See _panel_color for why a plain signed mean is wrong here. The
+        second return value is the part that took a user's bug report to
+        find.
+
+        A panel whose biggest tension and biggest compression are EQUAL has
+        no governing sign -- it is a chord pulling against a diagonal
+        pushing, and neither governs. `max(values, key=abs)` still answers,
+        because floating point always has a last bit: on a symmetric roof
+        two mirror-image corner panels came back with
+            +125.944229213916429  vs  -125.944229213916785   (compression wins)
+            +125.944229213916941  vs  -125.944229213916358   (tension wins)
+        and were painted deep blue and deep red respectively. A difference
+        of 3.6e-13 kN -- half a femtonewton, pure rounding noise from the
+        solve -- decided the colour of a whole panel, and did it differently
+        on the two sides of a perfectly symmetric structure.
+
+        So a tie is now DETECTED rather than broken. The caller paints those
+        panels a neutral colour and the legend counts them, which says
+        "equal and opposite" instead of picking one at random.
+        """
         if not values:
-            return 0.0
+            return 0.0, False
         mag = sum(abs(v) for v in values) / len(values)
+        hi_t = max(values)
+        hi_c = min(values)
+        if hi_t > 0 and hi_c < 0:
+            scale = max(abs(hi_t), abs(hi_c))
+            if abs(abs(hi_t) - abs(hi_c)) <= cls.PANEL_TIE_REL * scale:
+                return mag, True
         governing = max(values, key=abs)
-        return -mag if governing < 0 else mag
-
-    def _draw_voronoi_faces(self, c, proj, to_screen, frac, by_util, by_force, max_abs_N,
-                            by_moment, moment_by_node, max_abs_moment):
-        """A Voronoi tessellation of the structure's own SURFACE, drawn
-        behind the wireframe.
-
-        The tessellation lives in MODEL space, not on the screen: the cells
-        are attached to the structure and hold still while the camera moves.
-        Its domain is the mesh's own panels, so it stops exactly where the
-        structure stops -- see stereo_voronoi_surface for why a convex hull
-        (which this replaced) invents a floor slab under every vault, and why
-        the distance has to be measured along the fabric rather than through
-        space. All four spectra can drive it: force, utilization, node moment
-        and deformation.
-
-        Cells carry one flat colour each -- a Tk canvas polygon cannot blend
-        across itself -- so the smooth gradient remains the way to read a
-        continuous field ALONG the rods.
-        """
-        self._voronoi_note = ''
-        spec = self._voronoi_site_values(frac, by_util, by_force, max_abs_N,
-                                        by_moment, moment_by_node, max_abs_moment)
-        if spec is None:
-            return
-        sites, colours, kind = spec
-        patches, edges = self._voronoi_patches(sites, kind)
-        self._voronoi_note = '' if patches else self._voronoi_empty_reason(sites)
-        if not patches:
-            return
-
-        # Painter's algorithm: the tessellation is solid geometry, so a patch
-        # behind another has to be drawn first. Depth comes from the same
-        # projection the wireframe uses, so the two always agree about what
-        # is in front.
-        drawn = []
-        for poly, owner in patches:
-            pts, depth = [], 0.0
-            for x, y, z in poly:
-                px, py, d = self._project(x, y, z)
-                sx, sy = to_screen(px, py)
-                pts += [sx, sy]
-                depth += d
-            drawn.append((depth / max(1, len(poly)), pts, owner))
-        drawn.sort(key=lambda t: -t[0])
-
-        # Surface and Cells are both drawn STIPPLED. They wrap the outside of
-        # the structure, so a solid fill lets the nearest patch hide every
-        # patch behind it and the shape loses all depth. The density is
-        # gray75 rather than a half-tone, chosen by comparing the four Tk
-        # patterns side by side: at gray50 a Voronoi cell at the dark end of
-        # the ramp came out the same pale wash as one in the middle, because
-        # every stippled pixel is half canvas-white. The wireframe's own
-        # legibility does not depend on this at all -- tag_lower puts the
-        # whole fill beneath every rod, node and glyph on the canvas.
-        # The Section plane stays solid: it is a cut FACE, and a cut you can
-        # see through no longer reads as one.
-        stipple = '' if self.voronoi_view.get() == svs.VIEW_SECTION \
-            else self._fill_stipple()
-        for _depth, pts, owner in drawn:
-            c.create_polygon(*pts, fill=colours[owner], outline='',
-                             stipple=stipple, tags='voronoi_face')
-        # The cell OUTLINES, drawn over the fill. Without them a tessellation
-        # whose neighbouring cells happen to carry similar values reads as one
-        # continuous wash, which is the Surface view, not this one.
-        for p0, p1 in edges:
-            x0, y0, _ = self._project(*p0)
-            x1, y1, _ = self._project(*p1)
-            s0, s1 = to_screen(x0, y0), to_screen(x1, y1)
-            c.create_line(s0[0], s0[1], s1[0], s1[1], fill=CELL_EDGE_COLOR,
-                          width=CELL_EDGE_WIDTH, tags='voronoi_face')
-        c.tag_lower('voronoi_face')
-
-    def _voronoi_site_values(self, frac, by_util, by_force, max_abs_N,
-                             by_moment, moment_by_node, max_abs_moment):
-        """(sites, colour-per-site, kind) for whichever spectrum is active.
-
-        `kind` is what lets the surface engine seed each panel from the sites
-        lying ON it: 'member' sites are the rods of a panel, 'node' sites its
-        corners. Moment and deformation are genuinely NODAL quantities, so
-        their sites are the nodes. Force and utilization belong to a rod,
-        which has no single point where its value uniquely lives, so the
-        rod's midpoint stands in -- a reasonable choice but a genuinely
-        debatable one, which is why the legend says which it used rather than
-        leaving it implied.
-        """
-        if by_util and self.member_checks is not None:
-            sites = [tuple((a + b) / 2.0 for a, b in
-                           zip(self.nodes[m['a']], self.nodes[m['b']]))
-                     for m in self.members]
-            cols = [util_color((self.member_checks[i]['util'] * frac)
-                               if i < len(self.member_checks)
-                               and self.member_checks[i].get('checked') else 0.0)
-                    for i in range(len(self.members))]
-            return sites, cols, 'member'
-        if by_force and self.results is not None:
-            sites = [tuple((a + b) / 2.0 for a, b in
-                           zip(self.nodes[m['a']], self.nodes[m['b']]))
-                     for m in self.members]
-            cols = [force_color(mr['N'] * frac, max_abs_N)
-                    for mr in self.results['member_res']]
-            return sites, cols, 'member'
-        if by_moment and moment_by_node:
-            cols = [moment_color(moment_by_node.get(i, 0.0), max_abs_moment)
-                    for i in range(len(self.nodes))]
-            return list(self.nodes), cols, 'node'
-        if self.show_deformed.get() and self.results is not None:
-            _deformed, disp_mm = self._deformed_nodes_and_disp()
-            top = max(disp_mm, default=0.0)
-            return list(self.nodes), [deform_color(d, top) for d in disp_mm], 'node'
-        return None
-
-    def _voronoi_cut_value(self):
-        """The section's cut thickness, read defensively.
-
-        It is bound to a typed Entry, so between two keystrokes its contents
-        can be empty, half a number, or 'abc' -- and a DoubleVar raises on
-        every one of those. A redraw runs on far more than the Return key
-        (orbit, a toggle, the load slider), so an unguarded read turned an
-        ordinary edit into a broken canvas. The last value that WAS a
-        positive length is kept and used until the field makes sense again.
-        """
-        try:
-            r = float(self.voronoi_cut.get())
-        except (tk.TclError, ValueError):
-            return self._voronoi_cut_last
-        if r > 0:
-            self._voronoi_cut_last = r
-        return self._voronoi_cut_last
-
-    def _voronoi_empty_reason(self, sites):
-        """Why the tessellation came back empty -- the legend says this, so it
-        has to name the actual cause rather than guess at the commonest one.
-        Blaming model size for a mesh with no closed panels would send you off
-        tuning a setting that was never the problem."""
-        if len(sites) < 1:
-            return 'there is nothing to tessellate yet'
-        if not self._get_shaded_cells():
-            return ('this mesh has no closed triangles or quads, so it has no '
-                    'surface to tessellate')
-        if self.voronoi_view.get() == svs.VIEW_SECTION:
-            return (f'the cut plane misses the structure at this position '
-                    f'(thickness {self._voronoi_cut_value():g} m)')
-        return 'nothing to tessellate here'
-
-    def _voronoi_patches(self, sites, kind):
-        """(patches, cell-outline edges), rebuilt only when something they
-        actually depend on has changed.
-
-        Being in model space, the tessellation does NOT depend on the camera
-        -- which is the whole point of moving it off the screen -- so orbiting
-        reuses this cache and only re-projects.
-        """
-        view = self.voronoi_view.get()
-        key = (len(self.nodes), len(self.members), len(sites), kind, view,
-               round(self._voronoi_cut_value(), 4),
-               self.voronoi_axis.get(), round(float(self.voronoi_slice.get()), 4))
-        if self._voronoi_cache is not None and self._voronoi_cache[0] == key:
-            return self._voronoi_cache[1]
-        panels = self._get_shaded_cells()
-        if view == svs.VIEW_SECTION:
-            out = (svs.build_section(self.nodes, panels, sites,
-                                     'XYZ'.index(self.voronoi_axis.get()),
-                                     float(self.voronoi_slice.get()) / 100.0,
-                                     self._voronoi_cut_value()), [])
-        else:
-            key_field = 'members' if kind == 'member' else 'nodes'
-            panel_sites = [list(p[key_field]) for p in panels]
-            # `members` is what lets the domain cover the rods no panel
-            # contains -- a column shaft closes no triangle or quad, so
-            # without this the fill stops at the underside of the grid and
-            # the columns hang below it as bare lines.
-            patches = svs.build_surface(self.nodes, panels, sites, panel_sites,
-                                        members=self.members,
-                                        per_node=(kind == 'node'))
-            edges = []
-            if view == svs.VIEW_CELLS and panels:
-                polys = svs.panel_polys(self.nodes, panels)
-                adj, _ = svs.panel_adjacency(panels)
-                owners = svs.assign_owners(svs.panel_centroids(polys), panel_sites,
-                                           sites, adj)
-                edges = svs.cell_boundary_edges(self.nodes, self.members, panels, owners)
-            out = (patches, edges)
-        self._voronoi_cache = (key, out)
-        return out
+        return (-mag if governing < 0 else mag), False
 
     def _reference_grey(self):
         """The reference (rest) structure's adjustable grey shade, used
@@ -1292,10 +1570,18 @@ class StereoRenderMixin:
                          font=('Helvetica', 9, 'bold'), tags='axes')
 
     def _draw_legend(self, c, by_force, show_def=False, deformed_only=False, by_util=False,
-                     max_abs_N=0.0, max_abs_moment=0.0, frac=1.0, clipped=()):
-        x0, y0 = 10, 10
+                     max_abs_N=0.0, max_abs_moment=0.0, frac=1.0, clipped=(),
+                     rod_shear=False, rod_moment=False, rod_peak=0.0,
+                     rod_varies=False):
+        # The legend stays in the corner of the display, which is where you
+        # look when you are reading colour off the model -- but as a CARD
+        # rather than loose text. A card has its own ground, so the ramp and
+        # its numbers read against that instead of against whatever part of
+        # the structure happens to lie behind them.
+        x0, y0 = 20, 20
         y = y0
         BAR_W, BAR_H = 130, 10
+        before = set(c.find_all())
 
         def row(color, text, dashed=False, outline=None):
             nonlocal y
@@ -1363,9 +1649,69 @@ class StereoRenderMixin:
             y = ty + 12
 
         if not deformed_only:
-            if by_util:
-                caption('Utilization (demand ÷ capacity):')
-                colorbar(util_color, 0.0, 1.2, [(0.0, '0'), (0.5, '0.5'), (1.0, '≥1.0 (over)')])
+            if rod_shear or rod_moment:
+                what = 'Shear' if rod_shear else 'Moment'
+                unit = self.u('force') if rod_shear else self.u('moment')
+                caption(f'{what} along each rod, {unit}:')
+                shown, spec = scaled('force' if rod_shear else 'moment', rod_peak)
+                colorbar(lambda v: moment_color(v, rod_peak), -rod_peak, rod_peak,
+                         [(-rod_peak, f'−{shown:{spec}}'), (0.0, '0'),
+                          (rod_peak, f'+{shown:{spec}}')])
+                if not rod_varies:
+                    # The honest refusal. With no load ON the rods there is
+                    # nothing between a member's ends to change the force
+                    # across a cut, so the shear is constant along every
+                    # member and the moment is a straight line between two
+                    # end values. The colours on screen are still true --
+                    # they are just a value PER MEMBER, not a field along
+                    # it -- and saying so beats letting a flat-looking
+                    # picture be read as "no shear here".
+                    caption('No distributed load is on any rod, so shear is')
+                    caption('CONSTANT along each one and moment runs straight')
+                    caption('end to end. Add one under Loads → Distributed')
+                    caption('load on rods to see it actually vary.')
+            elif by_util:
+                util_top = self._util_top(frac)
+                if self.util_autorange.get() and util_top < 1.0:
+                    # Auto-range: the ramp no longer means "at capacity", so
+                    # label the ticks with the utilizations they ACTUALLY
+                    # stand for and say the scale is this model's own. A bar
+                    # still reading 0 / 0.5 / 1.0 here would be a lie -- the
+                    # red end is util_top, which may be a few percent.
+                    caption('Utilization (demand ÷ capacity), '
+                            'AUTO-RANGED to this model:')
+                    # Bare numbers on the ticks: the bar is only BAR_W wide
+                    # and the right-hand tick is anchored 'e', so any label
+                    # longer than a number runs left across the midpoint
+                    # tick and the two overprint each other. The words that
+                    # explain what the top of the bar MEANS go in the
+                    # captions underneath, where they have the full width.
+                    colorbar(lambda u: util_color(u, util_top), 0.0, util_top,
+                             [(0.0, '0'),
+                              (util_top / 2.0, f'{util_top / 2.0:.3f}'),
+                              (util_top, f'{util_top:.3f}')])
+                    caption('Relative scale: red = the busiest rod HERE '
+                            f'({util_top:.3f}), not at')
+                    caption('capacity. Every rod is under '
+                            f'{util_top * 100.0:.1f}% of capacity.')
+                else:
+                    caption('Utilization (demand ÷ capacity):')
+                    colorbar(lambda u: util_color(u, util_top), 0.0, 1.2,
+                             [(0.0, '0'), (0.5, '0.5'), (1.0, '≥1.0 (over)')])
+                    if self.member_checks is not None:
+                        peak = max((cc['util'] * frac for cc in self.member_checks
+                                    if cc and cc.get('checked')
+                                    and cc.get('util') is not None), default=None)
+                        # A structure whose worst rod is far down the bar is
+                        # SUPPOSED to look uniformly green, but that reads as
+                        # a broken gradient unless the legend says the peak
+                        # out loud. Turn on Auto-range to see the spread.
+                        if peak is not None and peak < 0.25:
+                            caption(f'Peak is only {peak:.3f} ('
+                                    f'{peak * 100.0:.1f}% of capacity), so the whole')
+                            caption('model sits at the green end of this absolute')
+                            caption('scale. Tick "Auto-range utilization" to')
+                            caption('stretch the ramp over this model\'s own range.')
             elif by_force:
                 caption(f'Axial force, {self.u("force")} '
                         '(+ tension / − compression):')
@@ -1409,17 +1755,16 @@ class StereoRenderMixin:
                        f'max (capped at {STRESS_WIDTH_MAX:.0f}px)')
             if self.shaded_faces.get() and self.results is not None:
                 caption('Shaded faces: flat colour/panel (approx., not a shell FEA)')
-            if self.voronoi_faces.get() and self.results is not None and self._voronoi_note:
-                caption(f'Voronoi: {self._voronoi_note}')
-            if self.voronoi_faces.get() and self.results is not None:
-                nodal = self.colour_by_moment.get() or (
-                    self.show_deformed.get() and not self.colour_by_force.get()
-                    and not self.colour_by_util.get())
-                view = self.voronoi_view.get()
-                where = ("the structure's own surface" if view != svs.VIEW_SECTION
-                         else f'a {self._voronoi_cut_value():g} m cut through the fabric')
-                caption(f'Voronoi · {view} · {where}'
-                       + f", sites = {'nodes' if nodal else 'rod midpoints'}")
+                # A neutral panel with nothing said about it reads as a panel
+                # carrying nothing, which is the opposite of what it means.
+                # The legend only receives by_force/by_util, so the moment
+                # case is derived from the colour mode the same way _draw
+                # derives it.
+                n_bal = self._balanced_panel_count(frac, by_util, by_force)
+                if n_bal:
+                    row(BALANCED_PANEL_COLOR,
+                        f'{n_bal} panel(s) carry EQUAL tension and compression '
+                        f'— no governing sign')
             if self.flag_slender.get() and self.member_checks is not None:
                 row(SLENDER_HALO_COLOR, f'halo = slender compression member '
                                        f'(KL/r > {SLENDERNESS_LIMIT:.0f})', dashed=True)
@@ -1483,3 +1828,23 @@ class StereoRenderMixin:
                           'click a rod to inspect its force/utilization\n'
                           'arrows/PgUp/PgDn: extend rod along axis from selected node\n'
                           'drag a selected node to reposition it')
+
+        # Size the card to whatever actually ended up on it, then drop it
+        # behind those items. Measured from the canvas rather than tracked
+        # per row, because which rows appear depends on the colour mode,
+        # the toggles and whether an analysis has run.
+        mine = [i for i in c.find_all() if i not in before]
+        boxes = [c.bbox(i) for i in mine if c.bbox(i)]
+        if boxes:
+            bx0 = min(b[0] for b in boxes) - 12
+            by0 = min(b[1] for b in boxes) - 10
+            bx1 = max(b[2] for b in boxes) + 12
+            by1 = max(b[3] for b in boxes) + 10
+            card = c.create_rectangle(bx0, by0, bx1, by1, fill=LEGEND_CARD_BG,
+                                      outline=LEGEND_CARD_EDGE, width=1,
+                                      tags="legend_card")
+            # Lower the card just under the FIRST legend item, in one call.
+            # Raising each item above the card instead re-inserts every one
+            # directly above it, which walks the stack backwards and leaves
+            # the colour ramp drawn in reverse.
+            c.tag_lower(card, mine[0])

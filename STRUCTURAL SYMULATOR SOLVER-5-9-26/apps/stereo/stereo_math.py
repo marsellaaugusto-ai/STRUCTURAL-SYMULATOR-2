@@ -70,11 +70,9 @@ translation-only supports reduces exactly to a classic 3-DOF/node space
 truss.
 """
 import math
-import warnings
 import numpy as np
-from scipy.sparse import coo_matrix
-from scipy.sparse.linalg import spsolve
 
+from apps.stereo import stereo_plates as splates
 from common import _beam_gauss_solve
 
 gauss_solve = _beam_gauss_solve
@@ -92,7 +90,6 @@ PRESET_SUPPORTS = {
     'rollerX': {'uy': True, 'uz': True},    # free to slide along global X only
     'rollerY': {'ux': True, 'uz': True},    # free to slide along global Y only
     'rollerZ': {'ux': True, 'uy': True},    # free to slide along global Z only
-    'cable':   {'uz': True},                # vertical cable: restrains only uz (crane hoist)
 }
 
 
@@ -198,46 +195,6 @@ def _rigid_local_stiffness(E_GPa, A_cm2, I_cm4, J_cm4, L, nu=DEFAULT_NU):
     return k
 
 
-def _fixed_end_forces_local(wx, wy, wz, L):
-    """The 12-vector of local end forces that hold a prismatic member's two
-    ends FIXED under a uniform span load (wx, wy, wz) in LOCAL N/m.
-
-    This is what makes a span load different from splitting it in half and
-    hanging it on the two joints. Lumping gets the end SHEARS right --
-    wL/2 each, which is why the two agree on a pin-jointed truss -- but it
-    silently throws away the end MOMENTS, wL^2/12, and with them the whole
-    reason a rigid joint behaves differently from a hinge. Every moment
-    this app reports for a rigid member used to be missing that term.
-
-    Sign convention follows _rigid_local_stiffness's own: the local x-y
-    plane pairs uy with rz, and the local x-z plane pairs uz with ry with
-    the sign reversed, so the two planes' fixed-end moments carry opposite
-    signs here for the same reason their stiffness terms do.
-
-    Used as `f_local = k_local @ d_local + f_fixed`, with `-f_fixed`
-    released onto the joints as the equivalent nodal load -- the standard
-    direct-stiffness treatment of an element load.
-    """
-    f = np.zeros(12)
-    half_x, half_y, half_z = wx * L / 2.0, wy * L / 2.0, wz * L / 2.0
-    m_y = wy * L * L / 12.0
-    m_z = wz * L * L / 12.0
-
-    f[0] = -half_x
-    f[6] = -half_x
-
-    f[1] = -half_y
-    f[7] = -half_y
-    f[5] = -m_y
-    f[11] = +m_y
-
-    f[2] = -half_z
-    f[8] = -half_z
-    f[4] = +m_z
-    f[10] = -m_z
-    return f
-
-
 def _rotation_12(local_x, local_y, local_z):
     """Block-diagonal 12x12 transformation (global -> local) from the 3x3
     direction-cosine matrix, repeated once per translational/rotational
@@ -249,7 +206,7 @@ def _rotation_12(local_x, local_y, local_z):
     return T
 
 
-def analyze(nodes, members, loads, supports, member_loads=None):
+def analyze(nodes, members, loads, supports, panels=None, member_loads=None):
     """Solve the space structure. Returns (result, error). On failure,
     result is None and error is a human-readable string (mirroring every
     other solver in this app, e.g. truss_math.analyze).
@@ -257,21 +214,35 @@ def analyze(nodes, members, loads, supports, member_loads=None):
     result = {
         'node_res': [{'ux','uy','uz' (mm), 'rx','ry','rz' (rad)}, ...],
         'member_res': [{'N' (kN, +tension), and for rigid members also
-                         'Vy_a','Vz_a','Vy_b','Vz_b' (kN), 'T',
-                         'My_a','My_b','Mz_a','Mz_b' (kN·m), and
-                         'w_local' (wx,wy,wz in kN/m) when the member
-                         carries a span load}, ...],
+                         'Vy','Vz' (kN), 'T','My_a','My_b','Mz_a','Mz_b'
+                         (kN·m)}, ...],
         'reactions': {node_idx: {'Fx','Fy','Fz' (kN), 'Mx','My','Mz' (kN·m)}},
+        'panel_res': [{'valid', 'nodes', 'area_m2', 'gamma', 'q' (kN/m),
+                        'tau_MPa', 't_mm', 'corner_forces'}, ...] parallel to
+                       `panels`, or [] when there are none.
     }
 
-    `member_loads` is an optional {member_index: (wx, wy, wz)} of uniform
-    span loads in GLOBAL kN/m. A rigid member gets the proper
-    direct-stiffness treatment -- consistent fixed-end forces onto the
-    joints, and the span term carried back into its own end actions. A pin
-    member cannot carry transverse load in the truss idealisation at all,
-    so its span load is lumped half-and-half onto its ends exactly as
-    before.
+    `member_loads` is optional and defaults to None. Each entry is a
+    distributed load applied ALONG one member (see stereo_member_loads for
+    the dict and for why the two connectivity cases are solved
+    differently). It is what makes a member's shear vary along it at all:
+    under nodal loads alone the shear between two joints is constant, so
+    `member_res` carries 'w_local' -- the local intensity actually on that
+    member -- and stereo_member_loads.member_diagram reads it to give the
+    forces at any station. A member with no load on it gets (0, 0, 0) and
+    the same constant answer at every station, which is the honest one.
+
+    `panels` is optional and defaults to None, so every existing caller is
+    unaffected. A welded shear panel adds only in-plane SHEAR stiffness over
+    its nodes' three translations -- a membrane has no rotational DOF -- so
+    the rotational DOFs are deliberately left out of its block rather than
+    given a token stiffness.
     """
+    # Imported here rather than at module scope: stereo_member_loads needs
+    # this module's own local-axis and member-vector helpers, so a top-level
+    # import in either direction would be circular.
+    from apps.stereo import stereo_member_loads as mloads
+
     err = check_boundary_setup(nodes, members, supports)
     if err:
         return None, err
@@ -283,6 +254,24 @@ def analyze(nodes, members, loads, supports, member_loads=None):
         node_r = restraints[sp['node']]
         for d in DOF_NAMES:
             node_r[d] = node_r[d] or r[d]
+
+    member_loads = list(member_loads or [])
+    # A member load is converted to work-equivalent NODAL loads before
+    # assembly (a load between two nodes cannot be fed to a stiffness solve
+    # any other way), and the member's own internal forces are recovered
+    # afterwards by adding its fixed-end vector back in.
+    if member_loads:
+        loads = list(loads) + mloads.equivalent_nodal_loads(nodes, members, member_loads)
+    fixed_end = {}
+    w_local = {}
+    for ld in member_loads:
+        mi = ld['member']
+        f = mloads.fixed_end_local(nodes, members, ld)
+        prev = fixed_end.get(mi)
+        fixed_end[mi] = f if prev is None else [a + b for a, b in zip(prev, f)]
+        wx, wy, wz, _L = mloads.local_intensity(nodes, members[mi], ld)
+        pw = w_local.get(mi, (0.0, 0.0, 0.0))
+        w_local[mi] = (pw[0] + wx, pw[1] + wy, pw[2] + wz)
 
     needs_rot = [False] * N
     for m in members:
@@ -308,120 +297,62 @@ def analyze(nodes, members, loads, supports, member_loads=None):
             idx += [None, None, None]
         dof_of[i] = tuple(idx)
 
-    coo_rows = []
-    coo_cols = []
-    coo_vals = []
-
-    pin_members = []
-    rigid_members = []
-    member_geom = [None] * len(members)
-    for mi, m in enumerate(members):
+    K = np.zeros((ndof, ndof))
+    for m in members:
         dx, dy, dz, L = member_vector(nodes, m)
-        member_geom[mi] = (dx, dy, dz, L)
         if L < 1e-9:
             continue
-        if m.get('conn', 'pin') != 'rigid':
-            pin_members.append(mi)
-        else:
-            rigid_members.append(mi)
-
-    if pin_members:
-        n_pin = len(pin_members)
-        EA_over_L = np.empty(n_pin)
-        dirs = np.empty((n_pin, 3))
-        pin_idx = np.empty((n_pin, 6), dtype=np.intp)
-        for pi, mi in enumerate(pin_members):
-            m = members[mi]
-            dx, dy, dz, L = member_geom[mi]
-            EA_over_L[pi] = (m['E'] * 1e9) * (m['A'] * 1e-4) / L
-            dirs[pi] = (dx / L, dy / L, dz / L)
-            a_dof, b_dof = dof_of[m['a']], dof_of[m['b']]
-            pin_idx[pi] = (a_dof[0], a_dof[1], a_dof[2],
-                           b_dof[0], b_dof[1], b_dof[2])
-        ke33_batch = EA_over_L[:, None, None] * (dirs[:, :, None] * dirs[:, None, :])
-        ke_batch = np.empty((n_pin, 6, 6))
-        ke_batch[:, :3, :3] = ke33_batch
-        ke_batch[:, :3, 3:] = -ke33_batch
-        ke_batch[:, 3:, :3] = -ke33_batch
-        ke_batch[:, 3:, 3:] = ke33_batch
-        row_idx = pin_idx[:, :, None].repeat(6, axis=2)
-        col_idx = pin_idx[:, None, :].repeat(6, axis=1)
-        coo_rows.append(row_idx.ravel())
-        coo_cols.append(col_idx.ravel())
-        coo_vals.append(ke_batch.ravel())
-
-    for mi in rigid_members:
-        m = members[mi]
-        dx, dy, dz, L = member_geom[mi]
-        local_x, local_y, local_z = _local_axes(dx, dy, dz, L)
-        kloc = _rigid_local_stiffness(m['E'], m['A'], m.get('I', 0.0),
-                                       m.get('J', m.get('I', 0.0)), L)
-        T = _rotation_12(local_x, local_y, local_z)
-        kgl = T.T @ kloc @ T
+        lx, ly, lz = dx / L, dy / L, dz / L
         a_dof, b_dof = dof_of[m['a']], dof_of[m['b']]
-        idx = np.array(list(a_dof) + list(b_dof), dtype=np.intp)
-        ri = idx[:, None].repeat(12, axis=1)
-        ci = idx[None, :].repeat(12, axis=0)
-        coo_rows.append(ri.ravel())
-        coo_cols.append(ci.ravel())
-        coo_vals.append(kgl.ravel())
 
-    if coo_rows:
-        all_rows = np.concatenate(coo_rows)
-        all_cols = np.concatenate(coo_cols)
-        all_vals = np.concatenate(coo_vals)
-    else:
-        all_rows = np.array([], dtype=np.intp)
-        all_cols = np.array([], dtype=np.intp)
-        all_vals = np.array([], dtype=float)
-
-    K_sparse = coo_matrix((all_vals, (all_rows, all_cols)),
-                           shape=(ndof, ndof)).tocsc()
-
-    # Span loads become consistent fixed-end forces on a rigid member, and
-    # the equivalent joint load released onto the structure is their
-    # negative. A pin member is a two-force member by definition -- it can
-    # carry no transverse load at all -- so its span load is lumped to its
-    # ends exactly as before, which is why a pin-jointed model solves to
-    # the same numbers with or without this path.
-    fef_local = {}
-    fef_lumped = []
-    for mi, w in (member_loads or {}).items():
-        if not (0 <= mi < len(members)):
-            continue
-        wx_g, wy_g, wz_g = (float(w[0]), float(w[1]), float(w[2]))
-        if not (wx_g or wy_g or wz_g):
-            continue
-        m = members[mi]
-        dx, dy, dz, L = member_geom[mi]
-        if L < 1e-9:
-            continue
         if m.get('conn', 'pin') != 'rigid':
-            half = L / 2.0
-            for nid in (m['a'], m['b']):
-                fef_lumped.append({'node': nid, 'fx': wx_g * half,
-                                   'fy': wy_g * half, 'fz': wz_g * half})
+            k = _pin_stiffness(m['E'], m['A'], L)
+            dirn = np.array([lx, ly, lz])
+            ke33 = k * np.outer(dirn, dirn)
+            idx = [a_dof[0], a_dof[1], a_dof[2], b_dof[0], b_dof[1], b_dof[2]]
+            ke = np.block([[ke33, -ke33], [-ke33, ke33]])
+            for i in range(6):
+                for j in range(6):
+                    K[idx[i], idx[j]] += ke[i, j]
+        else:
+            local_x, local_y, local_z = _local_axes(dx, dy, dz, L)
+            kloc = _rigid_local_stiffness(m['E'], m['A'], m.get('I', 0.0),
+                                           m.get('J', m.get('I', 0.0)), L)
+            T = _rotation_12(local_x, local_y, local_z)
+            kgl = T.T @ kloc @ T
+            idx = list(a_dof) + list(b_dof)
+            for i in range(12):
+                for j in range(12):
+                    K[idx[i], idx[j]] += kgl[i, j]
+
+    # ── welded shear panels ────────────────────────────────────────────────
+    # K = G*t*A * Bg^T Bg over the loop's 3n translations: one rank-1 block
+    # per panel. Rank-1 is not a defect -- the panel is only ever asked to
+    # carry shear, and the bay's remaining stiffness comes from the rods
+    # around it.
+    panels = panels or []
+    panel_dofs = {}
+    for pi, panel in enumerate(panels):
+        geom, _why = splates.panel_geometry(nodes, panel)
+        if geom is None:
+            continue          # invalid panel: reported by the UI, not solved
+        loop, _pts, area, Bg = geom
+        G_Pa, t_m = splates.panel_material(panel)
+        if G_Pa <= 0.0 or t_m <= 0.0:
             continue
-        local_x, local_y, local_z = _local_axes(dx, dy, dz, L)
-        w_loc = (wx_g * local_x[0] + wy_g * local_x[1] + wz_g * local_x[2],
-                 wx_g * local_y[0] + wy_g * local_y[1] + wz_g * local_y[2],
-                 wx_g * local_z[0] + wy_g * local_z[1] + wz_g * local_z[2])
-        f_loc = _fixed_end_forces_local(w_loc[0] * 1e3, w_loc[1] * 1e3,
-                                        w_loc[2] * 1e3, L)
-        fef_local[mi] = (f_loc, w_loc)
+        gdof, brow = [], []
+        for k, ni in enumerate(loop):
+            idx = dof_of[ni]
+            gdof += [idx[0], idx[1], idx[2]]
+            brow += list(Bg[k])
+        scale = G_Pa * t_m * abs(area)
+        for i in range(len(gdof)):
+            for j in range(len(gdof)):
+                K[gdof[i], gdof[j]] += scale * brow[i] * brow[j]
+        panel_dofs[pi] = (loop, _pts, area, brow, G_Pa, t_m, gdof)
 
     F = np.zeros(ndof)
-    for mi, (f_loc, _w_loc) in fef_local.items():
-        m = members[mi]
-        dx, dy, dz, L = member_geom[mi]
-        T = _rotation_12(*_local_axes(dx, dy, dz, L))
-        f_gl = T.T @ f_loc
-        idx = list(dof_of[m['a']]) + list(dof_of[m['b']])
-        for k, dofi in enumerate(idx):
-            if dofi is not None:
-                F[dofi] -= f_gl[k]
-
-    for ld in list(loads) + fef_lumped:
+    for ld in loads:
         idx = dof_of[ld['node']]
         F[idx[0]] += ld.get('fx', 0.0) * 1e3
         F[idx[1]] += ld.get('fy', 0.0) * 1e3
@@ -438,41 +369,29 @@ def analyze(nodes, members, loads, supports, member_loads=None):
         for k, d in enumerate(DOF_NAMES):
             if r[d]:
                 if idx[k] is None:
+                    # a rotational restraint at a node with no rotational
+                    # DOF allocated cannot happen: needs_rot was set for
+                    # exactly this case above.
                     raise AssertionError('internal: rotational DOF missing '
                                           'for a restrained rotation')
                 constrained.add(idx[k])
 
-    free = sorted(i for i in range(ndof) if i not in constrained)
+    free = [i for i in range(ndof) if i not in constrained]
     if not free:
         return None, 'All degrees of freedom are constrained -- nothing can move.'
 
-    free_arr = np.array(free, dtype=np.intp)
-    Kf = K_sparse[np.ix_(free_arr, free_arr)]
-    Ff = F[free_arr]
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', category=Warning)
-            U_free = spsolve(Kf.tocsc(), Ff)
-    except Exception:
-        return None, ('Singular stiffness matrix -- the structure (or some part '
-                       'of it) is a mechanism, or a node is floating with no '
-                       'load path to a support. Check for missing members or '
-                       'missing boundary conditions.')
-    if not np.all(np.isfinite(U_free)):
-        return None, ('Singular stiffness matrix -- the structure (or some part '
-                       'of it) is a mechanism, or a node is floating with no '
-                       'load path to a support. Check for missing members or '
-                       'missing boundary conditions.')
-    coords = np.array(nodes, dtype=float)
-    span = max((coords.max(axis=0) - coords.min(axis=0)).max(), 1.0)
-    if np.max(np.abs(U_free)) > span * 1e4:
+    Kf = K[np.ix_(free, free)]
+    Ff = F[free]
+    U_free = gauss_solve(Kf, Ff)
+    if U_free is None:
         return None, ('Singular stiffness matrix -- the structure (or some part '
                        'of it) is a mechanism, or a node is floating with no '
                        'load path to a support. Check for missing members or '
                        'missing boundary conditions.')
 
     U = np.zeros(ndof)
-    U[free_arr] = U_free
+    for li, gi in enumerate(free):
+        U[gi] = U_free[li]
 
     node_res = []
     for i in range(N):
@@ -485,48 +404,49 @@ def analyze(nodes, members, loads, supports, member_loads=None):
         })
 
     member_res = []
-    if pin_members:
-        U_pin_a = U[pin_idx[:, :3]]
-        U_pin_b = U[pin_idx[:, 3:]]
-        elong = np.sum((U_pin_b - U_pin_a) * dirs, axis=1)
-        N_forces = EA_over_L * elong / 1e3
-    pin_result_idx = 0
     for mi, m in enumerate(members):
-        dx, dy, dz, L = member_geom[mi]
+        dx, dy, dz, L = member_vector(nodes, m)
+        w_m = w_local.get(mi, (0.0, 0.0, 0.0))
         if L < 1e-9:
-            member_res.append({'N': 0.0, 'conn': m.get('conn', 'pin'), 'length_m': 0.0})
+            member_res.append({'N': 0.0, 'conn': m.get('conn', 'pin'), 'length_m': 0.0,
+                               'w_local': w_m})
             continue
+        lx, ly, lz = dx / L, dy / L, dz / L
+        a_dof, b_dof = dof_of[m['a']], dof_of[m['b']]
 
         if m.get('conn', 'pin') != 'rigid':
-            member_res.append({'N': float(N_forces[pin_result_idx]),
-                               'conn': 'pin', 'length_m': L})
-            pin_result_idx += 1
+            ua = np.array([U[a_dof[0]], U[a_dof[1]], U[a_dof[2]]])
+            ub = np.array([U[b_dof[0]], U[b_dof[1]], U[b_dof[2]]])
+            dirn = np.array([lx, ly, lz])
+            elong = float(np.dot(ub - ua, dirn))
+            N_force = (m['E'] * 1e9) * (m['A'] * 1e-4) / L * elong
+            member_res.append({'N': N_force / 1e3, 'conn': 'pin', 'length_m': L,
+                               'w_local': w_m})
         else:
             local_x, local_y, local_z = _local_axes(dx, dy, dz, L)
             kloc = _rigid_local_stiffness(m['E'], m['A'], m.get('I', 0.0),
                                            m.get('J', m.get('I', 0.0)), L)
             T = _rotation_12(local_x, local_y, local_z)
-            a_dof, b_dof = dof_of[m['a']], dof_of[m['b']]
             idx = list(a_dof) + list(b_dof)
             dgl = np.array([U[i] for i in idx])
             dloc = T @ dgl
-            f_fixed, w_loc = fef_local.get(mi, (None, None))
             floc = kloc @ dloc
-            if f_fixed is not None:
-                floc = floc + f_fixed
-            entry = {
+            fe = fixed_end.get(mi)
+            if fe is not None:
+                # f_end = k*d + f^F: without this the member would report
+                # the end forces of an UNLOADED beam that happens to have
+                # these end displacements, which is a different structure.
+                floc = floc + np.array(fe)
+            member_res.append({
                 'N': floc[6] / 1e3, 'conn': 'rigid', 'length_m': L,
+                'w_local': w_m,
                 'Vy_a': floc[1] / 1e3, 'Vz_a': floc[2] / 1e3, 'T': floc[3] / 1e3,
-                'Vy_b': floc[7] / 1e3, 'Vz_b': floc[8] / 1e3,
                 'My_a': floc[4] / 1e3, 'Mz_a': floc[5] / 1e3,
                 'My_b': floc[10] / 1e3, 'Mz_b': floc[11] / 1e3,
-            }
-            if w_loc is not None:
-                entry['w_local'] = w_loc
-            member_res.append(entry)
+            })
 
     reactions = {}
-    Ku = K_sparse @ U
+    Ku = K @ U
     for sp in supports:
         r = support_restraints(sp)
         if not any(r.values()):
@@ -538,102 +458,43 @@ def analyze(nodes, members, loads, supports, member_loads=None):
         for k, d in enumerate(DOF_NAMES):
             if r[d] and idx[k] is not None:
                 resid = Ku[idx[k]] - F[idx[k]]
-                rxn[labels[k]] += resid / 1e3
+                rxn[labels[k]] += resid / 1e3   # N -> kN, N*m -> kN*m
 
-    return {'node_res': node_res, 'member_res': member_res, 'reactions': reactions}, None
-
-
-def self_weight_split(nodes, members, unit_weight_kN_m3=DEFAULT_STEEL_UNIT_WEIGHT):
-    """Self weight as (nodal_loads, member_loads).
-
-    A pin member is a two-force member -- it carries no transverse load by
-    definition -- so its weight is lumped half-and-half onto its ends,
-    exactly what `self_weight_loads` has always done and exact within the
-    truss idealisation. A RIGID member is a beam: its weight is a span
-    load, and handing it to `analyze` as one is what lets the solver put
-    the wL^2/12 fixed-end moments where they belong instead of discarding
-    them.
-
-    Splitting rather than replacing is deliberate: a fully pin-jointed
-    model comes out of this with an empty member_loads dict and therefore
-    solves to numbers identical to the ones it produced before span loads
-    existed at all.
-    """
-    nodal = {}
-    span = {}
-    for mi, m in enumerate(members):
-        _, _, _, L = member_vector(nodes, m)
-        if L < 1e-12:
+    panel_res = []
+    for pi, panel in enumerate(panels):
+        entry = panel_dofs.get(pi)
+        if entry is None:
+            _geom, why = splates.panel_geometry(nodes, panel)
+            panel_res.append({'valid': False, 'nodes': list(panel.get('nodes', [])),
+                              'reason': why or 'panel not solved'})
             continue
-        W = m['A'] * 1e-4 * L * unit_weight_kN_m3        # kN over the member
-        if m.get('conn', 'pin') == 'rigid':
-            span[mi] = (0.0, 0.0, -W / L)                # kN/m, downward
-        else:
-            half = W / 2.0
-            nodal[m['a']] = nodal.get(m['a'], 0.0) + half
-            nodal[m['b']] = nodal.get(m['b'], 0.0) + half
-    loads = [{'node': n, 'fx': 0.0, 'fy': 0.0, 'fz': -w}
-             for n, w in nodal.items()]
-    return loads, span
+        loop, pts, area, brow, G_Pa, t_m, gdof = entry
+        d = [U[g] for g in gdof]
+        gamma = sum(brow[i] * d[i] for i in range(len(brow)))
+        q_N_per_m = G_Pa * t_m * gamma
+        tau_Pa = G_Pa * gamma
+        # What the panel applies TO its nodes is the negative of its own
+        # action vector K*d, the same convention the member path uses.
+        # Getting this backwards leaves the panel self-equilibrating -- its
+        # corner forces still sum to zero, so an element-level check passes
+        # happily -- while every joint it touches is out of balance by twice
+        # the corner force.
+        cscale = -G_Pa * t_m * abs(area) * gamma
+        corner = [{'node': ni,
+                   'Fx': cscale * brow[3 * k] / 1e3,
+                   'Fy': cscale * brow[3 * k + 1] / 1e3,
+                   'Fz': cscale * brow[3 * k + 2] / 1e3}
+                  for k, ni in enumerate(loop)]
+        panel_res.append({
+            'valid': True, 'nodes': list(loop), 'pts_m': pts,
+            'area_m2': abs(area), 'gamma': gamma,
+            'q': q_N_per_m / 1e3, 'tau_MPa': tau_Pa / 1e6,
+            't_mm': t_m * 1000.0, 'G_GPa': G_Pa / 1e9,
+            'corner_forces': corner,
+        })
 
-
-def member_diagram(mr, n_samples=21):
-    """Shear and bending along ONE member, sampled from end a to end b.
-
-    Returns {'x': [...], 'Vy','Vz','My','Mz': [...], 'V','M': [...]} where
-    V and M are the resultant magnitudes. Units kN and kN*m, x in metres.
-
-    The end actions alone give a straight moment line, which is the whole
-    truth only when nothing is applied between the ends. With a span load
-    the line becomes a parabola, and the sag it adds is exactly the part a
-    report that drew only the two end values used to be missing. A pin
-    member carries no shear or moment at all, so it samples as zeros.
-    """
-    L = float(mr.get('length_m', 0.0) or 0.0)
-    n = max(2, int(n_samples))
-    xs = [L * i / (n - 1) for i in range(n)] if L > 0 else [0.0] * n
-    if mr.get('conn') != 'rigid':
-        zeros = [0.0] * n
-        return {'x': xs, 'Vy': list(zeros), 'Vz': list(zeros),
-                'My': list(zeros), 'Mz': list(zeros),
-                'V': list(zeros), 'M': list(zeros)}
-
-    wy = wz = 0.0
-    w_loc = mr.get('w_local')
-    if w_loc:
-        wy, wz = float(w_loc[1]), float(w_loc[2])
-    Vy_a, Vz_a = mr.get('Vy_a', 0.0), mr.get('Vz_a', 0.0)
-    My_a, Mz_a = mr.get('My_a', 0.0), mr.get('Mz_a', 0.0)
-
-    out = {'x': xs, 'Vy': [], 'Vz': [], 'My': [], 'Mz': [], 'V': [], 'M': []}
-    for x in xs:
-        vy = -(Vy_a + wy * x)
-        vz = -(Vz_a + wz * x)
-        mz = -(Mz_a + Vy_a * x + wy * x * x / 2.0)
-        my = -(My_a + Vz_a * x + wz * x * x / 2.0)
-        out['Vy'].append(vy)
-        out['Vz'].append(vz)
-        out['My'].append(my)
-        out['Mz'].append(mz)
-        out['V'].append(math.hypot(vy, vz))
-        out['M'].append(math.hypot(my, mz))
-    return out
-
-
-def member_peak_actions(mr, n_samples=21):
-    """The governing |V| and |M| anywhere along a member, and where.
-
-    What "maximum solicitation" means for a rod: not the larger of its two
-    end values, which is all the end actions show, but the peak over the
-    whole span -- which under a span load sits between the ends.
-    """
-    d = member_diagram(mr, n_samples)
-    if not d['M']:
-        return {'V_max': 0.0, 'M_max': 0.0, 'x_V': 0.0, 'x_M': 0.0}
-    iv = max(range(len(d['V'])), key=lambda i: d['V'][i])
-    im = max(range(len(d['M'])), key=lambda i: d['M'][i])
-    return {'V_max': d['V'][iv], 'M_max': d['M'][im],
-            'x_V': d['x'][iv], 'x_M': d['x'][im]}
+    return {'node_res': node_res, 'member_res': member_res,
+            'reactions': reactions, 'panel_res': panel_res}, None
 
 
 def node_moment_vectors(nodes, members, member_res):
@@ -905,3 +766,120 @@ def combine_loads(*load_lists):
             t['fy'] += ld.get('fy', 0.0)
             t['fz'] += ld.get('fz', 0.0)
     return list(totals.values())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SPAN LOADS AND ALONG-ROD DIAGRAMS
+#
+# These read a solved `member_res` entry and need nothing from the solver but
+# the keys it already publishes: 'conn', 'length_m', 'w_local' (the local
+# intensity actually on that member) and, for a rigid member, its end actions
+# Vy_a / Vz_a / My_a / Mz_a. They report; they do not solve.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def self_weight_split(nodes, members, unit_weight_kN_m3=DEFAULT_STEEL_UNIT_WEIGHT):
+    """Self weight as (nodal_loads, member_loads).
+
+    A pin member is a two-force member -- it carries no transverse load by
+    definition -- so its weight is lumped half-and-half onto its ends,
+    exactly what `self_weight_loads` has always done and exact within the
+    truss idealisation. A RIGID member is a beam: its weight is a span load,
+    and handing it to `analyze` as one is what lets the solver put the
+    wL^2/12 fixed-end moments where they belong instead of discarding them.
+    Lumping gets the end SHEARS right, which is why the two agree on a
+    pin-jointed truss, and silently drops the end MOMENTS -- on a
+    moment-transferring frame, most of the bending.
+
+    `member_loads` is returned in stereo_member_loads' own dict form
+    ({'member', 'w', 'dir', 'spread'}), NOT as a {index: (wx, wy, wz)} map.
+    There is one span-load mechanism in the solver and this feeds it, so a
+    rod load the user drew and a rod's own weight go through identical code;
+    a second, parallel representation was how the two could have disagreed.
+
+    Splitting rather than replacing is deliberate: a fully pin-jointed model
+    comes out of this with an empty member_loads list and therefore solves to
+    numbers identical to the ones it produced before span loads existed.
+    """
+    # Imported HERE, not at module scope: stereo_member_loads imports
+    # _local_axes and member_vector from this module, so a top-level import
+    # back the other way is a circular one and fails at startup. The
+    # dependency runs one way only -- that module is built on this one.
+    from apps.stereo import stereo_member_loads as sml
+
+    nodal = {}
+    span = []
+    for mi, m in enumerate(members):
+        _, _, _, L = member_vector(nodes, m)
+        if L < 1e-12:
+            continue
+        W = m['A'] * 1e-4 * L * unit_weight_kN_m3        # kN over the member
+        if m.get('conn', 'pin') == 'rigid':
+            # w is an intensity and always positive; 'dir' carries the sense.
+            span.append({'member': mi, 'w': W / L, 'dir': (0.0, 0.0, -1.0),
+                         'spread': sml.ALONG})
+        else:
+            half = W / 2.0
+            nodal[m['a']] = nodal.get(m['a'], 0.0) + half
+            nodal[m['b']] = nodal.get(m['b'], 0.0) + half
+    loads = [{'node': n, 'fx': 0.0, 'fy': 0.0, 'fz': -w}
+             for n, w in nodal.items()]
+    return loads, span
+
+
+def member_diagram(mr, n_samples=21):
+    """Shear and bending along ONE member, sampled from end a to end b.
+
+    Returns {'x': [...], 'Vy','Vz','My','Mz': [...], 'V','M': [...]} where
+    V and M are the resultant magnitudes. Units kN and kN*m, x in metres.
+
+    The end actions alone give a straight moment line, which is the whole
+    truth only when nothing is applied between the ends. With a span load
+    the line becomes a parabola, and the sag it adds is exactly the part a
+    report that drew only the two end values used to be missing. A pin
+    member carries no shear or moment at all, so it samples as zeros.
+    """
+    L = float(mr.get('length_m', 0.0) or 0.0)
+    n = max(2, int(n_samples))
+    xs = [L * i / (n - 1) for i in range(n)] if L > 0 else [0.0] * n
+    if mr.get('conn') != 'rigid':
+        zeros = [0.0] * n
+        return {'x': xs, 'Vy': list(zeros), 'Vz': list(zeros),
+                'My': list(zeros), 'Mz': list(zeros),
+                'V': list(zeros), 'M': list(zeros)}
+
+    wy = wz = 0.0
+    w_loc = mr.get('w_local')
+    if w_loc:
+        wy, wz = float(w_loc[1]), float(w_loc[2])
+    Vy_a, Vz_a = mr.get('Vy_a', 0.0), mr.get('Vz_a', 0.0)
+    My_a, Mz_a = mr.get('My_a', 0.0), mr.get('Mz_a', 0.0)
+
+    out = {'x': xs, 'Vy': [], 'Vz': [], 'My': [], 'Mz': [], 'V': [], 'M': []}
+    for x in xs:
+        vy = -(Vy_a + wy * x)
+        vz = -(Vz_a + wz * x)
+        mz = -(Mz_a + Vy_a * x + wy * x * x / 2.0)
+        my = -(My_a + Vz_a * x + wz * x * x / 2.0)
+        out['Vy'].append(vy)
+        out['Vz'].append(vz)
+        out['My'].append(my)
+        out['Mz'].append(mz)
+        out['V'].append(math.hypot(vy, vz))
+        out['M'].append(math.hypot(my, mz))
+    return out
+
+
+def member_peak_actions(mr, n_samples=21):
+    """The governing |V| and |M| anywhere along a member, and where.
+
+    What "maximum solicitation" means for a rod: not the larger of its two
+    end values, which is all the end actions show, but the peak over the
+    whole span -- which under a span load sits between the ends.
+    """
+    d = member_diagram(mr, n_samples)
+    if not d['M']:
+        return {'V_max': 0.0, 'M_max': 0.0, 'x_V': 0.0, 'x_M': 0.0}
+    iv = max(range(len(d['V'])), key=lambda i: d['V'][i])
+    im = max(range(len(d['M'])), key=lambda i: d['M'][i])
+    return {'V_max': d['V'][iv], 'M_max': d['M'][im],
+            'x_V': d['x'][iv], 'x_M': d['x'][im]}

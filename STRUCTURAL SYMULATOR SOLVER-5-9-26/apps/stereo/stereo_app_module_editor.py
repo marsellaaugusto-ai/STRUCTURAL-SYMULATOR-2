@@ -343,6 +343,78 @@ class StereoModuleEditorMixin:
             return (margin + (u - umin) * scale, size - margin - (v - vmin) * scale)
         return coords, to_screen, scale
 
+    # ── the pinned preview card ─────────────────────────────────────────────
+    MODULE_CARD_SIZE = 168
+
+    def _build_module_card(self, parent_canvas):
+        """A small always-visible module, parked in a corner of the main view.
+
+        The Module Editor used to be a 300 px column open whether or not
+        anyone was editing a module; now it is a mode, which means it is not
+        on screen while you are placing supports or loads. That lost
+        something real -- the module is what the whole grid is made of, and
+        seeing it while you work is worth more than the column cost.
+
+        So it comes back as a card: the same solid the editor draws, at a
+        fraction of the size and without the dimension callouts, pinned over
+        the canvas corner where it costs the model nothing.
+        """
+        size = self.MODULE_CARD_SIZE
+        self.module_card_canvas = tk.Canvas(parent_canvas, width=size, height=size,
+                                            bg='#fbfcfd', highlightthickness=1,
+                                            highlightbackground='#ccd4db',
+                                            cursor='fleur')
+        # Drag it to turn the module. Same handlers as the editor panel, so
+        # there is one module camera and no way for the two to disagree.
+        self.module_card_canvas.bind('<ButtonPress-1>', self._me3d_orbit_press)
+        self.module_card_canvas.bind('<B1-Motion>', self._me3d_orbit_motion)
+        self.module_card_canvas.bind('<ButtonRelease-1>', self._me3d_orbit_release)
+        self._module_card_window = None
+
+    def _place_module_card(self):
+        """Show or hide the card, and keep it in its corner as the window
+        resizes. Called from _draw, so it tracks every redraw."""
+        canvas = self.canvas
+        want = (bool(self.show_module_card.get())
+                and getattr(self, '_me_base', None) is not None
+                and getattr(self, 'module_card_canvas', None) is not None)
+        if not want:
+            canvas.delete('module_card')
+            self._module_card_window = None
+            return
+        size = self.MODULE_CARD_SIZE
+        x = canvas.winfo_width() - size - 16
+        # Directly under the view cube, in the same right-hand column: both
+        # are "how am I looking at this", and stacking them keeps that one
+        # question in one place instead of at opposite corners.
+        cube_h = self.view_cube.winfo_reqheight() if getattr(self, 'view_cube', None) else 0
+        y = 16 + cube_h + 10
+        # _draw clears the canvas wholesale, which destroys the window item
+        # along with everything else, so a remembered id goes stale every
+        # frame. Ask the canvas what is actually on it instead.
+        existing = canvas.find_withtag('module_card')
+        if existing:
+            self._module_card_window = existing[0]
+            canvas.coords(self._module_card_window, x, y)
+        else:
+            self._module_card_window = canvas.create_window(
+                x, y, window=self.module_card_canvas, anchor='nw', tags='module_card')
+        self._draw_module_card()
+
+    def _draw_module_card(self):
+        """Draw the BASE module into the card, whatever the editor itself is
+        currently showing -- the card is a reference, not a second editor."""
+        c = self.module_card_canvas
+        keep = self._me_role_id
+        try:
+            if self._me_base is not None:
+                self._me_role_id = ME_BASE_ROLE
+            self._me_render_3d(canvas=c, size=self.MODULE_CARD_SIZE, dims=False)
+        finally:
+            self._me_role_id = keep
+        c.create_text(8, 6, text='BASE MODULE', anchor='nw', fill='#78848e',
+                      font=('Helvetica', 7, 'bold'))
+
     def _me_render(self):
         c = self.me_canvas
         c.delete('all')
@@ -437,7 +509,23 @@ class StereoModuleEditorMixin:
             return
         self.me3d_azimuth = (az0 + dx * self.ME3D_DEG_PER_PX) % 360.0
         self.me3d_elevation = max(-89.0, min(89.0, el0 - dy * self.ME3D_DEG_PER_PX))
-        self._me_render_3d()
+        self._me_render_3d_everywhere()
+
+    def _me_render_3d_everywhere(self):
+        """Redraw the module in BOTH places it is shown.
+
+        The editor panel and the pinned card are two views of one solid, so
+        they share one camera (still entirely separate from the main canvas's
+        -- orbiting the model never moves the module, and vice versa).
+        Sharing means dragging either one turns the other, which is what you
+        want from two windows onto the same object; keeping two cameras would
+        mean the card silently disagreeing with the editor about which way
+        the module faces.
+        """
+        if getattr(self, 'me3d_canvas', None) is not None:
+            self._me_render_3d()
+        if self.canvas.find_withtag('module_card'):
+            self._draw_module_card()
 
     def _me3d_orbit_release(self, event):
         self._me3d_orbit_start = None
@@ -515,7 +603,7 @@ class StereoModuleEditorMixin:
         tx, ty = (d0[0] + d1[0]) / 2.0 + ox * 11, (d0[1] + d1[1]) / 2.0 + oy * 11
         c.create_text(tx, ty, text=text, fill=MODULE_DIM_COLOR, font=('Helvetica', 8))
 
-    def _me_render_3d(self):
+    def _me_render_3d(self, canvas=None, size=None, dims=True):
         """A true 3D rendering of the CURRENT module as the actual
         repeating POLYHEDRON it belongs to -- not just its own flat ring
         (a triangle or quad silhouette), but the ring's own edges plus
@@ -533,7 +621,13 @@ class StereoModuleEditorMixin:
         on the module's own centroid (ring + apex) so it always sits
         nicely in view, then this panel's own orbit camera (see
         _me3d_project) and ZoomCanvas's own pan/zoom."""
-        c = self.me3d_canvas
+        # `canvas`/`size`/`dims` let the SAME drawing serve two places: the
+        # editor's own 264 px panel with its full CAD callouts, and the small
+        # pinned preview card on the main canvas, which wants the solid but
+        # not the dimensions. Defaults keep the editor's behaviour exactly.
+        card = canvas is not None
+        c = canvas if card else self.me3d_canvas
+        size = size or MODULE_CANVAS_SIZE
         c.delete('all')
         cell_nodes = self._me3d_cell_nodes()
         if cell_nodes is None:
@@ -561,21 +655,27 @@ class StereoModuleEditorMixin:
         ys = [p[1] for p in all_proj]
         span = max(max(xs) - min(xs), max(ys) - min(ys), 1e-6)
 
-        size = MODULE_CANVAS_SIZE
-        inner_pad = 82   # extra room for the dimension callouts around the solid
+        # A card has no callouts around the solid, so it needs far less
+        # breathing room than the dimensioned panel does.
+        inner_pad = 82 if dims else 22
         fit_scale = (size - 2 * inner_pad) / span
 
-        def to_screen(px, py):
-            wx = px * fit_scale
-            wy = -py * fit_scale
-            return self.me3d_zc.w2s(wx, wy)
+        if card:
+            # no pan/zoom on a card: centre it in its own box and be done
+            def to_screen(px, py):
+                return (size / 2.0 + px * fit_scale, size / 2.0 - py * fit_scale)
+        else:
+            def to_screen(px, py):
+                wx = px * fit_scale
+                wy = -py * fit_scale
+                return self.me3d_zc.w2s(wx, wy)
 
-        cx0, cy0 = self.me3d_zc.w2s(0.0, 0.0)
+        cx0, cy0 = (size / 2.0, size / 2.0) if card else self.me3d_zc.w2s(0.0, 0.0)
         # re-centre the ZoomCanvas's own pan so (0, 0) (the module's own
         # centroid) sits in the middle of the panel rather than its
         # top-left corner, the same correction the main canvas's own
         # _reset_view applies for the same reason.
-        if not getattr(self, '_me3d_centered', False):
+        if not card and not getattr(self, '_me3d_centered', False):
             self.me3d_zc.pan_x += (size / 2.0 - cx0) / self.me3d_zc.zoom
             self.me3d_zc.pan_y += (size / 2.0 - cy0) / self.me3d_zc.zoom
             self._me3d_centered = True
@@ -633,6 +733,8 @@ class StereoModuleEditorMixin:
             c.create_text(px, py - 12, text=str(i), font=('Helvetica', 8, 'bold'),
                          fill=MODULE_RING_COLOR)
 
+        if not dims:
+            return
         # -- dimensions: real edge lengths/angle, computed from the
         # model's own coordinates -- two adjacent top-chord edges (enough
         # to show the module is regular or not, without labelling every

@@ -18,6 +18,10 @@ a few hundred lines and the name tells you where a shape lives:
   stereo_geometry_domes.py           round-plan shells and radial grid
                                      (dome, cone, dish, ellipsoid,
                                      sphere, circular flat grid)
+  stereo_geometry_surfaces.py        revolved and swept shells
+                                     (ruled hyperboloid, elliptic
+                                     hyperboloid, torus segment,
+                                     helicoid ramp)
   stereo_geometry_bridges.py         truss bridge
   stereo_geometry_addons.py          column and reinforcement beam
                                      (augment an existing mesh)
@@ -80,12 +84,19 @@ pin/rigid choice.
 # internal to the library: the tests build hand-made meshes with them, and
 # doing so through this facade is what keeps those tests independent of
 # which family module a helper happens to live in.
-from apps.stereo.stereo_geometry_core import ROUND, _NodeBank, _add_chords, _add_member
+from apps.stereo.stereo_geometry_core import (
+    ROUND, _NodeBank, _add_chords, _add_member, apply_domain_mask,
+)
 from apps.stereo.stereo_geometry_grids import (
-    flat_grid, hypar_shell, hip_roof_grid, groin_vault,
+    flat_grid, hypar_shell, hip_roof_grid, groin_vault, vierendeel_grid,
+    elliptic_paraboloid_shell, elliptic_hypar_shell, conoid_shell,
+    monkey_saddle_shell, wave_shell, billow_shell,
 )
 from apps.stereo.stereo_geometry_vaults import (
-    barrel_vault, parabolic_vault, elliptic_vault,
+    barrel_vault, parabolic_vault, elliptic_vault, catenary_vault,
+)
+from apps.stereo.stereo_geometry_surfaces import (
+    hyperboloid_tower, elliptic_hyperboloid, torus_segment, helicoid_ramp,
 )
 from apps.stereo.stereo_geometry_domes import (
     dome, cone_roof, paraboloid_dish, elliptic_dome, sphere_shell,
@@ -101,9 +112,14 @@ from apps.stereo.stereo_geometry_addons import (          # noqa: F401
     BEAM_DEPTH_CONSTANT, BEAM_DEPTH_PARABOLIC, BEAM_DEPTH_LAWS,
 )
 from apps.stereo.stereo_geometry_custom_surface import (
-    make_height_field_surface, make_parametric_surface,
+    make_height_field_surface, make_parametric_surface, make_domain_fn,
     custom_surface_grid, custom_surface_between, _domain_lattice,
     surface_summits, surfaces_cross,
+    custom_surface_lattice, LATTICE_TYPES, LATTICE_SINGLE,
+    LATTICE_SOS_OFFSET, LATTICE_SQ_ON_DIAG, LATTICE_DIAG_ON_DIAG,
+    LATTICE_ALIGNED, LATTICE_PATTERNS,
+    PATTERN_SQUARE, PATTERN_DIAGONAL, PATTERN_ISOMETRIC,
+    isometric_lattice, staggered_rows, _domain_to_xy,
 )
 from apps.stereo.stereo_geometry_cells import (
     find_cells, classify_cell_roles, cell_local_basis, cell_local_coords,
@@ -114,12 +130,20 @@ from apps.stereo.stereo_geometry_cells import (
 __all__ = [
     'ROUND', 'GENERATORS',
     'flat_grid', 'hypar_shell', 'hip_roof_grid', 'groin_vault',
-    'barrel_vault', 'parabolic_vault', 'elliptic_vault',
+    'elliptic_paraboloid_shell', 'elliptic_hypar_shell', 'conoid_shell',
+    'monkey_saddle_shell', 'wave_shell', 'billow_shell',
+    'barrel_vault', 'parabolic_vault', 'elliptic_vault', 'catenary_vault',
+    'hyperboloid_tower', 'elliptic_hyperboloid', 'torus_segment',
+    'helicoid_ramp',
     'dome', 'cone_roof', 'paraboloid_dish', 'elliptic_dome', 'sphere_shell',
     'circular_flat_grid', 'truss_bridge',
     'add_column', 'reinforcement_beam',
     'make_height_field_surface', 'make_parametric_surface',
+    'make_domain_fn', 'apply_domain_mask', 'vierendeel_grid',
     'custom_surface_grid', 'custom_surface_between', 'surface_summits',
+    'custom_surface_lattice', 'LATTICE_TYPES', 'LATTICE_ALIGNED',
+    'LATTICE_PATTERNS', 'PATTERN_SQUARE', 'PATTERN_DIAGONAL',
+    'PATTERN_ISOMETRIC', 'isometric_lattice', 'staggered_rows',
     'surfaces_cross',
     'find_cells', 'classify_cell_roles', 'cell_local_basis',
     'cell_local_coords', 'project_onto_unlocked_directions', 'move_role_node',
@@ -132,6 +156,17 @@ GENERATORS = {
     'hypar_shell': hypar_shell,
     'hip_roof_grid': hip_roof_grid,
     'groin_vault': groin_vault,
+    'elliptic_paraboloid_shell': elliptic_paraboloid_shell,
+    'elliptic_hypar_shell': elliptic_hypar_shell,
+    'conoid_shell': conoid_shell,
+    'monkey_saddle_shell': monkey_saddle_shell,
+    'wave_shell': wave_shell,
+    'billow_shell': billow_shell,
+    'catenary_vault': catenary_vault,
+    'hyperboloid_tower': hyperboloid_tower,
+    'elliptic_hyperboloid': elliptic_hyperboloid,
+    'torus_segment': torus_segment,
+    'helicoid_ramp': helicoid_ramp,
     'circular_flat_grid': circular_flat_grid,
     'barrel_vault': barrel_vault,
     'parabolic_vault': parabolic_vault,

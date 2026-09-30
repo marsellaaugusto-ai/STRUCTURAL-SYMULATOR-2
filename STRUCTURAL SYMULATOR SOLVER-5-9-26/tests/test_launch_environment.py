@@ -96,3 +96,123 @@ def test_the_vscode_folder_and_the_doctor_ship_in_the_zip():
     assert '.vscode/tasks.json' in shipped
     assert 'tools/doctor.py' in shipped
     assert 'REPORTS AND GUIDES/RUNNING_THE_APP.md' in shipped
+
+
+# ── the startup check ─────────────────────────────────────────────────────
+# Restored 2026-09-30 after a user reported "the zip extracts but nothing
+# happens when I run main.py". An earlier version of this check was removed
+# because it had been committed as the fix for the app not starting, which it
+# was not -- see the module docstring. Removing it threw out something that
+# was still useful: it was MISLABELLED, not useless. These tests describe what
+# it actually does, which is turn a missing library into a readable message.
+
+def test_this_interpreter_reports_no_problems():
+    """The suite is running, so tkinter, numpy and scipy are all here."""
+    assert main.environment_problems() == []
+
+
+def test_the_check_runs_BEFORE_the_imports_it_protects():
+    """The whole point, and easy to break by tidying the file.
+
+    main.py imports tkinter at module scope, so a check placed at the bottom
+    of the file never runs on the interpreter that needs it most -- the
+    process is already dead at the import line. The __main__ guard that calls
+    environment_problems() must appear ABOVE `import tkinter as tk`.
+    """
+    src = open(os.path.join(APP, 'main.py')).read()
+    guard = src.index("if __name__ == '__main__':")
+    tk_import = src.index('import tkinter as tk')
+    assert guard < tk_import, (
+        'the startup check sits below the tkinter import, so it cannot run '
+        'on an interpreter without tkinter -- the case it exists for')
+
+
+def test_a_missing_dependency_is_reported_with_its_fix(monkeypatch):
+    monkeypatch.setattr(main, 'HARD_DEPENDENCIES', (
+        ('a_module_that_is_not_installed', 'ghost>=1.0',
+         'nothing at all, it does not exist', None),))
+    problems = main.environment_problems()
+    assert len(problems) == 1
+    title, detail = problems[0]
+    assert 'a_module_that_is_not_installed' in title
+    body = ' '.join(detail)
+    assert 'ModuleNotFoundError' in body
+    assert 'ghost>=1.0' in body
+    assert sys.executable in body, 'pip for THIS interpreter, not bare "pip"'
+
+
+def test_a_dependency_that_is_present_is_not_reported(monkeypatch):
+    monkeypatch.setattr(main, 'HARD_DEPENDENCIES', (
+        ('json', 'json', 'it is in the standard library', None),))
+    assert main.environment_problems() == []
+
+
+def test_the_tkinter_entry_carries_platform_hints():
+    """tkinter is the one that catches people out, because it is not on PyPI
+    and `pip install tkinter` fails in a way that teaches nothing."""
+    entry = [e for e in main.HARD_DEPENDENCIES if e[0] == 'tkinter']
+    assert entry, 'tkinter must be checked -- it is imported at module scope'
+    _mod, pip_name, _why, hints = entry[0]
+    assert pip_name is None, 'tkinter is not a pip package'
+    assert hints and {'linux', 'darwin', 'win32'} <= set(hints)
+
+
+def test_an_old_python_is_refused(monkeypatch):
+    import collections
+    monkeypatch.setattr(main.sys, 'version_info',
+                        collections.namedtuple('v', 'major minor')(3, 6))
+    problems = main.environment_problems()
+    assert any('3.9' in t for t, _ in problems)
+
+
+def _record_dialogs(monkeypatch):
+    """Capture messagebox.showerror instead of letting it open.
+
+    These two tests were first written assuming "no display here", so the
+    dialog would fail fast and be swallowed. Under xvfb there IS a display:
+    the modal dialog opened and waited for a click that never came, and the
+    whole file hung for ten minutes at 0% CPU. Recording the call is also a
+    stronger test than "did not raise" -- it proves the message reaches the
+    user, which is the only reason these functions exist.
+    """
+    shown = []
+    monkeypatch.setattr('tkinter.messagebox.showerror',
+                        lambda title, text, **kw: shown.append((title, text)))
+    return shown
+
+
+def test_reporting_writes_to_stderr_and_to_a_window(capsys, monkeypatch):
+    """It runs when things are already broken, so it cannot add a failure of
+    its own -- and it must say so where a double-click user can see it."""
+    shown = _record_dialogs(monkeypatch)
+    text = main.report_problems([('something is missing', ['a detail line'])])
+    err = capsys.readouterr().err
+    assert 'something is missing' in err
+    assert 'a detail line' in err
+    assert 'cannot start' in err
+    assert sys.executable in text
+    assert shown, 'nothing was shown in a window'
+    assert 'something is missing' in shown[0][1]
+
+
+def test_reporting_never_raises_even_if_the_window_cannot_open(monkeypatch):
+    def broken(*_a, **_k):
+        raise RuntimeError('no display')
+    monkeypatch.setattr('tkinter.messagebox.showerror', broken)
+    text = main.report_problems([('x', ['y'])])
+    assert 'x' in text
+
+
+def test_a_startup_failure_is_shown_rather_than_vanishing(monkeypatch):
+    """Any exception while the tabs build must reach a dialog, not only a
+    console that a double-click launch has already closed."""
+    shown = _record_dialogs(monkeypatch)
+    try:
+        raise ValueError('a wheel came off')
+    except ValueError as exc:
+        main._show_startup_failure(exc)
+    assert shown, 'the failure never reached a window'
+    title, text = shown[0]
+    assert 'failed to start' in title
+    assert 'a wheel came off' in text
+    assert 'ValueError' in text

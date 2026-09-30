@@ -15,6 +15,108 @@ If it will not start, see REPORTS AND GUIDES/RUNNING_THE_APP.md, or run
 `python tools/doctor.py` with the same interpreter to check this one has
 tkinter, numpy and scipy.
 """
+# ── startup check ───────────────────────────────────────────────────────────
+# This runs BEFORE the imports below, and it exists for one narrow reason:
+# tkinter is imported at module scope here and numpy inside common.py, so an
+# interpreter missing either dies on an import line before any window exists.
+# From a terminal that is at least a traceback. From a double-click or an
+# editor's Run button the console holding it can close again immediately, and
+# the whole failure reads as "nothing happens when I open it".
+#
+# TO BE CLEAR ABOUT WHAT THIS IS NOT: an earlier version of this check was
+# committed as the fix for the app not starting. That was wrong. The app hung
+# with every library present, because of a Tkinter resize-event loop, and that
+# is fixed in common.py (FlowBar._schedule, WrapBar._schedule and
+# _on_toplevel_resize). This check does not prevent a single hang. It only
+# makes a genuinely missing library say so in a window that stays open.
+import os
+import sys
+
+MIN_PYTHON = (3, 9)
+
+# (module, pip name or None if it is not on PyPI, what it is needed for,
+#  {platform: how to get it} or None when pip is the whole answer)
+HARD_DEPENDENCIES = (
+    ('tkinter', None, 'the entire user interface -- every window and widget',
+     {'linux': 'sudo apt install python3-tk   (Debian/Ubuntu)\n'
+               '  or: sudo dnf install python3-tkinter   (Fedora)',
+      'darwin': 'brew install python-tk\n'
+                '  or use the python.org build, which bundles it',
+      'win32': 'rerun the Python installer, choose Modify, '
+               'and tick "tcl/tk and IDLE"'}),
+    ('numpy', 'numpy', 'every solver; common.py imports it at module scope',
+     None),
+    ('scipy', 'scipy', 'the sparse 3D solver and the cable-web convergence',
+     None),
+)
+
+
+def environment_problems():
+    """[(title, [detail lines])] for this interpreter -- empty when fine."""
+    problems = []
+    if sys.version_info < MIN_PYTHON:
+        problems.append((
+            'Python %d.%d or newer is required' % MIN_PYTHON,
+            ['This interpreter is Python %s' % sys.version.split()[0],
+             'at %s' % sys.executable]))
+    import importlib
+    for mod, pip_name, why, hints in HARD_DEPENDENCIES:
+        try:
+            importlib.import_module(mod)
+        except Exception as exc:
+            detail = ['%s: %s' % (type(exc).__name__, exc),
+                      'Needed for: %s' % why]
+            if pip_name:
+                detail.append('Install it into THIS interpreter:')
+                detail.append('  "%s" -m pip install %s'
+                              % (sys.executable, pip_name))
+            if hints:
+                detail.append('On this platform (%s):' % sys.platform)
+                detail.append('  %s' % hints.get(
+                    sys.platform,
+                    hints.get('linux', 'see your Python distribution')))
+            detail.append('Interpreter: %s' % sys.executable)
+            problems.append(('%s is missing' % mod, detail))
+    return problems
+
+
+def report_problems(problems):
+    """Say it on stderr, and in a window when there is any way to show one."""
+    lines = ['STRUCTURAL SYMULATOR SOLVER cannot start.', '']
+    for title, detail in problems:
+        lines.append(title)
+        lines.extend('    ' + d for d in detail)
+        lines.append('')
+    lines.append('See REPORTS AND GUIDES/RUNNING_THE_APP.md, or run:')
+    lines.append('  "%s" tools/doctor.py' % sys.executable)
+    text = '\n'.join(lines)
+    try:
+        sys.stderr.write(text + '\n')
+        sys.stderr.flush()
+    except Exception:
+        pass
+    # A message box only works when tkinter is the thing that is present.
+    # When tkinter is what is missing, stderr above is all there is.
+    try:
+        import tkinter as _tk
+        from tkinter import messagebox as _mb
+        _root = _tk.Tk()
+        _root.withdraw()
+        _mb.showerror('STRUCTURAL SYMULATOR SOLVER', text)
+        _root.destroy()
+    except Exception:
+        pass
+    return text
+
+
+# Only when run as a program. Importing main (tests/tools/appdiag.py builds the
+# window with main.App directly) must not check anything or exit.
+if __name__ == '__main__':
+    _problems = environment_problems()
+    if _problems:
+        report_problems(_problems)
+        raise SystemExit(1)
+
 import tkinter as tk
 from tkinter import ttk
 
@@ -133,8 +235,39 @@ def _fit_window_to_screen(root, want=(1440, 900), margin=(80, 120)):
         pass            # a size we could not set is not worth failing over
 
 
+def _show_startup_failure(exc):
+    """Put a traceback where a double-click user can actually read it.
+
+    Everything above has imported, so tkinter is present and a window is
+    possible. Without this, any exception while the tabs are being built
+    prints to a console that a double-click launch closes immediately, and
+    the app simply "does nothing" -- the single least diagnosable symptom
+    this program has.
+    """
+    import traceback
+    detail = traceback.format_exc()
+    try:
+        sys.stderr.write(detail)
+        sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        from tkinter import messagebox
+        messagebox.showerror(
+            'STRUCTURAL SYMULATOR SOLVER failed to start',
+            '%s: %s\n\n%s\n\nThe full traceback is above this dialog in the '
+            'terminal, and in REPORTS AND GUIDES/RUNNING_THE_APP.md there is '
+            'what to do about it.' % (type(exc).__name__, exc, detail[-1500:]))
+    except Exception:
+        pass
+
+
 if __name__ == '__main__':
     root = tk.Tk()
     _fit_window_to_screen(root)
-    App(root)
+    try:
+        App(root)
+    except Exception as exc:
+        _show_startup_failure(exc)
+        raise SystemExit(1)
     root.mainloop()

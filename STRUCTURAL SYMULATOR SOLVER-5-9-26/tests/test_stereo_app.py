@@ -9950,3 +9950,75 @@ class TestGroupedAndUngroupedModes:
                 walk(c)
         walk(app._mode_frames['groups'])
         assert 'Ungrouped' in radios and 'Grouped' in radios
+
+
+class TestGroupsThroughExcel:
+    """Export Excel, edit the Groups sheet, Import from Excel -- through the
+    app's own two buttons."""
+
+    def test_groups_survive_the_round_trip_and_an_edit_lands(
+            self, app, monkeypatch, tmp_path, dialogs):
+        import openpyxl
+        from apps.stereo import stereo_groups_excel as sge
+        names = iter(['Roof', 'Edge'])
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: next(names))
+        app.selected_nodes = set()
+        app.selected_members = set(range(0, 30))
+        app._group_new_from_selection()
+        app.selected_members = set(range(100, 110))
+        app._group_new_from_selection()
+        path = str(tmp_path / 'm.xlsx')
+        monkeypatch.setattr('apps.stereo.stereo_app_reports.filedialog'
+                            '.asksaveasfilename', lambda *a, **k: path)
+        monkeypatch.setattr('apps.stereo.stereo_app_reports.filedialog'
+                            '.askopenfilename', lambda *a, **k: path)
+        app._export_excel()
+
+        wb = openpyxl.load_workbook(path)
+        ws = wb[sge.SHEET]
+        hdr = next(r for r in ws.iter_rows() if r[0].value == 'id')
+        col = {c.value: c.column for c in hdr}
+        for r in ws.iter_rows(min_row=hdr[0].row + 1):
+            if r[1].value == 'Edge':
+                ws.cell(row=r[0].row, column=col['profile'], value='CHS 76.1x3.6')
+        wb.save(path)
+
+        app._generate(push_undo=False)            # a different model loaded
+        assert app.groups == []
+        app._import_excel()
+        assert [g['name'] for g in app.groups] == ['Roof', 'Edge']
+        assert app.groups[0]['members'] == set(range(30))
+        assert {app.members[i]['profile'] for i in range(100, 110)} == \
+            {'CHS 76.1x3.6'}
+        assert app.members[0]['profile'] != 'CHS 76.1x3.6'
+        assert any('2 group(s) read' in str(d) and 'CHS 76.1x3.6' in str(d)
+                   for d in dialogs)
+
+    def test_a_bad_groups_sheet_leaves_the_model_as_it_was(
+            self, app, monkeypatch, tmp_path, dialogs):
+        import openpyxl
+        from apps.stereo import stereo_groups_excel as sge
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: 'Roof')
+        app.selected_nodes = set()
+        app.selected_members = set(range(0, 30))
+        app._group_new_from_selection()
+        path = str(tmp_path / 'm.xlsx')
+        monkeypatch.setattr('apps.stereo.stereo_app_reports.filedialog'
+                            '.asksaveasfilename', lambda *a, **k: path)
+        monkeypatch.setattr('apps.stereo.stereo_app_reports.filedialog'
+                            '.askopenfilename', lambda *a, **k: path)
+        app._export_excel()
+        wb = openpyxl.load_workbook(path)
+        ws = wb[sge.SHEET]
+        hdr = next(r for r in ws.iter_rows() if r[0].value == 'id')
+        col = {c.value: c.column for c in hdr}
+        ws.cell(row=hdr[0].row + 1, column=col['rods'], value='0-5, 99999')
+        wb.save(path)
+        n_before, groups_before = len(app.members), [dict(g) for g in app.groups]
+        app._import_excel()
+        assert len(app.members) == n_before
+        assert [g['name'] for g in app.groups] == [g['name'] for g in groups_before]
+        assert any('Import failed' in str(d) and '99999' in str(d)
+                   for d in dialogs)

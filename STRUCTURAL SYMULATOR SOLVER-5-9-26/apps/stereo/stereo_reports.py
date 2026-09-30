@@ -345,13 +345,16 @@ DEFAULT_MAX_CALC_MEMBERS = 40
 
 def export_excel(nodes, members, loads, supports, results, path, checks=None,
                   meta=None, max_calc_members=DEFAULT_MAX_CALC_MEMBERS,
-                  profiles=None):
+                  profiles=None, groups=None):
     """Write a workbook with Nodes, Members, Loads, Supports, Results (if
     `results` is not None), Member Checks (if `checks` is not None) and a
     machine-parseable Model sheet. `meta` is an optional dict of free-text
     generator parameters (typology, span, etc.) written at the top of the
     Model sheet purely for a human reader's benefit; it is not required by
     `import_excel_model`.
+
+    `groups` (stereo_groups' list) adds the editable Groups sheet -- see
+    stereo_groups_excel -- which Import from Excel reads back.
 
     `max_calc_members` caps the Member Calculations sheet to the N most
     critical members (sorted by utilization desc), and defaults to
@@ -747,6 +750,11 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
                     start_type='num', start_value=0, start_color='70AD47',
                     mid_type='num', mid_value=0.7, mid_color='FFC000',
                     end_type='num', end_value=1.0, end_color='C00000'))
+
+    # ── Groups sheet (editable; read back by Import from Excel) ─────────────
+    if groups:
+        from apps.stereo import stereo_groups_excel as _sge
+        _sge.write_groups_sheet(wb, groups, members, checks=checks)
 
     # ── Model sheet (machine-parseable round-trip) ───────────────────────────
     _write_model_sheet(wb, nodes, members, loads, supports, meta,

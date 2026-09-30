@@ -483,6 +483,31 @@ Once made, it behaves as **one object**:
 - A rod leaves a locked group only while that group is open, so adding a
   selection to one branch can never silently empty another.
 
+**Editing groups in Excel.** *Export Excel* writes a **Groups** sheet, one
+row per group: id, name, parent, its own rods as ranges (`0-39, 45`), then
+profile, conn, E, A, I, J, Fy, Fu, K, r_gyr and c. Edit it and *Import from
+Excel*:
+
+- a **filled** cell sets that value on every rod of the row; a **blank** one
+  leaves each rod as it is. A cell is exported blank when the group's rods
+  disagree, and the *info: mixed* column says which;
+- a **profile** name (catalog, or a name from the Model sheet's profiles)
+  sets the whole section, and numbers you **changed** in the same row go on
+  top — numbers still as exported do not, so changing only the profile gives
+  the whole catalog section;
+- changing **I** without a new **c** drops the old catalog depth, which
+  belonged to the old section;
+- a row sets its **own** rods; a subgroup has its own row;
+- **rods** can be moved between rows, rows added or deleted — the groups
+  come back as the sheet says. A rod in two rows, a rod the model does not
+  have, a missing parent or a group nested in itself stops the import with
+  the reason, and the model is left as it was;
+- importing a workbook you did not edit changes nothing. Afterwards a box
+  lists every change the sheet made.
+
+Imports used to drop groups entirely; a workbook exported from a grouped
+model now comes back grouped.
+
 **Grouped and Ungrouped modes.** The Groups panel's *Mode* switch sets how
 the model is drawn. *Grouped* gives every top-level group its own pale tint
 — a halo under its rods, so force, utilisation and moment colours still

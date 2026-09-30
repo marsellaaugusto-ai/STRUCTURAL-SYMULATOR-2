@@ -168,7 +168,7 @@ class StereoReportsMixin:
                             self.supports,
                             self.results, path, checks=self.member_checks,
                             meta={'grid_family': self._model_name()},
-                            profiles=self.profiles)
+                            profiles=self.profiles, groups=self.groups)
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return
@@ -178,17 +178,27 @@ class StereoReportsMixin:
         path = filedialog.askopenfilename(filetypes=[('Excel workbook', '*.xlsx')])
         if not path:
             return
+        from apps.stereo import stereo_groups_excel as sge
         try:
             nodes, members, loads, supports, profiles = sr.import_excel_model(path)
+            # The Groups sheet, read BEFORE anything is replaced: a sheet
+            # that does not make sense (a rod in two groups, a parent that
+            # is not there) must leave the model as it was, not half-loaded.
+            # It also applies each group row's section to that group's rods.
+            groups, group_report = sge.import_groups(
+                path, members, dict(self.profiles, **(profiles or {})))
         except Exception as exc:
             messagebox.showerror('Import failed', str(exc))
             return
         self._push_undo('import excel')
         self._model_label = os.path.basename(path)
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
-        # The workbook carries no groups, so the old model's cannot stay: a
-        # group holds member INDICES, and these are different rods.
+        # The old model's groups cannot stay: a group holds member INDICES,
+        # and these are different rods. The workbook's own come in instead.
         self._drop_groups()
+        if groups:
+            self.groups = groups
+            self._refresh_group_list()
         if profiles:
             self.profiles.update(profiles)
         self._support_candidates = [s['node'] for s in supports]
@@ -207,6 +217,17 @@ class StereoReportsMixin:
         self.selected_members = set()
         self._refresh_profile_combo()
         self._refresh_all()
+        if groups:
+            lines = '\n'.join('  ' + ln for ln in group_report[:14])
+            more = len(group_report) - 14
+            messagebox.showinfo(
+                'Import from Excel',
+                '%d group(s) read from the Groups sheet.\n\n%s%s' % (
+                    len(groups),
+                    lines if group_report else
+                    '  No group row changed any rod -- the sections are as '
+                    'they were exported.',
+                    '\n  … and %d more' % more if more > 0 else ''))
 
     def _import_sketchup(self):
         path = filedialog.askopenfilename(
@@ -591,7 +612,7 @@ class StereoReportsMixin:
                     sr.export_excel(self.nodes, self.members, self._all_loads(),
                                    self.supports, self.results, path,
                                    checks=self.member_checks, meta=meta,
-                                   profiles=self.profiles)
+                                   profiles=self.profiles, groups=self.groups)
                 except Exception as exc:
                     messagebox.showerror('Export failed', str(exc), parent=win)
                     return

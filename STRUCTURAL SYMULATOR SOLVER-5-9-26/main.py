@@ -1,6 +1,6 @@
 """
 main.py — entry point for STRUCTURAL SYMULATOR SOLVER-5-9-26. Wires all app tabs (Truss, Beam, Arch, Cable,
-Cable Web, Perforated Beam) into one ttk.Notebook. Run this file to launch
+Cable Web, Perforated Beam, Stereo, Shell (RC)) into one ttk.Notebook. Run this file to launch
 the app:
 
     python main.py
@@ -23,6 +23,7 @@ from apps.cable.cable_app import CableApp
 from apps.cable_web.cable_web_app import CableWebApp
 from apps.perforated_beam.perforated_beam_app import PerforatedBeamApp
 from apps.stereo.stereo_app import StereoApp
+from apps.shell.shell_app import ShellApp
 
 class App:
     def __init__(self, root):
@@ -78,6 +79,7 @@ class App:
         cable_web_tab = tk.Frame(nb)
         perforated_beam_tab = tk.Frame(nb)
         stereo_tab = tk.Frame(nb)
+        shell_tab = tk.Frame(nb)
         nb.add(truss_tab, text='Truss')
         nb.add(beam_tab, text='Beam')
         nb.add(arch_tab, text='Arch')
@@ -85,6 +87,7 @@ class App:
         nb.add(cable_web_tab, text='Cable Web')
         nb.add(perforated_beam_tab, text='Perforated Beam')
         nb.add(stereo_tab, text='Stereo')
+        nb.add(shell_tab, text='Shell (RC)')
 
         TrussApp(truss_tab)
         beam_app = BeamApp(beam_tab)
@@ -98,6 +101,8 @@ class App:
         perforated_beam_app = PerforatedBeamApp(perforated_beam_tab)
         perforated_beam_app.pack(fill='both', expand=True)
         StereoApp(stereo_tab)
+        shell_app = ShellApp(shell_tab)
+        shell_app.pack(fill='both', expand=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

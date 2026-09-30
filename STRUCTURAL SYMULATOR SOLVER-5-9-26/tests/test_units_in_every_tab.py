@@ -155,7 +155,28 @@ def cable_web():
             pass
 
 
-ALL_TABS = ('truss', 'arch', 'cable', 'perforated', 'cable_web')
+@pytest.fixture
+def shell():
+    from apps.shell.shell_app import ShellApp
+    units.set_current('cirsoc')
+    root = _root()
+    app = ShellApp(root)
+    app.pack(fill='both', expand=True)
+    root.update()
+    app.analyze()
+    root.update()
+    try:
+        yield app, root
+    finally:
+        units.set_current('cirsoc')
+        app.stop_units()
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+
+ALL_TABS = ('truss', 'arch', 'cable', 'perforated', 'cable_web', 'shell')
 
 
 # ── the property every tab has to hold ───────────────────────────────────────

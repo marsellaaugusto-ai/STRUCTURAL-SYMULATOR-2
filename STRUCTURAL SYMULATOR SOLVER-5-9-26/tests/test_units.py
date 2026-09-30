@@ -99,6 +99,29 @@ def test_aisc_section_properties():
     assert _close(s.to_si('inertia', 1.0), 0.0254 ** 4)           # 1 in^4
 
 
+def test_shell_quantities_si():
+    """The four quantities added for the Shell tab, SI side."""
+    cirsoc, csa = units.SYSTEMS['cirsoc'], units.SYSTEMS['csa']
+    assert _close(cirsoc.from_si('area_load', 1000.0), 1.0)           # 1 kN/m²
+    assert _close(cirsoc.from_si('moment_per_length', 1000.0), 1.0)   # 1 kN·m/m
+    assert _close(cirsoc.from_si('steel_per_length', 1e-4), 1.0)      # 1 cm²/m
+    assert _close(csa.from_si('steel_per_length', 1e-6), 1.0)         # 1 mm²/m
+    assert _close(cirsoc.from_si('unit_weight', 25000.0), 25.0)       # concrete
+
+
+def test_shell_quantities_us_customary_against_published_equivalents():
+    """Pinned against published equivalents, not against the module:
+    1 psf = 47.880 259 Pa, 1 pcf = 157.087 5 N/m³, 1 in²/ft = 2116.67 mm²/m,
+    1 kip·ft/ft = 4.448 222 kN·m/m."""
+    s = units.SYSTEMS['aisc']
+    assert _close(s.to_si('area_load', 1.0), 47.880258980, tol=1e-8)
+    assert _close(s.to_si('unit_weight', 1.0), 157.08746384, tol=1e-8)
+    assert _close(s.to_si('steel_per_length', 1.0), 2116.6666667e-6, tol=1e-8)
+    assert _close(s.to_si('moment_per_length', 1.0), 4448.2216152605)
+    # 150 pcf normal-weight concrete is about 23.6 kN/m³
+    assert abs(s.to_si('unit_weight', 150.0) / 1e3 - 23.56) < 0.01
+
+
 # -------------------------------------------------------------- round trips
 
 @pytest.mark.parametrize('key', list(units.SYSTEMS))

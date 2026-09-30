@@ -1,7 +1,16 @@
 # Stereo Roadmap v2 — Full Account of Execution
 
-**Written** 2026-09-28. **Covers** everything done since the Stereo Roadmap v2 began to be
-executed (2026-09-18 onward), plus the shared history it built on.
+**Written** 2026-09-28, **extended 2026-09-30** with §12 and the corrections it forced.
+**Covers** everything done since the Stereo Roadmap v2 began to be executed (2026-09-18
+onward), plus the shared history it built on.
+
+> **What changed on 2026-09-30.** The two branches this document was written to help you
+> reconcile **have now been merged** (`ad79a37`), and the merge turned out to delete UI
+> that the surviving code still called — a class of damage no failing test fully reported.
+> §12 is the account of that: what went missing, the `ast`-against-a-live-instance method
+> that found all of it, and the two features that were unreachable from the keyboard with
+> a green suite. §9.1 is **corrected**: the theory it advances was wrong. §9.2b is a new
+> gap found on the way. If you are reading this to fix something, read §1, §4 and §12.
 
 **Who this is for.** Someone picking this work up cold, with an LLM, who needs to fix the
 launch bug and reconcile two divergent versions of the app. It is written to remove
@@ -12,15 +21,23 @@ recorded too — the wrong turns are the most useful part of a handoff.
 **How to read it.** Sections 1–3 are what you must know before touching anything.
 Section 4 is the bug that stops the app launching, with a reproduction you can run.
 Sections 5–8 are the history and the technical inventory. Sections 9–11 are the open
-problems and what I would do next.
+problems and what I would do next. Section 12 is the merge and its aftermath, written
+last and the most current thing here; 12.7 collects the environment traps that cost the
+most time.
 
 ---
 
-## 1. The single most important fact: there are TWO versions, and they have forked
+## 1. The single most important fact: there were TWO versions, and they forked
 
-There is not one line of development. There are two sibling branches that split on
-2026-09-18 and never rejoined. **Most confusion about this project comes from not knowing
-which one you are looking at.**
+There was not one line of development. There are two sibling branches that split on
+2026-09-18 and ran apart for ten days. **Most confusion about this project comes from not
+knowing which one you are looking at** — and that still applies to every zip, report and
+screenshot produced before 2026-09-30, which is most of them.
+
+**They have since been merged** into `claude/stereo-structure-calculator-lqgosu` at
+`ad79a37`, with the UI-rebuild side imported first at `501b75a`. The fork below is
+therefore history, but you need it to read anything dated earlier, and §12 cannot be
+understood without it.
 
 ```
                                    aa7fb91  2026-09-18
@@ -632,7 +649,14 @@ count from `sr.plan_sheets(...)` so they track the planner instead of a frozen n
 
 ## 9. Open problems
 
-### 9.1 Two tests currently failing on `stereo-structure-calculator-lqgosu`
+### 9.1 RESOLVED — the two sheet-chooser tests (theory below was wrong)
+
+> **Read this box before the rest of 9.1.** Both tests pass. The diagnosis written here
+> at the time — a grab/lifecycle problem from `969be84` — was **never confirmed and is
+> not what was happening**. They were collateral from nine other tests aborting earlier
+> in the same file against a session-scoped `tk_root`; fixing those (§12.2) fixed these,
+> with no change to the dialog at all. §12.6 has the evidence. The original text is kept
+> below only so the wrong turn is on the record.
 
 Full suite, 2026-09-28: **2 failed, 2379 passed in 4477.69 s (1:14:37)**.
 
@@ -645,6 +669,8 @@ Both are in the sheet-chooser tests I added, and both are almost certainly fallo
 grab/lifecycle change in `969be84` (the fix for §8.3) — the dialog is now destroyed in a
 `finally`, so a test that inspects it after `wait_window` sees a dead widget. **Not yet
 diagnosed.** Fix these during the merge, not after.
+
+*(End of the superseded text. The dialog was never touched; see §12.6.)*
 
 ### 9.2 Known gaps, stated plainly
 
@@ -659,6 +685,38 @@ diagnosed.** Fix these during the merge, not after.
   an envelope sheet, a node detail sheet, a cover sheet, colour-blind-safe ramps.
 - One open question never answered: whether to drop the "longest bar" `L / n` line from the
   deformed sheet's panel now that a second `L / n` over the span also appears there.
+
+### 9.2b Catalog profiles never reach the real section modulus (found 2026-09-30)
+
+`stereo_checks.elastic_section_modulus_cm3` computes `S = I / c` and its docstring says
+`c_cm` "is present when the section came from the profile catalog, where it is half the
+real depth", falling back otherwise to an equivalent thin-walled round tube
+(`c = r_gyr * sqrt(2)`). **Nothing ever stores `c_cm`, so that branch has never run.**
+Two links are missing:
+
+1. `_open_catalog_picker` builds `self.profiles[name]` from `sp.section_to_props(...)`,
+   which *does* return `c_cm`, but copies only
+   `E, A, I, J, Fy, Fu, r_gyr, K` into the profile dict.
+2. `_assign_profile_to_selection` (and `_apply_sections`) copy that same key list onto
+   the members, so even a profile carrying `c_cm` would not pass it on.
+
+Measured over the 12 catalog sections that carry a depth, `S_tube / S_real`:
+
+| section | ratio |
+|---|---|
+| HEA 100 / 120 / 140 | 0.83 / 0.82 / 0.82 |
+| HEB 100 / 120 / 140 | 0.85 / 0.84 / 0.83 |
+| IPE 80 / 100 / 120 | 0.87 / 0.87 / 0.87 |
+| UPN 80 / 100 / 120 | 0.91 / 0.90 / 0.91 |
+
+Every ratio is **below 1**, so the bending check understates `S` by 9–18% and reports
+members weaker, and utilisations higher, than they are. It is therefore **conservative in
+every case and never optimistic** — which is why it was left alone rather than fixed on
+the eve of a presentation. Add `'c_cm': props.get('c_cm')` at (1) and `'c_cm'` to the key
+tuples at (2) when you want real geometry in the H1.1 and flexure checks. Expect
+utilisations to drop by roughly a tenth on I, H and U profiles, and not to move at all on
+tubes and angles, which have no depth in the catalog and for which the round-tube
+fallback is the right idealisation anyway.
 
 ### 9.3 Risks to check after merging
 
@@ -725,6 +783,202 @@ apps/stereo/stereo_app_reports.py      the export dialogs and sheet chooser
 REPORTS AND GUIDES/MANIFESTO.md        the house rules the code cites (§3c matters)
 REPORTS AND GUIDES/STEREO_FEATURES.md  feature list (co-modified — read both versions)
 ```
+
+---
+
+---
+
+## 12. The merge, and what it quietly deleted
+
+`claude/stereo-ui-rebuild` (the Shell/UI-rebuild side, the basis of
+`structural_simulator_shell_domain.zip`) and
+`claude/stereo-structure-calculator-lqgosu` (the analysis/report side) forked at
+`aa7fb91` and were merged at `ad79a37`. Thirteen files had been changed by both.
+
+**The mistake to understand before touching anything.** For each conflicted file the
+merge picked one side as the base and folded the other's additions in. For
+`apps/stereo/stereo_app_panels.py` the base was the UI-rebuild side, because that side
+carries the **mode rail** — the nine-item strip (`MODES` in `stereo_app_shell.py`) that
+shows one mode's controls at a time, replacing the old single scrolling sidebar. That was
+the right call for the shell. But the old sidebar had also been the only place that
+*built* several widgets from the analysis round, and the view and model mixins were
+resolved to the **superset**, so they kept calling into widgets that no longer got built.
+
+The result is the failure mode worth naming, because a green-looking app hides it: a
+handler that reads a widget which was never created raises `AttributeError` only when the
+event actually fires. Hovering the 3D canvas and pressing an arrow key both did that.
+
+### 12.1 How to find all of it, not just what the tests name
+
+Twenty-one tests failed, but the tests were not the measure — several losses had no test
+at all. What found everything was an `ast` walk over `apps/stereo/stereo_app*.py`
+collecting every `self.<name>` **read**, checked against a **live** `StereoApp`:
+
+```python
+import ast, glob, tkinter as tk
+from apps.stereo.stereo_app import StereoApp
+
+reads = {}
+for path in sorted(glob.glob('apps/stereo/stereo_app*.py')):
+    for n in ast.walk(ast.parse(open(path).read(), path)):
+        if (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+                and n.value.id == 'self' and isinstance(n.ctx, ast.Load)):
+            reads.setdefault(n.attr, set()).add('%s:%d' % (path, n.lineno))
+
+root = tk.Tk(); root.geometry('1500x950')
+app = StereoApp(root)
+for _ in range(60): root.update()
+live = set(dir(app)) | set(vars(app))
+for a in sorted(a for a in reads if a not in live):
+    print(a, sorted(reads[a])[:4])
+```
+
+Run it under `xvfb-run -a -s "-screen 0 1600x1000x24" /usr/bin/python3.12`. Two notes
+that cost time:
+
+* Restrict the glob to `stereo_app*.py`. Over the whole package it also walks
+  `stereo_profiles.py` and `stereo_reports.py`, whose `self.bf`, `self.tw`, `self.lab`,
+  `self.x0` belong to *other* classes — pure noise, because the walk does not know which
+  class a method is in.
+* `camera_scale` and `camera_note` show up as false positives: they are created and
+  `pack()`ed inside `_fill_display_popover`, so the read is two lines after the write.
+  Anything created inside a method that only runs when a popover opens will look missing.
+
+It reported **12** dangling reads. After the repair it reports 0 (bar those two).
+
+### 12.2 The twelve, and what each one was
+
+| attribute | belonged to | resolution |
+|---|---|---|
+| `_status_var` (6 sites) | the analysis side's own status bar | **rewired, not rebuilt** — the merged shell has one status bar (`status_var` + `status_label`, written through `_set_status(text, kind)`); the merge's own rewritten tests already expected it |
+| `_axis_extend_frame`, `_axis_dir_label`, `_axis_len_entry`, `_axis_len_var` | "extend a rod along an axis" | rebuilt as `_build_axis_extend_strip`, now in the **build** mode |
+| `chord_profile_var`, `web_profile_var` | the Profile row in each section panel | rebuilt in `_build_section_panel` |
+| `profile_combo` | assign/select-same row in the selection panel | rebuilt in `_build_selection_panel` |
+| `dist_w_var`, `dist_dir_var` | `_apply_dist_load` | **deleted** — see 12.4 |
+
+Four whole methods had gone with the sidebar and had to come back (~240 lines):
+`_refresh_section_profile_combo`, `_on_section_profile_selected`, `_open_catalog_picker`,
+`_open_profile_manager`. Nothing in the package referenced them any more, so the
+attribute walk could not see them — they were found by diffing the pre-merge
+`stereo_app_panels.py` method list against the merged one:
+
+```bash
+git show '969be84:STRUCTURAL SYMULATOR SOLVER-5-9-26/apps/stereo/stereo_app_panels.py' \
+  | grep -n '^    def '
+grep -n '^    def ' apps/stereo/stereo_app_panels.py
+```
+
+Do this for **every** file the merge resolved to one side. It is the only way to see a
+feature that left no caller behind.
+
+### 12.3 The two losses no failing test reported
+
+This is the part to take seriously if you are asked whether the suite proves anything.
+
+Every test in `TestKeyboardShortcuts` calls the handler directly —
+`app._shortcut_generate()`, `app._shortcut_view_xy()`. All of them passed while the
+canvas was bound to **none** of them. The old sidebar builder had carried the `bind()`
+calls; the merged `_build_canvas` had kept only the mouse ones and Delete/BackSpace. So:
+
+* the six arrow keys, `<Escape>`, `g`/`G`, `a`/`A`, `f`/`F` and `1`/`2`/`3` were
+  unreachable from the keyboard;
+* `<Motion>` was bound to `_on_canvas_hover` (the footprint-disc tool, which returns on
+  its first line unless that tool is armed) **instead of** `_on_mouse_motion` (the snap).
+  Hovering found no node, highlighted nothing and wrote no coordinates.
+
+Compare the two binding blocks mechanically rather than by eye:
+
+```bash
+A='STRUCTURAL SYMULATOR SOLVER-5-9-26/apps/stereo/stereo_app_panels.py'
+git show "969be84:$A" | grep -oE "canvas\.bind\('[^']*', *self\.[A-Za-z_]+" | sort > /tmp/mine
+grep -oE "canvas\.bind\('[^']*', *self\.[A-Za-z_]+" "$A" | sort > /tmp/merged
+comm -23 /tmp/mine /tmp/merged     # in the old side, missing from the merge
+```
+
+Both are fixed, `<Motion>` with `add='+'` so the disc hover and the snap both run.
+`TestTheShortcutsAreActuallyWiredToTheCanvas` now covers the wiring by generating the
+events (`canvas.event_generate('<KeyPress-1>', when='now')`), which is the only kind of
+test that would have caught this.
+
+One design consequence of the rail: the axis-extend length box used to sit under the
+selection panel, visible at all times. The rail shows one mode at a time, so an arrow key
+pressed while in any other mode armed the tool with its only input off-screen. The strip
+now lives in the **build** panel and `_on_axis_key` calls `_set_mode('build')`.
+
+### 12.4 One deliberate deletion
+
+`_apply_dist_load` (analysis side) converted a uniform line load on the selected members
+into **end forces only**, `w·L/2` at each node. The rod itself then carried nothing, so
+its shear was constant along it and there was no shear gradient to draw. The UI-rebuild
+side's `_apply_rod_load` carries a real **span load**, with the ALONG / PROJECTED choice
+that matters for snow (a sloping rod picks up what falls on its *plan* length). It is
+strictly better, and `_apply_dist_load` was reachable from nothing but its own two tests.
+It was deleted, with a comment at the site saying so, rather than given a second panel
+that would have shipped two "distributed load" groups doing different arithmetic.
+
+`TestSimpleAdvancedToggle` went the same way at the merge itself, for the same reason: the
+rail shows one mode's controls by construction, so a Simple/Advanced toggle over a single
+sidebar had nothing left to hide.
+
+### 12.5 The dependency preflight, removed
+
+`main.py` briefly carried an `environment_problems()` preflight and `HARD_DEPENDENCIES`,
+committed in `214a8ce` under the message "Fix the launch crash". **That was the wrong
+diagnosis** and it is worth being blunt about it in a document meant to save guesswork:
+the libraries were installed all along. The cause was the Tkinter resize loop of §4.
+The preflight is gone from `main.py`; `tools/doctor.py` survives as a standalone check a
+user can run by hand, which is genuinely useful and was never the fix.
+`tests/test_launch_preflight.py` is now `tests/test_launch_environment.py`: the seven
+tests for the preflight went with it, the six covering the doctor, the `.vscode` launch
+configurations and what ships in the zip stay, and the module docstring records the wrong
+turn so nobody re-derives it.
+
+### 12.6 The two failures that were not really failures
+
+Two `TestPdfSheetChooser` tests failed in the full run and **passed when run alone or as
+their own class**. They are the only two in that class that drive the real dialog instead
+of replacing `_pdf_sheet_dialog` with a lambda, so the obvious reading was order-dependent
+state, and a plausible-sounding theory was easy to construct (a leaked Tk `grab`, since
+`_pdf_sheet_dialog` calls `win.grab_set()` and there is a test in the file specifically
+about a leaked grab hanging a whole run).
+
+That theory was never tested, because the file was re-run after the repairs above and the
+answer came out plainly:
+
+```
+FAILED tests/test_stereo_app.py::test_no_panel_asks_for_more_width_than_the_panel_has[section]
+1 failed, 683 passed in 2607.98s (0:43:27)
+```
+
+Both chooser tests passed. They had been **collateral from the `AttributeError` cascade**
+earlier in the same file: six `TestSnapAndCoordinateDisplay` tests and three
+`test_axis_extend_*` tests aborting part-way through their fixtures, against a
+**session-scoped** `tk_root`, left residue that the two dialog-driving tests were the
+first to trip over. Fix the dangling attributes and the chooser tests fix themselves.
+
+The lesson for anyone reading a red suite on this tree: **fix the earliest failures first
+and re-run before theorising about the later ones.** Nine aborted tests sharing one Tk
+root produced two failures 250 tests further down with no causal link visible in either
+traceback.
+
+### 12.7 Two traps in this environment that cost real time
+
+* **`pkill -f '<pattern>'` kills your own shell** whenever the pattern also appears in the
+  shell's command line — which it does, because the shell is running the command that
+  contains the pattern. It happened twice. Kill by PID instead.
+* The same self-match breaks a **watcher** built on `pgrep -f`: a loop that waits for
+  `pgrep -f "test_cable_web_diagnosis"` to come back empty never finishes, because the
+  watcher's own command line matches. Watch a PID (`kill -0 "$PID"`) instead.
+* `pytest -q` redirected to a file is **block-buffered**, so the `[ nn%]` in the log lags
+  reality by up to a 4 KB block. A run that looks stuck at 84% usually is not. To find
+  which test is actually running, count the progress characters and index into
+  `pytest --collect-only -q`, remembering to offset by any tests added since the run
+  started.
+* **Timing tests cannot be measured under contention.** `test_at_rest_preview_does_not_
+  block_the_main_thread` asserts `call_seconds < 5.0`; it also drives a multi-threaded
+  scipy solve that took 571 s of CPU in 195 s of wall clock. Run two suites at once on
+  four cores and it fails for no reason at all. The final gate run must have the machine
+  to itself, or you will chase failures that are not there.
 
 ---
 

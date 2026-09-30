@@ -22,6 +22,7 @@ folder of the same name holding everything else.
 import argparse
 import os
 import sys
+import time
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -29,7 +30,35 @@ APP = os.path.dirname(HERE)
 
 PLUGIN_DIR = os.path.join(APP, 'sketchup_plugin')
 PLUGIN_NAME = 'coordinate_coordinator_truss_app_amac'
-RBZ_NAME = 'CoordinateCoordinatorTrussAppAMAC.rbz'
+# The delivered archives carry the version and the moment they were built,
+# so a zip sitting in a downloads folder can be identified without opening
+# it. APP_VERSION is the ONE place the number lives -- do not spell it into a
+# filename anywhere else. The series continues the repo's own history: the
+# last numbered archive was structural_simulator_v21_moment_arrows.zip, so
+# the first dated build is v22. Bump this when you hand out a new one.
+APP_VERSION = 22
+
+
+def build_stamp():
+    """`v<APP_VERSION>_2026-09-30_0415` -- version, date, 24-hour local time.
+
+    Minutes, not seconds: two builds inside one minute are the same delivery
+    as far as anyone receiving it is concerned, and a name you can read aloud
+    is worth more than that last digit of precision.
+    """
+    return 'v%d_%s' % (APP_VERSION, time.strftime('%Y-%m-%d_%H%M'))
+
+
+def stamped(base, ext, stamp=None):
+    """`structural_simulator_app` + `.zip` -> `structural_simulator_app_<stamp>.zip`"""
+    return '%s_%s%s' % (base, stamp or build_stamp(), ext)
+
+
+# The loader inside the .rbz must keep its fixed name, and so must the folder
+# beside it; only the ARCHIVE filename is stamped. SketchUp cares about the
+# extension and the layout within, never what the file is called.
+RBZ_BASE = 'CoordinateCoordinatorTrussAppAMAC'
+RBZ_NAME = RBZ_BASE + '.rbz'      # the name inside the app archive, unstamped
 
 # Files the loader/main require by name. If one of these is not in the
 # archive the extension is broken on load, so the build fails loudly
@@ -48,7 +77,8 @@ REQUIRED_RB = (
 # What belongs in the app archive. Everything else under the app root is
 # either generated (caches), an output someone happened to leave behind, or
 # an archive of its own.
-ZIP_NAME = 'structural_simulator_app.zip'
+ZIP_BASE = 'structural_simulator_app'
+ZIP_NAME = ZIP_BASE + '.zip'     # unstamped: what the required-file check names
 ZIP_INCLUDE_DIRS = ('apps', 'tests', 'sketchup_plugin', 'tools',
                     'REPORTS AND GUIDES',
                     # ships deliberately: launch.json is what makes F5 run
@@ -69,6 +99,25 @@ ZIP_INCLUDE_FILES = ('main.py', 'common.py', 'cirsoc_301.py', 'units.py',
 ZIP_SKIP_DIRS = {'__pycache__', '.pytest_cache', '.git', '.idea',
                  'node_modules', '.mypy_cache', '.ruff_cache'}
 ZIP_SKIP_SUFFIX = ('.pyc', '.pyo', '.pyd', '.so', '.orig', '.rej', '.swp')
+
+
+
+def prune_older(base, ext, keep):
+    """Delete this base's earlier stamped archives, keeping `keep`.
+
+    The working tree holds ONE app archive and one stamped extension, so the
+    folder does not silently fill with 10 MB files. Git history keeps every
+    blob that was ever committed regardless -- this keeps the directory
+    readable, it does not shrink the repository.
+    """
+    import glob as _glob
+    for old in _glob.glob(os.path.join(APP, f'{base}_v*{ext}')):
+        if os.path.abspath(old) != os.path.abspath(keep):
+            try:
+                os.remove(old)
+                print(f'  removed previous {os.path.basename(old)}')
+            except OSError as exc:
+                print(f'  could not remove {old}: {exc}')
 
 
 def plugin_files():
@@ -99,7 +148,8 @@ def build_rbz(dest=None, check_only=False):
 
     checked = ruby_syntax_check(files)
 
-    dest = dest or os.path.join(APP, RBZ_NAME)
+    stamp = build_stamp()
+    dest = dest or os.path.join(APP, stamped(RBZ_BASE, '.rbz', stamp))
     if check_only:
         print(f'rbz would hold {len(files)} file(s)'
               + (f'; ruby -c passed on {checked}' if checked else
@@ -112,7 +162,15 @@ def build_rbz(dest=None, check_only=False):
         for name, disk in files:
             z.write(disk, name)
     verify_rbz(dest)
-    print(f'{RBZ_NAME}: {len(files)} file(s), '
+    # The app archive carries the extension under its canonical name, and
+    # that is also the name SketchUp's documentation and every earlier report
+    # refer to, so the unstamped copy is written too. Same bytes, 22 KB.
+    canonical = os.path.join(APP, RBZ_NAME)
+    if os.path.abspath(canonical) != os.path.abspath(dest):
+        import shutil
+        shutil.copy2(dest, canonical)
+    prune_older(RBZ_BASE, '.rbz', dest)
+    print(f'{os.path.basename(dest)}: {len(files)} file(s), '
           f'{os.path.getsize(dest):,} bytes -> {dest}')
     return dest, files
 
@@ -210,9 +268,10 @@ def build_zip(dest=None, check_only=False):
         if must not in names:
             raise SystemExit(f'app archive would be missing {must}')
 
-    dest = dest or os.path.join(APP, ZIP_NAME)
+    dest = dest or os.path.join(APP, stamped(ZIP_BASE, '.zip'))
     if check_only:
-        print(f'zip would hold {len(files)} file(s)')
+        print(f'zip would hold {len(files)} file(s) -> '
+              f'{os.path.basename(dest)}')
         return dest, files
 
     root = os.path.basename(APP)
@@ -223,7 +282,8 @@ def build_zip(dest=None, check_only=False):
         bad = z.testzip()
         if bad is not None:
             raise SystemExit(f'{dest}: corrupt entry {bad}')
-    print(f'{ZIP_NAME}: {len(files)} file(s), '
+    prune_older(ZIP_BASE, '.zip', dest)
+    print(f'{os.path.basename(dest)}: {len(files)} file(s), '
           f'{os.path.getsize(dest):,} bytes -> {dest}')
     return dest, files
 

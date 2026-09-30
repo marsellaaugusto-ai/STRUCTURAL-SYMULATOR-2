@@ -7344,7 +7344,18 @@ class TestTheShortcutsAreActuallyWiredToTheCanvas:
     """
 
     def _press(self, app, seq, **kw):
-        app.canvas.focus_set()
+        """focus_FORCE, not focus_set: a key event is delivered to whichever
+        widget holds the focus and then travels up its bindtags, so after a
+        few hundred earlier tests have left the focus on some entry of their
+        own, focus_set only *requests* it and the keypress goes elsewhere.
+        These five tests passed alone and failed in the full suite for
+        exactly that reason. The assert makes a future focus problem say so
+        instead of surfacing as a state assertion that looks like the
+        binding is gone."""
+        app.canvas.focus_force()
+        app.root.update()
+        assert app.root.focus_get() is app.canvas, (
+            'canvas did not take focus, so %s was never delivered' % seq)
         app.canvas.event_generate(seq, when='now', **kw)
         app.root.update_idletasks()
         app.root.update()

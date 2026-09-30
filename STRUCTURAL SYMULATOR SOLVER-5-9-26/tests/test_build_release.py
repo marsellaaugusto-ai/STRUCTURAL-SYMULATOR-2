@@ -132,3 +132,59 @@ def test_build_zip_produces_a_readable_archive_rooted_in_one_folder(tmp_path):
         assert len(roots) == 1, f'the archive must unpack into ONE folder: {roots}'
         root = roots.pop()
         assert f'{root}/main.py' in z.namelist()
+
+
+# ── how the delivered archives are named ──────────────────────────────────
+# Asked for on 2026-09-30: every archive handed out carries its version and
+# the moment it was built, so a zip sitting in a downloads folder can be told
+# apart from the four earlier ones without opening it.
+
+def test_the_stamp_carries_version_date_and_time():
+    import re
+    stamp = br.build_stamp()
+    assert re.fullmatch(r'v\d+_\d{4}-\d{2}-\d{2}_\d{4}', stamp), stamp
+    assert stamp.startswith(f'v{br.APP_VERSION}_')
+
+
+def test_the_version_lives_in_exactly_one_place():
+    """A number spelled into a filename template as well as into APP_VERSION
+    is a number that will disagree with itself."""
+    src = open(os.path.join(APP, 'tools', 'build_release.py')).read()
+    assert f'v{br.APP_VERSION}_' not in src, (
+        'the version is hard-coded into a string as well as APP_VERSION')
+    assert br.APP_VERSION > 21, (
+        'the series continues the repo history, whose last numbered archive '
+        'was structural_simulator_v21_moment_arrows.zip')
+
+
+def test_stamped_builds_the_name_the_reader_sees():
+    name = br.stamped(br.ZIP_BASE, '.zip', 'v22_2026-09-30_0415')
+    assert name == 'structural_simulator_app_v22_2026-09-30_0415.zip'
+
+
+def test_the_archive_names_are_stamped_and_the_inner_rbz_name_is_not():
+    """SketchUp does not care what the .rbz file is called, but the loader
+    inside it and the folder beside it must keep their fixed names -- and the
+    app archive ships the extension under that canonical name, which is what
+    every earlier report refers to."""
+    dest, _ = br.build_zip(check_only=True)
+    base = os.path.basename(dest)
+    assert base.startswith(br.ZIP_BASE + '_v')
+    assert base.endswith('.zip')
+    assert br.RBZ_NAME == br.RBZ_BASE + '.rbz'
+    assert '_v' not in br.RBZ_NAME
+    shipped = {rel for rel, _ in br.app_files()}
+    assert br.RBZ_NAME in shipped
+
+
+def test_prune_older_keeps_the_one_it_is_told_to(tmp_path, monkeypatch):
+    monkeypatch.setattr(br, 'APP', str(tmp_path))
+    keep = tmp_path / 'thing_v22_2026-09-30_0415.zip'
+    for name in ('thing_v20_2026-09-01_0900.zip',
+                 'thing_v21_2026-09-15_1200.zip',
+                 'thing_v22_2026-09-30_0415.zip'):
+        (tmp_path / name).write_bytes(b'x')
+    (tmp_path / 'unrelated.zip').write_bytes(b'x')
+    br.prune_older('thing', '.zip', str(keep))
+    left = sorted(p.name for p in tmp_path.iterdir())
+    assert left == ['thing_v22_2026-09-30_0415.zip', 'unrelated.zip']

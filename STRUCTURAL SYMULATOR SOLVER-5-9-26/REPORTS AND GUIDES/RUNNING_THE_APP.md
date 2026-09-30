@@ -22,18 +22,32 @@ virtual environment, or a Microsoft Store build.
 imports `numpy` unguarded. Miss either and the process dies on an import
 line before a window exists — and from a Run button that looks like a
 crash, because the console that held the traceback may have closed again.
+So the first thing to do is run **the doctor** below, which says which
+interpreter you are on and what it is missing.
 
-As of 2026-09-27 it no longer does that. The launch **preflight** in
-`main.py` checks the interpreter *before* those imports and, if anything is
-missing, prints and shows a message naming:
+## "It starts, but no window ever appears"
 
-- which interpreter is running, and its version,
-- what is missing and what it is needed for,
-- the exact `pip install` command for **that** interpreter,
-- how to change the interpreter in VS Code.
+This is a different fault and it has a different cause. There is no
+traceback, nothing is missing, and the process sits burning most of a core
+forever.
 
-So the first thing to do is read what it says. If you cannot see it — the
-terminal closed, or nothing appeared at all — run the doctor instead.
+That was a **Tkinter resize-event loop**, fixed on 2026-09-28 in
+`common.py`. A `<Configure>` binding on a toplevel fires for every
+descendant as well, because a widget's bindtags include its toplevel; the
+toolbar's relayout handlers were reacting to their own children's resize
+events and changing the layout again on each one, so the first layout pass
+never finished. The fix defers each relayout to a short timer instead of
+`after_idle`, which is what let it re-enter:
+`FlowBar._schedule`, `WrapBar._schedule` and `_on_toplevel_resize`.
+
+**A correction worth recording**, because the wrong answer was shipped
+first: a dependency *preflight* was added to `main.py` on 2026-09-27 under
+the belief that this was a missing-library problem. It was not — the
+libraries were installed the whole time — and the preflight has been
+removed. If you are reading an older copy of this file, or an older commit
+message claiming a launch crash was fixed by checking dependencies, that
+claim is wrong. `REPORTS AND GUIDES/STEREO_ROADMAP_V2_FULL_ACCOUNT_2026-09-28.md`
+§4 has the reproduction and §12.5 the correction.
 
 ## The doctor
 
@@ -90,5 +104,5 @@ cannot install into the wrong one.
 
 ## Python version
 
-3.9 or newer. The preflight says so and stops rather than failing later on
+3.9 or newer. The doctor says so rather than letting it fail later on
 a syntax or stdlib difference.

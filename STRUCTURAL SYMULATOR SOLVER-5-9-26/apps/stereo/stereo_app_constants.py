@@ -348,7 +348,7 @@ ROD_SCOPE_BOTTOM = 'Bottom chords'
 ROD_SCOPE_CHORDS = 'All chords'
 ROD_SCOPE_WEBS = 'Webs only'
 ROD_SCOPE_ALL = 'Every rod'
-ROD_SCOPE_SELECTED = 'Selected rod only'
+ROD_SCOPE_SELECTED = 'Selected rods'   # click one, or drag a box over many
 ROD_SCOPES = (ROD_SCOPE_TOP, ROD_SCOPE_BOTTOM, ROD_SCOPE_CHORDS,
               ROD_SCOPE_WEBS, ROD_SCOPE_ALL, ROD_SCOPE_SELECTED)
 

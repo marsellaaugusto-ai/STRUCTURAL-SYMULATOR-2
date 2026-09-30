@@ -912,10 +912,21 @@ class StereoModelMixin:
         Roles, not picking, because that is how such a load is specified in
         practice: cladding lands on the top chords and a service run hangs
         off the bottom ones, and nobody sits and clicks four hundred
-        purlins. 'Selected rod only' is there for the one-off."""
+        purlins. 'Selected rods' is there for the one-off and for whatever a
+        box happens to catch."""
         scope = self.rod_scope.get()
         if scope == ROD_SCOPE_SELECTED:
-            return [] if self.selected_member is None else [self.selected_member]
+            # BOTH selections, because the canvas fills two different places:
+            # a single click on a rod sets self.selected_member, while a
+            # rubber-band box fills self.selected_members and then explicitly
+            # clears the singular (see _on_canvas_release). Reading only the
+            # singular meant a box selection always resolved to nothing and
+            # the panel answered "No rods in that scope", which is the one
+            # way most people try to use this.
+            picked = set(self.selected_members)
+            if self.selected_member is not None:
+                picked.add(self.selected_member)
+            return sorted(i for i in picked if 0 <= i < len(self.members))
         if scope == ROD_SCOPE_ALL:
             return list(range(len(self.members)))
         roles = ROD_SCOPE_ROLES.get(scope)
@@ -936,8 +947,9 @@ class StereoModelMixin:
         targets = self._rods_in_scope()
         if not targets:
             messagebox.showerror('Rod load',
-                                 'No rods in that scope. Pick a rod on the '
-                                 'canvas first, or choose a different scope.')
+                                 'No rods in that scope. Click a rod on the '
+                                 'canvas, or drag a box across several, or '
+                                 'choose a different scope.')
             return
         spread = self._rod_spread_key()
         self._push_undo('rod load')

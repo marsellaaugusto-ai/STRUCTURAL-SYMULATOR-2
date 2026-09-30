@@ -8256,3 +8256,87 @@ class TestNodeAndRodSizeOnScreen:
         assert 1 in widths, 'the base hairline is gone'
         assert any(w >= 4 for w in widths), (
             f'the selected rod is not drawn thicker than the base: {widths}')
+
+
+class TestRodLoadOnABoxSelection:
+    """Reported from use: drag a box over some rods, choose the selected-rods
+    scope, press Apply, and the panel answers "No rods in that scope".
+
+    The cause was that the canvas fills TWO different places. A single click
+    on a rod sets `selected_member`; a rubber-band box fills
+    `selected_members` and then explicitly sets `selected_member = None`.
+    _rods_in_scope read only the singular, so a box selection always resolved
+    to nothing -- the feature only ever worked for one rod at a time, which is
+    not how anyone loads a roof.
+    """
+
+    def _box(self, app, frac=0.5):
+        """Drag a rubber-band box over part of the model, as a user does."""
+        pts = app._screen_positions()
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        x0, y0 = min(xs) + 5, min(ys) + 5
+        x1 = min(xs) + (max(xs) - min(xs)) * frac
+        y1 = min(ys) + (max(ys) - min(ys)) * frac
+        app._on_canvas_press(FakeEvent(int(x0), int(y0)))
+        app._on_canvas_motion(FakeEvent(int(x1), int(y1)))
+        app._on_canvas_release(FakeEvent(int(x1), int(y1)))
+        app.root.update_idletasks()
+
+    def test_the_box_fills_the_plural_and_clears_the_singular(self, app):
+        """The premise. If this ever stops being true the bug cannot recur,
+        but the scope code must still agree with whatever replaces it."""
+        self._box(app)
+        assert app.selected_members, 'the box caught no rods at all'
+        assert app.selected_member is None
+
+    def test_a_boxed_selection_is_in_scope(self, app):
+        self._box(app)
+        app.rod_scope.set(sc.ROD_SCOPE_SELECTED)
+        assert set(app._rods_in_scope()) == set(app.selected_members)
+
+    def test_apply_loads_every_rod_in_the_box(self, app, monkeypatch):
+        shown = []
+        monkeypatch.setattr('apps.stereo.stereo_app_model.messagebox.showerror',
+                            lambda *a, **k: shown.append(a))
+        self._box(app)
+        picked = set(app.selected_members)
+        app.rod_scope.set(sc.ROD_SCOPE_SELECTED)
+        app.rod_w.set(3.5)
+        app._apply_rod_load()
+        assert not shown, f'it still refuses: {shown}'
+        assert {ld['member'] for ld in app.member_loads} == picked
+        assert all(ld['w'] == 3.5 for ld in app.member_loads)
+
+    def test_a_single_click_still_works(self, app):
+        app.selected_members = set()
+        app.selected_member = 3
+        app.rod_scope.set(sc.ROD_SCOPE_SELECTED)
+        assert app._rods_in_scope() == [3]
+
+    def test_click_and_box_together_are_unioned(self, app):
+        self._box(app)
+        picked = set(app.selected_members)
+        app.selected_member = max(picked) + 1 if max(picked) + 1 < len(app.members) else 0
+        app.rod_scope.set(sc.ROD_SCOPE_SELECTED)
+        assert set(app._rods_in_scope()) == picked | {app.selected_member}
+
+    def test_nothing_selected_still_refuses_and_says_how(self, app, monkeypatch):
+        shown = []
+        monkeypatch.setattr('apps.stereo.stereo_app_model.messagebox.showerror',
+                            lambda *a, **k: shown.append(a))
+        app.selected_members = set()
+        app.selected_member = None
+        app.rod_scope.set(sc.ROD_SCOPE_SELECTED)
+        app._apply_rod_load()
+        assert shown, 'an empty selection must still be refused'
+        assert 'box' in ' '.join(shown[0]).lower(), (
+            'the refusal should mention the box, since that is how most '
+            'people will have tried to select')
+
+    def test_a_stale_index_cannot_survive_a_smaller_model(self, app):
+        """Selections are indices, and the model can shrink under them."""
+        app.selected_members = {0, 1, 999999}
+        app.selected_member = None
+        app.rod_scope.set(sc.ROD_SCOPE_SELECTED)
+        assert app._rods_in_scope() == [0, 1]

@@ -446,3 +446,37 @@ def totals_reconcile(groups, nodes, members, unit_weight_kN_m3=78.5):
             'length_in_model_m': L_all,
             'ok': (leaf + len(rest) == len(members)
                    and abs(L_leaf - L_all) < 1e-6 * max(1.0, L_all))}
+
+
+# ── surviving a renumber ───────────────────────────────────────────────────
+
+def remap_members(groups, old_to_new):
+    """Rewrite every group's membership after the member list was rebuilt.
+
+    A group holds MEMBER INDICES, and several operations rebuild that list by
+    filtering it -- deleting rods or nodes, and clearing an add-on, which also
+    drops the rods it made. Every index after a dropped one then means a
+    different rod. Left alone, a branch would quietly point at the wrong part
+    of the structure, which is worse than having no branch at all: the report
+    would still be produced, and it would be wrong.
+
+    `old_to_new` maps a surviving old index to its new one; anything absent
+    was deleted and leaves the group. Call it at every site that rebuilds
+    `members`.
+    """
+    for g in groups:
+        g['members'] = {old_to_new[i] for i in g['members'] if i in old_to_new}
+    return groups
+
+
+def member_remap(n_before, dropped):
+    """{old index: new index} for a filter that removed `dropped`."""
+    drop = set(dropped)
+    out = {}
+    new = 0
+    for i in range(n_before):
+        if i in drop:
+            continue
+        out[i] = new
+        new += 1
+    return out

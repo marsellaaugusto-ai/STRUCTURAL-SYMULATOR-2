@@ -39,6 +39,8 @@ from apps.stereo import stereo_reports as sr_module
 from apps.stereo import stereo_app_constants as sc
 from apps.stereo import stereo_app_module_editor as me
 from apps.stereo import stereo_app_shell as sh
+from apps.stereo import stereo_groups as sgp
+from apps.stereo import stereo_profiles as sp_mod
 
 
 @pytest.fixture(autouse=True)
@@ -5097,9 +5099,16 @@ def test_alt_digit_jumps_to_each_mode_in_rail_order(app):
     app.canvas.focus_force()
     app.root.update()
     for n, (key, _g, _l, _t) in enumerate(MODES, start=1):
-        app.canvas.event_generate(f'<Alt-Key-{n}>', when='now')
+        # The rail outgrew the digits: there are ten modes and only nine
+        # single digits after 0, so the TENTH is Alt+0. Renumbering to fit
+        # Groups into the middle would have moved nine shortcuts that are
+        # already muscle memory. `<Alt-Key-10>` is not a keysym at all,
+        # which is how this test found out.
+        assert n <= 10, 'the rail has outgrown the single-digit shortcuts'
+        digit = 0 if n == 10 else n
+        app.canvas.event_generate(f'<Alt-Key-{digit}>', when='now')
         app.root.update()
-        assert app.active_mode.get() == key, f'Alt+{n} did not reach {key}'
+        assert app.active_mode.get() == key, f'Alt+{digit} did not reach {key}'
 
 
 def test_the_shortcut_works_from_inside_an_entry_without_typing_into_it(app):
@@ -8823,3 +8832,344 @@ class TestTheLiftIsWellPosed:
                        for sp in app.supports)
         assert after == before
         assert not app._crane_tag
+
+
+class TestGroupsPanel:
+    """The Groups panel (roadmap 4.1) as a user meets it.
+
+    Driven through the real widgets and the real handlers, because the
+    failure this whole tab has already suffered once is a handler that works
+    behind a control that is gone.
+    """
+
+    def _names(self, app):
+        return [app.group_list.get(i) for i in range(app.group_list.size())]
+
+    def _pick_row(self, app, i):
+        app.group_list.selection_clear(0, 'end')
+        app.group_list.selection_set(i)
+        app._on_group_pick()
+
+    def _make(self, app, monkeypatch, name, rods, parent_row=None):
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: name)
+        app.selected_members = set(rods)
+        app.selected_member = None
+        app.selected_nodes = set()
+        if parent_row is None:
+            app._group_new_from_selection()
+        else:
+            self._pick_row(app, parent_row)
+            app._group_new_subgroup()
+        return app.groups[-1]
+
+    def test_the_groups_mode_is_in_the_rail_with_a_panel(self, app):
+        assert 'groups' in app._mode_frames
+        keys = [k for k, _g, _l, _t in sh.MODES]
+        assert 'groups' in keys
+        app._set_mode('groups')
+        assert app.active_mode.get() == 'groups'
+        assert app.group_list is not None
+
+    def test_the_tenth_mode_is_on_alt_zero_and_the_first_nine_did_not_move(self, app):
+        """Renumbering to fit Groups in the middle would move nine shortcuts
+        that are already muscle memory."""
+        keys = [k for k, _g, _l, _t in sh.MODES]
+        assert len(keys) == 10
+        top = app.root.winfo_toplevel()
+        assert top.bind('<Alt-Key-0>'), 'Alt+0 is not bound'
+        for n in range(1, 10):
+            assert top.bind('<Alt-Key-%d>' % n), n
+
+    def test_making_a_group_from_the_selection(self, app, monkeypatch):
+        g = self._make(app, monkeypatch, 'Roof', range(6))
+        assert g['name'] == 'Roof'
+        assert g['members'] == set(range(6))
+        assert 'Roof' in self._names(app)[0]
+
+    def test_a_group_with_no_selection_says_what_to_do(self, app, monkeypatch):
+        shown = []
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.messagebox.showinfo',
+                            lambda *a, **k: shown.append(a))
+        app.selected_members = set()
+        app.selected_nodes = set()
+        app._group_new_from_selection()
+        assert shown and 'Select the rods' in shown[0][1]
+        assert app.groups == []
+
+    def test_the_ungrouped_row_is_always_there_while_rods_are_loose(self, app,
+                                                                    monkeypatch):
+        self._make(app, monkeypatch, 'Roof', range(6))
+        rows = self._names(app)
+        assert any(sgp.UNGROUPED_NAME in r for r in rows), rows
+
+    def test_a_subgroup_is_shown_indented_under_its_parent(self, app,
+                                                           monkeypatch):
+        self._make(app, monkeypatch, 'Roof', range(6))
+        self._make(app, monkeypatch, 'Bay', range(6, 10), parent_row=0)
+        rows = self._names(app)
+        assert rows[0].startswith('Roof')
+        assert rows[1].startswith('   ') and 'Bay' in rows[1]
+        assert app.groups[1]['parent'] == app.groups[0]['id']
+
+    def test_the_parent_row_shows_its_own_count_and_its_subtree_count(self, app,
+                                                                      monkeypatch):
+        self._make(app, monkeypatch, 'Roof', range(6))
+        self._make(app, monkeypatch, 'Bay', range(6, 10), parent_row=0)
+        assert '[6/10]' in self._names(app)[0]
+
+    def test_ungrouped_cannot_be_made_a_parent(self, app, monkeypatch):
+        """It is what is left over, not a branch."""
+        self._make(app, monkeypatch, 'Roof', range(6))
+        shown = []
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.messagebox.showinfo',
+                            lambda *a, **k: shown.append(a))
+        rows = self._names(app)
+        ung = next(i for i, r in enumerate(rows) if sgp.UNGROUPED_NAME in r)
+        self._pick_row(app, ung)
+        app._group_new_subgroup()
+        assert shown and 'cannot be a parent' in shown[0][1]
+
+    def test_adding_a_selection_moves_it_out_of_its_old_group(self, app,
+                                                              monkeypatch):
+        a = self._make(app, monkeypatch, 'A', range(6))
+        # B is made from a rod of its own: "New from selection" with nothing
+        # selected is refused, which is right, so it cannot make an empty one.
+        b = self._make(app, monkeypatch, 'B', [9])
+        assert a is not b
+        self._pick_row(app, 1)
+        app.selected_members = {0, 1}
+        app.selected_member = None
+        app._group_assign_selection()
+        assert a['members'] == {2, 3, 4, 5}
+        assert b['members'] == {0, 1, 9}
+
+    def test_selecting_a_group_puts_its_rods_in_the_view(self, app, monkeypatch):
+        g = self._make(app, monkeypatch, 'Roof', range(6))
+        app.selected_members = set()
+        app.selected_nodes = set()
+        self._pick_row(app, 0)
+        app._group_select_rods()
+        assert app.selected_members == g['members']
+        assert app.selected_nodes == set(
+            sgp.nodes_of_rods(app.members, sorted(g['members'])))
+
+    def test_deleting_a_group_returns_its_rods_to_ungrouped(self, app,
+                                                            monkeypatch):
+        self._make(app, monkeypatch, 'Roof', range(6))
+        self._pick_row(app, 0)
+        app._group_delete()
+        assert app.groups == []
+        assert 0 in sgp.ungrouped_rods(app.groups, len(app.members))
+
+    def test_a_group_holds_member_indices_so_a_regenerate_clears_it(self, app,
+                                                                     monkeypatch):
+        """One kept across a new mesh would name whatever rods now hold those
+        numbers -- a branch pointing at the wrong part of a different model."""
+        self._make(app, monkeypatch, 'Roof', range(6))
+        assert app.groups
+        app._generate(push_undo=False)
+        assert app.groups == []
+
+    def test_deleting_rods_renumbers_the_groups_instead_of_corrupting_them(
+            self, app, monkeypatch):
+        """The trap: self.members is rebuilt by FILTERING, so every index
+        after a dropped rod means a different rod. Left alone a branch would
+        quietly point at the wrong steel and still produce a report."""
+        a = self._make(app, monkeypatch, 'A', [0, 1, 2, 3, 4, 5])
+        b = self._make(app, monkeypatch, 'B', [6, 7, 8, 9])
+        app.selected_nodes = set()
+        app.selected_members = {0}
+        app.selected_member = None
+        app._on_delete_nodes()
+        assert a['members'] == {0, 1, 2, 3, 4}
+        assert b['members'] == {5, 6, 7, 8}
+        rec = sgp.totals_reconcile(app.groups, app.nodes, app.members)
+        assert rec['ok'], rec
+
+    def test_clearing_an_addon_also_renumbers_the_groups(self, app, monkeypatch):
+        """_strip_members rebuilds the list too, and it runs for every
+        Clear button in the Add-ons panel."""
+        top = max(p[2] for p in app.members and app.nodes)
+        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
+        app.selected_nodes = set(tops[:4])
+        app._add_column()
+        n_after_col = len(app.members)
+        assert n_after_col > 0
+        g = self._make(app, monkeypatch, 'Grid', [0, 1, 2])
+        app._clear_columns()
+        assert g['members'] == {0, 1, 2}, 'front-of-list rods must not move'
+        rec = sgp.totals_reconcile(app.groups, app.nodes, app.members)
+        assert rec['ok'], rec
+
+    def test_the_totals_check_reports_success(self, app, monkeypatch):
+        shown = []
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.messagebox.showinfo',
+                            lambda *a, **k: shown.append(a))
+        self._make(app, monkeypatch, 'Roof', range(6))
+        rec = app._group_reconcile()
+        assert rec['ok']
+        assert shown and 'exactly once' in shown[-1][1]
+
+
+class TestGroupSectionRecommendationUI:
+    """The right-click properties box and the sizing recommendation."""
+
+    def _group(self, app, monkeypatch, rods, name='Branch'):
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: name)
+        app.selected_members = set(rods)
+        app.selected_member = None
+        app.selected_nodes = set()
+        app._group_new_from_selection()
+        app.group_list.selection_clear(0, 'end')
+        app.group_list.selection_set(0)
+        app._on_group_pick()
+        return app.groups[-1]
+
+    def _texts(self, w):
+        out = []
+
+        def walk(v):
+            try:
+                t = v.cget('text')
+                if isinstance(t, str) and t.strip():
+                    out.append(t.strip())
+            except tk.TclError:
+                pass
+            for c in v.winfo_children():
+                walk(c)
+        walk(w)
+        return out
+
+    def test_recommending_before_a_solve_says_to_analyze_first(self, app,
+                                                               monkeypatch):
+        shown = []
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.messagebox.showinfo',
+                            lambda *a, **k: shown.append(a))
+        self._group(app, monkeypatch, range(6))
+        app.results = None
+        app._group_recommend()
+        assert shown and 'Analyze first' in shown[-1][1]
+
+    def test_the_recommendation_window_names_a_section_and_its_governing_rod(
+            self, app, monkeypatch):
+        self._group(app, monkeypatch, range(8))
+        app._analyze()
+        assert app.results
+        app._group_recommend()
+        win = app._group_rec_win
+        blob = ' | '.join(self._texts(win))
+        assert 'Recommended' in blob
+        assert 'Governing rod' in blob
+        assert 'Apply' in blob
+        win.destroy()
+
+    def test_applying_it_sets_every_rod_and_clears_the_stale_results(self, app,
+                                                                      monkeypatch):
+        g = self._group(app, monkeypatch, range(8))
+        app._analyze()
+        app._group_recommend()
+        win = app._group_rec_win
+        btn = None
+        for w in _walk_widgets(win):
+            try:
+                if str(w.cget('text')).startswith('Apply') and w.cget('command'):
+                    btn = w
+                    break
+            except tk.TclError:
+                continue
+        assert btn is not None
+        btn.invoke()
+        rods = sorted(g['members'])
+        first = app.members[rods[0]]['profile']
+        assert first
+        for i in rods:
+            assert app.members[i]['profile'] == first
+        # the solve it was sized from is no longer valid for the new sections
+        assert app.results is None
+
+    def test_the_properties_box_reports_the_group(self, app, monkeypatch):
+        self._group(app, monkeypatch, range(6), name='Roof')
+        app._analyze()
+        win = app._group_properties()
+        blob = ' | '.join(self._texts(win))
+        assert 'Roof' in blob
+        assert 'Rods (with subgroups)' in blob
+        assert 'Nodes touched' in blob
+        assert 'Total length' in blob
+        assert 'Joints shared with others' in blob
+        win.destroy()
+
+    def test_the_properties_box_lists_the_sections_in_use_without_calling_it_a_fault(
+            self, app, monkeypatch):
+        """A group need not be uniform; setting one section makes it so."""
+        self._group(app, monkeypatch, range(6))
+        win = app._group_properties()
+        blob = ' | '.join(self._texts(win))
+        assert 'Sections in use' in blob
+        assert 'not a fault' in blob
+        win.destroy()
+
+    def test_the_right_click_selects_the_row_under_the_pointer_first(self, app,
+                                                                     monkeypatch):
+        """A context menu that acts on whatever was selected BEFORE the
+        right-click acts on the wrong group about half the time."""
+        self._group(app, monkeypatch, range(4), name='A')
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: 'B')
+        app.selected_members = {4, 5}
+        app._group_new_from_selection()
+        app.group_list.selection_clear(0, 'end')
+        app.group_list.selection_set(0)
+        app._on_group_pick()
+        posted = []
+        monkeypatch.setattr(tk.Menu, 'tk_popup',
+                            lambda self, *a, **k: posted.append(a))
+        monkeypatch.setattr(tk.Menu, 'grab_release', lambda self: None)
+        # The Listbox has no geometry until its own mode is on screen, so
+        # bbox() returns None and a y coordinate cannot be chosen. Show the
+        # mode first -- this is a real property of the widget, not a
+        # workaround.
+        app._set_mode('groups')
+        app.root.update_idletasks()
+        app.root.update()
+        bbox = app.group_list.bbox(1)
+        assert bbox, 'the second row has no bbox even once Groups is shown'
+
+        class E:
+            pass
+        e = E()
+        e.x, e.y = 5, bbox[1] + 2
+        e.x_root, e.y_root = 100, 100
+        app._on_group_right_click(e)
+        assert posted, 'the menu was never posted'
+        assert app._current_group() == app.groups[1]['id']
+
+    def test_the_family_filter_restricts_the_candidates(self, app, monkeypatch):
+        self._group(app, monkeypatch, range(8))
+        app._analyze()
+        app.group_family.set('CHS (tubes)')
+        cands = app._group_candidates()
+        assert cands and all(n in sp_mod.profiles_in_group('CHS (tubes)')
+                             for n in cands)
+        app._group_recommend()
+        win = app._group_rec_win
+        blob = ' | '.join(self._texts(win))
+        win.destroy()
+        assert 'Recommended' in blob
+
+    def test_the_shared_joints_window_lists_cross_and_internal(self, app,
+                                                               monkeypatch):
+        self._group(app, monkeypatch, range(6), name='A')
+        app._analyze()
+        win = app._group_shared_nodes()
+        blob = ' | '.join(self._texts(win))
+        assert 'CROSS' in blob or 'Every sharing is listed' in blob
+        win.destroy()
+
+
+def _walk_widgets(w):
+    yield w
+    for c in w.winfo_children():
+        yield from _walk_widgets(c)

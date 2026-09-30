@@ -277,6 +277,14 @@ class StereoModelMixin:
         # supports whose node numbers mean something else now.
         self._crane_freed = []
         self._crane_tag = None
+        # And the groups, for the same reason and more sharply: a group holds
+        # MEMBER indices, so one kept across a regenerate would name whatever
+        # rods now hold those numbers -- a branch pointing at the wrong part
+        # of a different model, which is worse than no branch at all.
+        self.groups = []
+        self._group_sel = None
+        if hasattr(self, '_refresh_group_list'):
+            self._refresh_group_list()
         # Same reasoning, and the same trap: a panel is a list of node
         # INDICES, so one kept across a regenerate would weld itself to
         # whichever four nodes now hold those numbers.

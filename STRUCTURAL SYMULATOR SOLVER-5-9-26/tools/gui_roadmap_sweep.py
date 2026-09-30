@@ -96,6 +96,15 @@ def menu_items(menu):
 root = tk.Tk(); root.geometry('1600x1000')
 from apps.stereo.stereo_app import StereoApp
 from apps.stereo import stereo_app_reports as _sr
+from apps.stereo import stereo_app_groups as _sg_ui
+
+# The group name prompts are modal too. Answer them with a counter, so each
+# group gets its own name and the tree is legible in the failure output.
+_GN = [0]
+def _ask(*_a, **_k):
+    _GN[0] += 1
+    return 'Branch %d' % _GN[0]
+_sg_ui.simpledialog.askstring = _ask
 
 # The PDF exports put up a MODAL sheet chooser (grab_set + wait_window). Under
 # xvfb nobody presses OK, so it blocks forever -- which is correct behaviour
@@ -507,6 +516,114 @@ else:
         except Exception:
             pass
     pump()
+
+# ── 4.1 groups: branches, subgroups, and one section for each ───────────
+step('4.1 groups')
+app._set_mode('groups'); pump()
+gframe = app._mode_frames['groups']
+(ok if any('group' in t.lower() for t in texts(gframe)) else bad)(
+    '4.1 the Groups panel is visible')
+(ok if hasattr(app, 'group_list') else bad)('4.1 it has a group list')
+
+app.groups = []
+app._refresh_group_list()
+app.selected_members = set(range(8)); app.selected_member = None
+app.selected_nodes = set()
+BOX.clear()
+if press(gframe, 'new from selection', '4.1 New from selection'):
+    pump()
+    (ok if app.groups and app.groups[0]['members'] == set(range(8)) else bad)(
+        '4.1 the group holds the selected rods',
+        str([sorted(g['members'])[:4] for g in app.groups]))
+
+app.group_list.selection_clear(0, 'end'); app.group_list.selection_set(0)
+app._on_group_pick()
+app.selected_members = set(range(8, 12))
+if press(gframe, 'new subgroup', '4.1 New subgroup'):
+    pump()
+    (ok if len(app.groups) == 2 and app.groups[1]['parent'] == app.groups[0]['id']
+     else bad)('4.1 the subgroup nests under it',
+               str([(g['name'], g['parent']) for g in app.groups]))
+    rows = [app.group_list.get(i) for i in range(app.group_list.size())]
+    (ok if any(r.startswith('   ') for r in rows) else bad)(
+        '4.1 the tree is indented', ' / '.join(rows)[:70])
+    (ok if any('Ungrouped' in r for r in rows) else bad)(
+        '4.1 Ungrouped is a row of its own')
+
+app.group_list.selection_clear(0, 'end'); app.group_list.selection_set(0)
+app._on_group_pick()
+app.selected_members = set(); app.selected_nodes = set()
+if press(gframe, 'select this group in the view', '4.1 Select in the view'):
+    pump()
+    (ok if len(app.selected_members) == 12 else bad)(
+        '4.1 selecting the group selects its whole subtree',
+        '%d rods' % len(app.selected_members))
+
+# a rod is in exactly one group
+app.group_list.selection_clear(0, 'end'); app.group_list.selection_set(1)
+app._on_group_pick()
+app.selected_members = {0, 1}
+press(gframe, 'add selection', '4.1 Add selection to a group')
+pump()
+holders = [g['name'] for g in app.groups if 0 in g['members']]
+(ok if len(holders) == 1 else bad)('4.1 a rod ends up in exactly one group',
+                                   ', '.join(holders))
+
+app._analyze(); pump()
+app.group_list.selection_clear(0, 'end'); app.group_list.selection_set(0)
+app._on_group_pick()
+
+# the properties box
+pw = app._group_properties(); pump()
+if pw is None:
+    bad('4.1 the properties box opens')
+else:
+    blob = ' | '.join(texts(pw))
+    for want in ('Rods (with subgroups)', 'Nodes touched', 'Total length',
+                 'Joints shared with others', 'Sections in use'):
+        (ok if want in blob else bad)('4.1 properties: %s' % want)
+    pw.destroy(); pump()
+
+# the section recommendation
+BOX.clear()
+app._group_recommend(); pump()
+rw = getattr(app, '_group_rec_win', None)
+if rw is None:
+    bad('4.1 the section recommendation opens', str(BOX[-1:]))
+else:
+    blob = ' | '.join(texts(rw))
+    (ok if 'Recommended' in blob else bad)('4.1 it names a section',
+                                           blob[:70])
+    (ok if 'Governing rod' in blob else bad)('4.1 it names the governing rod')
+    (ok if 'Apply' in blob else bad)('4.1 it can be applied')
+    btn = button(rw, 'apply')
+    if btn is not None:
+        btn.invoke(); pump()
+        rods = sorted(app.groups[0]['members'])
+        prof = {app.members[i].get('profile') for i in rods}
+        (ok if len(prof) == 1 and None not in prof else bad)(
+            '4.1 applying it sets every rod in the group', str(prof))
+        (ok if app.results is None else bad)(
+            '4.1 applying it drops the now-stale solve')
+    else:
+        bad('4.1 the Apply button is present', ' | '.join(texts(rw))[:70])
+    try:
+        rw.destroy()
+    except Exception:
+        pass
+    pump()
+
+# the two checks
+sw = app._group_shared_nodes(); pump()
+if sw is None:
+    bad('4.1 the shared-joints window opens')
+else:
+    ok('4.1 the shared-joints window opens')
+    sw.destroy(); pump()
+BOX.clear()
+rc = app._group_reconcile()
+(ok if rc and rc['ok'] else bad)('4.1 every rod is accounted for once',
+                                 str(rc))
 
 # ── every mode again, after all of that ─────────────────────────────────
 step('every mode again')

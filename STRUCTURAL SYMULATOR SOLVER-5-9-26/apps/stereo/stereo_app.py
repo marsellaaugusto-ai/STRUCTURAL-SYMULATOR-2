@@ -83,13 +83,14 @@ from apps.stereo.stereo_app_wizard import StereoWizardMixin
 from apps.stereo.stereo_app_addons import StereoAddonsMixin
 from apps.stereo.stereo_app_reports import StereoReportsMixin
 from apps.stereo.stereo_app_inspector import StereoInspectorMixin
+from apps.stereo.stereo_app_groups import StereoGroupsMixin
 from apps.stereo.stereo_reports import STORAGE_UNITS as sr_storage_units
 
 
 class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
                 StereoRenderMixin, StereoModuleEditorMixin,
                 StereoWizardMixin, StereoAddonsMixin, StereoReportsMixin,
-                StereoInspectorMixin, UnitsMixin):
+                StereoInspectorMixin, StereoGroupsMixin, UnitsMixin):
     """The Stereo tab.
 
     Holds the model (nodes, members, supports, loads), every Tk variable
@@ -146,6 +147,11 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self._crane_freed = []
         # The lift's tag line, so clearing the crane takes it away too.
         self._crane_tag = None
+        # Named branches of the model (roadmap 4.1). A list of dicts whose
+        # shape and rules stereo_groups documents; empty means everything is
+        # Ungrouped, which is a real state rather than a missing one.
+        self.groups = []
+        self._group_sel = None
         self._load_nodes = {}
         self._load_glyphs = {}
         self._disabled_supports = set()

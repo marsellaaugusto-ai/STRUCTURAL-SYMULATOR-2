@@ -44,6 +44,7 @@ MODES = (
     ('module',  '◫', 'Module',  'the repeating cell'),
     ('analyse', '◑', 'Analyse', 'how to draw it, and what the solve found'),
     ('results', 'Σ', 'Results', 'what came out'),
+    ('groups',  '⑃', 'Groups',  'branches, and one section for each'),
 )
 DEFAULT_MODE = 'build'
 
@@ -267,9 +268,13 @@ class StereoShellMixin:
         """
         top = self.root.winfo_toplevel()
         for n, (key, _glyph, _label, _tip) in enumerate(MODES, start=1):
-            if n > 9:
+            if n > 10:
                 break
-            top.bind(f'<Alt-Key-{n}>', lambda _e, k=key: self._mode_hotkey(k))
+            # The tenth mode gets Alt+0. Renumbering to fit it in the middle
+            # would move nine shortcuts that are already muscle memory.
+            digit = 0 if n == 10 else n
+            top.bind(f'<Alt-Key-{digit}>',
+                     lambda _e, k=key: self._mode_hotkey(k))
 
     def _mode_hotkey(self, key):
         """'break' stops the keypress reaching the widget that had focus, so
@@ -376,6 +381,7 @@ class StereoShellMixin:
         # survives changing mode and coming back.
         self._build_properties_panel(self._mode_frames['results'])
         self._build_model_tree_panel(self._mode_frames['results'])
+        self._build_groups_panel(self._mode_frames['groups'])
         self._on_connectivity_change()   # hide I/J unless Rigid is selected
         self._on_col_style_change()      # hide the fields this style ignores
 

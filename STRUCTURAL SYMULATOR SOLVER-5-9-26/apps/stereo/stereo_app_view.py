@@ -1095,6 +1095,16 @@ class StereoViewMixin:
             what = 'member' + ('s' if len(member_targets) != 1 else '')
         self._push_undo('delete ' + what)
 
+        # Groups hold MEMBER indices, so work out which rods are about to go
+        # and remap the groups BEFORE self.members is rebuilt under them.
+        # Both branches below filter the list, so both shift the indices.
+        if getattr(self, 'groups', None):
+            from apps.stereo import stereo_groups as _sgp
+            _going = {j for j, m in enumerate(self.members)
+                      if j in member_targets
+                      or m['a'] in node_targets or m['b'] in node_targets}
+            _sgp.remap_members(self.groups,
+                               _sgp.member_remap(len(self.members), _going))
         if node_targets:
             remap = {}
             new_nodes = []
@@ -1127,6 +1137,8 @@ class StereoViewMixin:
         self.selected_members = set()
         self.results = None
         self.member_checks = None
+        if hasattr(self, '_refresh_group_list'):
+            self._refresh_group_list()
         self._refresh_all()
 
     # The canvas bindings and the "Delete selected node(s)" button were

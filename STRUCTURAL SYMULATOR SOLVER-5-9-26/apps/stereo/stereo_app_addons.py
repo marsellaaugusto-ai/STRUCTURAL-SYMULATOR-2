@@ -200,6 +200,14 @@ class StereoAddonsMixin:
         remap = {old: new for new, old in enumerate(order)}
 
         self.nodes = [self.nodes[i] for i in order]
+        # Groups hold MEMBER indices, and this rebuild shifts every index
+        # after a dropped rod. Remap before the list is replaced, or a branch
+        # silently comes to mean different rods -- see
+        # stereo_groups.remap_members.
+        if getattr(self, 'groups', None):
+            from apps.stereo import stereo_groups as _sgp
+            _sgp.remap_members(self.groups,
+                               _sgp.member_remap(len(self.members), drop))
         self.members = [dict(m, a=remap[m['a']], b=remap[m['b']]) for m in kept]
         self.supports = [dict(sp, node=remap[sp['node']])
                          for sp in self.supports if sp['node'] in remap]

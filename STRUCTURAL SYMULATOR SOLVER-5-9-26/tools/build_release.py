@@ -148,8 +148,12 @@ def build_rbz(dest=None, check_only=False):
 
     checked = ruby_syntax_check(files)
 
-    stamp = build_stamp()
-    dest = dest or os.path.join(APP, stamped(RBZ_BASE, '.rbz', stamp))
+    # `into_app` is the difference between a real build and a test building
+    # into a tmp_path. Only a real build may touch anything else in APP:
+    # prune_older and the canonical copy below are destructive, and a test
+    # that passes an explicit dest must not reach out of its own directory.
+    into_app = dest is None
+    dest = dest or os.path.join(APP, stamped(RBZ_BASE, '.rbz'))
     if check_only:
         print(f'rbz would hold {len(files)} file(s)'
               + (f'; ruby -c passed on {checked}' if checked else
@@ -165,11 +169,12 @@ def build_rbz(dest=None, check_only=False):
     # The app archive carries the extension under its canonical name, and
     # that is also the name SketchUp's documentation and every earlier report
     # refer to, so the unstamped copy is written too. Same bytes, 22 KB.
-    canonical = os.path.join(APP, RBZ_NAME)
-    if os.path.abspath(canonical) != os.path.abspath(dest):
-        import shutil
-        shutil.copy2(dest, canonical)
-    prune_older(RBZ_BASE, '.rbz', dest)
+    if into_app:
+        canonical = os.path.join(APP, RBZ_NAME)
+        if os.path.abspath(canonical) != os.path.abspath(dest):
+            import shutil
+            shutil.copy2(dest, canonical)
+        prune_older(RBZ_BASE, '.rbz', dest)
     print(f'{os.path.basename(dest)}: {len(files)} file(s), '
           f'{os.path.getsize(dest):,} bytes -> {dest}')
     return dest, files
@@ -268,6 +273,7 @@ def build_zip(dest=None, check_only=False):
         if must not in names:
             raise SystemExit(f'app archive would be missing {must}')
 
+    into_app = dest is None
     dest = dest or os.path.join(APP, stamped(ZIP_BASE, '.zip'))
     if check_only:
         print(f'zip would hold {len(files)} file(s) -> '
@@ -282,7 +288,8 @@ def build_zip(dest=None, check_only=False):
         bad = z.testzip()
         if bad is not None:
             raise SystemExit(f'{dest}: corrupt entry {bad}')
-    prune_older(ZIP_BASE, '.zip', dest)
+    if into_app:
+        prune_older(ZIP_BASE, '.zip', dest)
     print(f'{os.path.basename(dest)}: {len(files)} file(s), '
           f'{os.path.getsize(dest):,} bytes -> {dest}')
     return dest, files

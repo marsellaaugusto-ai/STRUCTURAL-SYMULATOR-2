@@ -188,3 +188,30 @@ def test_prune_older_keeps_the_one_it_is_told_to(tmp_path, monkeypatch):
     br.prune_older('thing', '.zip', str(keep))
     left = sorted(p.name for p in tmp_path.iterdir())
     assert left == ['thing_v22_2026-09-30_0415.zip', 'unrelated.zip']
+
+
+def test_building_to_an_explicit_dest_leaves_the_app_folder_alone(tmp_path):
+    """A test that builds into tmp_path must not touch APP.
+
+    This is not hypothetical. When the stamped naming went in, build_zip
+    pruned `APP/structural_simulator_app_v*.zip` and build_rbz copied its
+    result over `APP/CoordinateCoordinatorTrussAppAMAC.rbz` regardless of
+    where they had been asked to write. The suite's own tmp_path builds then
+    deleted the archives that had just been delivered. Destructive steps are
+    gated on `dest is None` now, and this holds them there.
+    """
+    before = sorted(n for n in os.listdir(APP)
+                    if n.endswith(('.zip', '.rbz')))
+    stamps = {n: os.stat(os.path.join(APP, n)).st_mtime_ns for n in before}
+
+    br.build_zip(dest=str(tmp_path / 'somewhere_else.zip'))
+    br.build_rbz(dest=str(tmp_path / 'somewhere_else.rbz'))
+
+    after = sorted(n for n in os.listdir(APP)
+                   if n.endswith(('.zip', '.rbz')))
+    assert after == before, (
+        f'building into tmp_path changed APP: gone={set(before) - set(after)}, '
+        f'new={set(after) - set(before)}')
+    for n in after:
+        assert os.stat(os.path.join(APP, n)).st_mtime_ns == stamps[n], (
+            f'{n} was rewritten by a build aimed somewhere else')

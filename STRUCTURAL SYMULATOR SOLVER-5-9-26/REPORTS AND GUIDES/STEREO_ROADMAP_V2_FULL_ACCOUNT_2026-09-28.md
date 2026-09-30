@@ -1309,7 +1309,13 @@ dependencies did not match the numbering.
 142 Make the PDF report honour the app-wide unit selector
 143 Add deflection-against-a-limit to the deformed sheet
 144 Add a steel take-off sheet to the PDF report
-145 Rebuild and deliver the app zip and the rbz            [not done]
+145 Rebuild and deliver the app zip and the rbz            [DONE 2026-09-30]
+146 Commit the uploaded zip as an import on top of stereo-ui-rebuild
+147 Merge the import into stereo-structure-calculator-lqgosu
+148 Fix the failing sheet-chooser tests                    [see 12.6 -- no fix needed]
+149 Full suite green on the merged tree
+150 Rebuild the zip, verify it by launching from the unpacked copy, deliver
+151 Repair the 21 failures the merge left behind            [see 12]
 ```
 
 **What this ledger shows about the plan.** Phase 6.1 was one line in the roadmap ("PDF
@@ -1321,8 +1327,23 @@ the model wrongly, and a scale bar drawn on the wrong axis. Every one was found 
 at the rendered PDF, not by a test. **Budget for visual inspection of any report feature;
 tests did not catch a single one of these.**
 
-Items 140–142 are still open or wrong; 145 was never done, which is why the delivered zip
-does not match the branch head.
+Items 140–142 are still open or wrong. **145 is now done**: the zip was rebuilt from the
+merged tree on 2026-09-30 and the delivered archive matches the branch head again.
+
+Items 146–151 are the merge and its repair, which the plan never anticipated because the
+plan did not know the tree had forked. They cost roughly as much as a roadmap phase.
+Item 151 alone covered 21 failing tests in four unrelated clusters, plus two features
+(the keyboard shortcuts and the canvas snap) that were **not** failing any test and were
+found only by reading the bindings — see §12.3. Anyone planning similar work should assume
+a merge of two ten-day divergent UI branches is a phase of its own, not a chore.
+
+**The delivered archive.** `structural_simulator_app.zip`, 284 files, 9,728,477 bytes.
+Verified the way a recipient would use it, not the way it was built: unpacked into a
+directory outside the repository, checked that every module `shell_app.py` imports at
+module scope is present, `compileall` over the whole unpacked tree, then launched from
+that copy — `App()` returned in 1.26 s and all eight tabs built and opened, exit 0.
+`CoordinateCoordinatorTrussAppAMAC.rbz`, 12 files, 22,352 bytes, `ruby -c` clean on all
+8 of its `.rb` files.
 
 ---
 

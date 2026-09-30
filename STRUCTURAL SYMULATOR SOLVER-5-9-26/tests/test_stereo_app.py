@@ -55,6 +55,11 @@ def dialogs(monkeypatch):
     for kind in ('showinfo', 'showerror', 'showwarning'):
         monkeypatch.setattr(f'apps.stereo.stereo_app.messagebox.{kind}',
                             lambda *a, _k=kind, **kw: seen.append((_k,) + a))
+    # A yes/no question hangs the same way. "Yes" is the default here so a
+    # confirmation reads as the user going ahead; a test about "No" patches
+    # its own.
+    monkeypatch.setattr('apps.stereo.stereo_app.messagebox.askyesno',
+                        lambda *a, **kw: (seen.append(('askyesno',) + a), True)[1])
     return seen
 
 
@@ -8930,8 +8935,12 @@ class TestGroupsPanel:
         app._group_new_subgroup()
         assert shown and 'cannot be a parent' in shown[0][1]
 
-    def test_adding_a_selection_moves_it_out_of_its_old_group(self, app,
-                                                              monkeypatch):
+    def test_a_rod_leaves_a_locked_group_only_through_its_edit_mode(
+            self, app, monkeypatch):
+        """This used to be one step: add A's rods to B and they moved. A
+        group is now an object that is locked until opened, so taking rods
+        out of A is refused until A is open -- and while A is open, B is
+        blocked. The two steps are ungroup inside A, then add to B."""
         a = self._make(app, monkeypatch, 'A', range(6))
         # B is made from a rod of its own: "New from selection" with nothing
         # selected is refused, which is right, so it cannot make an empty one.
@@ -8940,6 +8949,18 @@ class TestGroupsPanel:
         self._pick_row(app, 1)
         app.selected_members = {0, 1}
         app.selected_member = None
+        app._group_assign_selection()
+        assert a['members'] == set(range(6)), 'A is locked'
+        assert b['members'] == {9}
+
+        self._pick_row(app, 0)
+        app._group_edit_toggle()
+        app.selected_members = {0, 1}
+        app._group_unassign_selection()
+        app._group_edit_toggle()
+        assert app._editing_gid() is None
+        self._pick_row(app, 1)
+        app.selected_members = {0, 1}
         app._group_assign_selection()
         assert a['members'] == {2, 3, 4, 5}
         assert b['members'] == {0, 1, 9}
@@ -8978,6 +8999,7 @@ class TestGroupsPanel:
         quietly point at the wrong steel and still produce a report."""
         a = self._make(app, monkeypatch, 'A', [0, 1, 2, 3, 4, 5])
         b = self._make(app, monkeypatch, 'B', [6, 7, 8, 9])
+        app._group_edit_toggle(a['id'])     # a locked rod deletes only so
         app.selected_nodes = set()
         app.selected_members = {0}
         app.selected_member = None
@@ -9275,3 +9297,656 @@ class TestCatalogDepthReachesMembers:
         with_depth = [m for m in members if m.get('c_cm')]
         assert with_depth, 'c_cm did not survive the workbook'
         assert with_depth[0]['c_cm'] == pytest.approx(props['c_cm'])
+
+
+class TestLockedGroups:
+    """A group is one object until it is opened -- driven through the app.
+
+    The request: once made, a group cannot be edited unless edit mode is
+    opened; it moves as a whole and its parts cannot; its nodes cannot be
+    moved but rods can still be added to them; and while it is being edited
+    everything outside it is blocked but stays visible. The rules are unit
+    tested in test_stereo_group_locks.py; these check each tool obeys them.
+    """
+
+    def _group(self, app, monkeypatch, name, rods):
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: name)
+        app.selected_members = set(rods)
+        app.selected_member = None
+        app.selected_nodes = set()
+        app._group_new_from_selection()
+        g = app.groups[-1]
+        app.selected_members = set()
+        return g
+
+    def _outside_rod_at(self, app, nodes, exclude):
+        for j, m in enumerate(app.members):
+            if j not in exclude and (m['a'] in nodes or m['b'] in nodes):
+                return j
+        raise AssertionError('no neighbouring rod')
+
+    def _free_node(self, app):
+        grouped = set(sgp.nodes_of_rods(app.members,
+                                        sgp.owner_of_rod(app.groups)))
+        return next(n for n in range(len(app.nodes)) if n not in grouped)
+
+    # ── locked ─────────────────────────────────────────────────────────────
+
+    def test_dragging_a_node_of_a_group_moves_the_whole_group(self, app,
+                                                              monkeypatch):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        mine = sgp.nodes_of_rods(app.members, sorted(g['members']))
+        before = list(app.nodes)
+        app.selected_nodes = {mine[0]}
+        app._move_selected_nodes_by_screen(300, 300, 360, 330)
+        deltas = {tuple(round(app.nodes[n][k] - before[n][k], 9)
+                        for k in range(3)) for n in mine}
+        assert len(deltas) == 1, 'every node of the group moved by one vector'
+        assert deltas != {(0.0, 0.0, 0.0)}
+        others = [n for n in range(len(before)) if n not in set(mine)]
+        assert all(app.nodes[n] == before[n] for n in others)
+
+    def test_a_group_joined_to_another_group_by_a_joint_does_not_move(
+            self, app, monkeypatch):
+        a = self._group(app, monkeypatch, 'A', range(6))
+        mine = set(sgp.nodes_of_rods(app.members, sorted(a['members'])))
+        j = self._outside_rod_at(app, mine, a['members'])
+        self._group(app, monkeypatch, 'B', [j])
+        before = list(app.nodes)
+        app.selected_nodes = {next(n for n in sorted(mine)
+                                   if n not in (app.members[j]['a'],
+                                                app.members[j]['b']))}
+        app._move_selected_nodes_by_screen(300, 300, 360, 330)
+        assert app.nodes == before
+        assert 'shares' in app.status_var.get()
+
+    def test_a_locked_node_cannot_be_typed_to_a_new_place(self, app,
+                                                          monkeypatch, dialogs):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        n = sgp.nodes_of_rods(app.members, sorted(g['members']))[0]
+        before = app.nodes[n]
+        app.selected_nodes = {n}
+        app.selected_member = None
+        app._update_properties_panel()
+        app._props_entries['x'].set(before[0] + 5.0)
+        app._apply_node_properties()
+        assert app.nodes[n] == before
+        assert any('locked' in str(d) for d in dialogs)
+
+    def test_a_locked_rods_properties_cannot_be_edited(self, app, monkeypatch):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        app.selected_member = 0
+        app.selected_members = {0}
+        app.selected_nodes = set()
+        was = dict(app.members[0])
+        app._update_properties_panel()
+        for key, var in app._props_entries.items():
+            try:
+                var.set(var.get() * 2 if isinstance(var.get(), float)
+                        else var.get())
+            except Exception:
+                pass
+        app._apply_member_properties()
+        assert app.members[0] == was
+        assert 0 in g['members']
+
+    def test_rods_can_still_be_drawn_to_a_locked_groups_nodes(self, app,
+                                                              monkeypatch):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        n = sgp.nodes_of_rods(app.members, sorted(g['members']))[0]
+        free = self._free_node(app)
+        before = set(g['members'])
+        app._add_rod_between(n, free)
+        new = len(app.members) - 1
+        assert {app.members[new]['a'], app.members[new]['b']} == {n, free}
+        assert g['members'] == before, 'the new rod is not part of the object'
+        assert new in sgp.ungrouped_rods(app.groups, len(app.members))
+
+    def test_a_locked_groups_rods_are_not_deleted(self, app, monkeypatch,
+                                                  dialogs):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        n_members = len(app.members)
+        app.selected_nodes = set()
+        app.selected_members = {0, 100}
+        app._on_delete_selection()
+        assert len(app.members) == n_members, 'all or nothing'
+        assert g['members'] == set(range(6))
+        assert any('Nothing was deleted' in str(d) for d in dialogs)
+
+    def test_panel_sections_leave_a_locked_groups_own_section_alone(
+            self, app, monkeypatch):
+        from apps.stereo import stereo_profiles as sp
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        app.group_list.selection_clear(0, 'end')
+        app.group_list.selection_set(0)
+        app._on_group_pick()
+        name = sp.catalog_names()[5]
+        app.group_profile.set(name)
+        app._group_apply_profile()
+        assert {app.members[i]['profile'] for i in range(6)} == {name}
+        app._apply_sections()
+        assert {app.members[i]['profile'] for i in range(6)} == {name}
+        assert 'kept their own sections' in app.status_var.get()
+
+    def test_a_group_moves_by_a_typed_offset_and_undo_puts_it_back(
+            self, app, monkeypatch):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        mine = sgp.nodes_of_rods(app.members, sorted(g['members']))
+        # Its joints are shared with Ungrouped rods only, which are not an
+        # object: they stretch to follow, so the group may move.
+        before = list(app.nodes)
+        assert app._group_move_by(g['id'], 1.0, 0.0, 0.5)
+        for n in mine:
+            assert app.nodes[n][0] == pytest.approx(before[n][0] + 1.0)
+            assert app.nodes[n][2] == pytest.approx(before[n][2] + 0.5)
+        app._undo()
+        assert app.nodes == before
+
+    def test_the_move_dialog_moves_the_picked_group(self, app, monkeypatch):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        app.group_list.selection_clear(0, 'end')
+        app.group_list.selection_set(0)
+        app._on_group_pick()
+        n = sgp.nodes_of_rods(app.members, sorted(g['members']))[0]
+        x0 = app.nodes[n][0]
+        win = app._group_move_dialog()
+        app._group_move_vals['dx'].set(2.0)
+        app._group_move_go()
+        assert app.nodes[n][0] == pytest.approx(x0 + 2.0)
+        assert not win.winfo_exists()
+
+    # ── edit mode ─────────────────────────────────────────────────────────
+
+    def test_opening_a_group_shows_it_on_the_button_and_the_drawing(
+            self, app, monkeypatch):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        assert 'Edit group' in app.group_edit_btn.cget('text')
+        app._group_edit_toggle(g['id'])
+        assert app._editing_gid() == g['id']
+        assert 'Done editing Roof' in app.group_edit_btn.cget('text')
+        app._draw()
+        assert app.canvas.find_withtag('edit_banner')
+        dim = app.canvas.find_withtag('locked_dim')
+        assert len(dim) == len(app.members) - 6, \
+            'everything outside is drawn -- faded, not hidden'
+        app._group_edit_toggle()
+        app._draw()
+        assert not app.canvas.find_withtag('edit_banner')
+        assert not app.canvas.find_withtag('locked_dim')
+
+    def test_while_open_nothing_outside_can_be_selected(self, app,
+                                                        monkeypatch):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        mine = set(sgp.nodes_of_rods(app.members, sorted(g['members'])))
+        app._group_edit_toggle(g['id'])
+        outside = self._free_node(app)
+        app.selected_nodes = {outside, min(mine)}
+        app.selected_members = {0, 100}
+        app._sync_selection_fields()
+        assert app.selected_nodes == {min(mine)}
+        assert app.selected_members == {0}
+
+    def test_while_open_a_part_moves_by_itself(self, app, monkeypatch):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        mine = sgp.nodes_of_rods(app.members, sorted(g['members']))
+        app._group_edit_toggle(g['id'])
+        before = list(app.nodes)
+        app.selected_nodes = {mine[0]}
+        app._move_selected_nodes_by_screen(300, 300, 360, 330)
+        moved = [n for n in range(len(before)) if app.nodes[n] != before[n]]
+        assert moved == [mine[0]]
+
+    def test_while_open_its_rods_delete_and_undo_restores_the_group(
+            self, app, monkeypatch):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        app._group_edit_toggle(g['id'])
+        app.selected_nodes = set()
+        app.selected_members = {0}
+        app._on_delete_selection()
+        assert g['members'] == set(range(5))
+        app._undo()
+        again = sgp.find(app.groups, g['id'])
+        assert again['members'] == set(range(6)), \
+            'undo brings the group back with the rod'
+        rec = sgp.totals_reconcile(app.groups, app.nodes, app.members)
+        assert rec['ok'], rec
+
+    def test_a_rod_drawn_while_open_joins_the_group(self, app, monkeypatch):
+        g = self._group(app, monkeypatch, 'Roof', range(12))
+        mine = sgp.nodes_of_rods(app.members, sorted(g['members']))
+        linked = {frozenset((m['a'], m['b'])) for m in app.members}
+        a, b = next((p, q) for p in mine for q in mine
+                    if p < q and frozenset((p, q)) not in linked)
+        app._group_edit_toggle(g['id'])
+        app._add_rod_between(a, b)
+        assert len(app.members) - 1 in g['members']
+
+    def test_while_open_a_rod_to_a_node_outside_is_refused(self, app,
+                                                           monkeypatch):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        n = sgp.nodes_of_rods(app.members, sorted(g['members']))[0]
+        free = self._free_node(app)
+        app._group_edit_toggle(g['id'])
+        count = len(app.members)
+        app._add_rod_between(n, free)
+        assert len(app.members) == count
+
+    def test_while_open_other_groups_are_blocked_in_the_panel(self, app,
+                                                              monkeypatch):
+        a = self._group(app, monkeypatch, 'A', range(6))
+        b = self._group(app, monkeypatch, 'B', [300])
+        app._group_edit_toggle(a['id'])
+        app.group_list.selection_clear(0, 'end')
+        app.group_list.selection_set(1)
+        app._on_group_pick()
+        app._group_delete()
+        assert sgp.find(app.groups, b['id']) is not None
+
+    def test_an_open_group_that_undo_removes_closes_itself(self, app,
+                                                           monkeypatch):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        app._group_edit_toggle(g['id'])
+        app._undo()                         # undoes "new group"
+        assert app.groups == []
+        assert app._editing_gid() is None
+        assert 'Edit group' in app.group_edit_btn.cget('text')
+
+    def test_a_new_group_made_while_open_nests_inside_it(self, app,
+                                                        monkeypatch):
+        g = self._group(app, monkeypatch, 'Roof', range(6))
+        app._group_edit_toggle(g['id'])
+        sub = self._group(app, monkeypatch, 'Bay', [0, 1])
+        assert sub['parent'] == g['id']
+        assert sgp.rods_of(app.groups, g['id']) == list(range(6))
+
+    def test_an_addon_bolted_to_a_locked_group_leaves_it_unchanged(
+            self, app, monkeypatch):
+        top = max(p[2] for p in app.nodes)
+        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
+        feet = set(tops[:4])
+        rods = [i for i, m in enumerate(app.members)
+                if m['a'] in feet or m['b'] in feet]
+        g = self._group(app, monkeypatch, 'Roof', rods)
+        before_nodes = list(app.nodes)
+        n = len(app.members)
+        app.selected_nodes = feet
+        app._add_column()
+        assert len(app.members) > n, 'the column went on'
+        assert g['members'] == set(rods)
+        assert app.nodes[:len(before_nodes)] == before_nodes
+
+
+class TestShowMeThisRod:
+    """"Show me this rod": a rod a panel names is found for you -- selected,
+    brought to the middle of the view and flagged with a caption."""
+
+    def _mid_on_screen(self, app, i):
+        pts = app._screen_positions()
+        m = app.members[i]
+        (ax, ay), (bx, by) = pts[m['a']], pts[m['b']]
+        return (ax + bx) / 2.0, (ay + by) / 2.0
+
+    def _centre(self, app):
+        return app.canvas.winfo_width() / 2.0, app.canvas.winfo_height() / 2.0
+
+    def test_centring_on_a_node_puts_it_in_the_middle_at_any_zoom(self, app):
+        """The old centring set the pan to minus the node's projection,
+        which ignores the model's centre and the zoom, so the node landed
+        somewhere else."""
+        for zoom in (1.0, 2.5):
+            app.zc.zoom = zoom
+            app._center_on_node(17)
+            sx, sy = app._screen_positions()[17]
+            cx, cy = self._centre(app)
+            assert abs(sx - cx) < 1.0 and abs(sy - cy) < 1.0, (zoom, sx, sy)
+
+    def test_before_a_solve_there_is_no_governing_rod_to_show(self, app,
+                                                              dialogs):
+        assert app._governing_rod() is None
+        assert app._show_governing_rod() is False
+        assert any('Analyze first' in str(d) for d in dialogs)
+
+    def test_the_governing_rod_is_selected_centred_and_flagged(self, app):
+        app._analyze()
+        i, u = app._governing_rod()
+        assert u == max(c['util'] for c in app.member_checks
+                        if c.get('util') is not None)
+        assert app._show_governing_rod()
+        assert app.selected_member == i and app.selected_members == {i}
+        sx, sy = self._mid_on_screen(app, i)
+        cx, cy = self._centre(app)
+        assert abs(sx - cx) < 1.0 and abs(sy - cy) < 1.0
+        texts = [app.canvas.itemcget(t, 'text')
+                 for t in app.canvas.find_withtag('flagged_rod')
+                 if app.canvas.type(t) == 'text']
+        assert texts == ['governing rod %d -- utilisation %.2f' % (i, u)]
+
+    def test_clicking_something_else_takes_the_flag_away(self, app):
+        app._analyze()
+        app._show_governing_rod()
+        app.selected_members = set()
+        app.selected_member = None
+        app.selected_nodes = {0}
+        app._sync_selection_fields()
+        app._draw()
+        assert app._flagged_rod is None
+        assert not app.canvas.find_withtag('flagged_rod')
+
+    def test_an_edit_that_drops_the_solve_drops_the_flag(self, app):
+        """"Governing" is a claim about one solve; after an edit it may be
+        some other rod."""
+        app._analyze()
+        app._show_governing_rod()
+        app.results = None
+        app.member_checks = None
+        app._draw()
+        assert not app.canvas.find_withtag('flagged_rod')
+
+    def test_the_results_panel_has_the_button(self, app):
+        def texts(w):
+            out = []
+            for c in w.winfo_children():
+                try:
+                    out.append(c.cget('text'))
+                except tk.TclError:
+                    pass
+                out += texts(c)
+            return out
+        assert 'Show me the governing rod' in texts(app._mode_frames['results'])
+
+    def test_a_groups_recommendation_can_show_its_governing_rod(
+            self, app, monkeypatch):
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: 'Roof')
+        app.selected_members = set(range(40))
+        app.selected_nodes = set()
+        app._group_new_from_selection()
+        app._analyze()
+        app.group_list.selection_clear(0, 'end')
+        app.group_list.selection_set(0)
+        app._on_group_pick()
+        app._group_recommend()
+        win = app._group_rec_win
+        buttons = []
+
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, tk.Button) and \
+                        c.cget('text').startswith('Show me rod'):
+                    buttons.append(c)
+                walk(c)
+        walk(win)
+        assert buttons, 'no "Show me rod" button in the recommendation'
+        buttons[0].invoke()
+        rod = int(buttons[0].cget('text').split()[3])
+        assert app.selected_member == rod
+        assert rod in range(40)
+        assert 'Roof' in app._flagged_rod[1]
+        win.destroy()
+
+    def test_a_groups_properties_can_show_its_worst_rod(self, app,
+                                                       monkeypatch):
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: 'Roof')
+        app.selected_members = set(range(40))
+        app.selected_nodes = set()
+        app._group_new_from_selection()
+        app._analyze()
+        app.group_list.selection_clear(0, 'end')
+        app.group_list.selection_set(0)
+        app._on_group_pick()
+        win = app._group_properties()
+        btn = []
+
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, tk.Button) and c.cget('text') == 'Show worst rod':
+                    btn.append(c)
+                walk(c)
+        walk(win)
+        assert btn
+        btn[0].invoke()
+        assert app._flagged_rod[0] == app._governing_rod(range(40))[0]
+        win.destroy()
+
+
+class TestSectionPropertiesInTheBoxes:
+    """The recommendation and the group's properties box show the section's
+    own numbers -- A, I, both radii, c, W, mass -- not just its name."""
+
+    def _group(self, app, monkeypatch, rods):
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: 'Roof')
+        app.selected_members = set(rods)
+        app.selected_nodes = set()
+        app._group_new_from_selection()
+        app.group_list.selection_clear(0, 'end')
+        app.group_list.selection_set(0)
+        app._on_group_pick()
+        return app.groups[-1]
+
+    def _frames(self, win):
+        out = []
+
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, tk.LabelFrame):
+                    out.append(c)
+                walk(c)
+        walk(win)
+        return out
+
+    def _labels(self, frame):
+        return [c.cget('text') for c in frame.winfo_children()
+                if isinstance(c, tk.Label)]
+
+    def test_the_recommendation_shows_the_recommended_sections_properties(
+            self, app, monkeypatch):
+        self._group(app, monkeypatch, range(40))
+        app._analyze()
+        app._group_recommend()
+        win = app._group_rec_win
+        tables = [f for f in self._frames(win)
+                  if f.cget('text').startswith('Section properties')]
+        assert len(tables) == 1
+        name = tables[0].cget('text').split('-- ')[1]
+        from apps.stereo import stereo_profiles as sp
+        labels = self._labels(tables[0])
+        for sym, val, unit, _m in sp.section_properties(name):
+            assert sym in labels and val in labels and unit in labels, sym
+        win.destroy()
+
+    def test_the_properties_box_shows_the_groups_section(self, app,
+                                                         monkeypatch):
+        from apps.stereo import stereo_profiles as sp
+        self._group(app, monkeypatch, range(12))
+        app.group_profile.set('IPE 200')
+        app._group_apply_profile()
+        win = app._group_properties()
+        tables = [f for f in self._frames(win)
+                  if 'IPE 200' in f.cget('text')]
+        assert tables and tables[0].cget('text') == \
+            'Section properties -- IPE 200'
+        r_min = dict((r[0], r[1]) for r in sp.section_properties('IPE 200'))
+        assert r_min['r min'] in self._labels(tables[0])
+        win.destroy()
+
+    def test_a_mixed_group_says_which_section_it_is_showing(self, app,
+                                                          monkeypatch):
+        self._group(app, monkeypatch, range(12))
+        app.group_profile.set('IPE 200')
+        app._group_apply_profile()
+        from apps.stereo import stereo_checks as sk
+        sk.apply_recommendation(app.members, [0, 1], 'HEA 200')
+        win = app._group_properties()
+        titles = [f.cget('text') for f in self._frames(win)]
+        assert 'Most used: IPE 200 (10 of 12 rods)' in titles
+        win.destroy()
+
+
+class TestGroupsPdf:
+    """One document for a grouped model: a summary with contents, the joints
+    where groups meet, and a section per group -- numbered as one document."""
+
+    def _pages(self, path):
+        import re
+        data = open(path, 'rb').read()
+        return len(re.findall(rb'/Type\s*/Page(?!s)', data))
+
+    def _groups(self, app, monkeypatch):
+        names = iter(['Roof A', 'Bay A1', 'Roof B'])
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: next(names))
+        app.selected_nodes = set()
+        app.selected_members = set(range(0, 200))
+        app._group_new_from_selection()
+        a = app.groups[-1]
+        app.group_list.selection_clear(0, 'end')
+        app.group_list.selection_set(0)
+        app._on_group_pick()
+        app.selected_members = set(range(0, 40))
+        app._group_edit_toggle(a['id'])       # rods leave A only while open
+        app._group_new_from_selection()        # nests inside A
+        app._group_edit_toggle()
+        app.selected_members = set(range(200, 420))
+        app._group_new_from_selection()
+        app._analyze()
+        monkeypatch.setattr(app, '_pdf_sheet_dialog',
+                            lambda *a, **k: {'tables'})
+
+    def test_every_group_gets_a_section_and_the_numbering_is_one_document(
+            self, app, monkeypatch, tmp_path):
+        from apps.stereo import stereo_reports as sr
+        self._groups(app, monkeypatch)
+        path = str(tmp_path / 'groups.pdf')
+        contents = app._export_groups_pdf(path=path)
+        titles = [t.strip() for t, _ in contents]
+        assert titles[:2] == ['Groups — summary',
+                              'Joints shared between groups']
+        assert titles[2:] == ['Roof A', 'Bay A1', 'Roof B', 'Ungrouped']
+        # each section starts where the one before it ends
+        per = []
+        for gid, name, lvl, rods in sr.group_report_order(app.groups,
+                                                          len(app.members)):
+            sub = sr.submodel(app.nodes, app.members, app._all_loads(),
+                              app._active_supports(), app.results,
+                              app.member_checks, member_idx=rods)
+            per.append(len(sr.report_plan(sub[1], sub[4], sub[5], {'tables'},
+                                          False)))
+        starts = [at for _t, at in contents[2:]]
+        assert [b - a for a, b in zip(starts, starts[1:])] == per[:-1]
+        assert self._pages(path) == starts[-1] + per[-1] - 1
+
+    def test_the_joints_run_over_as_many_sheets_as_they_need(self, app,
+                                                             monkeypatch,
+                                                             tmp_path):
+        from apps.stereo import stereo_reports as sr
+        from apps.stereo import stereo_groups as sgp
+        self._groups(app, monkeypatch)
+        rows = sgp.shared_node_rows(app.groups, app.nodes, app.members,
+                                    app.results['member_res'])
+        blocks = sr._joint_table_rows(rows, sr.ReportUnits())
+        pages = sr._paginate_blocks(blocks)
+        assert sum(len(p) for p in pages) == sum(len(r['sides']) for r in rows)
+        assert all(len(p) <= sr.PDF_JOINT_ROWS_PER_SHEET for p in pages)
+        # no joint is split across two sheets: each page starts with a node
+        assert all(p[0][0] != '' for p in pages)
+        contents = app._export_groups_pdf(path=str(tmp_path / 'g.pdf'))
+        assert contents[2][1] == 2 + len(pages), \
+            'the first section starts after the last joints sheet'
+
+    def test_pdf_of_this_group_covers_it_and_its_subgroups_only(
+            self, app, monkeypatch, tmp_path):
+        self._groups(app, monkeypatch)
+        app.group_list.selection_clear(0, 'end')
+        app.group_list.selection_set(0)            # Roof A, with Bay A1
+        app._on_group_pick()
+        contents = app._export_groups_pdf(only_picked=True,
+                                          path=str(tmp_path / 'a.pdf'))
+        assert [t.strip() for t, _ in contents[2:]] == ['Roof A', 'Bay A1']
+
+    def test_it_asks_for_a_solve_first(self, app, monkeypatch, dialogs,
+                                       tmp_path):
+        self._groups(app, monkeypatch)
+        app.results = None
+        assert app._export_groups_pdf(path=str(tmp_path / 'x.pdf')) is None
+        assert any('Analyze first' in str(d) for d in dialogs)
+
+    def test_the_panel_offers_both_actions(self, app):
+        def texts(w):
+            out = []
+            for c in w.winfo_children():
+                try:
+                    out.append(c.cget('text'))
+                except tk.TclError:
+                    pass
+                out += texts(c)
+            return out
+        t = texts(app._mode_frames['groups'])
+        assert 'PDF of all groups…' in t and 'PDF of this group…' in t
+
+
+class TestGroupedAndUngroupedModes:
+    """Grouped mode marks every top-level group with its own tint and names
+    them in a key; Ungrouped is the plain model. The locks hold in both."""
+
+    def _two_groups(self, app, monkeypatch):
+        names = iter(['Roof A', 'Bay A1', 'Roof B'])
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: next(names))
+        app.selected_nodes = set()
+        app.selected_members = set(range(0, 60))
+        app._group_new_from_selection()
+        a = app.groups[-1]
+        app._group_edit_toggle(a['id'])
+        app.selected_members = set(range(0, 10))
+        app._group_new_from_selection()           # Bay A1, inside Roof A
+        app._group_edit_toggle()
+        app.selected_members = set(range(300, 340))
+        app._group_new_from_selection()
+        return a
+
+    def test_ungrouped_mode_draws_the_plain_model(self, app, monkeypatch):
+        self._two_groups(app, monkeypatch)
+        app.group_view.set(False)
+        app._draw()
+        assert not app.canvas.find_withtag('group_tint')
+        assert not app.canvas.find_withtag('group_key')
+
+    def test_grouped_mode_tints_every_grouped_rod_by_its_outer_group(
+            self, app, monkeypatch):
+        self._two_groups(app, monkeypatch)
+        app.group_view.set(True)
+        app._draw()
+        tints = app.canvas.find_withtag('group_tint')
+        assert len(tints) == 60 + 40, 'every grouped rod, and only those'
+        rods, key = app._group_tint_map()
+        assert [n for n, _t in key] == ['Roof A', 'Roof B'], \
+            'a subgroup reads as part of its outer group'
+        assert rods[0] == rods[59], 'Bay A1 takes Roof A\'s tint'
+        assert rods[0] != rods[300]
+        texts = [app.canvas.itemcget(t, 'text')
+                 for t in app.canvas.find_withtag('group_key')
+                 if app.canvas.type(t) == 'text']
+        assert texts == ['GROUPS', 'Roof A', 'Roof B']
+
+    def test_the_locks_hold_in_ungrouped_mode_too(self, app, monkeypatch):
+        self._two_groups(app, monkeypatch)
+        app.group_view.set(False)
+        n = len(app.members)
+        app.selected_nodes = set()
+        app.selected_members = {5}
+        app._on_delete_selection()
+        assert len(app.members) == n
+
+    def test_the_panel_has_the_two_modes(self, app):
+        radios = []
+
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, tk.Radiobutton):
+                    radios.append(c.cget('text'))
+                walk(c)
+        walk(app._mode_frames['groups'])
+        assert 'Ungrouped' in radios and 'Grouped' in radios

@@ -199,6 +199,34 @@ the worst axial and shear framing in, the reaction, and the envelope.
 **20 — Steel take-off.** Bars, area, total and mean length, kg/m and mass
 per section, ranked by mass, closing on the total in kg and tonnes.
 
+## The grouped report (Groups mode)
+
+**PDF of all groups…** writes a grouped model as one document, and
+**PDF of this group…** (also on a group's right-click menu) writes the same
+for one group and its subgroups. Both use the sheet chooser above.
+
+- **Sheet 1 — Groups, summary and contents.** One row per group, indented
+  by nesting: rods, nodes, length, weight, worst utilisation and the rod it
+  is at, the sections in use, and the sheet its section starts on. A
+  parent's row includes its subgroups, so the rows do not sum to the model;
+  the closing line is the check that does — every rod counted once, in its
+  own group or in Ungrouped.
+- **Joints shared between groups** — as many sheets as it takes, never
+  splitting a joint across two. For every joint two groups meet at, the rods
+  each side has there and the force they pull on it (Fx, Fy, Fz, |F|), which
+  is what the connection is detailed from. Cross-branch joints first.
+- **Then a section per group**, in the tree's order, each the ordinary
+  report of that group shown in isolation — the same sheets *PDF of
+  Selection* produces — followed by an Ungrouped section when any rods are
+  unassigned. The five orthographic views are included only when ticked in
+  the chooser.
+
+Every section is a **view of the one whole-model solve**. A branch cut free
+and solved on its own would be a different structure, usually a mechanism,
+and its forces would be wrong. Sheets are numbered through the whole
+document ("Sheet 14 / 52"), and the summary's contents column gives each
+section's first sheet.
+
 ## Rebuilding the hand-out artefacts
 
 ```

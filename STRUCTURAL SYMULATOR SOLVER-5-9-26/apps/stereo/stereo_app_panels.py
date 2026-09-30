@@ -2679,3 +2679,6 @@ class StereoPanelsMixin(_ToolbarModes):
         self.results_text = tk.Text(box, height=8, width=32, wrap='word',
                                     font=('Helvetica', 9), relief='flat', bg=BG)
         self.results_text.pack(fill='both', padx=6, pady=6)
+        tk.Button(box, text='Show me the governing rod', font=('Helvetica', 8),
+                  command=self._show_governing_rod
+                  ).pack(fill='x', padx=6, pady=(0, 6))

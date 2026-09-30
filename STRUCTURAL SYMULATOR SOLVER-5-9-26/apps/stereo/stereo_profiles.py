@@ -539,6 +539,67 @@ def profile_summary(name: str) -> str:
     return f'{name}  (A={a_cm2:.1f} cm², I={ix_cm4:.0f} cm⁴, r min={r_cm:.2f} cm)'
 
 
+STEEL_KG_PER_M3 = 7850.0
+
+
+def section_properties(name: str) -> List[Tuple[str, str, str, str]]:
+    """The properties a reader checks a section by, for a properties box.
+
+    Rows of (symbol, value, unit, meaning), already formatted, in the order
+    a steel table prints them. The two radii are both given and both named,
+    because the minor one is what a strut buckles about and the major one
+    is what a bending check uses -- showing one bare "r" invites reading
+    the wrong one, the mistake this catalog itself once made. [] for a name
+    that is not in the catalog (a hand-typed section has no table row).
+    """
+    sec = CATALOG.get(name)
+    if sec is None:
+        return []
+    A = sec.A_mm2 / 100.0
+    Ix = sec.Ix_mm4 / 10_000.0
+    Iy = sec.Iy_mm4 / 10_000.0
+    J = sec.J_mm4 / 10_000.0
+    c = sec.c_mm / 10.0
+    # "Strong" and "weak" only mean something for a section that has them.
+    # An angle's x and y are its two legs, equal here, and its weakest axis
+    # is neither (v-v); a round tube is the same about every axis.
+    if isinstance(sec, EqualAngle):
+        ax, ay = 'about a leg (x-x)', 'about the other leg (y-y)'
+    elif isinstance(sec, RoundTube):
+        ax = ay = 'about any axis'
+    elif abs(Ix - Iy) <= 1e-9 * max(Ix, Iy, 1e-12):
+        ax = ay = 'about either axis'       # a square tube
+    else:
+        ax, ay = 'strong axis', 'weak axis'
+    rows = [
+        ('A', '%.2f' % A, 'cm²', 'area'),
+        ('Ix', '%.1f' % Ix, 'cm⁴', 'second moment, ' + ax),
+        ('Iy', '%.1f' % Iy, 'cm⁴', 'second moment, ' + ay),
+        ('J', '%.2f' % J, 'cm⁴', 'torsion constant'),
+        ('rx', '%.2f' % (sec.r_x_mm / 10.0), 'cm', 'radius of gyration, ' + ax),
+        ('r min', '%.2f' % (sec.r_gyr_mm / 10.0), 'cm',
+         'radius of gyration, minor -- buckling uses this'),
+        ('c', '%.1f' % c, 'cm', 'centroid to extreme fibre, ' + ax),
+        ('Wx', '%.1f' % (Ix / c if c > 0 else 0.0), 'cm³',
+         'elastic section modulus, ' + ax),
+        ('mass', '%.2f' % (A * 1e-4 * STEEL_KG_PER_M3), 'kg/m',
+         'steel at 7850 kg/m³'),
+    ]
+    if isinstance(sec, EqualAngle):
+        rows.insert(3, ('Iv', '%.1f' % (sec.Iv_mm4 / 10_000.0), 'cm⁴',
+                        'second moment, minor principal (v-v)'))
+    return rows
+
+
+# Printed under every properties table: the catalog builds each section from
+# its nominal plate dimensions, without the root fillets of a rolled shape,
+# so A, I and mass run a few per cent under a published steel table -- on
+# the safe side, and worth saying so nobody takes it for a transcription.
+SECTION_PROPERTIES_NOTE = ('From nominal plate dimensions, without root '
+                           'fillets: a few per cent under published tables, '
+                           'on the safe side.')
+
+
 # ── writing a section onto a member without leaving a stale depth ────────────
 
 # The member keys a section is made of. c_cm is deliberately NOT in this list:

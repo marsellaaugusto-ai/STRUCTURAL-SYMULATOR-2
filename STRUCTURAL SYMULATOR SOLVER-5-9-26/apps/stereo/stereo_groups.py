@@ -480,3 +480,312 @@ def member_remap(n_before, dropped):
         out[i] = new
         new += 1
     return out
+
+
+# ── locking: a group is one object until it is opened for editing ─────────
+#
+# Asked for in these words: once made, a group is an uneditable object unless
+# edit mode is opened for it; it moves as a whole but its parts cannot; its
+# nodes cannot be moved, but rods can still be added to them; and while one
+# group is being edited, everything outside it is blocked -- still drawn, for
+# context, but not selectable, movable or deletable.
+#
+# So there is no per-group "locked" flag to forget to set. EVERY group is
+# locked, always, and the one piece of state is which group -- if any -- is
+# open. `editing` below is that group's id, or None when none is open.
+# Opening a group opens its whole subtree: a subgroup is "inside the group I
+# am editing", which is the rule as stated.
+#
+# Three decisions the request left open, taken here so they are in one place:
+#
+#   * A group that shares a joint with ANOTHER group cannot be moved on its
+#     own: the joint belongs to both, and moving it would change a group that
+#     is not being moved. The refusal names the joints and the other group.
+#     Ungrouped rods are not an object, so a joint shared only with them
+#     moves, and they stretch to follow.
+#   * Grabbing a node that two groups share takes BOTH groups: the joint is
+#     part of each, so "the object this node belongs to" is both of them.
+#   * A group's own section can be set while it is locked. The lock is about
+#     geometry and membership -- the mistakes that cannot be seen until the
+#     report is wrong -- and sizing a branch is what groups exist for.
+
+def top_group(groups, gid):
+    """The outermost group containing `gid` -- the object a click lands on."""
+    g, seen = find(groups, gid), set()
+    while g is not None and g['parent'] is not None and g['id'] not in seen:
+        seen.add(g['id'])
+        up = find(groups, g['parent'])
+        if up is None:
+            break
+        g = up
+    return g['id'] if g is not None else None
+
+
+def owner_of_rod(groups):
+    """{rod index: gid} for every grouped rod, leaf level."""
+    out = {}
+    for g in groups:
+        for i in g['members']:
+            out[i] = g['id']
+    return out
+
+
+def rods_at_nodes(members):
+    """{node: [rod indices]} -- the adjacency every rule below reads."""
+    out = {}
+    for i, m in enumerate(members):
+        out.setdefault(m['a'], []).append(i)
+        if m['b'] != m['a']:
+            out.setdefault(m['b'], []).append(i)
+    return out
+
+
+def editable_rods(groups, editing, n_members):
+    """The rods that may be changed one by one right now.
+
+    With no group open these are the Ungrouped rods -- every grouped rod is
+    part of a locked object. With a group open they are that group's rods,
+    subgroups included, and nothing else.
+    """
+    if editing is None:
+        return set(ungrouped_rods(groups, n_members))
+    return set(rods_of(groups, editing, deep=True))
+
+
+def protected_rods(groups, editing):
+    """Grouped rods outside the open group: the ones nothing may change."""
+    inside = set(rods_of(groups, editing, deep=True)) if editing is not None \
+        else set()
+    return set(owner_of_rod(groups)) - inside
+
+
+def editable_nodes(groups, members, editing, n_nodes=None):
+    """Nodes that may be selected and changed one by one right now.
+
+    No group open: every node no grouped rod touches (a grouped node belongs
+    to an object and moves only with it). A group open: the nodes of that
+    group, and only those -- everything else is blocked while editing.
+    `n_nodes` counts nodes no rod touches at all, which the member list
+    alone cannot see.
+    """
+    if editing is not None:
+        return set(nodes_of_rods(members, rods_of(groups, editing, deep=True)))
+    touched = set(nodes_of_rods(members, owner_of_rod(groups)))
+    if n_nodes is None:
+        n_nodes = 1 + max((max(m['a'], m['b']) for m in members), default=-1)
+    return {n for n in range(n_nodes) if n not in touched}
+
+
+def node_groups(groups, members, node, adjacency=None):
+    """The groups (leaf level) with a rod at `node`."""
+    own = owner_of_rod(groups)
+    adj = adjacency if adjacency is not None else rods_at_nodes(members)
+    return sorted({own[i] for i in adj.get(node, ()) if i in own})
+
+
+def _conflicts(groups, members, moving_nodes, moving_rods, editing, adj=None):
+    """{node: [gid...]} -- moving nodes that a protected rod outside the move
+    also uses. Moving such a node would change a group nobody opened."""
+    if adj is None:
+        adj = rods_at_nodes(members)
+    guard = protected_rods(groups, editing) - set(moving_rods)
+    own = owner_of_rod(groups)
+    out = {}
+    for n in moving_nodes:
+        hit = sorted({own[i] for i in adj.get(n, ()) if i in guard})
+        if hit:
+            out[n] = hit
+    return out
+
+
+def move_plan(groups, members, selected_nodes, editing=None):
+    """What a drag of these selected nodes is allowed to move.
+
+    Returns {'nodes': [...], 'groups': [...], 'conflicts': {node: [gid]}}.
+    With `conflicts` non-empty nothing may move.
+
+    No group open: a node that belongs to a group brings its whole
+    outermost group along -- the object moves as a whole. A free node moves
+    by itself. With a group open: only that group's nodes move, one by one,
+    and a selected node outside it is ignored rather than dragged along.
+    """
+    adj = rods_at_nodes(members)
+    own = owner_of_rod(groups)
+    sel = {int(n) for n in selected_nodes}
+    if editing is None:
+        tops = set()
+        free = set()
+        for n in sel:
+            gids = {own[i] for i in adj.get(n, ()) if i in own}
+            if gids:
+                tops |= {top_group(groups, g) for g in gids}
+            else:
+                free.add(n)
+        rods = set()
+        for t in tops:
+            rods |= set(rods_of(groups, t, deep=True))
+        nodes = set(nodes_of_rods(members, rods)) | free
+    else:
+        tops = set()
+        rods = set()
+        nodes = sel & editable_nodes(groups, members, editing)
+    return {'nodes': sorted(nodes), 'groups': sorted(tops),
+            'conflicts': _conflicts(groups, members, nodes, rods, editing, adj)}
+
+
+def group_move_plan(groups, members, gid, editing=None):
+    """Moving one named group -- and its subgroups -- as a whole."""
+    rods = set(rods_of(groups, gid, deep=True))
+    nodes = set(nodes_of_rods(members, rods))
+    return {'nodes': sorted(nodes), 'groups': [gid],
+            'conflicts': _conflicts(groups, members, nodes, rods, editing)}
+
+
+def delete_blockers(groups, members, node_targets, member_targets, editing=None):
+    """{gid or None: [rods]} that a delete would take but may not.
+
+    Deleting a node takes every rod at it, so a node shared with anything
+    outside what may be edited blocks the delete even when the node itself
+    is inside. None as a key is the Ungrouped set, blocked while a group is
+    open for the same reason as everything else outside it.
+    """
+    nodes = {int(n) for n in node_targets}
+    going = {int(i) for i in member_targets}
+    going |= {i for i, m in enumerate(members)
+              if m['a'] in nodes or m['b'] in nodes}
+    allowed = editable_rods(groups, editing, len(members))
+    own = owner_of_rod(groups)
+    out = {}
+    for i in sorted(going - allowed):
+        out.setdefault(own.get(i), []).append(i)
+    return out
+
+
+def rod_locked(groups, i, editing=None):
+    """May this rod NOT be changed on its own right now?"""
+    if editing is None:
+        return int(i) in owner_of_rod(groups)
+    return int(i) not in set(rods_of(groups, editing, deep=True))
+
+
+def node_locked(groups, members, n, editing=None):
+    """May this node NOT be moved on its own right now?"""
+    if editing is None:
+        return bool(node_groups(groups, members, n))
+    return int(n) not in editable_nodes(groups, members, editing)
+
+
+def assign_blockers(groups, rod_idx, target, editing=None):
+    """{gid: [rods]} this assignment would take out of a locked group.
+
+    A rod leaves a group only while that group is open: `assign` MOVES a
+    rod, so without this, adding a selection to one branch could silently
+    empty another. `target` None means Ungroup.
+    """
+    own = owner_of_rod(groups)
+    inside = set(rods_of(groups, editing, deep=True)) if editing is not None \
+        else set()
+    out = {}
+    for i in sorted({int(i) for i in rod_idx}):
+        g = own.get(i)
+        if g is None or g == target or i in inside:
+            continue
+        out.setdefault(g, []).append(i)
+    return out
+
+
+def target_open(groups, target, editing=None):
+    """May rods be added to `target` without asking? Only if it is open."""
+    if target is None:
+        return editing is None
+    return editing is not None and (
+        target == editing or target in descendant_ids(groups, editing))
+
+
+# ── an operation that rebuilds the model must not disturb a locked group ──
+
+def geometry_violations(groups, nodes_before, members_before, nodes_after,
+                        members_after, editing=None, tol=1e-9):
+    """[(gid, rod, why)] for protected rods an operation removed or moved.
+
+    For the operations that rebuild the whole node or member list from a
+    rule -- the Module Editor's role edits, the add-ons -- and so cannot be
+    checked one click at a time. Rods are matched by their END NODES, not
+    their index, because several of these operations reorder the list.
+    Node indices of existing nodes are assumed stable, which every one of
+    them keeps (they append new nodes; the ones that drop nodes are checked
+    before they run).
+    """
+    after = {}
+    for i, m in enumerate(members_after):
+        after.setdefault(frozenset((m['a'], m['b'])), i)
+    own = owner_of_rod(groups)
+    out = []
+    for i in sorted(protected_rods(groups, editing)):
+        if not (0 <= i < len(members_before)):
+            continue
+        m = members_before[i]
+        if frozenset((m['a'], m['b'])) not in after:
+            out.append((own[i], i, 'removed'))
+            continue
+        for n in (m['a'], m['b']):
+            if n >= len(nodes_after) or n >= len(nodes_before):
+                out.append((own[i], i, 'node %d gone' % n))
+                break
+            p, q = nodes_before[n], nodes_after[n]
+            if max(abs(p[k] - q[k]) for k in range(3)) > tol:
+                out.append((own[i], i, 'node %d moved' % n))
+                break
+    return out
+
+
+def remap_by_endpoints(groups, members_before, members_after):
+    """Carry every group across a rebuild that may have reordered the rods.
+
+    Index-based remapping needs to be told what was dropped; this finds each
+    rod again by its two end nodes, so it also survives an operation that
+    inserts or reorders. A rod that is gone leaves its group.
+    """
+    after = {}
+    for i, m in enumerate(members_after):
+        after.setdefault(frozenset((m['a'], m['b'])), i)
+    for g in groups:
+        keep = set()
+        for i in g['members']:
+            if 0 <= i < len(members_before):
+                m = members_before[i]
+                j = after.get(frozenset((m['a'], m['b'])))
+                if j is not None:
+                    keep.add(j)
+        g['members'] = keep
+    return groups
+
+
+def describe_conflicts(groups, conflicts, limit=6):
+    """'node 12 (Roof, Bay 2), node 14 (Roof)' -- for a refusal message."""
+    parts = []
+    for n in sorted(conflicts)[:limit]:
+        names = ', '.join(_name(groups, g) for g in conflicts[n])
+        parts.append('node %d (%s)' % (n, names))
+    more = len(conflicts) - limit
+    return ', '.join(parts) + (' and %d more' % more if more > 0 else '')
+
+
+def describe_rods(groups, by_group, limit=8):
+    """'Roof: rods 3, 4, 9; Ungrouped: rod 12' -- for a refusal message."""
+    parts = []
+    for g in sorted(by_group, key=lambda k: (k is None, k if k is not None else 0)):
+        rods = by_group[g]
+        shown = ', '.join(str(i) for i in rods[:limit])
+        if len(rods) > limit:
+            shown += ' and %d more' % (len(rods) - limit)
+        parts.append('%s: rod%s %s' % (_name(groups, g),
+                                       's' if len(rods) != 1 else '', shown))
+    return '; '.join(parts)
+
+
+def _name(groups, gid):
+    if gid is None:
+        return UNGROUPED_NAME
+    g = find(groups, gid)
+    return g['name'] if g else '?'

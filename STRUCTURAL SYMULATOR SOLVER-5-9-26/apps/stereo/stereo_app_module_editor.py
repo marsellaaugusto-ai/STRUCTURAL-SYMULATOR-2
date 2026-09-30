@@ -921,10 +921,16 @@ class StereoModuleEditorMixin:
             return
         if delta == (0.0, 0.0, 0.0):
             return
+        # A role edit moves the node in EVERY cell of that role, all over
+        # the model, so a locked group is checked against the result rather
+        # than against the one node that was picked.
+        new_nodes = sg.move_role_node(self.nodes, self.members, self._me_cells,
+                                      self._me_roles, self._me_role_id, position, delta,
+                                      locked_member_idxs=self._me_locked_member_idxs())
+        if not self._guard_rebuild('Module Editor', new_nodes, self.members):
+            return
         self._push_undo('module editor: move node')
-        self.nodes = sg.move_role_node(self.nodes, self.members, self._me_cells,
-                                       self._me_roles, self._me_role_id, position, delta,
-                                       locked_member_idxs=self._me_locked_member_idxs())
+        self.nodes = new_nodes
         self.results = None
         self.member_checks = None
         # Deliberately NOT _me_refresh_topology() here: a move changes
@@ -963,9 +969,12 @@ class StereoModuleEditorMixin:
         if new_length <= 0:
             messagebox.showerror('Module Editor', 'Length must be positive.')
             return
+        new_nodes = sg.set_role_member_length(self.nodes, self._me_cells, self._me_roles,
+                                              self._me_role_id, pos_a, pos_b, new_length)
+        if not self._guard_rebuild('Module Editor', new_nodes, self.members):
+            return
         self._push_undo('module editor: set rod length')
-        self.nodes = sg.set_role_member_length(self.nodes, self._me_cells, self._me_roles,
-                                               self._me_role_id, pos_a, pos_b, new_length)
+        self.nodes = new_nodes
         self.results = None
         self.member_checks = None
         # Not _me_refresh_topology() -- see _me_apply_move's own comment;
@@ -994,9 +1003,18 @@ class StereoModuleEditorMixin:
         if self._me_selection is None or self._me_selection[0] != 'toggle':
             return
         pos_a, pos_b = self._me_selection[1]
+        new_members = sg.toggle_role_member(self.members, self._me_cells, self._me_roles,
+                                            self._me_role_id, pos_a, pos_b)
+        if not self._guard_rebuild('Module Editor', self.nodes, new_members):
+            return
         self._push_undo('module editor: toggle rod')
-        self.members = sg.toggle_role_member(self.members, self._me_cells, self._me_roles,
-                                             self._me_role_id, pos_a, pos_b)
+        # Toggling OFF drops rods from the middle of the list, which shifts
+        # every index after them; the groups follow their rods by end nodes.
+        n_before = len(self.members)
+        self._carry_groups(self.members, new_members)
+        self.members = new_members
+        self._adopt_new_rods(n_before if len(new_members) > n_before
+                             else len(new_members))
         self._apply_sections(members=self.members, redraw=False)
         self.results = None
         self.member_checks = None
@@ -1014,9 +1032,12 @@ class StereoModuleEditorMixin:
         if factor <= 0:
             messagebox.showerror('Module Editor', 'Scale factor must be positive.')
             return
+        new_nodes = sg.rescale_role_cells(self.nodes, self._me_cells, self._me_roles,
+                                          self._me_role_id, factor)
+        if not self._guard_rebuild('Module Editor', new_nodes, self.members):
+            return
         self._push_undo('module editor: rescale')
-        self.nodes = sg.rescale_role_cells(self.nodes, self._me_cells, self._me_roles,
-                                           self._me_role_id, factor)
+        self.nodes = new_nodes
         self.results = None
         self.member_checks = None
         # Not _me_refresh_topology() -- see _me_apply_move's own comment;

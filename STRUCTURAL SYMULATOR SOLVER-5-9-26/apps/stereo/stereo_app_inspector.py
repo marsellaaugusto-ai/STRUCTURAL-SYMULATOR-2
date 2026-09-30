@@ -143,6 +143,8 @@ class StereoInspectorMixin:
             z = self._props_entries['z'].get()
         except (tk.TclError, KeyError):
             return
+        if not self._guard_nodes('Node position', [sn]):
+            return
         self._push_undo('edit node position')
         self.nodes[sn] = (x, y, z)
         self.results = None
@@ -152,6 +154,8 @@ class StereoInspectorMixin:
     def _apply_member_properties(self):
         sm_idx = self.selected_member
         if sm_idx is None or sm_idx >= len(self.members):
+            return
+        if not self._guard_rods('Member properties', [sm_idx]):
             return
         self._push_undo('edit member properties')
         m = self.members[sm_idx]
@@ -293,9 +297,9 @@ class StereoInspectorMixin:
     def _center_on_node(self, i):
         if i >= len(self.nodes):
             return
-        x, y, z = self.nodes[i]
-        px, py, _ = self._project(x, y, z)
-        self.zc.pan_x = -px * self.PX_PER_M
-        self.zc.pan_y = -py * self.PX_PER_M
-        self._view_touched = True
+        # Through _center_on_point, which does the sum _draw does. This used
+        # to set the pan to minus the node's projected position, ignoring
+        # both the model's centre and the zoom, so "centre on node" put the
+        # node somewhere else -- often off the canvas.
+        self._center_on_point(*self.nodes[i])
         self._draw()

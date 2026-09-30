@@ -451,9 +451,61 @@ card is a reference, not a second editor.
 - **Delete** selected nodes or a selected member.
 - **Click to inspect** a rod: endpoints, role, connectivity, axial force,
   utilisation and the governing check.
+- **Show me this rod** — wherever a panel names a rod (Results: *Show me
+  the governing rod*; a group's section recommendation: its governing rod
+  and, when different, its largest-force rod; a group's properties: its
+  worst rod), one click selects it, centres the view on it and flags it
+  with a magenta halo and a caption saying why. The flag goes when you
+  select something else, or when an edit invalidates the solve it came from.
+  *Centre on node* in the model tree now really centres (it used to ignore
+  the zoom and the model's own centre).
 - **Undo / redo**, 60 deep, covering every model-changing command.
 - **Support sandbox** — click a support to disable it and re-analyze without
   editing the model, to build intuition for redundancy.
+
+### Groups are locked objects
+
+A group (Groups mode) is a named set of rods — a branch of the structure.
+Once made, it behaves as **one object**:
+
+- **Dragging any of its nodes moves the whole group**, subgroups included.
+  Its parts do not move on their own, cannot be typed to new coordinates,
+  and its rods cannot be deleted or have their properties edited.
+- **Rods can still be drawn to its nodes.** The new rod is Ungrouped — the
+  object it was drawn from is unchanged.
+- **Move group…** moves it by a typed (dx, dy, dz).
+- A group that **shares a joint with another group** will not move on its
+  own: the joint belongs to both. The status line names the joint. Select a
+  node of each to move them together. Ungrouped rods at its joints are not
+  an object, so they stretch to follow.
+- Its **section** can still be set from the Groups panel, and the panel-wide
+  *Apply sections* (which every add-on also runs) leaves it alone.
+- A rod leaves a locked group only while that group is open, so adding a
+  selection to one branch can never silently empty another.
+
+**Grouped and Ungrouped modes.** The Groups panel's *Mode* switch sets how
+the model is drawn. *Grouped* gives every top-level group its own pale tint
+— a halo under its rods, so force, utilisation and moment colours still
+read on top — and a key naming them in the corner; a subgroup takes its
+outer group's tint, because it is part of the same object. *Ungrouped* is
+the plain model. The locks hold in both: the mode is a view, and *Edit
+group* is the only way to change a group's parts.
+
+**Section properties.** The section recommendation shows the recommended
+section's own table — A, Ix, Iy, J, both radii of gyration (the minor one
+labelled as the one buckling uses), c, Wx and kg/m, with Iv for angles —
+and a group's properties box shows the section its rods carry (or, in a
+mixed group, the one most of them carry, and says so). Values come from
+nominal plate dimensions without root fillets, a few per cent under
+published tables, and the box says that too.
+
+**Edit group (unlock its parts)** opens one group. Its nodes and rods — and
+its subgroups' — can then be moved, deleted and added to; new rods join it;
+a new group made from a selection nests inside it. **Everything outside it
+is blocked**: faded on the drawing but still there for context, not
+selectable, and refused by every tool. A blue frame and banner say which
+group is open. **Done editing** locks it again. Undo covers all of it: the
+groups are part of every undo step.
 
 ---
 
@@ -614,6 +666,10 @@ legends and colourbar tick values.
   from. Utilisation and the L/n deflection ratio stay unconverted, being
   ratios; the scale bar, grid spacing and triad arm pick their round
   number in the unit they are labelled in.
+- **Groups PDF** — Groups mode's *PDF of all groups* / *PDF of this group*:
+  one document with a summary and contents sheet, the joints shared between
+  groups with the force each side hands across (as many sheets as needed),
+  then a section per group. Numbered as one document. See the PDF guide.
 - **PDF of Selection** — the same report for the selected group **alone**,
   with the rest of the model cut out rather than dimmed, so nothing
   obstructs it. The title block names both the file and the group.

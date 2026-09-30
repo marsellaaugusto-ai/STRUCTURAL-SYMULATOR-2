@@ -2963,7 +2963,8 @@ def plan_sheets(results=None, checks=None, n_rigid=0, groups=None):
 def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                meta=None, az_deg=30, el_deg=25, ortho_views=True,
                groups=None, deflection_denom=PDF_DEFLECTION_DENOM,
-               unit_weight_kN_m3=None):
+               unit_weight_kN_m3=None, into=None, sheet_base=0,
+               sheet_total=None):
     """Generate the multi-sheet PDF analysis report.
 
     Sheets: 1) the general (axonometric) view with the load case, then the
@@ -2994,6 +2995,12 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
     `unit_weight_kN_m3` is the material unit weight the take-off sheet
     computes mass from; it defaults to the same one the self-weight load
     case uses, so the two cannot disagree.
+
+    `into` is an already open PdfPages to append to instead of writing
+    `path` -- how export_groups_pdf puts one section per group in a single
+    document. `sheet_base` and `sheet_total` then number these sheets
+    within the whole document ("Sheet 14 / 52"), not within this section.
+    Returns the number of sheets written.
     """
     from common import _ensure_matplotlib
     if not _ensure_matplotlib():
@@ -3038,21 +3045,23 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
     views = [(n, v) for n, v in PDF_ORTHO_VIEWS if n in plan]
     group = (meta or {}).get('group')
     subset_of = (meta or {}).get('subset_of')
-    total = len(plan)
+    total = len(plan) if sheet_total is None else sheet_total
     sheet = [0]
 
     def new_sheet(title):
         sheet[0] += 1
         fig = plt.figure(figsize=PDF_SHEET_IN)
         fig.patch.set_facecolor('white')
-        _pdf_sheet(fig, sheet[0], total, title, sheet_meta)
+        _pdf_sheet(fig, sheet_base + sheet[0], total, title, sheet_meta)
         return fig
 
     def conn_color(i):
         return (MEMBER_RIGID_COLOR if members[i].get('conn') == 'rigid'
                 else MEMBER_PIN_COLOR)
 
-    with PdfPages(path) as pdf:
+    import contextlib
+    with (contextlib.nullcontext(into) if into is not None
+          else PdfPages(path)) as pdf:
         # ── Sheet 1: model, load case, general view ─────────────────────
         fig = new_sheet('General view — model and load case')
         ax = _pdf_view_axes(fig)
@@ -3904,3 +3913,258 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                 tail_rows=tail)
             pdf.savefig(fig)
             plt.close(fig)
+    return sheet[0]
+
+
+# ── one document, a section per group ─────────────────────────────────────
+#
+# Roadmap v2 4.1's report. The branches of the model (stereo_groups) each get
+# the same sheets a selection report gets -- by the same code, export_pdf on
+# a submodel -- in ONE document, behind two sheets only a grouped model has:
+# a summary of every group, with the check that the groups account for the
+# model exactly once, and the joints where groups meet, with the force each
+# side hands across. Every group section is a VIEW of the one whole-model
+# solve, never a re-solve of the branch cut free: a branch on its own is a
+# different structure, usually a mechanism (see stereo_groups).
+
+def report_plan(members, results=None, checks=None, groups=None,
+                ortho_views=True):
+    """The sheet keys export_pdf will write for this model -- its own rule,
+    so a document that holds several reports can number them in advance."""
+    n_rigid = sum(1 for m in members if m.get('conn') == 'rigid')
+    want = set(PDF_SHEET_GROUPS if groups is None else groups)
+    if not ortho_views:
+        want.discard('views')
+    return plan_sheets(results, checks, n_rigid, want)
+
+
+def group_report_order(branch_groups, n_members, gids=None,
+                       include_ungrouped=True):
+    """[(gid, name, level, rods)] in the order the document gives them.
+
+    The tree's own order, each group with its subtree's rods (so a parent's
+    section shows the whole branch), then Ungrouped when it has rods: the
+    rods nobody assigned are part of the structure too, and a document that
+    left them out would not add up. `gids` limits it to some groups -- the
+    "PDF of this group" action passes one.
+    """
+    from apps.stereo import stereo_groups as sgp
+    out = []
+    for g, lvl in sgp.walk(branch_groups):
+        if gids is not None and g['id'] not in gids:
+            continue
+        rods = sgp.rods_of(branch_groups, g['id'], deep=True)
+        if rods:
+            out.append((g['id'], g['name'], lvl, rods))
+    if include_ungrouped and gids is None:
+        rest = sgp.ungrouped_rods(branch_groups, n_members)
+        if rest:
+            out.append((None, sgp.UNGROUPED_NAME, 0, rest))
+    return out
+
+
+# Rows of the joints table per sheet. The table sheet fits thirty
+# under its three-line note; a joint's rows are never split across two
+# sheets, so a sheet may carry a few fewer.
+PDF_JOINT_ROWS_PER_SHEET = 30
+
+
+def _joint_table_rows(shared, u):
+    """[[rows of one joint], ...] -- a block per joint, one row per side."""
+    blocks = []
+    for r in shared:
+        block = []
+        for k, side in enumerate(r['sides']):
+            rods_txt = ','.join(str(i) for i in side['rods'])
+            has_f = 'F' in side
+            block.append([
+                r['node'] if k == 0 else '',
+                r['kind'].upper() if k == 0 else '',
+                side['name'][:22],
+                rods_txt[:22] + ('…' if len(rods_txt) > 22 else ''),
+                u.f('force', side['Fx'], 2, sign=True) if has_f else '—',
+                u.f('force', side['Fy'], 2, sign=True) if has_f else '—',
+                u.f('force', side['Fz'], 2, sign=True) if has_f else '—',
+                u.f('force', side['F'], 2) if has_f else '—'])
+        blocks.append(block)
+    return blocks
+
+
+def _paginate_blocks(blocks, per_sheet=PDF_JOINT_ROWS_PER_SHEET):
+    """Pack whole blocks into sheets of at most `per_sheet` rows. A block
+    longer than a sheet gets one to itself (the table marks the overflow)."""
+    pages, cur = [], []
+    for b in blocks:
+        if cur and len(cur) + len(b) > per_sheet:
+            pages.append(cur)
+            cur = []
+        cur = cur + b
+    if cur or not pages:
+        pages.append(cur)
+    return pages
+
+
+def export_groups_pdf(nodes, members, loads, supports, results, path,
+                      branch_groups, checks=None, meta=None, gids=None,
+                      az_deg=30, el_deg=25, groups=None, ortho_views=False,
+                      unit_weight_kN_m3=None,
+                      deflection_denom=PDF_DEFLECTION_DENOM):
+    """The grouped model as ONE document: summary, shared joints, and then a
+    section per group -- or per group in `gids` -- built by export_pdf.
+
+    `groups` picks the sheets each section carries, as for export_pdf;
+    `ortho_views` defaults off here because five orthographic sheets per
+    branch make a long document, and the summary and joint sheets are what
+    a grouped report is for. Sheets are numbered across the whole document.
+    Returns the list of (title, first sheet) for every part, which is also
+    what the summary sheet prints as its contents.
+    """
+    from common import _ensure_matplotlib
+    if not _ensure_matplotlib():
+        raise RuntimeError('matplotlib is required for PDF export.')
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    from apps.stereo import stereo_groups as sgp
+    from apps.stereo import stereo_math as _sm
+
+    u = ReportUnits()
+    unit_weight = (_sm.DEFAULT_STEEL_UNIT_WEIGHT if unit_weight_kN_m3 is None
+                   else float(unit_weight_kN_m3))
+    member_res = (results or {}).get('member_res') if results else None
+    order = group_report_order(branch_groups, len(members), gids=gids)
+    if not order:
+        raise ValueError('No group with any rods to report.')
+
+    # Every section is cut from the model first, so its sheet count is known
+    # before the first sheet is drawn and "Sheet n / N" is true throughout.
+    sections = []
+    for gid, name, lvl, rods in order:
+        sub = submodel(nodes, members, loads, supports, results, checks,
+                       member_idx=rods)
+        n = len(report_plan(sub[1], sub[4], sub[5], groups, ortho_views))
+        sections.append((gid, name, lvl, rods, sub, n))
+    # The joints table runs over as many sheets as it needs: a joint left
+    # off the list is a connection nobody details, which is the failure
+    # that sheet exists to prevent. Worked out now, for the numbering.
+    shared = sgp.shared_node_rows(branch_groups, nodes, members, member_res)
+    wanted = {gid for gid, *_ in order}
+    if gids is not None:
+        shared = [r for r in shared
+                  if any(sd['group'] in wanted for sd in r['sides'])]
+    joint_pages = _paginate_blocks(_joint_table_rows(shared, u))
+    head = 1 + len(joint_pages)   # summary, then the joints
+    total = head + sum(s[5] for s in sections)
+
+    sheet_meta = _pdf_sheet_meta(nodes, members, meta, u=u)
+    contents = [('Groups — summary', 1), ('Joints shared between groups', 2)]
+    first_sheet = {}
+    at = head + 1
+    for gid, name, lvl, rods, sub, n in sections:
+        contents.append(('%s%s' % ('   ' * lvl, name), at))
+        first_sheet[gid] = at
+        at += n
+
+    def page(no, title):
+        fig = plt.figure(figsize=PDF_SHEET_IN)
+        fig.patch.set_facecolor('white')
+        _pdf_sheet(fig, no, total, title, sheet_meta)
+        return fig
+
+    with PdfPages(path) as pdf:
+        # ── the summary ────────────────────────────────────────────────
+        rows_sum = sgp.group_summary(branch_groups, nodes, members, member_res,
+                                     checks, unit_weight_kN_m3=unit_weight)
+        rows = []
+        for r in rows_sum:
+            if gids is not None and r['id'] not in wanted:
+                continue
+            rods = (sgp.rods_of(branch_groups, r['id'], deep=True)
+                    if r['id'] is not None
+                    else sgp.ungrouped_rods(branch_groups, len(members)))
+            secs = sorted({(members[i].get('profile') or '—')
+                           for i in rods if 0 <= i < len(members)})
+            first = first_sheet.get(r['id'], '')
+            rows.append([
+                ('  ' * r['level'] + r['name'])[:26],
+                r['n_rods'], r['n_nodes'],
+                u.f('length', r['length_m']),
+                u.f('force', r['weight_kN'], 2),
+                '—' if r['worst_util'] is None else '%.2f' % r['worst_util'],
+                '—' if r['worst_rod'] is None else r['worst_rod'],
+                (', '.join(secs))[:30] + ('…' if len(', '.join(secs)) > 30
+                                          else ''),
+                first])
+        rec = sgp.totals_reconcile(branch_groups, nodes, members,
+                                   unit_weight_kN_m3=unit_weight)
+        tail = [['every rod once', rec['rods_in_groups'], '', '', '', '', '',
+                 '%d in groups + %d ungrouped = %d of %d  %s'
+                 % (rec['rods_in_groups'], rec['rods_ungrouped'],
+                    rec['rods_counted'], rec['rods_in_model'],
+                    'OK' if rec['ok'] else 'DOES NOT ADD UP'), '']]
+        fig = page(1, 'Groups — summary')
+        _pdf_table_page(
+            fig, 'Groups — summary and contents',
+            ['group', 'rods', 'nodes', f'length ({u.lab("length")})',
+             f'weight ({u.lab("force")})', 'worst', 'at rod', 'sections',
+             'sheet'],
+            rows, [2.6, 0.6, 0.6, 1.1, 1.1, 0.6, 0.7, 2.6, 0.5],
+            note='A parent\'s row includes its subgroups, so the rows do not '
+                 'sum to the model; the last line is the check that does: '
+                 'every rod counted exactly once, in its own group or in '
+                 'Ungrouped. Each group\'s section is a view of the one '
+                 'whole-model solve -- a branch cut free would be a '
+                 'different structure.',
+            tail_rows=tail)
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # ── the joints between them ────────────────────────────────────
+        n_cross = sum(1 for r in shared if r['kind'] == 'cross')
+        for k, body in enumerate(joint_pages):
+            title = 'Joints shared between groups'
+            if len(joint_pages) > 1:
+                title += ' (%d of %d)' % (k + 1, len(joint_pages))
+            fig = page(2 + k, title)
+            _pdf_table_page(
+                fig, title,
+                ['node', 'kind', 'group', 'its rods at the joint',
+                 f'Fx ({u.lab("force")})', f'Fy ({u.lab("force")})',
+                 f'Fz ({u.lab("force")})', f'|F| ({u.lab("force")})'],
+                body or [['—', '', 'no joint is shared between groups', '',
+                          '', '', '', '']],
+                [0.6, 0.8, 2.0, 2.2, 1.0, 1.0, 1.0, 1.0],
+                note='Every joint two groups meet at, with the force each '
+                     'side\'s rods pull on it (axial, from the whole-model '
+                     'solve) -- what the connection there is detailed from. '
+                     'CROSS joints join separate branches and come first; '
+                     'INTERNAL ones join a group to its own subgroup, still a '
+                     'joint to detail if the subgroup is fabricated apart. '
+                     'Ungrouped counts as a branch.',
+                tail_rows=[['', '', '%d joint(s): %d cross, %d internal'
+                            % (len(shared), n_cross, len(shared) - n_cross),
+                            '', '', '', '', '']])
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        # ── a section per group ────────────────────────────────────────
+        base = head
+        for gid, name, lvl, rods, sub, n in sections:
+            s_nodes, s_members, s_loads, s_supports, s_res, s_checks, _ = sub
+            g_meta = dict(meta or {})
+            g_meta['group'] = name
+            g_meta['subset_of'] = (meta or {}).get('grid_family') or 'model'
+            written = export_pdf(
+                s_nodes, s_members, s_loads, s_supports, s_res, None,
+                checks=s_checks, meta=g_meta, az_deg=az_deg, el_deg=el_deg,
+                ortho_views=ortho_views, groups=groups,
+                deflection_denom=deflection_denom,
+                unit_weight_kN_m3=unit_weight_kN_m3,
+                into=pdf, sheet_base=base, sheet_total=total)
+            if written != n:
+                # The contents and every "Sheet n / N" were numbered from n.
+                raise RuntimeError('section %r wrote %d sheets, planned %d'
+                                   % (name, written, n))
+            base += n
+    return contents

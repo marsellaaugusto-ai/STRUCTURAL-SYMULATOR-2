@@ -26,6 +26,7 @@ from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_member_loads as mld
 from apps.stereo import stereo_bezier as bz
 from apps.stereo import expr_math as em
+from apps.stereo import stereo_groups as sgp
 from apps.stereo.stereo_app_colors import (
     surface_preview_color,
     load_path_color,
@@ -57,6 +58,7 @@ from apps.stereo.stereo_app_constants import (
     SCALE_P95, FORCE_SCALE_PERCENTILE, CLIP_MARK_COLOR, CLIP_MARK_DASH,
     FILL_DENSITY_STIPPLE, FILL_DENSITY_DEFAULT,
     SNAP_NODE_COLOR, SNAP_MIDPOINT_COLOR, SNAP_RING_RADIUS,
+    LOCKED_DIM_COLOR, EDIT_BANNER_COLOR, FLAG_ROD_COLOR,
 )
 
 
@@ -547,6 +549,18 @@ class StereoRenderMixin:
             # this whole loop in an `if` -- keeps every per-member branch
             # below (halos, load-path dashes, over-capacity dashing) as a
             # single indentation level, unchanged whether rods show or not.
+            # An open group: its rods and nodes draw as usual, everything
+            # else fades to one flat pale colour -- still there to edit
+            # against, plainly not what is being edited.
+            open_rods = open_nodes = None
+            if self.groups and self._editing_gid() is not None:
+                open_rods = set(sgp.rods_of(self.groups, self._editing_gid(),
+                                            deep=True))
+                open_nodes = set(sgp.nodes_of_rods(self.members, open_rods))
+            # Grouped mode: a tint under each grouped rod, by top-level group.
+            tints = None
+            if self.groups and self.group_view.get():
+                tints, _key = self._group_tint_map()
             order = sorted(range(len(self.members)), key=lambda i: -(
                 proj[self.members[i]['a']][2] + proj[self.members[i]['b']][2])) \
                 if self.show_members.get() else []
@@ -576,6 +590,13 @@ class StereoRenderMixin:
                 bx, by, _ = proj[m['b']]
                 sx0, sy0 = to_screen(ax, ay)
                 sx1, sy1 = to_screen(bx, by)
+                if open_rods is not None and i not in open_rods:
+                    c.create_line(sx0, sy0, sx1, sy1, fill=LOCKED_DIM_COLOR,
+                                  width=1, tags=('member', 'locked_dim'))
+                    continue
+                if tints is not None and i in tints:
+                    c.create_line(sx0, sy0, sx1, sy1, fill=tints[i], width=9,
+                                  capstyle='round', tags='group_tint')
                 over = False
                 chk = self.member_checks[i] if self.member_checks and i < len(self.member_checks) \
                     else None
@@ -716,6 +737,8 @@ class StereoRenderMixin:
                                              arrowshape=(6, 7, 3),
                                              tags=('member', 'load_path'))
 
+            self._draw_flagged_rod(c, proj, to_screen)
+
             support_nodes = {s['node'] for s in self.supports
                              if any(sm.support_restraints(s).values())}
             # Same empty-iterable trick as `order` above for show_members --
@@ -733,7 +756,9 @@ class StereoRenderMixin:
                     r = MOMENT_NODE_RADIUS_PX + 1 if sel else MOMENT_NODE_RADIUS_PX
                 else:
                     r = (base_r + 2) if sel else base_r
-                if sel:
+                if open_nodes is not None and i not in open_nodes:
+                    color = LOCKED_DIM_COLOR
+                elif sel:
                     color = NODE_SEL_COLOR
                 elif i in self._disabled_supports and i in support_nodes:
                     color = SUPPORT_DISABLED_COLOR
@@ -897,7 +922,113 @@ class StereoRenderMixin:
                           rod_peak=rod_peak, rod_varies=rod_varies,
                           max_abs_N=max_abs_N, max_abs_moment=max_abs_moment,
                           frac=frac, clipped=clipped)
+        self._draw_flag_caption(c)
+        self._draw_group_key(c)
+        self._draw_edit_banner(c)
         self._to_screen_cache = to_screen   # for hit-testing on click
+
+    _flag_caption_at = None
+
+    def _draw_flagged_rod(self, c, proj, to_screen):
+        """The rod a "Show me this rod" action points at: a wide halo, the
+        rod itself on top of it, and a caption saying why it was shown.
+
+        Only over a live solve -- "governing" is a claim about the solve,
+        and after an edit it may be a different rod. An index that no longer
+        exists (the list shrank) is dropped rather than drawn on a stranger.
+        """
+        flag = getattr(self, '_flagged_rod', None)
+        if flag is None:
+            return
+        i, caption = flag
+        if self.results is None or not (0 <= i < len(self.members)):
+            self._flagged_rod = None
+            return
+        m = self.members[i]
+        sx0, sy0 = to_screen(*proj[m['a']][:2])
+        sx1, sy1 = to_screen(*proj[m['b']][:2])
+        c.create_line(sx0, sy0, sx1, sy1, fill=FLAG_ROD_COLOR, width=11,
+                      capstyle='round', tags='flagged_rod')
+        c.create_line(sx0, sy0, sx1, sy1, fill='#1d2328', width=3,
+                      tags='flagged_rod')
+        # The caption waits for the end of _draw: node and rod labels are
+        # drawn after the rods and would otherwise print across it.
+        self._flag_caption_at = ((sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0, caption)
+
+    def _draw_flag_caption(self, c):
+        spot = getattr(self, '_flag_caption_at', None)
+        self._flag_caption_at = None
+        if spot is None or getattr(self, '_flagged_rod', None) is None:
+            return
+        mx, my, caption = spot
+        t = c.create_text(mx + 14, my - 14, anchor='sw', text=caption,
+                          fill='white', font=('Helvetica', 9, 'bold'),
+                          tags='flagged_rod')
+        x0, y0, x1, y1 = c.bbox(t)
+        box = c.create_rectangle(x0 - 5, y0 - 2, x1 + 5, y1 + 2,
+                                 fill=FLAG_ROD_COLOR, outline='',
+                                 tags='flagged_rod')
+        c.tag_lower(box, t)
+        c.create_line(mx, my, x0 - 5, y1 + 2, fill=FLAG_ROD_COLOR, width=2,
+                      tags='flagged_rod')
+
+    def _draw_group_key(self, c):
+        """Grouped mode's key: a swatch and a name per top-level group, in
+        the bottom-right corner (the legend owns the top-left)."""
+        if not (self.groups and self.group_view.get()):
+            return
+        _rods, key = self._group_tint_map()
+        if not key:
+            return
+        w = max(int(c.winfo_width()), 200)
+        h = max(int(c.winfo_height()), 200)
+        row_h = 16
+        x1 = w - 12
+        y = h - 14 - row_h * len(key)
+        items = []
+        items.append(c.create_text(x1, y - 4, anchor='se', text='GROUPS',
+                                   fill='#5f6368',
+                                   font=('Helvetica', 8, 'bold'),
+                                   tags='group_key'))
+        for name, tint in key:
+            items.append(c.create_rectangle(x1 - 14, y + 3, x1, y + 13,
+                                            fill=tint, outline='#8a9099',
+                                            tags='group_key'))
+            items.append(c.create_text(x1 - 20, y + 8, anchor='e', text=name,
+                                       fill='#1d2328', font=('Helvetica', 8),
+                                       tags='group_key'))
+            y += row_h
+        x0, y0, _x, y1b = c.bbox(*items)
+        bg = c.create_rectangle(x0 - 8, y0 - 5, x1 + 6, y1b + 5, fill='white',
+                                outline='#d0d4d9', tags='group_key')
+        c.tag_lower(bg, items[0])
+
+    def _draw_edit_banner(self, c):
+        """Say, on the drawing itself, that a group is open.
+
+        A mode that changes what clicks do has to be impossible to forget,
+        and the panel that opened it may not be the one on screen.
+        """
+        gid = self._editing_gid() if self.groups else None
+        if gid is None:
+            return
+        w = max(int(c.winfo_width()), 200)
+        h = max(int(c.winfo_height()), 200)
+        c.create_rectangle(2, 2, w - 2, h - 2, outline=EDIT_BANNER_COLOR,
+                           width=3, tags='edit_banner')
+        text = ('EDITING  %s  --  everything else is locked.  '
+                'Groups > Done editing to finish.'
+                % self._group_display_name(gid))
+        # Along the BOTTOM edge: the legend card owns the top-left corner and
+        # the view buttons the top-right, and a banner over either hides
+        # something the drawing needs.
+        t = c.create_text(12, h - 12, anchor='sw', text=text, fill='white',
+                          font=('Helvetica', 9, 'bold'), tags='edit_banner')
+        x0, y0, x1, y1 = c.bbox(t)
+        r = c.create_rectangle(x0 - 6, y0 - 3, x1 + 6, y1 + 3,
+                               fill=EDIT_BANNER_COLOR, outline='',
+                               tags='edit_banner')
+        c.tag_lower(r, t)
 
     def _get_shaded_cells(self):
         """The mesh's minimal 3-/4-node closed cells (stereo_geometry's own

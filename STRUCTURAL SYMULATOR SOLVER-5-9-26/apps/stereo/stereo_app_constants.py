@@ -61,6 +61,21 @@ UTIL_LOW = '#2e7d32'    # green -- well within capacity
 UTIL_MID = '#f9a825'    # amber -- approaching capacity
 UTIL_HIGH = '#c62828'   # red -- at or over capacity
 MEMBER_SEL_COLOR = '#e0522b'
+# Edit mode (an open group): everything outside it stays on screen for
+# context, but faded to this, so what can and cannot be touched is legible
+# at a glance. Pale enough to recede, dark enough to read on white.
+LOCKED_DIM_COLOR = '#c4cad1'
+# "Show me this rod": a halo no colour ramp in this app uses -- not red or
+# blue (force), not the green-to-red of utilisation, not the orange of the
+# selection -- so it cannot be read as a value.
+FLAG_ROD_COLOR = '#d400c8'
+# Grouped mode: one pale tint per top-level group, drawn as a halo UNDER the
+# rods so every colour mode -- force, utilisation, moment -- still reads on
+# top of it. Tints, not colours, for that reason; eight, then they repeat
+# (the key says which is which).
+GROUP_TINTS = ('#f5c48f', '#a9cdf0', '#bfe3a4', '#dcb8ea',
+               '#f0de7e', '#a8e0d8', '#f0b3c0', '#d2cbb8')
+EDIT_BANNER_COLOR = '#1f6fb2'
 MEMBER_SEL_HIT_PX = 8
 SLENDER_HALO_COLOR = '#ffb300'
 SLENDERNESS_LIMIT = 200.0   # AISC/CIRSOC's own recommended (non-mandatory) practical limit

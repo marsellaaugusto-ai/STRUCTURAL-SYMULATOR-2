@@ -13,11 +13,13 @@ Drawing itself lives in stereo_app_render.py; this module never paints,
 it only decides where things are and what the user just clicked.
 """
 import tkinter as tk
+from tkinter import messagebox
 import math
 import time as _time
 
 from apps.stereo import stereo_math as sm
 from apps.stereo import expr_math as em
+from apps.stereo import stereo_groups as sgp
 from apps.stereo.stereo_app_canvas_geom import (
     _point_segment_distance, _seg_intersects_rect,
 )
@@ -173,6 +175,7 @@ class StereoViewMixin:
         self._lasso_cur = None
         self._drag_node = None
         self._drag_node_active = False
+        self._drag_ids = None
         if self.selected_nodes and not self.add_rod_mode.get():
             pts = self._screen_positions()
             for i in self.selected_nodes:
@@ -194,11 +197,18 @@ class StereoViewMixin:
             if not self._drag_node_active and (abs(dx) > LASSO_DRAG_THRESHOLD_PX
                                                or abs(dy) > LASSO_DRAG_THRESHOLD_PX):
                 self._drag_node_active = True
-                self._push_undo('drag node')
-            if self._drag_node_active:
+                # Decided ONCE, as the drag starts: which nodes this gesture
+                # moves. A node of a locked group brings its whole group;
+                # a group glued to another by a shared joint does not move
+                # at all, and the status line says which joint holds it.
+                self._drag_ids = self._node_move_ids(quiet=True)
+                if self._drag_ids:
+                    self._push_undo('drag node')
+            if self._drag_node_active and self._drag_ids:
                 prev_sx, prev_sy = self._drag_node
                 self._move_selected_nodes_by_screen(prev_sx, prev_sy,
-                                                    event.x, event.y)
+                                                    event.x, event.y,
+                                                    ids=self._drag_ids)
                 self._drag_node = (event.x, event.y)
                 self._draw_throttled()
             return
@@ -216,12 +226,17 @@ class StereoViewMixin:
             return
         self.canvas.focus_set()   # so a following Delete/Backspace reaches us
         if self._drag_node_active:
+            moved = bool(getattr(self, '_drag_ids', None))
             self._drag_node = None
             self._drag_node_active = False
+            self._drag_ids = None
             self._lasso_press = None
-            self.results = None
-            self.member_checks = None
-            self._refresh_all()
+            if moved:
+                self.results = None
+                self.member_checks = None
+                self._refresh_all()
+            else:
+                self._draw()        # a refused drag changes nothing
             return
         self._drag_node = None
         self._drag_node_active = False
@@ -272,10 +287,16 @@ class StereoViewMixin:
         self._lasso_cur = None
         self._draw()
 
-    def _move_selected_nodes_by_screen(self, sx0, sy0, sx1, sy1):
-        """Move all selected nodes by the world-space delta corresponding
+    def _move_selected_nodes_by_screen(self, sx0, sy0, sx1, sy1, ids=None):
+        """Move the selected nodes by the world-space delta corresponding
         to a screen-pixel drag from (sx0,sy0) to (sx1,sy1), keeping
-        each node's depth (view-direction component) constant."""
+        each node's depth (view-direction component) constant.
+
+        `ids` is the set the drag decided on (see _on_canvas_motion). Left
+        out, it is worked out here by the same rule -- so a locked group
+        moves whole, or not at all, whichever way this is reached."""
+        if ids is None:
+            ids = self._node_move_ids(quiet=True)
         wx0, wy0 = self.zc.s2w(sx0, sy0)
         wx1, wy1 = self.zc.s2w(sx1, sy1)
         dpx = (wx1 - wx0) / self.PX_PER_M
@@ -287,7 +308,7 @@ class StereoViewMixin:
         dx = c * dpx - s * se * dpy
         dy = -s * dpx - c * se * dpy
         dz = -ce * dpy
-        for i in self.selected_nodes:
+        for i in ids:
             if i < len(self.nodes):
                 ox, oy, oz = self.nodes[i]
                 self.nodes[i] = (ox + dx, oy + dy, oz + dz)
@@ -826,6 +847,13 @@ class StereoViewMixin:
         too so a one-node lasso box behaves identically to a plain click.
         Falls through to showing the selected MEMBER's own force/
         utilization readout when a rod, not a node, was clicked."""
+        if self.groups:
+            self._clip_selection_to_edit()
+        # A flag follows its rod out of the selection: clicking something
+        # else is the user saying they have found it.
+        flag = getattr(self, '_flagged_rod', None)
+        if flag is not None and flag[0] not in self.selected_members:
+            self._flagged_rod = None
         best = self.selected_node
         if best is None:
             if self.selected_member is not None:
@@ -848,7 +876,12 @@ class StereoViewMixin:
         self.sup_node_var.set(best)
         self.ld_node_var.set(best)
         x, y, z = self.nodes[best]
-        self.sel_var.set(f'Node {best}: ({x:.3f}, {y:.3f}, {z:.3f}) m')
+        where = (sgp.node_groups(self.groups, self.members, best)
+                 if self.groups and self._editing_gid() is None else [])
+        self.sel_var.set(f'Node {best}: ({x:.3f}, {y:.3f}, {z:.3f}) m' + (
+            '\nPart of %s (locked): dragging it moves the whole group.'
+            % ', '.join(self._group_display_name(g) for g in where)
+            if where else ''))
         existing = next((s for s in self.supports if s['node'] == best), None)
         if existing is not None:
             r = sm.support_restraints(existing)
@@ -936,14 +969,106 @@ class StereoViewMixin:
         if any((m['a'] == a and m['b'] == b) or (m['a'] == b and m['b'] == a)
                for m in self.members):
             return
+        # A locked group's nodes still take new rods -- that was asked for
+        # in so many words. Only while a group is OPEN are both ends held to
+        # it, because then everything outside is blocked.
+        editing = self._editing_gid() if self.groups else None
+        if editing is not None:
+            inside = sgp.editable_nodes(self.groups, self.members, editing)
+            outside = [n for n in (a, b) if n not in inside]
+            if outside:
+                self._group_refuse(
+                    'Add rod', 'Node %s is outside %s, the group being '
+                    'edited.' % (', '.join(map(str, outside)),
+                                 self._group_display_name(editing)))
+                return
         self._push_undo('add rod')
         web = self._panel_section('web')        # carries c_cm when valid
         web_profile = self.web_profile_var.get() if hasattr(self, 'web_profile_var') else ''
         self.members.append({'a': a, 'b': b, 'conn': self.sec_conn.get(),
                             'role': 'user_rod', 'profile': web_profile, **web})
+        self._adopt_new_rods(len(self.members) - 1)
         self.results = None
         self.member_checks = None
         self._refresh_all()
+
+    # ── "show me this rod" ────────────────────────────────────────────────
+
+    def _center_on_point(self, x, y, z):
+        """Pan so the world point (x, y, z) lands in the middle of the canvas.
+
+        Mirrors _draw's own to_screen: the drawing subtracts the model's
+        projected centre (cx, cy) before scaling, and w2s multiplies by the
+        zoom AFTER adding the pan -- so the pan that centres a point is
+        w / (2 * zoom) minus that point's offset from the model's centre.
+        Anything simpler puts the point somewhere else at every zoom but 1.
+        """
+        if not self.nodes:
+            return
+        self._refresh_camera_distance()
+        proj = [self._project(*p) for p in self.nodes]
+        xs = [p[0] for p in proj]
+        ys = [p[1] for p in proj]
+        cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+        px, py, _ = self._project(x, y, z)
+        w = self.canvas.winfo_width()
+        h = self.canvas.winfo_height()
+        w = w if w > 1 else 400
+        h = h if h > 1 else 400
+        zoom = self.zc.zoom
+        self.zc.pan_x = w / (2.0 * zoom) - (px - cx) * self.PX_PER_M
+        self.zc.pan_y = h / (2.0 * zoom) - (py - cy) * self.PX_PER_M
+        self._view_touched = True
+
+    def _governing_rod(self, among=None):
+        """(rod, utilisation) of the most utilised checked rod, or None.
+
+        `among` limits it to some rods -- a group's, say."""
+        if not self.member_checks:
+            return None
+        pool = range(len(self.member_checks)) if among is None else among
+        best = None
+        for i in pool:
+            if not (0 <= i < len(self.member_checks)):
+                continue
+            chk = self.member_checks[i]
+            u = chk.get('util')
+            if chk.get('checked', True) and u is not None and \
+                    (best is None or u > best[1]):
+                best = (i, u)
+        return best
+
+    def _show_rod(self, i, caption=None):
+        """Select rod `i`, bring it to the middle of the view and flag it.
+
+        The flag is a halo and a caption drawn over the model, so the rod a
+        panel is talking about can be found in a model of hundreds without
+        reading node numbers off the drawing.
+        """
+        if i is None or not (0 <= i < len(self.members)):
+            return False
+        self.selected_nodes = set()
+        self.selected_members = {i}
+        self.selected_member = i
+        self._sync_selection_fields()
+        self._flagged_rod = (i, caption or 'rod %d' % i)
+        m = self.members[i]
+        a, b = self.nodes[m['a']], self.nodes[m['b']]
+        self._center_on_point(*((a[k] + b[k]) / 2.0 for k in range(3)))
+        self._draw()
+        self._set_status('Showing %s.' % self._flagged_rod[1], 'ok')
+        return True
+
+    def _show_governing_rod(self):
+        """The Results panel's button: the most utilised rod in the model."""
+        gov = self._governing_rod()
+        if gov is None:
+            messagebox.showinfo(
+                'Governing rod',
+                'Analyze first. Which rod governs is a result of the solve.')
+            return False
+        i, u = gov
+        return self._show_rod(i, 'governing rod %d -- utilisation %.2f' % (i, u))
 
     # ── keyboard axis extend ────────────────────────────────────────────────
     _AXIS_KEYS = {
@@ -1000,6 +1125,7 @@ class StereoViewMixin:
         self.members.append({'a': src, 'b': new_idx,
                             'conn': self.sec_conn.get(),
                             'role': 'user_rod', **web})
+        self._adopt_new_rods(len(self.members) - 1)
         self.results = None
         self.member_checks = None
         self.selected_nodes = {new_idx}
@@ -1089,6 +1215,16 @@ class StereoViewMixin:
                 what += ' + member' + ('s' if len(member_targets) != 1 else '')
         else:
             what = 'member' + ('s' if len(member_targets) != 1 else '')
+        if self.groups:
+            block = sgp.delete_blockers(self.groups, self.members, node_targets,
+                                        member_targets, self._editing_gid())
+            if block:
+                self._group_refuse(
+                    'Delete',
+                    'Nothing was deleted: that would take rods of a locked '
+                    'group -- %s.\n\nOpen the group with Edit group to '
+                    'change its parts.' % sgp.describe_rods(self.groups, block))
+                return
         self._push_undo('delete ' + what)
 
         # Groups hold MEMBER indices, so work out which rods are about to go

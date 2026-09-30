@@ -69,8 +69,15 @@ class StereoAddonsMixin:
         except ValueError as exc:
             messagebox.showerror('Column', str(exc))
             return
+        # An add-on bolts new rods ON; it must not move or drop a locked
+        # group's. Checked against the lists it built, not assumed.
+        if not self._guard_rebuild('Column', nodes, members):
+            return
         self._push_undo('add column')
+        n_before = len(self.members)
+        self._carry_groups(self.members, members)
         self.nodes, self.members = nodes, members
+        self._adopt_new_rods(n_before)
         # EVERY foot is pinned, not just the first. A latticed or splay-
         # footed column is rigid as a body, so restraining one node of it
         # leaves three rotations free and the solver reports a mechanism
@@ -188,6 +195,21 @@ class StereoAddonsMixin:
                    if m.get('role') in roles]
         if not victims:
             return 0
+        if getattr(self, 'groups', None):
+            from apps.stereo import stereo_groups as _sgp
+            locked = _sgp.protected_rods(self.groups, self._editing_gid())
+            hit = [i for i in victims if i in locked]
+            if hit:
+                own = _sgp.owner_of_rod(self.groups)
+                by = {}
+                for i in hit:
+                    by.setdefault(own[i], []).append(i)
+                self._group_refuse(
+                    'Clear',
+                    'Nothing was cleared: those rods are part of a locked '
+                    'group -- %s.\n\nOpen the group with Edit group, or '
+                    'ungroup them, first.' % _sgp.describe_rods(self.groups, by))
+                return 0
         self._push_undo(label)
         drop = set(victims)
         kept = [m for i, m in enumerate(self.members) if i not in drop]
@@ -264,8 +286,15 @@ class StereoAddonsMixin:
             messagebox.showerror('Crane', str(exc))
             return
 
+        # An add-on bolts new rods ON; it must not move or drop a locked
+        # group's. Checked against the lists it built, not assumed.
+        if not self._guard_rebuild('Crane', nodes, members):
+            return
         self._push_undo('add crane')
+        n_before = len(self.members)
+        self._carry_groups(self.members, members)
         self.nodes, self.members = nodes, members
+        self._adopt_new_rods(n_before)
         # FIXED, where the roadmap says "pin", and the difference is not
         # cosmetic. A lone rigid mast whose top can rotate has a zero-energy
         # TORSIONAL mode about its own axis: the cables are pin-jointed and
@@ -590,8 +619,15 @@ class StereoAddonsMixin:
         except ValueError as exc:
             messagebox.showerror('Reinforcement beam', str(exc))
             return
+        # An add-on bolts new rods ON; it must not move or drop a locked
+        # group's. Checked against the lists it built, not assumed.
+        if not self._guard_rebuild('Reinforcement beam', nodes, members):
+            return
         self._push_undo('add reinforcement beam')
+        n_before = len(self.members)
+        self._carry_groups(self.members, members)
         self.nodes, self.members = nodes, members
+        self._adopt_new_rods(n_before)
         self._apply_sections(members=self.members, redraw=False)
         self.selected_nodes = set(apex)
         self.results = None

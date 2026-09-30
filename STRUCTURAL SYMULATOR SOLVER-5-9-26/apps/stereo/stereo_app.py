@@ -152,6 +152,16 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         # Ungrouped, which is a real state rather than a missing one.
         self.groups = []
         self._group_sel = None
+        # The group open for editing, or None. Every group is locked; this
+        # is the one piece of state the lock needs (see stereo_groups).
+        self._group_editing = None
+        # (rod index, caption) of the rod a "Show me this rod" action is
+        # pointing at, or None. Drawn only over a live solve: the claim it
+        # makes ("this rod governs") is a claim about THAT solve.
+        self._flagged_rod = None
+        # Grouped / Ungrouped mode -- see _build_groups_panel. A view of the
+        # model; the locks apply either way.
+        self.group_view = tk.BooleanVar(value=False)
         self._load_nodes = {}
         self._load_glyphs = {}
         self._disabled_supports = set()
@@ -242,7 +252,12 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
                 # nodes while the curve that produced them kept the edit --
                 # so the next Build silently undid the undo.
                 'bz_profile': copy.deepcopy(self._bz_profile),
-                'bz_grid': copy.deepcopy(self._bz_grid)}
+                'bz_grid': copy.deepcopy(self._bz_grid),
+                # Groups hold MEMBER INDICES, so they are model state in the
+                # same way the rods are. Left out, undoing a rod delete put
+                # the rod back while every group stayed remapped around its
+                # absence -- each branch then meant the wrong rods.
+                'groups': copy.deepcopy(self.groups)}
 
     def _restore_snapshot(self, snap):
         self.nodes = snap['nodes']
@@ -255,6 +270,7 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self._bz_profile = copy.deepcopy(snap.get('bz_profile'))
         self._bz_grid = copy.deepcopy(snap.get('bz_grid'))
         self._bz_drag = None
+        self.groups = snap.get('groups', [])
         self.results = None
         self.member_checks = None
         self.panel_checks = []
@@ -277,6 +293,12 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self._disabled_supports = {i for i in self._disabled_supports if i < n}
         self._add_rod_first = (self._add_rod_first
                                if (self._add_rod_first or 0) < n else None)
+        self.selected_members = {i for i in self.selected_members if i < nm}
+        if hasattr(self, '_editing_gid'):
+            self._editing_gid()          # closes an edit whose group is gone
+            self._refresh_group_edit_controls()
+        if hasattr(self, '_refresh_group_list'):
+            self._refresh_group_list()
 
     def _push_undo(self, label=''):
         self._undo_stack.append((label, self._model_snapshot()))

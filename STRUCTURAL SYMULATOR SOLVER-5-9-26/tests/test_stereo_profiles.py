@@ -300,3 +300,52 @@ def test_a_remembered_depth_holds_only_while_I_is_unchanged():
     assert not sp.depth_still_valid(None, 400.0)
     assert not sp.depth_still_valid((0.0, 400.0), 400.0)
     assert not sp.depth_still_valid((5.0, 400.0), 'not a number')
+
+
+# ── the properties box ─────────────────────────────────────────────────────
+
+def test_the_properties_box_names_both_radii_and_which_one_buckles():
+    rows = {r[0]: r for r in sp.section_properties('IPE 200')}
+    for sym in ('A', 'Ix', 'Iy', 'J', 'rx', 'r min', 'c', 'Wx', 'mass'):
+        assert sym in rows, sym
+    sec = sp.CATALOG['IPE 200']
+    assert rows['r min'][1] == '%.2f' % (sec.r_gyr_mm / 10.0)
+    assert 'buckling' in rows['r min'][3]
+    assert float(rows['rx'][1]) > float(rows['r min'][1])
+    assert 'strong' in rows['Ix'][3] and 'weak' in rows['Iy'][3]
+
+
+def test_the_properties_box_agrees_with_what_members_are_given():
+    props = sp.section_to_props(sp.CATALOG['HEA 200'])
+    rows = {r[0]: r for r in sp.section_properties('HEA 200')}
+    assert float(rows['A'][1]) == pytest.approx(props['A'], abs=0.005)
+    assert float(rows['Ix'][1]) == pytest.approx(props['I'], abs=0.05)
+    assert float(rows['c'][1]) == pytest.approx(props['c_cm'], abs=0.05)
+    assert float(rows['Wx'][1]) == pytest.approx(props['I'] / props['c_cm'],
+                                                 abs=0.05)
+    assert float(rows['mass'][1]) == pytest.approx(props['A'] * 0.785,
+                                                   abs=0.005)
+
+
+def test_an_angle_is_described_by_its_legs_and_its_v_axis():
+    rows = {r[0]: r for r in sp.section_properties('L 50x5')}
+    assert 'Iv' in rows, 'the axis an angle actually buckles about'
+    assert 'leg' in rows['Ix'][3]
+    assert 'strong' not in rows['Ix'][3]
+    assert rows['r min'][1] == '0.98', 'EN 10056-1 r_v for L 50x5'
+
+
+def test_a_round_tube_has_no_strong_axis():
+    rows = {r[0]: r for r in sp.section_properties('CHS 76.1x3.6')}
+    assert 'any axis' in rows['Ix'][3]
+
+
+def test_a_hand_typed_section_has_no_table_row():
+    assert sp.section_properties('my own section') == []
+
+
+def test_a_square_tube_has_no_strong_axis_either():
+    rows = {r[0]: r for r in sp.section_properties('SHS 200x200x8')}
+    assert 'either axis' in rows['Ix'][3]
+    rows = {r[0]: r for r in sp.section_properties('RHS 200x100x6')}
+    assert 'strong' in rows['Ix'][3]

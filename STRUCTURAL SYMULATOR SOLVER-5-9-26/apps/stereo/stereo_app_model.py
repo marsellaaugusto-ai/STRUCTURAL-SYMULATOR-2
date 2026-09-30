@@ -261,6 +261,11 @@ class StereoModelMixin:
         # pre-filled with. Cleared for a mesh that carries none, so the
         # wizard never shows the previous model's surfaces.
         self._wizard_recipe = mesh.get('wizard')
+        # Groups go first, before the sections are written: _apply_sections
+        # leaves locked groups' rods alone, and the OLD model's groups would
+        # otherwise protect whichever new rods happen to hold their numbers.
+        self.groups = []
+        self._group_editing = None
         self._apply_sections(members=self.members, redraw=False)
         # The reference module of the grid AS GENERATED -- before a node is
         # nudged, a column raised or a beam bolted on. Taken here and nowhere
@@ -285,6 +290,8 @@ class StereoModelMixin:
         self._group_sel = None
         if hasattr(self, '_refresh_group_list'):
             self._refresh_group_list()
+        if hasattr(self, '_refresh_group_edit_controls'):
+            self._refresh_group_edit_controls()
         # Same reasoning, and the same trap: a panel is a list of node
         # INDICES, so one kept across a regenerate would weld itself to
         # whichever four nodes now hold those numbers.
@@ -618,7 +625,15 @@ class StereoModelMixin:
         if redraw:
             self._push_undo('apply sections')
         from apps.stereo import stereo_profiles as _sp
+        from apps.stereo import stereo_groups as _sgp
         conn = self.sec_conn.get()
+        # A locked group keeps the sections it was given: sizing a branch is
+        # what the Groups panel is for, and the panel-wide sections here --
+        # re-applied by every add-on as well as by the button -- would
+        # otherwise quietly undo it. The open group, if any, is not locked.
+        keep = set()
+        if getattr(self, 'groups', None) and members is self.members:
+            keep = _sgp.protected_rods(self.groups, self._editing_gid())
         # Through _panel_section so the catalog depth c_cm comes too, and
         # through write_section rather than m.update so a member that HAD a
         # depth and is now given a hand-typed section loses it. update() only
@@ -628,7 +643,9 @@ class StereoModelMixin:
         web = self._panel_section('web')
         chord_profile = self.chord_profile_var.get() if hasattr(self, 'chord_profile_var') else ''
         web_profile = self.web_profile_var.get() if hasattr(self, 'web_profile_var') else ''
-        for m in members:
+        for mi, m in enumerate(members):
+            if mi in keep:
+                continue
             if not m.get('rigid_required'):
                 m['conn'] = conn
             is_chord = m.get('role') in CHORD_ROLES
@@ -639,6 +656,10 @@ class StereoModelMixin:
             self.member_checks = None
             self.panel_checks = []
             self._refresh_all()
+            if keep:
+                self._set_status(
+                    '%d rod(s) in locked groups kept their own sections -- set '
+                    'those from the Groups panel.' % len(keep), 'ok')
 
     # ── profile management ──────────────────────────────────────────────────
 
@@ -660,6 +681,9 @@ class StereoModelMixin:
             messagebox.showwarning('Profile', f'Profile "{name}" not found.')
             return
         from apps.stereo import stereo_profiles as _sp
+        if not self._guard_rods('Profile', self.selected_members,
+                                verb='assign a profile to'):
+            return
         self._push_undo('assign profile')
         for mi in self.selected_members:
             if mi < len(self.members):

@@ -186,6 +186,9 @@ class StereoReportsMixin:
         self._push_undo('import excel')
         self._model_label = os.path.basename(path)
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
+        # The workbook carries no groups, so the old model's cannot stay: a
+        # group holds member INDICES, and these are different rods.
+        self._drop_groups()
         if profiles:
             self.profiles.update(profiles)
         self._support_candidates = [s['node'] for s in supports]
@@ -219,6 +222,9 @@ class StereoReportsMixin:
         self._push_undo('import sketchup')
         self._model_label = f'SketchUp: {os.path.basename(path)}'
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
+        # The workbook carries no groups, so the old model's cannot stay: a
+        # group holds member INDICES, and these are different rods.
+        self._drop_groups()
         if profiles:
             self.profiles.update(profiles)
         self._support_candidates = [s['node'] for s in supports]
@@ -610,6 +616,9 @@ class StereoReportsMixin:
         self._push_undo('open example')
         self._model_label = 'Example: paraboloid dish (antenna)'
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
+        # The workbook carries no groups, so the old model's cannot stay: a
+        # group holds member INDICES, and these are different rods.
+        self._drop_groups()
         if profiles:
             self.profiles.update(profiles)
         self._support_candidates = [s['node'] for s in supports]
@@ -680,6 +689,9 @@ class StereoReportsMixin:
             'profiles': copy.deepcopy(self.profiles),
             'results': copy.deepcopy(self.results),
             'member_checks': copy.deepcopy(self.member_checks),
+            # Groups are member INDICES into THIS member list, so they
+            # travel with the variant rather than staying with the window.
+            'groups': copy.deepcopy(self.groups),
             'summary': {
                 'n_nodes': len(self.nodes),
                 'n_members': len(self.members),
@@ -790,6 +802,9 @@ class StereoReportsMixin:
             self.profiles = copy.deepcopy(v['profiles'])
             self.results = copy.deepcopy(v['results'])
             self.member_checks = copy.deepcopy(v['member_checks'])
+            self._drop_groups()
+            self.groups = copy.deepcopy(v.get('groups', []))
+            self._refresh_group_list()
             self._model_label = f'Variant: {v["name"]}'
             self._support_candidates = [s['node'] for s in self.supports]
             self._load_nodes = {}

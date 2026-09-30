@@ -1,95 +1,33 @@
-"""The app must explain why it will not start, instead of dying on an
-import line.
+"""What has to be true for the app to start on someone else's machine.
 
-`main.py` imports tkinter at module scope and `common.py` imports numpy
-unguarded, so an interpreter missing either one killed the process before
-a window existed. From a terminal that is at least a traceback; from an
-editor's Run button it is indistinguishable from "the program crashes when
-I open it", because the console holding the traceback may have closed
-again. These tests pin the preflight that replaced it.
+There WAS a dependency preflight here, added on the theory that the app
+would not launch because tkinter, numpy or scipy were missing. That theory
+was wrong: the libraries were present all along, and the real cause was a
+Tkinter resize-event loop -- relayout handlers reacting to their own
+children's <Configure> events and changing the layout again on each one, so
+the window never finished its first layout pass. The fix for that lives in
+common.py (FlowBar._schedule, WrapBar._schedule and _on_toplevel_resize);
+see REPORTS AND GUIDES/STEREO_ROADMAP_V2_FULL_ACCOUNT_2026-09-28.md.
+
+The preflight and its seven tests went with the wrong diagnosis. What is
+left here is the part that was worth keeping and is still true: main.py
+imports cleanly as a module, tools/doctor.py works as a standalone check
+an end user can run by hand, and the .vscode launch configurations set the
+working directory the package imports need.
 """
 import json
 import os
 import subprocess
 import sys
 
-import pytest
-
 import main
 
 APP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def test_this_interpreter_reports_no_problems():
-    """The suite is running, so tkinter, numpy and scipy are all here --
-    the preflight must not invent a problem on a working install."""
-    assert main.environment_problems() == []
-
-
-def test_a_missing_dependency_is_reported_with_its_fix(monkeypatch):
-    monkeypatch.setattr(main, 'HARD_DEPENDENCIES', (
-        ('a_module_that_is_not_installed', 'ghost>=1.0',
-         'nothing at all, it does not exist', None),))
-    problems = main.environment_problems()
-    assert len(problems) == 1
-    title, detail = problems[0]
-    assert 'a_module_that_is_not_installed' in title
-    body = ' '.join(detail)
-    assert 'ModuleNotFoundError' in body
-    assert 'ghost>=1.0' in body
-    assert sys.executable in body      # pip for THIS interpreter, not 'pip'
-
-
-def test_a_dependency_that_is_present_is_not_reported(monkeypatch):
-    monkeypatch.setattr(main, 'HARD_DEPENDENCIES', (
-        ('json', 'json', 'the standard library', None),))
-    assert main.environment_problems() == []
-
-
-def test_the_tkinter_entry_carries_platform_hints():
-    """tkinter is the one that catches people out, because it is not on
-    PyPI: `pip install tkinter` fails and tells them nothing."""
-    entry = [d for d in main.HARD_DEPENDENCIES if d[0] == 'tkinter']
-    assert entry, 'tkinter must be checked'
-    name, pip_name, why, hints = entry[0]
-    assert pip_name is None, 'tkinter is not a pip package'
-    assert hints, 'it needs OS-level instructions instead'
-    joined = ' '.join(hints).lower()
-    assert 'apt' in joined and 'python.org' in joined
-
-
-def test_an_old_python_is_refused(monkeypatch):
-    import collections
-    fake = collections.namedtuple(
-        'v', 'major minor micro releaselevel serial')(3, 6, 0, 'final', 0)
-    monkeypatch.setattr(sys, 'version_info', fake)
-    problems = main.environment_problems()
-    assert any('newer is required' in title for title, _ in problems)
-
-
-def test_the_report_names_the_interpreter_and_the_way_out():
-    report = main.environment_report([('tkinter cannot be imported',
-                                       ['needed for the GUI'])])
-    assert sys.executable in report
-    assert 'requirements.txt' in report
-    assert 'Select Interpreter' in report      # the VS Code cause
-    assert 'tkinter cannot be imported' in report
-
-
-def test_reporting_writes_to_stderr_and_never_raises(capsys):
-    """It is called when the app is already failing; it must not add a
-    second failure of its own -- including where tkinter is the thing
-    that is missing and the dialog cannot be shown."""
-    main.report_environment_problems([('numpy cannot be imported',
-                                       ['needed for every solver'])])
-    err = capsys.readouterr().err
-    assert 'cannot start' in err
-    assert 'numpy cannot be imported' in err
-
-
 def test_main_is_still_importable_as_a_module():
     """tests/tools/appdiag.py builds the window with main.App directly, so
-    the preflight must not run on import -- only on __main__."""
+    importing main must not construct or check anything by itself."""
     assert hasattr(main, 'App')
 
 

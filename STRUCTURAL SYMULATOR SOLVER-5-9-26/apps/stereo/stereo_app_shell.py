@@ -355,6 +355,7 @@ class StereoShellMixin:
             self._mode_frames[key] = tk.Frame(self.panel_host, bg=BG)
 
         self._build_geometry_panel(self._mode_frames['build'])
+        self._build_axis_extend_strip(self._mode_frames['build'])
         self._build_shape_panel(self._mode_frames['shape'])
         self._build_supports_panel(self._mode_frames['support'])
         self._build_loads_panel(self._mode_frames['load'])

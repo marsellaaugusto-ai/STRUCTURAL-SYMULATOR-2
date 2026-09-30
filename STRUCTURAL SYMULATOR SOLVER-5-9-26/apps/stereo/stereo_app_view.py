@@ -966,6 +966,10 @@ class StereoViewMixin:
         dx, dy, dz, label = info
         self._axis_pending = (dx, dy, dz)
         self._axis_dir_label.config(text=label)
+        # The strip lives in the build mode's panel, and the rail shows one
+        # mode at a time: arming from any other mode would leave the length
+        # box off-screen with the tool already waiting on it.
+        self._set_mode('build')
         self._axis_extend_frame.pack(fill='x', pady=(0, 4))
         self._axis_len_entry.focus_set()
         self._axis_len_entry.select_range(0, 'end')
@@ -1176,23 +1180,23 @@ class StereoViewMixin:
         if self._snap_node is not None:
             x, y, z = self.nodes[self._snap_node]
             self._cursor_world = (x, y, z)
-            self._status_var.set(
+            self._set_status(
                 f'Node {self._snap_node}: ({x:.3f}, {y:.3f}, {z:.3f}) m')
         elif self._snap_midpoint is not None:
             _, _, x, y, z, mi = self._snap_midpoint
             self._cursor_world = (x, y, z)
-            self._status_var.set(
+            self._set_status(
                 f'Midpoint of member {mi}: ({x:.3f}, {y:.3f}, {z:.3f}) m')
         else:
             world = self._unproject_to_z0(ex, ey)
             if world is not None:
                 self._cursor_world = world
                 x, y, z = world
-                self._status_var.set(
+                self._set_status(
                     f'Cursor (Z=0): ({x:.3f}, {y:.3f}, {z:.3f}) m')
             else:
                 self._cursor_world = None
-                self._status_var.set('')
+                self._set_status('')
 
         changed = (self._snap_node != old_snap
                    or self._snap_midpoint != old_mid)

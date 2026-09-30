@@ -1454,30 +1454,12 @@ def test_cable_support_restrains_only_uz(app):
     assert r['rz'] is False
 
 
-def test_apply_dist_load_adds_nodal_forces(app):
-    """Distributed load w on selected members produces w*L/2 at each end."""
-    app.loads.clear()
-    app.selected_members = {0, 1}
-    app.dist_w_var.set(2.0)
-    app.dist_dir_var.set('Down (−Z)')
-    app._apply_dist_load()
-    assert len(app.loads) > 0
-    for ld in app.loads:
-        assert ld['fz'] < 0
-        assert ld['fx'] == 0.0
-        assert ld['fy'] == 0.0
-
-
-def test_apply_dist_load_no_members_shows_info(app, monkeypatch):
-    """With no members selected, a messagebox appears and no loads are added."""
-    shown = []
-    monkeypatch.setattr('apps.stereo.stereo_app_model.messagebox.showinfo',
-                        lambda *a, **kw: shown.append(a))
-    app.selected_members = set()
-    n_before = len(app.loads)
-    app._apply_dist_load()
-    assert len(app.loads) == n_before
-    assert len(shown) == 1
+# The two _apply_dist_load tests that were here are gone with the method.
+# It converted a line load on the selected members into END forces only
+# (w*L/2 per node), leaving the rod itself unloaded and its shear constant.
+# _apply_rod_load carries a real span load instead -- see TestRodLoads and
+# the 'Quoted:' ALONG / PROJECTED choice it exercises -- so the older path
+# was dead code reachable from nothing but these two tests.
 
 
 def test_member_info_before_analysis_says_so(app):
@@ -7352,6 +7334,84 @@ class TestKeyboardShortcuts:
         app._axis_pending = None
 
 
+class TestTheShortcutsAreActuallyWiredToTheCanvas:
+    """Every test in TestKeyboardShortcuts above calls the handler directly,
+    so all of them passed while the canvas was bound to none of them -- which
+    is exactly what happened at the merge: the mode rail replaced the sidebar
+    that had carried the bind() calls, and the snap, the arrow keys and the
+    single-key shortcuts were unreachable from the keyboard for a while with
+    a green suite. These tests press the keys instead.
+    """
+
+    def _press(self, app, seq, **kw):
+        app.canvas.focus_set()
+        app.canvas.event_generate(seq, when='now', **kw)
+        app.root.update_idletasks()
+        app.root.update()
+
+    def test_every_sequence_the_handlers_need_is_bound(self, app):
+        bound = set(app.canvas.bind())
+        for seq in ('<Motion>', '<Key-Escape>', '<Key-Delete>', '<Key-BackSpace>',
+                    '<Key-Left>', '<Key-Right>', '<Key-Up>', '<Key-Down>',
+                    '<Key-Prior>', '<Key-Next>',
+                    'g', 'G', 'a', 'A', 'f', 'F', '1', '2', '3'):
+            assert seq in bound, f'{seq} is not bound on the canvas'
+
+    def test_motion_keeps_both_handlers(self, app):
+        """The footprint-disc hover and the snap both want <Motion>; binding
+        one without add='+' silently throws the other away."""
+        script = app.canvas.bind('<Motion>')
+        assert len([l for l in script.splitlines() if l.strip()]) == 2
+
+    def test_the_view_keys_move_the_camera(self, app):
+        app.azimuth, app.elevation = 37.0, 21.0
+        self._press(app, '<KeyPress-1>')
+        assert (app.azimuth, app.elevation) == (0.0, 0.0)
+        self._press(app, '<KeyPress-2>')
+        assert (app.azimuth, app.elevation) == (0.0, 90.0)
+        self._press(app, '<KeyPress-3>')
+        assert (app.azimuth, app.elevation) == (90.0, 0.0)
+
+    def test_a_analyses(self, app):
+        app.results = None
+        self._press(app, '<KeyPress-a>')
+        assert app.results is not None
+
+    def test_g_generates(self, app):
+        app._clear_model()
+        assert app.nodes == []
+        self._press(app, '<KeyPress-g>')
+        assert len(app.nodes) > 0
+
+    def test_an_arrow_key_arms_the_axis_extend_and_shows_its_length_box(self, app):
+        app.selected_nodes = {0}
+        app.selected_members = set()
+        app.selected_member = None
+        self._press(app, '<KeyPress-Right>')
+        assert app._axis_pending == (1, 0, 0)
+        assert app._axis_dir_label.cget('text') == '+X'
+        # armed with the box off-screen would be a tool waiting on an input
+        # the reader cannot see, so arming switches the rail to it
+        assert app.active_mode.get() == 'build'
+        assert app._axis_extend_frame.winfo_ismapped()
+        self._press(app, '<KeyPress-Escape>')
+        assert app._axis_pending is None
+        assert not app._axis_extend_frame.winfo_ismapped()
+
+    def test_arming_from_another_mode_still_shows_the_box(self, app):
+        app._set_mode('results')
+        app.selected_nodes = {0}
+        self._press(app, '<KeyPress-Up>')
+        assert app.active_mode.get() == 'build'
+        assert app._axis_extend_frame.winfo_ismapped()
+
+    def test_hovering_snaps_and_writes_the_coordinates(self, app):
+        sx, sy = app._screen_positions()[0]
+        self._press(app, '<Motion>', x=int(sx), y=int(sy))
+        assert app._snap_node == 0
+        assert 'Node 0' in app.status_var.get()
+
+
 class TestPropertiesPanel:
 
     def test_properties_panel_exists(self, app):
@@ -7610,9 +7670,18 @@ class TestDesignVariants:
         app._show_variant_comparison()
         app.root.update_idletasks()
 
-    def test_variant_buttons_exist(self, app):
-        assert hasattr(app, '_btn_save_variant')
-        assert hasattr(app, '_btn_compare_variants')
+    def test_variant_commands_are_reachable(self, app):
+        """The old toolbar buttons became Export-menu entries at the merge, so
+        what has to hold is that the two commands are still on the menu and
+        still bound to the handlers the tests above exercise."""
+        menu = app.export_menu
+        labels = [menu.entrycget(i, 'label')
+                  for i in range(menu.index('end') + 1)
+                  if menu.type(i) == 'command']
+        assert 'Save Variant…' in labels
+        assert 'Compare Variants…' in labels
+        assert callable(app._save_variant)
+        assert callable(app._compare_variants)
 
 
 class TestExportsCarryTheSolvedLoadCase:

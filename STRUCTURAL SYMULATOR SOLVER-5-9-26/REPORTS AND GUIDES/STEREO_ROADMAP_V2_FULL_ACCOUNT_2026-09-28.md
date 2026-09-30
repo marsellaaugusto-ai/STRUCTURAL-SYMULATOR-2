@@ -982,6 +982,74 @@ traceback.
 
 ---
 
+---
+
+## 13. Roadmap v2 against the app as delivered — feature audit (2026-09-30)
+
+Asked for directly: "check that all the features are present in the UI or the GUI".
+The audit below was made against a **live `StereoApp`**, walking every widget in
+all nine mode panels and every menu and reading their labels, not by grepping for
+function names. A handler that exists but that nothing in the interface can reach
+is not a feature, and three of the items below were exactly that until today.
+
+Reproduce it with the script in §12.1, replacing the attribute check with a
+recursive `cget('text')` walk over `app._mode_frames[key]` for each key in
+`MODES`, plus `menu.entrycget(i, 'label')` over `app.export_menu`.
+
+### 13.1 Present and reachable
+
+| # | Feature | Where it is in the UI |
+|---|---|---|
+| 1.1 | Panel scroll + width bugs | fixed in `common.py` (`scrollregion` from `interior.winfo_reqheight`, width propagated by `itemconfigure`) |
+| 1.2 | SketchUp → Stereo compatibility | round-trips; the `.rbz` is rebuilt by `tools/build_release.py` |
+| 2.1 | **Node size 0–12 px** | Display popover → *Size on screen* → **Nodes** |
+| 2.2 | **Rod thickness 0–8** | Display popover → *Size on screen* → **Rods** |
+| 2.3 | Excel colour scales | `ColorScaleRule` in `stereo_reports.py` |
+| 2.5 | Example workbook | Export menu → *Open Example* |
+| 3.1 | Select a rod by clicking | plain click; the NODE hit-test runs first, so aim mid-span |
+| 3.2 | Lasso selects rods | drag a box; Shift adds |
+| 3.3 | Delete nodes and rods | Delete / BackSpace on the canvas |
+| 3.4 | Axis navigation by arrow keys | arrow keys arm it, length box in the Build panel, Escape cancels |
+| 3.5 | **Distributed load along rods** | Load mode → *Distributed load on rods* (scope, direction, ALONG/PROJECTED) |
+| 3.7 | Drag a node on the canvas | press and drag past the lasso threshold |
+| 4.3 | CIRSOC **301** | `cirsoc_301.py`, and the catalog picker in Section mode |
+| 4.7 | Calculated properties + 2D plates in Excel | `stereo_plates.py`, extra sheets |
+| 5.2 | Snap, midpoint snap, coordinate display | hover the canvas; the status bar reads out |
+| 5.3 | Keyboard shortcuts | `g` `a` `f` `1` `2` `3`, Alt+1..9 for the rail |
+| 5.4 | Properties panel | Results mode → *Properties* |
+| 5.5 | Model tree | Results mode → *Model tree* |
+| 6.1–6.4 | PDF, SketchUp export, IFC, variants | Export menu |
+
+### 13.2 Not built
+
+| # | Feature | Note |
+|---|---|---|
+| 2.4 | Free-body images beside the data in Excel | not started |
+| **3.6** | **Cable support / crane simulation** | **not started.** Easy to believe it exists, because the per-node support list offers `cable` — but that preset only restrains `uz` (a hoist point). The roadmap's 3.6 is a whole add-on: pick 3+ nodes, compute the centroid, raise a new node above it (auto height or typed), join each picked node to it with **tension-only cable members**, and stand a vertical bar from it to a pin. There is **no tension-only member type anywhere in the stereo solver**, which is the real prerequisite. |
+| 3.4 | Rotate / mirror the selection (R / M) | the axis-extend half of 3.4 is built; this half is not |
+| **4.1** | **Groups with subgroups** | **not started.** The only `group` in the panels is `_pop_group`, a popover layout helper. No tree, no shared section properties, no rename/merge/dissolve. |
+| 4.2 | Group editing in Excel | depends on 4.1 |
+| 4.4 | "Group Summary" comparison sheet | depends on 4.1 |
+| 4.5 | Merge several Excel files into one model | not started |
+| 4.6 | Wind load case | not started; the only "wind" in the stereo code is one comment |
+| 4.3 | CIRSOC **302** (aluminium) and **303** (timber) | only 301 exists |
+| 1.3 | A visible "Import from SketchUp" button | the command exists as *Import Excel…* on the Export menu; the SketchUp wording appears only inside a message |
+| 5.1 | Simple / Advanced toggle | was BUILT, then deliberately dropped at the merge — the mode rail shows one mode's controls by construction, so it had nothing left to hide. Restoring it is a decision, not a repair. |
+
+### 13.3 The part that matters for planning
+
+Page 4 of the roadmap names five items as the highest-impact for the presentation:
+the panel fix, the node/rod size sliders, click-selection of bars, the
+Simple/Advanced toggle, and SketchUp compatibility — and says the sliders are the
+fastest to build ("dias, no semanas") and should be prioritised to be ready in time.
+
+Of those five, the **sliders had never been built** and the **toggle had been
+dropped**. The sliders were built on 2026-09-30 and are in §13.1 above. This is
+worth recording as a process point rather than a task: the roadmap's own priority
+list was not what the execution followed, and nothing in the task ledger caught
+that, because the ledger tracked what was done rather than what the plan ranked
+first.
+
 ## Appendix A — Complete commit history
 
 Generated from git on 2026-09-28. Format: `hash | date | subject`.

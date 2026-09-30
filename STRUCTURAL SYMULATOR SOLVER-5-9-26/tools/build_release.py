@@ -57,6 +57,12 @@ ZIP_INCLUDE_DIRS = ('apps', 'tests', 'sketchup_plugin', 'tools',
                     # therefore NOT in ZIP_SKIP_DIRS below.
                     '.vscode')
 ZIP_INCLUDE_FILES = ('main.py', 'common.py', 'cirsoc_301.py', 'units.py',
+                     # the Shell tab's two top-level modules. shell_app.py
+                     # imports both at module scope, so leaving either out
+                     # does not degrade the Shell tab -- it stops main.py
+                     # importing at all, and the whole app fails to start
+                     # from an archive that looked complete.
+                     'formula.py', 'view3d.py',
                      'requirements.txt', RBZ_NAME,
                      # a real model to open straight after unpacking
                      'wave_like_structure_1.xlsx')
@@ -190,8 +196,17 @@ def app_files():
 def build_zip(dest=None, check_only=False):
     files = app_files()
     names = {n for n, _ in files}
-    for must in ('main.py', 'common.py', 'apps/stereo/stereo_app.py',
-                 'apps/stereo/stereo_reports.py', RBZ_NAME):
+    # Every module main.py imports transitively at startup, so a missing
+    # one fails the BUILD rather than the user's first launch. This list is
+    # why formula.py and view3d.py are caught now: they were absent from
+    # ZIP_INCLUDE_FILES when the Shell tab was merged in, and the archive
+    # would have unpacked cleanly and then refused to start.
+    for must in ('main.py', 'common.py', 'units.py', 'cirsoc_301.py',
+                 'formula.py', 'view3d.py',
+                 'apps/stereo/stereo_app.py', 'apps/stereo/stereo_reports.py',
+                 'apps/stereo/stereo_app_inspector.py',
+                 'apps/shell/shell_app.py', 'apps/shell/shell_model.py',
+                 RBZ_NAME):
         if must not in names:
             raise SystemExit(f'app archive would be missing {must}')
 

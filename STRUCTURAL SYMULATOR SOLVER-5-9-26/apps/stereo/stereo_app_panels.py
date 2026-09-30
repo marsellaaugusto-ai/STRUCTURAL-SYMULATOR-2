@@ -1968,17 +1968,21 @@ class StereoPanelsMixin(_ToolbarModes):
         # chooser that sets it has to exist before either can name a profile.
         profile_var = tk.StringVar(value=f'Default {prefix}')
         setattr(self, f'{prefix}_profile_var', profile_var)
+        # Two rows, not one: the old sidebar was wide enough for
+        # label + combobox + button abreast, the mode rail's context panel is
+        # PANEL_W (300 px) and test_no_panel_asks_for_more_width_than_the
+        # _panel_has catches the overflow -- Tk itself clips it in silence.
         prof_row = tk.Frame(box, bg=BG)
-        prof_row.pack(fill='x', padx=6, pady=(4, 2))
+        prof_row.pack(fill='x', padx=6, pady=(4, 0))
         tk.Label(prof_row, text='Profile:', bg=BG, width=8, anchor='w',
                  font=('Helvetica', 9)).pack(side='left')
-        combo = ttk.Combobox(prof_row, textvariable=profile_var, width=18,
+        combo = ttk.Combobox(prof_row, textvariable=profile_var, width=12,
                              font=('Helvetica', 8), state='readonly')
-        combo.pack(side='left', padx=(0, 4))
+        combo.pack(side='left', fill='x', expand=True)
         setattr(self, f'_{prefix}_profile_combo', combo)
-        tk.Button(prof_row, text='Catalog…', font=('Helvetica', 8),
+        tk.Button(box, text='Catalog…', font=('Helvetica', 8),
                   command=lambda p=prefix: self._open_catalog_picker(p)
-                 ).pack(side='left')
+                 ).pack(anchor='w', padx=(56, 6), pady=(1, 2))
         self._refresh_section_profile_combo(prefix)
         combo.bind('<<ComboboxSelected>>',
                    lambda _e, p=prefix: self._on_section_profile_selected(p))
@@ -2004,13 +2008,13 @@ class StereoPanelsMixin(_ToolbarModes):
         if prefix == 'web':
             # only need to trigger _apply_sections once for the pair; the
             # chord panel's own button would just redo the same work.
-            btn_row = tk.Frame(box, bg=BG)
-            btn_row.pack(fill='x', padx=6, pady=(4, 6))
-            tk.Button(btn_row, text='Apply sections to all members',
-                     command=self._apply_sections).pack(side='left')
-            tk.Button(btn_row, text='Profile Manager…',
+            tk.Button(box, text='Apply sections to all members',
+                     command=self._apply_sections).pack(padx=6, pady=(4, 1),
+                                                        anchor='w')
+            tk.Button(box, text='Profile Manager…',
                      command=self._open_profile_manager,
-                     font=('Helvetica', 8)).pack(side='left', padx=(6, 0))
+                     font=('Helvetica', 8)).pack(padx=6, pady=(0, 6),
+                                                 anchor='w')
 
     def _on_connectivity_change(self):
         show = self.sec_conn.get() == 'rigid'

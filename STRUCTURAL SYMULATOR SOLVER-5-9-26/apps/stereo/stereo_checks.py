@@ -188,3 +188,220 @@ def worst_utilization(checks):
     'checked' filter every time."""
     vals = [c['util'] for c in checks if c.get('checked')]
     return max(vals) if vals else None
+
+
+# ── one section for a whole group of rods ──────────────────────────────────
+#
+# Roadmap v2 4.1's companion: a group of rods is usually FABRICATED alike,
+# and one section for the branch is cheaper to build than five sections that
+# each just fit. So: what is the smallest catalog section that carries EVERY
+# rod in the group?
+#
+# Two things about this are easy to get wrong, and both are why the search
+# below tries every candidate against every rod rather than sizing for "the
+# worst member" and stopping.
+#
+# FIRST, the rod with the largest force is NOT necessarily the rod that
+# decides the section. `check_member` takes compression capacity from KL/r,
+# using each rod's OWN length, so a long slender strut at 40 kN can demand a
+# heavier section than a short one at 90 kN. Which rod governs therefore
+# depends on the candidate section -- it is an output of the search, not an
+# input to it. Both are reported: `governing` (closest to capacity in the
+# recommendation) and `largest_force` (the biggest |N|), because they differ
+# often enough that showing only one would mislead.
+#
+# SECOND, a recommendation is a FIRST PASS. These structures are
+# indeterminate, so changing sections redistributes the forces the
+# recommendation was computed from. `recommend_for_group` reports the forces
+# it used; applying it and re-analysing may move the answer, and
+# `iterate_recommendation` is the loop that settles it.
+
+def _trial_member(member, section, material=None):
+    """`member` with `section`'s geometry substituted, everything else kept.
+
+    E/Fy/Fu stay with the member unless a material is given: re-sizing a rod
+    is not a decision to change its steel.
+    """
+    from apps.stereo import stereo_profiles as sp
+    props = sp.section_to_props(section, material)
+    out = dict(member)
+    out.update(props)
+    return out
+
+
+def _worst_over(members, member_res, indices, section, code=cirsoc.CIRSOC_301,
+                material=None):
+    """(worst util, governing index, all utils) for one candidate section."""
+    worst, gov = None, None
+    utils = {}
+    for i in indices:
+        if not (0 <= i < len(members) and i < len(member_res)):
+            continue
+        trial = _trial_member(members[i], section, material)
+        res = member_res[i]
+        chk = check_member(trial, res.get('N', 0.0), code, member_res=res)
+        u = chk.get('util')
+        utils[i] = u
+        if u is not None and (worst is None or u > worst):
+            worst, gov = u, i
+    return worst, gov, utils
+
+
+def recommend_for_group(nodes, members, member_res, indices,
+                        candidates=None, code=cirsoc.CIRSOC_301,
+                        material=None, target_util=1.0):
+    """The lightest catalog section that carries every rod in `indices`.
+
+    Returns a dict, or None if `indices` holds nothing checkable:
+
+        name            the recommended section, or None if nothing fits
+        worst_util      its utilisation at the governing rod
+        governing       the rod index that decides it
+        largest_force   the rod with the biggest |N| -- often NOT `governing`
+        utils           {rod index: utilisation} under the recommendation
+        spare           1 - worst_util, how much is left at the governing rod
+        overshoot       the mean unused capacity across the group, which is
+                        the price of one section for the branch
+        next_up         the next heavier candidate, for deliberately
+                        oversizing to something easier to build
+        considered      how many candidates were tried
+        forces          {rod index: N} the recommendation was computed FROM
+        tried           [(name, worst_util)] in weight order, for a report
+
+    Candidates are ordered by area, so the first that passes is the
+    lightest. `target_util` below 1.0 sizes with a margin.
+    """
+    from apps.stereo import stereo_profiles as sp
+    from apps.stereo import stereo_math as sm
+
+    idx = [i for i in sorted(set(indices)) if 0 <= i < len(members)]
+    if not idx:
+        return None
+
+    # Lengths come from the same helper the solver used, never recomputed
+    # differently here.
+    with_len = list(members)
+    for i in idx:
+        _dx, _dy, _dz, L = sm.member_vector(nodes, members[i])
+        with_len[i] = dict(members[i], _length_m=L)
+
+    pool = ([sp.CATALOG[n] for n in candidates if n in sp.CATALOG]
+            if candidates is not None
+            else [sp.CATALOG[n] for n in sp.catalog_names()])
+    pool = [s for s in pool if getattr(s, 'A_mm2', 0) > 0]
+    pool.sort(key=lambda s: s.A_mm2)
+    if not pool:
+        return None
+
+    forces = {i: (member_res[i].get('N', 0.0) if i < len(member_res) else 0.0)
+              for i in idx}
+    largest = max(idx, key=lambda i: abs(forces.get(i, 0.0)))
+
+    tried = []
+    best = None
+    for sec in pool:
+        worst, gov, utils = _worst_over(with_len, member_res, idx, sec, code,
+                                        material)
+        tried.append((sec.name, worst))
+        if worst is None:
+            continue            # nothing checkable: no Fy, or no forces yet
+        if worst <= target_util + 1e-9:
+            best = (sec, worst, gov, utils)
+            break
+
+    if best is None:
+        # Nothing in the catalog carries it. Report the heaviest and what it
+        # would reach, which is more use than a bare "no".
+        sec = pool[-1]
+        worst, gov, utils = _worst_over(with_len, member_res, idx, sec, code,
+                                        material)
+        return {'name': None, 'heaviest_tried': sec.name,
+                'worst_util': worst, 'governing': gov,
+                'largest_force': largest, 'utils': utils, 'spare': None,
+                'overshoot': None, 'next_up': None,
+                'considered': len(pool), 'forces': forces, 'tried': tried,
+                'note': ('No catalog section carries every rod in this group. '
+                         'The heaviest tried (%s) reaches %s at rod %s.'
+                         % (sec.name,
+                            'n/a' if worst is None else '%.2f' % worst,
+                            gov))}
+
+    sec, worst, gov, utils = best
+    order = [s.name for s in pool]
+    at = order.index(sec.name)
+    vals = [u for u in utils.values() if u is not None]
+    return {'name': sec.name, 'worst_util': worst, 'governing': gov,
+            'largest_force': largest, 'utils': utils,
+            'spare': (1.0 - worst) if worst is not None else None,
+            'overshoot': (1.0 - (sum(vals) / len(vals))) if vals else None,
+            'next_up': (order[at + 1] if at + 1 < len(order) else None),
+            'considered': len(pool), 'forces': forces, 'tried': tried,
+            'note': ''}
+
+
+def apply_recommendation(members, indices, name, material=None):
+    """Give every rod in `indices` the named section. Returns how many.
+
+    This is the bulk edit a group exists for: the rods in a group need not
+    start out alike, but setting the group's section sets all of them.
+    """
+    from apps.stereo import stereo_profiles as sp
+    sec = sp.CATALOG.get(name)
+    if sec is None:
+        raise ValueError('no catalog section named %r' % (name,))
+    props = sp.section_to_props(sec, material)
+    n = 0
+    for i in sorted(set(indices)):
+        if 0 <= i < len(members):
+            members[i].update(props)
+            members[i]['profile'] = name
+            n += 1
+    return n
+
+
+def iterate_recommendation(nodes, members, loads, supports, indices,
+                           candidates=None, code=cirsoc.CIRSOC_301,
+                           material=None, target_util=1.0, max_passes=6,
+                           panels=None, member_loads=None):
+    """Recommend, apply, re-analyse, repeat until the section settles.
+
+    Necessary because the structure is indeterminate: stiffening a branch
+    draws more load into it, so the section that just passed under the old
+    forces may not pass under the new ones. Each pass re-solves the WHOLE
+    structure -- never the branch alone, which would be a different
+    structure.
+
+    Returns (recommendation, history, members). `members` is a copy with the
+    settled section applied; the caller's list is untouched, so a
+    recommendation can be inspected before it is accepted.
+    """
+    from apps.stereo import stereo_math as sm
+    work = [dict(m) for m in members]
+    history = []
+    rec = None
+    for _ in range(max_passes):
+        res, err = sm.analyze(nodes, work, loads, supports, panels, member_loads)
+        if res is None:
+            return None, history + [{'error': err}], work
+        rec = recommend_for_group(nodes, work, res['member_res'], indices,
+                                  candidates, code, material, target_util)
+        if rec is None:
+            return None, history, work
+        history.append({'name': rec['name'], 'worst_util': rec['worst_util'],
+                        'governing': rec['governing']})
+        if rec['name'] is None:
+            return rec, history, work
+        if len(history) >= 2 and history[-1]['name'] == history[-2]['name']:
+            rec['settled'] = True
+            rec['passes'] = len(history)
+            return rec, history, work
+        apply_recommendation(work, indices, rec['name'], material)
+    if rec is not None:
+        rec['settled'] = False
+        rec['passes'] = len(history)
+        rec['note'] = ((rec.get('note') or '')
+                       + ' The section did not settle in %d passes: it is '
+                         'alternating as the load redistributes. Treat the '
+                         'last one as approximate and check it by hand.'
+                       % max_passes).strip()
+    return rec, history, work

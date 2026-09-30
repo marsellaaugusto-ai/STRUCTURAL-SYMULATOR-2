@@ -23,6 +23,19 @@ small-deflection. Solves in SI; the UI converts at the boundary.
   full 12×12 frame element with axial, 2 bending planes, torsion and shear
   terms. This is what a Vierendeel needs; pinned, a Vierendeel is a mechanism.
 
+**Tension-only members (cables).** Any member may carry `tension_only=True`.
+Because a cable cannot push, the answer depends on which cables are slack, and
+which are slack is not known until it is solved — so `analyze()` solves for it,
+by an active-set iteration: solve, drop any cable that came out in compression,
+restore any slack cable whose trial force now wants tension, repeat until the
+set stops changing. A slack cable is *removed from the stiffness matrix*, not
+given a small stiffness (a small stiffness still pushes; the force just gets
+small enough to look believable). Slack members report `N = 0.0` with
+`slack: True`, keeping the trial force as `N_trial`. If every cable holding the
+structure up goes slack, the remainder is a mechanism, and that gets its own
+message rather than a singular-matrix error. Models with no cables take the
+original path unchanged, at the original cost.
+
 **Per-member properties.** `E` (GPa), `A` (cm²), `r` (radius of gyration, cm),
 `I` (cm⁴), `J` (cm⁴), `K` (effective-length factor), `Fy`, `Fu` (MPa).
 Chord and web members carry independent property sets (`_apply_sections`), so a
@@ -205,7 +218,7 @@ finer than the mesh lattice, so a crossing that dips between two nodes is caught
 
 ---
 
-## 4. Add-ons: columns and beams
+## 4. Add-ons: columns, beams and the crane
 
 `stereo_geometry_addons.py`. Select nodes in the 3D view, set dimensions, press
 the button.
@@ -283,6 +296,59 @@ screen explains.
 
 Each with a **constant** or **parabolic** depth law, any offset direction, and
 multi-tier stacking for a deeper girder.
+
+**Cable crane** (`add_cable_crane`). Select three or more joints and press *Lift
+the selected nodes* in the Crane group: a hook node goes up above the centroid of
+the selection, one **tension-only cable** runs from each selected node to the
+hook, and a vertical mast runs from the hook to an anchor above it. This answers
+"what happens to my structure while it is being lifted", which is a different
+load case from the finished structure and often the governing one.
+
+Hook rise and mast length are typed, or worked out from the spread of the
+selection: the mean horizontal distance from the centroid out to the picked
+nodes, floored at 0.5 m, which puts the slings near 45° — the angle a rigger
+aims for, because steeper wastes height and flatter multiplies the tension for
+the same lift. The mast defaults to 35% of the rise. **Clear every crane**
+removes each crane member and node by role, so the action is repeatable.
+
+The cables are pinned and tension-only, so the §1 active-set solve applies:
+a sling on the slack side of an off-centre lift reads **0.00, slack** instead of
+pushing. Compare a guyed mast under a horizontal load — with cables, the
+windward guy takes **+16.63 kN** and the leeward one goes slack; with the same
+members as ordinary bars, both read **±8.33 kN** and one of them is a strut,
+which is not what a guy rope does.
+
+**The lift takes the model off its own supports** (a checkbox, on by default).
+A support left in place is a rigid path to ground in parallel with the slings and
+it wins every time: with the grid's own supports in, all four slings read exactly
+0.000 kN. *Clear every crane* hands them back, kind and all. With the checkbox off
+the panel warns you that the slings may read zero.
+
+**It also adds three tag lines**, and it has to. A body hanging from concurrent
+cables is a pendulum, and a linear small-deflection solve gives a pendulum no
+lateral stiffness at all — the restoring force is a geometric, second-order term
+this solver does not carry. Three modes therefore have zero stiffness: swing in x,
+swing in y, and spin about the vertical. Unsteadied, the lifted grid's stiffness
+matrix has a condition number of 6 × 10¹⁶ — numerically singular — and yet returns
+a clean, plausible answer under one load case and displacements of 10¹⁰ m under
+another, because the singularity test looks at the residual, which depends on the
+loads. A real rig steadies a hanging load the same way. The three restraints are
+the minimum and the maximum: at the lifted node furthest out, ux and uy; at the
+node furthest from that one, the direction across the line between them. In a
+symmetric lift they carry exactly zero, which is the check that they are steadying
+and not carrying; a non-zero reaction there is the net horizontal load on the lift,
+which has nowhere else to go.
+
+Steadied, the four-sling lift of 1800 kN reads **636.3961 kN** per sling with the
+vertical components summing to 1800.0000 kN — 1800/(4·cos 45°), the slings at 45°
+as the geometry says.
+
+**The mast anchor is fixed, not pinned.** A rigid mast whose top can rotate has
+a zero-energy torsional mode about its own axis — the cables are pin-jointed and
+add no rotational stiffness at the hook, so nothing resists that rotation and
+the solve is singular before any cable has gone slack. The same fact is worth
+knowing when reading results: a body hanging from a single hook can spin, so its
+rotation about the mast axis is not restrained by the lift itself.
 
 ---
 
@@ -402,7 +468,7 @@ question:
 | 3 | **Support** | Where the structure stands, and on what boundary conditions |
 | 4 | **Load** | What it carries: area load, self-weight, point loads and moments |
 | 5 | **Section** | What it is made of: chord and web sections, material, pinned or rigid |
-| 6 | **Add-ons** | Columns and reinforcement beams |
+| 6 | **Add-ons** | Columns, reinforcement beams, and the cable crane |
 | 7 | **Module** | The repeating cell, and edits applied to every congruent copy |
 | 8 | **Analyse** | How to draw it, and four charts of what the solve found |
 | 9 | **Results** | Reactions, member table, the click-to-inspect readout |
@@ -611,11 +677,23 @@ the P you typed, and leaves any moments you had typed alone.
 Stated plainly so nobody assumes otherwise:
 
 - Linear, small-deflection only. No geometric non-linearity, no form-finding,
-  no buckling capacity beyond CIRSOC's member check.
+  no buckling capacity beyond CIRSOC's member check. Tension-only members are
+  the one exception, and a narrow one: the solve decides which cables are slack,
+  but each active cable is still a straight elastic bar — there is no cable sag,
+  no pretension and no large-displacement geometry. The absence of geometric
+  stiffness is why a lift has to be steadied by hand (§4): a hanging body's
+  restoring force is exactly the term that is missing.
+- The crane is a *load case*, not a simulation over time: it answers what the
+  structure and the slings do while hanging at one position, not what happens
+  during the lift.
 - One load case at a time. `combine_loads` exists but there is no combination
   UI.
 - No per-member section rotation for rigid frames — `_local_axes` picks a
   default reference, which matters for non-symmetric sections.
 - The Excel round-trip loses the wizard recipe, so an imported model cannot be
   reopened in the wizard.
+- The *Member Calculations* sheet shows the 40 most utilized rods, not all of
+  them. Each block carries three rendered images, so all 800 rods of the default
+  grid made a 19.7 MB workbook with 2,400 images in it; at 40 it is 1.7 MB. The
+  sheet says so, and *Member Forces* and *Member Checks* still cover every rod.
 - No dynamic, thermal or staged-construction analysis.

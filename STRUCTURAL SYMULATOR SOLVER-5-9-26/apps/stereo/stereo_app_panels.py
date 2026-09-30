@@ -2569,6 +2569,58 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Button(beam, text='Clear every beam', fg='#a3241a',
                   command=self._clear_beams).pack(fill='x', padx=6, pady=(0, 4))
 
+        # ── crane (roadmap v2, 3.6) ──────────────────────────────────────
+        crane = tk.LabelFrame(box, text='Crane (lift from selected nodes)', bg=BG,
+                              font=('Helvetica', 8, 'bold'))
+        crane.pack(fill='x', padx=6, pady=(0, 4))
+        tk.Label(crane, text='Select 3 or more joints, then Lift. A hook goes '
+                             'over their centroid, one tension-only cable runs '
+                             'to each joint, and a mast above the hook is built '
+                             'into a fixed top. A cable pulls or goes slack -- '
+                             'it never pushes -- so Analyze solves this in '
+                             'passes.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(2, 2))
+        self.crane_auto = tk.BooleanVar(value=True)
+        self.crane_rise = tk.DoubleVar(value=4.0)
+        self.crane_mast = tk.DoubleVar(value=1.5)
+        # ON by default, and it has to be: with the model's own supports left
+        # in place the ground is a far stiffer path than a sling, so every
+        # cable reads zero and the crane appears to be carrying nothing.
+        # Clear every crane hands the supports back.
+        self.crane_off_ground = tk.BooleanVar(value=True)
+        tk.Checkbutton(crane, text='Take it off its own supports while lifting',
+                       variable=self.crane_off_ground, bg=BG,
+                       font=('Helvetica', 8)).pack(anchor='w', padx=6)
+        tk.Checkbutton(crane, text='Work the hook height out from the spread',
+                       variable=self.crane_auto, bg=BG, font=('Helvetica', 8),
+                       command=self._on_crane_auto_change
+                      ).pack(anchor='w', padx=6)
+        self._crane_rise_row = tk.Frame(crane, bg=BG)
+        tk.Label(self._crane_rise_row, text='Hook rise (m):', bg=BG, width=16,
+                 anchor='w', font=('Helvetica', 9)).pack(side='left')
+        tk.Entry(self._crane_rise_row, textvariable=self.crane_rise, width=10,
+                 font=('Helvetica', 9)).pack(side='left')
+        # Kept so the rise row can be re-packed in ITS OWN place. pack()
+        # appends to the end of the parent, so a row hidden at build time and
+        # shown later reappears under the buttons instead of above the mast,
+        # which is not where the user left it.
+        self._crane_mast_row = self._labeled_entry(crane, 'Mast (m):',
+                                                   self.crane_mast)
+        tk.Button(crane, text='Lift the selected nodes',
+                  command=self._add_cable_crane).pack(fill='x', padx=6, pady=(2, 2))
+        tk.Button(crane, text='Clear every crane', fg='#a3241a',
+                  command=self._clear_cable_cranes).pack(fill='x', padx=6, pady=(0, 4))
+        self._on_crane_auto_change()
+
+    def _on_crane_auto_change(self):
+        """The typed rise is only meaningful when the automatic one is off."""
+        if self.crane_auto.get():
+            self._crane_rise_row.pack_forget()
+        else:
+            self._crane_rise_row.pack(fill='x', padx=6, pady=1,
+                                      before=self._crane_mast_row)
+
     def _build_results_panel(self, parent):
         box = tk.LabelFrame(parent, text='Results', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='both', padx=6, pady=(4, 8))

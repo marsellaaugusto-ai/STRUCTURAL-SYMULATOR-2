@@ -207,7 +207,8 @@ def _rotation_12(local_x, local_y, local_z):
     return T
 
 
-def analyze(nodes, members, loads, supports, panels=None, member_loads=None):
+def _analyze_once(nodes, members, loads, supports, panels=None,
+                  member_loads=None, slack=frozenset()):
     """Solve the space structure. Returns (result, error). On failure,
     result is None and error is a human-readable string (mirroring every
     other solver in this app, e.g. truss_math.analyze).
@@ -299,7 +300,12 @@ def analyze(nodes, members, loads, supports, panels=None, member_loads=None):
         dof_of[i] = tuple(idx)
 
     K = np.zeros((ndof, ndof))
-    for m in members:
+    for mi, m in enumerate(members):
+        if mi in slack:
+            # A slack tension-only member is ABSENT from the structure for
+            # this pass -- not a member with a small stiffness. Leaving a
+            # token stiffness in is what makes a cable push.
+            continue
         dx, dy, dz, L = member_vector(nodes, m)
         if L < 1e-9:
             continue
@@ -421,8 +427,17 @@ def analyze(nodes, members, loads, supports, panels=None, member_loads=None):
             dirn = np.array([lx, ly, lz])
             elong = float(np.dot(ub - ua, dirn))
             N_force = (m['E'] * 1e9) * (m['A'] * 1e-4) / L * elong
-            member_res.append({'N': N_force / 1e3, 'conn': 'pin', 'length_m': L,
-                               'w_local': w_m})
+            N_kN = N_force / 1e3
+            if mi in slack:
+                # It carries nothing. N_trial is what it WOULD carry at these
+                # displacements, and is how the active-set loop in analyze()
+                # decides whether to bring it back.
+                member_res.append({'N': 0.0, 'conn': 'pin', 'length_m': L,
+                                   'w_local': w_m, 'slack': True,
+                                   'N_trial': N_kN})
+            else:
+                member_res.append({'N': N_kN, 'conn': 'pin', 'length_m': L,
+                                   'w_local': w_m})
         else:
             local_x, local_y, local_z = _local_axes(dx, dy, dz, L)
             kloc = _rigid_local_stiffness(m['E'], m['A'], m.get('I', 0.0),
@@ -496,6 +511,92 @@ def analyze(nodes, members, loads, supports, panels=None, member_loads=None):
 
     return {'node_res': node_res, 'member_res': member_res,
             'reactions': reactions, 'panel_res': panel_res}, None
+
+
+# How much axial force counts as "really" compression or tension when
+# deciding whether a cable is slack. Anything inside this band is numerical
+# noise about zero, and flipping a member's state on noise is what makes an
+# active-set loop oscillate instead of converge.
+CABLE_FORCE_TOL_kN = 1e-6
+
+
+def is_tension_only(member):
+    """A cable: it carries tension and goes slack rather than push.
+
+    Marked with `tension_only`, NOT approximated by a normal bar with a tiny
+    E or A. A soft bar still pushes, just less, and the whole point of a
+    crane cable is that it cannot push at all.
+    """
+    return bool(member.get('tension_only'))
+
+
+def analyze(nodes, members, loads, supports, panels=None, member_loads=None):
+    """Solve the space structure -- see _analyze_once for the result shape.
+
+    Tension-only members (cables) make this NONLINEAR: which cables are
+    slack depends on the displacements, and the displacements depend on
+    which cables are carrying. So this is an active-set loop, not one solve:
+
+        solve -> any carrying cable found in compression goes slack
+              -> any slack cable that now WANTS tension comes back
+              -> repeat until the set stops changing
+
+    Both directions are needed. Dropping a cable can redistribute load so
+    that one dropped earlier is wanted again, and a loop that only ever
+    removes members converges to the wrong answer without saying so.
+
+    With no tension-only members this is exactly one call to _analyze_once,
+    so every existing model solves the way it always did.
+    """
+    cables = {i for i, m in enumerate(members) if is_tension_only(m)}
+    if not cables:
+        return _analyze_once(nodes, members, loads, supports, panels, member_loads)
+
+    # A rigid tension-only member is not a thing, and this is a hard stop
+    # rather than a quiet reinterpretation. The bookkeeping below reads
+    # 'N_trial' to decide when a slack member is wanted again, and only the
+    # pin branch of _analyze_once writes it, so a rigid cable would be
+    # dropped from the structure and never come back -- wrong, and silently.
+    rigid_cables = sorted(i for i in cables
+                          if members[i].get('conn', 'pin') == 'rigid')
+    if rigid_cables:
+        # Numbered the way the canvas labels rods, which is 0-based here, so
+        # the number in the message is the one on screen.
+        return None, ('Rod %d is marked tension-only but its joints are rigid. '
+                      'A cable has no bending or torsional stiffness, so it has '
+                      'to be pinned. Set its connection to pin, or drop the '
+                      'tension-only flag.' % rigid_cables[0])
+
+    slack = set()
+    # Each pass either removes or restores at least one cable, so this cannot
+    # run longer than that; the +2 covers the confirming pass at the end.
+    for _ in range(2 * len(cables) + 2):
+        res, err = _analyze_once(nodes, members, loads, supports, panels,
+                                 member_loads, slack=frozenset(slack))
+        if res is None:
+            if slack:
+                # Going slack is what broke it: the structure leans on cables
+                # that cannot push. Say so, rather than reporting the generic
+                # singular-matrix message for a case with a specific cause.
+                return None, ('The structure is held up by cables that have '
+                              'gone slack -- with those out it is a mechanism. '
+                              'A cable can only pull, so something else has to '
+                              'resist the load in the other direction.')
+            return None, err
+        mres = res['member_res']
+        push = {i for i in cables - slack
+                if mres[i].get('N', 0.0) < -CABLE_FORCE_TOL_kN}
+        pull = {i for i in slack
+                if mres[i].get('N_trial', 0.0) > CABLE_FORCE_TOL_kN}
+        if not push and not pull:
+            return res, None
+        slack = (slack | push) - pull
+    # Fell out of the loop: the active set is oscillating. Return the last
+    # solve rather than nothing, and say the state is not settled, because a
+    # near-answer with a caveat beats no answer at all.
+    return res, ('The cable set did not settle: some cable keeps alternating '
+                 'between carrying and slack. The results shown are the last '
+                 'pass and should be treated as approximate.')
 
 
 def node_moment_vectors(nodes, members, member_res):

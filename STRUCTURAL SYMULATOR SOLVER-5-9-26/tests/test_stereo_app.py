@@ -8340,3 +8340,486 @@ class TestRodLoadOnABoxSelection:
         app.selected_member = None
         app.rod_scope.set(sc.ROD_SCOPE_SELECTED)
         assert app._rods_in_scope() == [0, 1]
+
+
+class TestCraneAddon:
+    """Roadmap v2, 3.6: pick joints, hang them from a hook on tension-only
+    cables, stand a mast above it. Exercised through the panel's own button,
+    because the feature is the whole chain -- selection, geometry, boundary
+    conditions, solve -- not the geometry helper on its own.
+    """
+
+    def _corners(self, app):
+        top_z = max(p[2] for p in app.nodes)
+        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top_z) < 1e-9]
+        xs = sorted({round(app.nodes[i][0], 6) for i in tops})
+        ys = sorted({round(app.nodes[i][1], 6) for i in tops})
+        out = []
+        for xv in (xs[0], xs[-1]):
+            for yv in (ys[0], ys[-1]):
+                for i in tops:
+                    if (abs(app.nodes[i][0] - xv) < 1e-9
+                            and abs(app.nodes[i][1] - yv) < 1e-9):
+                        out.append(i)
+                        break
+        return out
+
+    def _roles(self, app, role):
+        return [i for i, m in enumerate(app.members) if m.get('role') == role]
+
+    def test_the_panel_offers_it(self, app):
+        assert hasattr(app, 'crane_auto') and hasattr(app, 'crane_rise')
+        assert hasattr(app, 'crane_mast')
+        assert callable(app._add_cable_crane)
+        assert callable(app._clear_cable_cranes)
+
+    def test_fewer_than_three_joints_is_refused(self, app, monkeypatch):
+        shown = []
+        monkeypatch.setattr('apps.stereo.stereo_app_addons.messagebox.showerror',
+                            lambda *a, **k: shown.append(a))
+        app.selected_nodes = {0, 1}
+        n_before = len(app.nodes)
+        app._add_cable_crane()
+        assert shown and len(app.nodes) == n_before
+
+    def test_lifting_builds_the_hook_cables_mast_and_restraint(self, app):
+        pick = self._corners(app)
+        app.selected_nodes = set(pick)
+        app._add_cable_crane()
+        cables = self._roles(app, 'crane_cable')
+        masts = self._roles(app, 'crane_mast')
+        assert len(cables) == len(pick)
+        assert len(masts) == 1
+        assert all(app.members[i].get('tension_only') for i in cables)
+        assert app.members[masts[0]]['conn'] == 'rigid'
+        anchor = app.members[masts[0]]['b']
+        # FIXED, not pinned -- a rigid mast free to rotate at its top has a
+        # zero-energy torsional mode about its own axis
+        assert any(sp['node'] == anchor and sp['type'] == 'fixed'
+                   for sp in app.supports)
+
+    def test_the_hook_sits_over_the_centroid(self, app):
+        pick = self._corners(app)
+        app.selected_nodes = set(pick)
+        cx = sum(app.nodes[i][0] for i in pick) / len(pick)
+        cy = sum(app.nodes[i][1] for i in pick) / len(pick)
+        app._add_cable_crane()
+        hook = app.members[self._roles(app, 'crane_mast')[0]]['a']
+        assert app.nodes[hook][0] == pytest.approx(cx)
+        assert app.nodes[hook][1] == pytest.approx(cy)
+        assert app.nodes[hook][2] > max(app.nodes[i][2] for i in pick)
+
+    def test_a_typed_rise_is_used_when_the_automatic_one_is_off(self, app):
+        pick = self._corners(app)
+        app.selected_nodes = set(pick)
+        app.crane_auto.set(False)
+        app.crane_rise.set(9.0)
+        top = max(app.nodes[i][2] for i in pick)
+        app._add_cable_crane()
+        hook = app.members[self._roles(app, 'crane_mast')[0]]['a']
+        assert app.nodes[hook][2] == pytest.approx(top + 9.0)
+
+    def test_no_cable_is_ever_in_compression(self, app):
+        pick = self._corners(app)
+        app.selected_nodes = set(pick)
+        app._add_cable_crane()
+        app._analyze()
+        assert app.results is not None
+        for i in self._roles(app, 'crane_cable'):
+            assert app.results['member_res'][i]['N'] >= 0.0
+
+    def test_the_crane_carries_the_whole_lift(self, app):
+        """Take the model's own supports away so the crane alone holds it,
+        then check the cables' vertical pull against the load."""
+        pick = self._corners(app)
+        app.selected_nodes = set(pick)
+        app._add_cable_crane()
+        anchor = app.members[self._roles(app, 'crane_mast')[0]]['b']
+        app.supports = [sp for sp in app.supports if sp['node'] == anchor]
+        app.results = None
+        app._analyze()
+        assert app.results is not None, 'the crane could not hold the model'
+        want = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
+        assert app.results['reactions'][anchor]['Fz'] == pytest.approx(want, rel=1e-6)
+        lifted = 0.0
+        for i in self._roles(app, 'crane_cable'):
+            _dx, _dy, dz, L = sm.member_vector(app.nodes, app.members[i])
+            assert app.results['member_res'][i]['N'] > 0
+            lifted += app.results['member_res'][i]['N'] * dz / L
+        assert lifted == pytest.approx(want, rel=1e-6)
+
+    def test_clearing_puts_the_model_back_exactly(self, app):
+        n0, m0, s0 = len(app.nodes), len(app.members), len(app.supports)
+        app.selected_nodes = set(self._corners(app))
+        app._add_cable_crane()
+        assert len(app.nodes) > n0
+        app._clear_cable_cranes()
+        assert (len(app.nodes), len(app.members), len(app.supports)) == (n0, m0, s0)
+        assert not self._roles(app, 'crane_cable')
+        assert not self._roles(app, 'crane_mast')
+
+
+class TestCranePanelLayout:
+    """The Crane group as a user meets it, not through its handlers.
+
+    Every other crane test calls `app._add_cable_crane()` directly, which is
+    exactly the blind spot that let the merge delete working UI: the handler
+    is fine, the widget that reaches it is not. These press the real widgets
+    and read the real geometry manager.
+    """
+
+    def _crane_widgets(self, app):
+        out = []
+        def walk(w):
+            out.append(w)
+            for c in w.winfo_children():
+                walk(c)
+        walk(app._mode_frames['addons'])
+        return out
+
+    def _button(self, app, needle):
+        for w in self._crane_widgets(app):
+            try:
+                if needle.lower() in str(w.cget('text')).lower() and w.cget('command'):
+                    return w
+            except tk.TclError:
+                continue
+        return None
+
+    def test_the_lift_and_clear_buttons_exist_and_are_wired(self, app):
+        for needle in ('lift the selected nodes', 'clear every crane'):
+            assert self._button(app, needle) is not None, needle
+
+    def test_pressing_lift_on_the_real_button_builds_a_crane(self, app, monkeypatch):
+        shown = []
+        monkeypatch.setattr('apps.stereo.stereo_app_addons.messagebox.showerror',
+                            lambda *a, **k: shown.append(a))
+        zs = [p[2] for p in app.nodes]
+        top = max(zs)
+        top_nodes = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
+        app.selected_nodes = set(top_nodes[:4])
+        assert len(app.selected_nodes) >= 3
+        self._button(app, 'lift the selected nodes').invoke()
+        assert not shown, shown
+        assert [m for m in app.members if m.get('role') == 'crane_cable']
+        self._button(app, 'clear every crane').invoke()
+        assert not [m for m in app.members if m.get('role') == 'crane_cable']
+
+    def test_the_hook_rise_box_appears_above_the_mast_box_not_below_it(self, app):
+        """pack() appends, so a row hidden at build time and shown later lands
+        at the BOTTOM of the group -- under the Lift and Clear buttons, which
+        is not where the label says it is. `before=` is what keeps it in its
+        own place, and this is the test that notices when it is dropped.
+        """
+        app.crane_auto.set(False)
+        app._on_crane_auto_change()
+        group = app._crane_mast_row.master
+        order = list(group.pack_slaves())
+        assert app._crane_rise_row in order, 'the rise row never came back'
+        assert order.index(app._crane_rise_row) < order.index(app._crane_mast_row)
+
+    def test_the_hook_rise_box_is_hidden_while_the_spread_decides(self, app):
+        app.crane_auto.set(True)
+        app._on_crane_auto_change()
+        assert app._crane_rise_row not in list(app._crane_mast_row.master.pack_slaves())
+
+    def test_the_rise_box_survives_being_hidden_and_shown_repeatedly(self, app):
+        group = app._crane_mast_row.master
+        for _ in range(3):
+            app.crane_auto.set(False); app._on_crane_auto_change()
+            app.crane_auto.set(True); app._on_crane_auto_change()
+        app.crane_auto.set(False); app._on_crane_auto_change()
+        order = list(group.pack_slaves())
+        assert order.index(app._crane_rise_row) < order.index(app._crane_mast_row)
+
+    def test_the_panel_does_not_promise_a_pin_the_code_does_not_build(self, app):
+        """The hint text said the mast "ends in a pin". It is FIXED, because a
+        rigid mast free to rotate at its top has a zero-energy torsional mode.
+        A hint that contradicts the model is worse than no hint.
+        """
+        texts = []
+        for w in self._crane_widgets(app):
+            try:
+                t = w.cget('text')
+            except tk.TclError:
+                continue
+            if isinstance(t, str):
+                texts.append(t)
+        blob = ' '.join(texts).lower()
+        assert 'crane' in blob
+        i = blob.find('crane (lift from selected nodes)')
+        assert i >= 0
+        hint = blob[i:i + 400]
+        assert 'fixed' in hint
+        assert 'ends in a pin' not in hint
+
+
+class TestCraneTakesOverTheSupports:
+    """A lifted structure is not also standing on the ground.
+
+    This is the bug the GUI sweep found, and it is the columns' bug again:
+    with the grid's own supports left in place all four slings read exactly
+    0.000 kN, because a support is a rigid path to ground in parallel with a
+    cable and it wins every time. The crane was in the picture, in the member
+    list and in the checks, and carrying nothing.
+    """
+
+    def _corners(self, app):
+        top = max(p[2] for p in app.nodes)
+        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
+        xs = [app.nodes[i][0] for i in tops]
+        ys = [app.nodes[i][1] for i in tops]
+        out = set()
+        for tx in (min(xs), max(xs)):
+            for ty in (min(ys), max(ys)):
+                out.add(min(tops, key=lambda i: (app.nodes[i][0] - tx) ** 2
+                                                + (app.nodes[i][1] - ty) ** 2))
+        return out
+
+    def _cables(self, app):
+        return [i for i, m in enumerate(app.members)
+                if m.get('role') == 'crane_cable']
+
+    def test_the_slings_actually_carry_the_load(self, app):
+        app.selected_nodes = set(self._corners(app))
+        assert app.crane_off_ground.get(), 'has to default to on'
+        app._add_cable_crane()
+        app._analyze()
+        assert app.results is not None
+        forces = [app.results['member_res'][i]['N'] for i in self._cables(app)]
+        assert forces, 'no cables'
+        assert max(forces) > 1.0, forces
+
+    def test_with_the_option_off_the_ground_still_wins(self, app):
+        """The old behaviour, kept reachable and documented rather than
+        removed: this is what "the crane reads zero" looks like, and the
+        panel says so when it happens."""
+        app.selected_nodes = set(self._corners(app))
+        app.crane_off_ground.set(False)
+        before = len(app.supports)
+        app._add_cable_crane()
+        assert len(app.supports) == before + 1     # only the mast's own top
+        app._analyze()
+        assert app.results is not None
+        forces = [app.results['member_res'][i]['N'] for i in self._cables(app)]
+        assert max(forces) == pytest.approx(0.0, abs=1e-6), forces
+
+    def test_lifting_leaves_the_masts_top_and_the_steady_lines(self, app):
+        """Nothing of the model's own boundary survives a lift. What is left
+        is the mast's fixed top, which carries the whole load, and the three
+        single-DOF tag lines that steady a hanging body -- see
+        TestTheLiftIsWellPosed for why those three have to be there."""
+        app.selected_nodes = set(self._corners(app))
+        assert len(app.supports) > 0, 'the fixture grid has to be supported'
+        app._add_cable_crane()
+        masts = [i for i, m in enumerate(app.members)
+                 if m.get('role') == 'crane_mast']
+        anchor = app.members[masts[0]]['b']
+        full = [sp for sp in app.supports if sp.get('type')]
+        assert [sp['node'] for sp in full] == [anchor]
+        assert full[0]['type'] == 'fixed'
+        steady = [sp for sp in app.supports if not sp.get('type')]
+        assert len(steady) == 3
+        # Each holds exactly ONE translation: any more and it would start
+        # carrying load the slings are there to carry.
+        for sp in steady:
+            assert list(sp['dofs'].values()) == [True]
+            assert list(sp['dofs'])[0] in ('ux', 'uy')
+
+    def test_clearing_puts_the_model_back_on_the_ground(self, app):
+        before = sorted((sp['node'], sp.get('type')) for sp in app.supports)
+        app.selected_nodes = set(self._corners(app))
+        app._add_cable_crane()
+        app._clear_cable_cranes()
+        assert sorted((sp['node'], sp.get('type'))
+                      for sp in app.supports) == before
+
+    def test_the_kind_of_each_support_survives_the_round_trip(self, app):
+        """Node numbers are not enough -- a pin handed back as a fixed base
+        is a different structure, and nothing in the mesh remembers which it
+        was."""
+        app.supports = [{'node': sp['node'], 'type': 'rollerX'}
+                        for sp in app.supports]
+        want = sorted((sp['node'], sp['type']) for sp in app.supports)
+        app.selected_nodes = set(self._corners(app))
+        app._add_cable_crane()
+        app._clear_cable_cranes()
+        assert sorted((sp['node'], sp['type']) for sp in app.supports) == want
+
+    def test_clearing_the_columns_does_not_hand_back_the_cranes_supports(self, app):
+        app.selected_nodes = set(self._corners(app))
+        app._add_cable_crane()
+        only_anchor = [dict(sp) for sp in app.supports]
+        app._clear_columns()
+        assert [dict(sp) for sp in app.supports] == only_anchor
+
+    def test_a_regenerate_forgets_what_the_old_lift_freed(self, app):
+        """Kept entries are node INDICES, so carrying them across a new mesh
+        would weld supports onto whichever nodes now hold those numbers."""
+        app.selected_nodes = set(self._corners(app))
+        app._add_cable_crane()
+        assert app._crane_freed
+        app._generate(push_undo=False)
+        assert app._crane_freed == []
+
+    def test_the_panel_says_which_way_it_went(self, app):
+        """Taking a support away is not a detail the user should have to
+        discover from a reaction that vanished, so the panel states it both
+        ways round -- and states the zero-slings case too, since that is the
+        one that looks like a broken crane."""
+        app.selected_nodes = set(self._corners(app))
+        app._add_cable_crane()
+        assert 'off its own' in str(app.col_note.cget('text')).lower()
+        app._clear_cable_cranes()
+        assert 'handed back' in str(app.col_note.cget('text')).lower()
+
+    def test_the_panel_warns_when_the_ground_will_win(self, app):
+        app.selected_nodes = set(self._corners(app))
+        app.crane_off_ground.set(False)
+        app._add_cable_crane()
+        note = str(app.col_note.cget('text')).lower()
+        assert 'still stands on its own supports' in note
+        assert 'zero' in note
+
+
+class TestTheLiftIsWellPosed:
+    """The lift has to give a MEANINGFUL answer, not merely an answer.
+
+    This class exists because of a bug that passed every check I had. A body
+    hanging from concurrent cables is a pendulum, and a linear
+    small-deflection solve gives a pendulum no lateral stiffness at all --
+    the restoring force is a geometric, second-order term this solver does
+    not carry. Three modes therefore had ZERO stiffness (swing in x, swing
+    in y, spin about the vertical), and the reduced matrix came back with a
+    condition number of 6.2e16.
+
+    It did not fail. `_beam_gauss_solve` judges a system by the residual of
+    the solution it found, which depends on the LOADS and not only on the
+    matrix, so under a plain area load the model returned four slings at
+    636.396 kN whose vertical components summed to exactly the applied
+    1800 kN -- correct for a 45 degree sling, and pure luck. Adding four rod
+    span loads changed the loads and not the matrix, and the same model
+    returned displacements of 1.2e10 m.
+
+    So a statics check cannot catch this: adding a rigid-body mode to a
+    solution does not violate equilibrium. These tests check the
+    CONDITIONING and check the answer under a second, asymmetric load case,
+    which is what actually distinguishes the two.
+    """
+
+    def _lift(self, app, rod_loads=False):
+        if rod_loads:
+            app.selected_members = set(range(4))
+            app.selected_member = None
+            app.rod_scope.set(sc.ROD_SCOPE_SELECTED)
+            app.rod_w.set(3.0)
+            app._apply_rod_load()
+        top = max(p[2] for p in app.nodes)
+        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
+        xs = [app.nodes[i][0] for i in tops]
+        ys = [app.nodes[i][1] for i in tops]
+        picks = set()
+        for tx in (min(xs), max(xs)):
+            for ty in (min(ys), max(ys)):
+                picks.add(min(tops, key=lambda i: (app.nodes[i][0] - tx) ** 2
+                                                  + (app.nodes[i][1] - ty) ** 2))
+        app.selected_nodes = set(picks)
+        app._add_cable_crane()
+        return picks
+
+    def _cables(self, app):
+        return [i for i, m in enumerate(app.members)
+                if m.get('role') == 'crane_cable']
+
+    def test_the_reduced_matrix_is_not_numerically_singular(self, app,
+                                                            monkeypatch):
+        """The measurement that actually catches it: before the steady lines
+        the condition number was 6.2e16, which is past what double precision
+        can carry. This asserts a bound many orders of magnitude below that,
+        so it fails long before the answers do."""
+        import numpy as np
+        seen = {}
+        real = sm.gauss_solve
+
+        def spy(A, b):
+            if 'cond' not in seen:
+                sv = np.linalg.svd(np.asarray(A, float), compute_uv=False)
+                seen['cond'] = float(sv[0] / sv[-1])
+                seen['smin'] = float(sv[-1])
+                seen['smax'] = float(sv[0])
+            return real(A, b)
+
+        monkeypatch.setattr(sm, 'gauss_solve', spy)
+        self._lift(app)
+        app._analyze()
+        assert 'cond' in seen, 'the solve never ran'
+        assert seen['cond'] < 1e12, (
+            'the lifted model is near-singular: cond=%.3e smin=%.3e smax=%.3e'
+            % (seen['cond'], seen['smin'], seen['smax']))
+
+    def test_the_answer_survives_an_asymmetric_load_case(self, app):
+        """The load case that exposed it. The matrix is the same either way,
+        so if this differs from the symmetric case by orders of magnitude the
+        model is rank-deficient and the symmetric answer was luck."""
+        self._lift(app, rod_loads=True)
+        app._analyze()
+        assert app.results is not None, 'the asymmetric lift did not solve'
+        # node_res carries displacements in MILLIMETRES.
+        biggest = max(abs(nr[k]) for nr in app.results['node_res']
+                      for k in ('ux', 'uy', 'uz'))
+        assert biggest < 1000.0, (
+            'displacements of %.3e mm are a null-space artefact, not a '
+            'solution' % biggest)
+
+    def test_the_slings_read_what_a_45_degree_sling_should(self, app):
+        """1800 / (4 cos 45) = 636.396 kN. Sound only now that the model is
+        well posed -- the same number came out of the singular version."""
+        self._lift(app)
+        app._analyze()
+        want = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
+        forces = [app.results['member_res'][i]['N'] for i in self._cables(app)]
+        assert len(forces) == 4
+        for f in forces:
+            assert f == pytest.approx(want / (4 * math.cos(math.radians(45.0))),
+                                      rel=1e-4), forces
+
+    def test_the_verticals_add_up_to_the_load(self, app):
+        self._lift(app)
+        app._analyze()
+        want = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
+        lifted = 0.0
+        for i in self._cables(app):
+            _dx, _dy, dz, L = sm.member_vector(app.nodes, app.members[i])
+            lifted += app.results['member_res'][i]['N'] * dz / L
+        assert lifted == pytest.approx(want, rel=1e-8)
+
+    def test_a_symmetric_lift_puts_nothing_into_the_steady_lines(self, app):
+        """The check that they are steadying and not carrying. If a tag line
+        takes real load in a symmetric lift, it has been placed where a sling
+        should be doing the work."""
+        self._lift(app)
+        app._analyze()
+        want = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
+        for t in app._crane_tag:
+            r = app.results['reactions'][t['node']]
+            got = r['Fx'] if t['dof'] == 'ux' else r['Fy']
+            assert abs(got) < 1e-6 * want, (t, got)
+
+    def test_the_whole_lift_goes_through_the_mast(self, app):
+        self._lift(app)
+        app._analyze()
+        want = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
+        mast = [i for i, m in enumerate(app.members)
+                if m.get('role') == 'crane_mast'][0]
+        assert app.results['member_res'][mast]['N'] == pytest.approx(want, rel=1e-8)
+
+    def test_clearing_the_crane_takes_the_steady_lines_with_it(self, app):
+        before = sorted((sp['node'], sp.get('type'), tuple(sorted((sp.get('dofs') or {}).items())))
+                        for sp in app.supports)
+        self._lift(app)
+        assert app._crane_tag
+        app._clear_cable_cranes()
+        after = sorted((sp['node'], sp.get('type'), tuple(sorted((sp.get('dofs') or {}).items())))
+                       for sp in app.supports)
+        assert after == before
+        assert not app._crane_tag

@@ -13,7 +13,7 @@ Nothing in this file depends on truss_app / beam_app / arch_app / cable_app
 """
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-import math, os, sys, subprocess
+import math, os, sys, subprocess, time
 
 import units
 
@@ -978,6 +978,11 @@ class ScrollPanel(tk.Frame):
         self._syncing = False
         self._last_toplevel_w = None
         self._tl_pending = False
+        # When the panel last actually changed its own width. See
+        # _apply_toplevel_width: a panel sized as a SHARE of the window,
+        # inside a window that sizes itself to fit its content, is a circular
+        # constraint, and it does not always have a fixed point.
+        self._tl_applied_at = []
 
         self.vsb = tk.Scrollbar(self, orient='vertical')
         self.hsb = tk.Scrollbar(self, orient='horizontal')
@@ -1085,8 +1090,36 @@ class ScrollPanel(tk.Frame):
         except Exception:
             self._tl_pending = False
 
+    # A panel may change its own width at most this many times in this many
+    # seconds. Past that it is oscillating, not tracking, and it stops.
+    RESIZE_BURST = 8
+    RESIZE_BURST_SECONDS = 1.0
+
     def _apply_toplevel_width(self):
-        """The body of _on_toplevel_resize, off the idle queue."""
+        """The body of _on_toplevel_resize, off the idle queue.
+
+        The width guard below is NOT enough on its own, and the reason is
+        worth stating because it cost an afternoon twice. This panel takes a
+        SHARE of the window's width, and the window sizes itself to fit its
+        content -- which includes this panel. Widening the panel widens the
+        window, which raises the share, which widens the panel. That is a
+        circular constraint, and it has no fixed point whenever the panels
+        are what the window is sizing itself around: the window then cycles
+        (measured: 1549 -> 1370 -> 1442 -> 1370 -> 1474 -> 1571 ...) and each
+        pass through it is a fresh, DIFFERENT window width, so
+        `_last_toplevel_w == win_w` never fires and the loop runs forever at
+        100% CPU. It is not the same bug as the <Configure> re-entry the
+        docstring above describes; that one is fixed, this one sits under it.
+
+        Whether a given model lands in the stable or the unstable regime
+        depends on how wide the panels' content happens to be, so ANY change
+        to any tab's panel can tip it over -- adding one group box to the
+        Stereo add-ons panel is what exposed it. Hence a rate limit rather
+        than a cleverer predicate: a panel that has changed its own width
+        RESIZE_BURST times within RESIZE_BURST_SECONDS is cycling, and it
+        stops and keeps the width it has. A real user resize comes long after
+        that window has lapsed, so tracking still works.
+        """
         self._tl_pending = False
         try:
             if not self.winfo_exists():
@@ -1099,10 +1132,17 @@ class ScrollPanel(tk.Frame):
             self._last_toplevel_w = win_w
             share = max(120, int(win_w * self.MAX_WINDOW_SHARE))
             w = min(int(self.base_width * self.MAX_GROW), share)
-            if int(self.cget('width')) != w:
-                self.configure(width=w)
-                self.canvas.configure(width=w)
-                self._sync()
+            if int(self.cget('width')) == w:
+                return
+            now = time.monotonic()
+            self._tl_applied_at = [t for t in self._tl_applied_at
+                                   if now - t < self.RESIZE_BURST_SECONDS]
+            if len(self._tl_applied_at) >= self.RESIZE_BURST:
+                return          # cycling: keep the width we have
+            self._tl_applied_at.append(now)
+            self.configure(width=w)
+            self.canvas.configure(width=w)
+            self._sync()
         except Exception:
             pass
 

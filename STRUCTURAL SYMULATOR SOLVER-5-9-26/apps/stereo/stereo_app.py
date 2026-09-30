@@ -139,6 +139,13 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self.selected_member = None
         self.selected_members = set()
         self._support_candidates = []
+        # Supports the add-ons took over, kept so clearing them hands
+        # each set back. Separate lists: clearing the columns must not
+        # restore what a lift took away, or the other way round.
+        self._column_freed = []
+        self._crane_freed = []
+        # The lift's tag line, so clearing the crane takes it away too.
+        self._crane_tag = None
         self._load_nodes = {}
         self._load_glyphs = {}
         self._disabled_supports = set()

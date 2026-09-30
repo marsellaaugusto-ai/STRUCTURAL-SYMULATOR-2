@@ -1,6 +1,7 @@
 # Stereo Roadmap v2 — Full Account of Execution
 
-**Written** 2026-09-28, **extended 2026-09-30** with §12 and the corrections it forced.
+**Written** 2026-09-28, **extended 2026-09-30** with §12, §13, §14 and §15, and the
+corrections they forced.
 **Covers** everything done since the Stereo Roadmap v2 began to be executed (2026-09-18
 onward), plus the shared history it built on.
 
@@ -10,7 +11,11 @@ onward), plus the shared history it built on.
 > §12 is the account of that: what went missing, the `ast`-against-a-live-instance method
 > that found all of it, and the two features that were unreachable from the keyboard with
 > a green suite. §9.1 is **corrected**: the theory it advances was wrong. §9.2b is a new
-> gap found on the way. If you are reading this to fix something, read §1, §4 and §12.
+> gap found on the way. **§13** is a feature-by-feature audit of the roadmap against the
+> live UI, which found four features the plan called for and the app did not have. **§14**
+> is the first of them built: roadmap 3.6, the crane, and the tension-only cable solver it
+> turned out to require. If you are reading this to fix something, read §1, §4 and §12; if
+> you are reading it to find out what is and is not built, read §13.
 
 **Who this is for.** Someone picking this work up cold, with an LLM, who needs to fix the
 launch bug and reconcile two divergent versions of the app. It is written to remove
@@ -23,7 +28,9 @@ Section 4 is the bug that stops the app launching, with a reproduction you can r
 Sections 5–8 are the history and the technical inventory. Sections 9–11 are the open
 problems and what I would do next. Section 12 is the merge and its aftermath, written
 last and the most current thing here; 12.7 collects the environment traps that cost the
-most time.
+most time. Sections 13 to 15 are newer still: 13 is the roadmap-against-reality audit, 14 is the
+crane and the solver change underneath it, and 15 is the GUI sweep that checks the
+whole of 13 by pressing real buttons — plus the 20 MB workbook it turned up.
 
 ---
 
@@ -1041,6 +1048,7 @@ recursive `cget('text')` walk over `app._mode_frames[key]` for each key in
 | 3.3 | Delete nodes and rods | Delete / BackSpace on the canvas |
 | 3.4 | Axis navigation by arrow keys | arrow keys arm it, length box in the Build panel, Escape cancels |
 | 3.5 | **Distributed load along rods** | Load mode → *Distributed load on rods* (scope, direction, ALONG/PROJECTED) |
+| **3.6** | **Cable support / crane simulation** | Add-ons mode (Alt+6) → *Crane (lift from selected nodes)* → select 3+ joints → **Lift the selected nodes**. Hook rise and mast are typed, or worked out from the spread. §14 explains the tension-only solver it needed. |
 | 3.7 | Drag a node on the canvas | press and drag past the lasso threshold |
 | 4.3 | CIRSOC **301** | `cirsoc_301.py`, and the catalog picker in Section mode |
 | 4.7 | Calculated properties + 2D plates in Excel | `stereo_plates.py`, extra sheets |
@@ -1055,7 +1063,6 @@ recursive `cget('text')` walk over `app._mode_frames[key]` for each key in
 | # | Feature | Note |
 |---|---|---|
 | 2.4 | Free-body images beside the data in Excel | not started |
-| **3.6** | **Cable support / crane simulation** | **not started.** Easy to believe it exists, because the per-node support list offers `cable` — but that preset only restrains `uz` (a hoist point). The roadmap's 3.6 is a whole add-on: pick 3+ nodes, compute the centroid, raise a new node above it (auto height or typed), join each picked node to it with **tension-only cable members**, and stand a vertical bar from it to a pin. There is **no tension-only member type anywhere in the stereo solver**, which is the real prerequisite. |
 | 3.4 | Rotate / mirror the selection (R / M) | the axis-extend half of 3.4 is built; this half is not |
 | **4.1** | **Groups with subgroups** | **not started.** The only `group` in the panels is `_pop_group`, a popover layout helper. No tree, no shared section properties, no rename/merge/dissolve. |
 | 4.2 | Group editing in Excel | depends on 4.1 |
@@ -1079,6 +1086,309 @@ worth recording as a process point rather than a task: the roadmap's own priorit
 list was not what the execution followed, and nothing in the task ledger caught
 that, because the ledger tracked what was done rather than what the plan ranked
 first.
+
+---
+
+## 14 — Roadmap 3.6: the crane, and the tension-only solver underneath it
+
+Built 2026-09-30. §13 listed 3.6 as *not started* and named the real obstacle
+correctly: **there was no tension-only member type anywhere in the stereo solver.**
+A crane whose slings can push is not a crane, so the solver came first.
+
+### 14.1 Why a cable is not a bar with a small stiffness
+
+The obvious shortcut — leave the cable in the stiffness matrix but give it a token
+EA when it goes slack — is wrong, and it is wrong in the direction that hides the
+error. A token stiffness still transmits compression; the reported force just gets
+small. The model stays solvable, the numbers look plausible, and the cable is
+quietly propping the structure up. The only correct statement is that a slack
+cable is **absent** from the structure for that load case:
+
+```python
+for mi, m in enumerate(members):
+    if mi in slack:
+        # A slack tension-only member is ABSENT from the structure for
+        # this pass -- not a member with a small stiffness. Leaving a
+        # token stiffness in is what makes a cable push.
+        continue
+```
+
+Which members are slack is not known before the solve, so it is solved for.
+
+### 14.2 The active-set iteration
+
+`analyze()` is now a wrapper. When no member carries `tension_only`, it calls
+`_analyze_once()` and returns — the existing path, unchanged, at the existing cost.
+When cables are present it iterates:
+
+1. Solve with the current slack set excluded.
+2. Any active cable in compression (`N < -1e-6 kN`) joins the slack set.
+3. Any slack cable whose *trial* force wants tension (`N_trial > +1e-6 kN`)
+   leaves it — this is the half that is easy to omit, and without it the first
+   cable to go slack never comes back, so the answer depends on the order the
+   loads happened to be applied in.
+4. Repeat until neither set changes, capped at `2·(number of cables) + 2` passes.
+
+A slack member still reports a row, with `N = 0.0`, `slack: True`, and the trial
+force kept as `N_trial` so step 3 has something to test and so the UI can say
+*slack* rather than *zero*.
+
+**When the structure is held up by cables that have all gone slack**, the reduced
+system is a mechanism and the solve is singular. That is a real answer, not a
+failure, and it gets its own message rather than the generic singular-matrix one:
+*"The structure is held up by cables that have gone slack — with those out it is a
+mechanism. A cable can only pull, so something else has to resist the load in the
+other direction."*
+
+### 14.3 The add-on
+
+`add_cable_crane(nodes, members, target_nodes, section, rise=None, mast=None)` in
+`stereo_geometry_addons.py`, re-exported from `stereo_geometry.py`:
+
+- centroid of the picked nodes → hook node raised by `rise` above the highest
+  of them (`crane_auto_rise()` when the rise is left to the spread: the mean
+  horizontal distance from the centroid out to the picked nodes, floored at
+  0.5 m, which puts the slings near 45° — steeper wastes height, flatter
+  multiplies the tension for the same lift)
+- one cable per picked node to the hook: `conn='pin'`, `role='crane_cable'`,
+  `tension_only=True`
+- a vertical mast from the hook to a new anchor above it: `conn='rigid'`,
+  `role='crane_mast'`, length `mast` or `CRANE_MAST_FRACTION` of the rise
+- fewer than 3 picked nodes raises `ValueError`
+
+In the UI it is a group in the **Add-ons** panel (Alt+6), *Crane (lift from
+selected nodes)*, alongside the columns and the reinforcement beams — which is
+where it belongs, because it is the same kind of thing: an add-on applied to a
+selection. It carries **Lift the selected nodes**, a hook-rise box, a mast box,
+a *Work the hook height out from the spread* checkbox that hides the rise box when
+ticked, and a *Take it off its own supports while lifting* checkbox (on by default —
+§14.6 says why it has to be). **Clear every crane** removes each member and node
+the add-on made by role, hands back the supports the lift took away, and removes the
+tag lines of §14.4, so the action is repeatable in both directions.
+
+The panel's readout names everything the press did: how many slings, the hook rise,
+the mast, the fixed top, how many of the model's own supports came off, and which
+DOF each tag line holds at which node.
+
+### 14.4 The lift is a pendulum, and a linear solve does not know it
+
+This is the part of 3.6 that was wrong, that passed every check I had, and that
+is the most useful thing in this section.
+
+A body hanging from concurrent cables is a **pendulum**. What makes a hanging load
+come back to centre is *geometric* stiffness — tension over length, acting through
+the swing — and that is a second-order term this solver, like any linear
+small-deflection solver, does not carry. So the lifted body had **three modes with
+zero stiffness**: swing in x, swing in y, and spin about the vertical through the
+hook (the slings are pinned and meet at one point, so swinging every lifted node
+tangentially changes no cable length to first order — the mast cannot help, because
+it restrains the *hook's rotation* while the mode is a motion of the body's
+*translations*).
+
+Measured on the default grid hung from its four top corners, before any of this was
+restrained:
+
+| | |
+|---|---|
+| condition number of the reduced matrix | **6.18 × 10¹⁶** |
+| singular values at the bottom | 1.3 × 10⁴, then **1.9 × 10⁻⁶** and **5.0 × 10⁻⁸** |
+
+6 × 10¹⁶ is past what double precision can carry: the matrix is numerically
+singular. Two of those near-zeros are the swings, the third was the spin.
+
+**And it did not fail.** `_beam_gauss_solve` (in `common.py`, shared by every tab)
+decides a system is singular by the **residual of the solution it found** —
+
+```python
+residual = Anp @ x - bnp
+scale = max(1.0, float(np.max(np.abs(bnp))))
+if np.max(np.abs(residual)) > 1e-8 * scale:
+    return None
+```
+
+— which depends on the **load vector**, not only on the matrix. Under a plain area
+load the lifted grid returned four slings at 636.396 kN whose vertical components
+summed to exactly the applied 1800 kN: exactly what a 45° sling should read, and
+**luck**. Add four rod span loads — which change the loads and *not* the matrix —
+and the same model returns displacements of **1.2 × 10¹⁰ m**.
+
+This is the trap worth carrying away: **a statics check cannot catch it.** Adding a
+rigid-body mode to a solution does not violate equilibrium, so the sum-of-verticals
+test I had written passed on the singular model and would have kept passing. What
+distinguishes the two is the **conditioning**, and a **second, asymmetric load
+case** — both of which are now tests (`TestTheLiftIsWellPosed`).
+
+It was found by the GUI sweep, and only because the sweep happened to apply rod
+loads before lifting. Nothing in the unit tests did both.
+
+**The fix is what a real rig does: tag lines.** `crane_steady_lines()` returns three
+restraints, which is both the minimum and the maximum — one fewer leaves a
+zero-stiffness mode, one more starts carrying load the slings should carry:
+
+- at the lifted node furthest from the centroid, hold **ux** and **uy** (the two
+  swings; furthest out because the longer the lever, the less force holds the same
+  rotation),
+- at the lifted node furthest from *that* one, hold the direction **across** the
+  line between them (the spin) — never along it, which the first node already holds.
+
+After it, on the same model: condition number **8.35 × 10⁴**, smallest singular
+value 1.11 × 10⁴, and both load cases solve with displacements of 0.34 m.
+
+The check that the tag lines are steadying rather than carrying is their own
+reactions, and in a symmetric lift they are **exactly 0.000000 kN** on all three.
+Under the asymmetric case they take 17.0, 22.6 and 5.7 kN — about 1% of the lift,
+and correctly so: a hanging body under a net horizontal load has no other lateral
+path, because the cables provide none in a linear analysis. So a non-trivial tag
+reaction is information, not an error — it is the net horizontal load on the lift.
+
+### 14.5 The anchor is FIXED, and that is not cosmetic
+
+The roadmap says the mast stands on a pin. A pin there does not work, and the
+reason is worth recording because the symptom points somewhere else entirely — the
+solve comes back singular before a single cable has gone slack, which reads like a
+bug in §14.2:
+
+> A lone rigid mast whose top can rotate has a zero-energy **torsional** mode about
+> its own axis: the cables are pin-jointed and add no rotational stiffness at the
+> hook, so nothing anywhere resists that rotation.
+
+The anchor is therefore `fixed`. The same reasoning has a second consequence that
+cost two wrong tests: **a body hung from a single hook can spin.** Its equilibrium
+is real but its rotational stiffness about the mast axis is zero to first order, so
+a lift of a bare picked set is not a well-posed check. The equilibrium test hangs a
+real structure instead.
+
+### 14.6 What was verified
+
+| Case | Result |
+|---|---|
+| Guyed mast, horizontal load | windward cable **+16.63 kN**, leeward **0.00, slack**. With the same members as ordinary bars: **±8.33 kN**, one of them pushing. |
+| Four-sling lift, 1800 kN, **steadied** | 4 slings at **+636.3961 kN**; vertical components sum to **1800.0000 kN** (error 1 × 10⁻⁹); mast **1800.0000 kN**; anchor reaction **1800.0000 kN**; all three tag lines **0.000000 kN**. 636.396 = 1800/(4·cos 45°). Sound this time — see §14.4 for why the same number off an unsteadied model was not. |
+| The same lift, asymmetric (4 rod span loads) | applied 1836 kN; slings 681.1 / 645.4 / 634.1 / 635.9; verticals sum to **1836.0000 kN**; tag lines take 17.0 / 22.6 / 5.7 kN, ≈1% — the net horizontal load, which has no other path. |
+| Conditioning | **8.35 × 10⁴** after the tag lines, from 6.18 × 10¹⁶ before. |
+| Lifting a model still on its supports | every sling **0.000 kN** — the ground wins. Hence the lift takes the supports over; see below. |
+| No cables in the model | `analyze()` returns `_analyze_once()` unchanged — no iteration, no cost. |
+| All cables slack | the §14.2 message, not a singular-matrix error. |
+| A rigid member marked tension-only | refused by name, rather than silently dropped and never restored. |
+
+**The lift takes the model off its own supports**, and that is not a convenience.
+A support left in place is a rigid path to ground *in parallel with the slings*, and
+it wins every time: with the default grid's own supports in, all four slings read
+exactly 0.000 kN — the crane in the picture, in the member list and in the checks,
+carrying nothing. This is the columns' bug again (§ the columns note: a plain post
+under a pinned corner carried 0.00 kN with the pin still in place, and 23.17 kN once
+it was gone) and it gets the columns' answer: the add-on takes the supports over,
+says so in the panel, and **Clear every crane** hands them back — kind and all, since
+nothing in the mesh afterwards remembers whether a base was a pin or a roller.
+The behaviour is a checkbox, so the old way stays reachable, and when it is off the
+panel warns that the slings may well read zero.
+
+### 14.7 A pre-existing layout instability the crane panel tipped over
+
+Adding the Crane group to the Build panel made the **app hang on startup** — not in
+the crane code, and not in Stereo at all. The launch probe died inside
+`root.update()` while switching to the **Arch** tab, after Truss and Beam had built
+fine. Stashing the crane work made it go away, which proved it was mine to fix but
+said nothing about where.
+
+Instrumenting `common.py` found, on the Arch tab alone,
+`ScrollPanel._on_toplevel_resize` called **302,180** times,
+`_apply_toplevel_width` 10,373, `WrapBar.relayout` 3,954. Printing the width from
+inside the handler showed the window cycling **1549 → 1370 → 1442 → 1370 → 1474 →
+1571**, with three `base=544` panels each claiming a share of it.
+
+The constraint is circular and has no fixed point: **a panel is sized as a share of
+the window width, while the window is sized to fit its content, which includes the
+panel.** Stereo's own panel (`base=300`) was stable at 390 throughout — the
+oscillating panels belong to other tabs. The instability was always there; the
+extra widgets only moved the arithmetic far enough for it to start ringing.
+
+The fix does not try to solve the circularity, because there is nothing to solve.
+It refuses to keep ringing: a panel that has changed its own width
+`RESIZE_BURST` (8) times within `RESIZE_BURST_SECONDS` (1.0) stops and keeps the
+width it has. Unchanged widths return before the counter is touched, so a settled
+layout never spends budget and a genuine user resize is never throttled.
+
+Launch after the fix: **all 8 tabs, exit 0, 5.93 s** — faster than the 7.11 s the
+same probe took before the crane, because the pre-existing ringing was also being
+paid for on every launch.
+
+---
+
+## 15 — The GUI sweep, and the 20 MB workbook it found
+
+### 15.1 What the sweep is
+
+`tools/gui_roadmap_sweep.py`. It drives the **real** GUI: it finds the widget by
+its label and presses *that widget's* command, sends real `<Motion>`, `<Button>`
+and key events to the canvas, and reads back what the panel itself shows. A
+feature whose handler survives but whose button or binding was lost fails here —
+which is exactly the damage the merge did (§12) with a green test suite.
+
+Run it as:
+
+```bash
+APPDIR="$PWD" SWEEPOUT=/tmp/sweep \
+  xvfb-run -a -s "-screen 0 1600x1000x24" python3 -u tools/gui_roadmap_sweep.py
+```
+
+It covers every item §13.1 lists as present, numbered as the roadmap numbers
+them, and exits non-zero on any failure. Current result: **71 checks, 0
+failures**, and all five export formats write real files (xlsx, pdf, rb, ifc,
+obj).
+
+**Three of its own first "failures" were the sweep being wrong, and they are
+worth recording because each is a way to mis-test a Tk app:**
+
+1. The coordinate readout goes to the **status bar** (`_set_status` →
+   `status_var`), not to the selection label. Reading the wrong one of two
+   StringVars reported a working feature as broken.
+2. The 14 grid families and the 17 worked examples hang off **cascades** of the
+   Generate menubutton, not off its top level, so counting the top level found
+   3 entries and called it a loss.
+3. `app.root` is the **tab frame**, not the Tk root, so the dialogs the app
+   opens are children of that. Searching `root.winfo_children()` for a new
+   Toplevel found nothing.
+
+And one was a modal doing its job: the PDF export's sheet chooser uses
+`grab_set` + `wait_window`, so under xvfb it blocks forever. The sweep replaces
+`_pdf_sheet_dialog` with one that answers "every sheet". Note that returning
+`None` there means **cancelled** — the export then writes nothing, which looks
+identical to a broken exporter.
+
+### 15.2 The 20 MB workbook
+
+The sweep writes each export to a directory and checks the file exists. It does
+not check size, and the size is what stood out: **19.68 MB** of xlsx from the
+default 221-node, 800-rod grid.
+
+Unpacked, the cause is not ambiguous: **2,400 PNG files, 25 MB of them**, in
+`xl/media/`. The *Member Calculations* sheet renders **three images per member**
+— the member in context, and a free-body diagram at each end node — and the
+default model has 800 members.
+
+`export_excel` already had the cap: `max_calc_members`, which keeps the N most
+utilized members and sorts them back into index order. **Nothing ever passed
+it**, and its default was `None`, meaning every member. The mechanism was
+designed and then left switched off.
+
+The default is now `DEFAULT_MAX_CALC_MEMBERS = 40`, and the sheet's own note
+says so when it bites — naming the count, the total, and the two sheets
+(*Member Forces*, *Member Checks*) that do still cover every rod, because a
+shortened sheet that does not say it is shortened reads as "these are all the
+rods", which is worse than the large file. `max_calc_members=None` still
+renders everything for a caller that wants it.
+
+Measured on the app's own default model, through the real Export Excel command:
+
+| | before | after |
+|---|---|---|
+| workbook | **19.68 MB** | **1.74 MB** |
+| embedded images | 2,400 | 120 |
+
+This one matters beyond tidiness. "I cannot open the document" was a real
+report earlier in this work, and a 20 MB workbook holding 2,400 images is a
+plausible way for a spreadsheet to appear not to open at all.
 
 ## Appendix A — Complete commit history
 

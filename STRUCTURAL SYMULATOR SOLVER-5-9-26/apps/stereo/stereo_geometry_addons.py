@@ -681,3 +681,172 @@ def reinforcement_beam(nodes, members, edge_a, edge_b, depth, direction=(0.0, 0.
                 web(lo_row[k], hi_row[k])
 
     return nodes, members, [a for tier in apex_tiers for row in tier for a in row]
+
+
+# ── cable crane (roadmap v2, 3.6) ──────────────────────────────────────────
+
+CRANE_ROLES = frozenset({'crane_cable', 'crane_mast'})
+
+# The automatic hook rise, as a multiple of the mean horizontal distance from
+# the centroid out to the picked nodes. 1.0 puts the cables at roughly 45
+# degrees, which is what a rigger actually aims for: steeper wastes height,
+# flatter multiplies the tension for the same lift.
+CRANE_AUTO_RISE = 1.0
+
+# The mast above the hook, as a multiple of the hook rise.
+CRANE_MAST_FRACTION = 0.35
+
+
+def crane_auto_rise(nodes, target_nodes):
+    """The default hook height above the centroid of the picked nodes.
+
+    Proportional to how far apart they are, as the roadmap asks: a wide
+    pick needs a high hook to keep the cables off the flat.
+    """
+    pts = [nodes[i] for i in target_nodes]
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+    spread = sum(math.hypot(p[0] - cx, p[1] - cy) for p in pts) / len(pts)
+    return max(0.5, CRANE_AUTO_RISE * spread)
+
+
+def add_cable_crane(nodes, members, target_nodes, section,
+                    rise=None, mast=None):
+    """Hang the picked nodes from a crane: cables to a hook, then a mast.
+
+    Returns (nodes, members, hook_index, anchor_index).
+
+    The shape is the roadmap's 3.6: the centroid of the picked nodes, a hook
+    node raised above it, one TENSION-ONLY cable from each picked node up to
+    the hook, and a mast from the hook to an anchor node that the caller
+    restrains. The caller FIXES that anchor rather than pinning it, which
+    the roadmap's wording does not anticipate: a rigid mast free to rotate
+    at its top has a zero-energy TORSIONAL mode about its own axis, because
+    the cables are pin-jointed and add no rotational stiffness at the hook.
+    The solve is then singular before any cable has gone slack. See the
+    note at the call site in stereo_app_addons.
+
+    Two things here are deliberate and worth stating.
+
+    The cables are marked `tension_only`, which stereo_math treats as a
+    member that goes slack rather than push -- not a bar given a small E or
+    A. A soft bar still pushes, and a crane cable cannot.
+
+    The mast is RIGID. A pin-jointed mast holds the hook only along its own
+    axis, so the moment every cable went slack the hook would be free to
+    swing and the solve would report a mechanism -- a numerical artefact of
+    the idealisation, not anything about the structure. A mast with bending
+    stiffness is also what a real crane has.
+    """
+    if len(target_nodes) < 3:
+        raise ValueError('Pick at least 3 nodes for the crane to lift from: '
+                         'the hook sits over their centroid, and two nodes '
+                         'have no centroid to speak of.')
+    nodes = list(nodes)
+    members = list(members)
+    pts = [nodes[i] for i in target_nodes]
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+    top = max(p[2] for p in pts)
+
+    if rise is None:
+        rise = crane_auto_rise(nodes, target_nodes)
+    rise = float(rise)
+    if rise <= 0:
+        raise ValueError('The hook has to be above the nodes it lifts: '
+                         'give a rise greater than zero.')
+    if mast is None:
+        mast = max(0.5, CRANE_MAST_FRACTION * rise)
+    mast = float(mast)
+    if mast <= 0:
+        raise ValueError('The mast has to have some length.')
+
+    hook = len(nodes)
+    nodes.append((cx, cy, top + rise))
+    anchor = len(nodes)
+    nodes.append((cx, cy, top + rise + mast))
+
+    for i in target_nodes:
+        m = dict(section)
+        m.update(a=i, b=hook, conn='pin', role='crane_cable',
+                 tension_only=True)
+        members.append(m)
+
+    m = dict(section)
+    m.update(a=hook, b=anchor, conn='rigid', role='crane_mast')
+    members.append(m)
+    return nodes, members, hook, anchor
+
+
+def crane_steady_lines(nodes, target_nodes):
+    """The restraints a hanging lift needs, as [(node_index, dof_name), ...].
+
+    A body hanging from cables is a PENDULUM, and a linear small-deflection
+    analysis gives a pendulum no lateral stiffness at all. The restoring
+    force of a hanging load comes from geometric (second-order) stiffness --
+    tension divided by length, acting through the swing -- and that term is
+    exactly what this solver, like any linear one, leaves out. So the lifted
+    body has three rigid-body modes with ZERO stiffness: swing in x, swing
+    in y, and spin about the vertical through the hook (the slings are
+    pinned and concurrent, so swinging every lifted node tangentially
+    changes no cable length to first order).
+
+    Measured on the default grid hung from its four top corners, before any
+    of this was restrained: the reduced matrix had a condition number of
+    6.2e16, and its singular values fell off a cliff -- 1.3e+04, then
+    1.9e-06 and 5.0e-08. Two of those near-zeros are the swings; the third
+    was the spin.
+
+    What makes this dangerous rather than obvious is that the solve does not
+    reliably fail. `_beam_gauss_solve` rejects a system by the RESIDUAL of
+    the solution it found, which depends on the load vector, not only on the
+    matrix. Under a plain area load the lifted grid returned a clean and
+    entirely plausible answer -- four slings at 636.396 kN whose vertical
+    components summed to exactly the applied 1800 kN, which is what a 45
+    degree sling should read. Add four rod span loads, which change the
+    loads and NOT the matrix, and the same model returns displacements of
+    1.2e10 m. Equilibrium holds either way, because adding a rigid-body mode
+    to a solution does not violate equilibrium, so no statics check can tell
+    the two apart. The plausible answer was luck.
+
+    A real rig removes all three the same way, with tag lines: the load is
+    steadied while it hangs. Three restraints is the minimum and the
+    maximum -- one fewer leaves a zero-stiffness mode, one more starts
+    carrying structural load that the slings should carry:
+
+      * at the lifted node furthest from the centroid, hold ux and uy (the
+        two swings),
+      * at the lifted node furthest from THAT one, hold the direction across
+        the line between them (the spin) -- never along it, which is the
+        direction the first node already holds.
+
+    In a symmetric lift all three carry essentially nothing, and that is the
+    check that they have not been asked to do structural work: look at their
+    reactions.
+    """
+    pts = [nodes[i] for i in target_nodes]
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+    # The longest horizontal lever about the hook: the further out, the less
+    # force it takes to hold the same rotation.
+    anchor = max(target_nodes,
+                 key=lambda i: (nodes[i][0] - cx) ** 2 + (nodes[i][1] - cy) ** 2)
+    ax, ay = nodes[anchor][0], nodes[anchor][1]
+    far = max((i for i in target_nodes if i != anchor),
+              key=lambda i: (nodes[i][0] - ax) ** 2 + (nodes[i][1] - ay) ** 2,
+              default=None)
+    out = [(anchor, 'ux'), (anchor, 'uy')]
+    if far is not None:
+        dx = nodes[far][0] - ax
+        dy = nodes[far][1] - ay
+        out.append((far, 'uy' if abs(dx) >= abs(dy) else 'ux'))
+    return out
+
+
+def crane_tag_line(nodes, target_nodes):
+    """The first of crane_steady_lines, kept for callers that want one.
+
+    Deprecated in favour of crane_steady_lines: one restraint is not enough,
+    and that docstring explains why in full.
+    """
+    return crane_steady_lines(nodes, target_nodes)[0]

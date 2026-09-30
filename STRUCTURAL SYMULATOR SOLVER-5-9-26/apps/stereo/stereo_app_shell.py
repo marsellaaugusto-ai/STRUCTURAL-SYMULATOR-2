@@ -40,7 +40,7 @@ MODES = (
     ('support', '△', 'Support', 'where the structure stands'),
     ('load',    '↓', 'Load',    'what it carries'),
     ('section', '▤', 'Section', 'what it is made of'),
-    ('addons',  '⊥', 'Add-ons', 'columns and reinforcement beams'),
+    ('addons',  '⊥', 'Add-ons', 'columns, beams and the crane'),
     ('module',  '◫', 'Module',  'the repeating cell'),
     ('analyse', '◑', 'Analyse', 'how to draw it, and what the solve found'),
     ('results', 'Σ', 'Results', 'what came out'),

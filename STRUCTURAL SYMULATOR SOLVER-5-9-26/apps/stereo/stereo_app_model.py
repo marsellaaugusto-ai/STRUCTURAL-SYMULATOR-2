@@ -273,6 +273,10 @@ class StereoModelMixin:
         # to hand back. Carrying the old model's entries over would restore
         # supports onto whatever node happens to hold those indices now.
         self._column_freed = []
+        # And the crane's, for the same reason: a lift on the OLD mesh freed
+        # supports whose node numbers mean something else now.
+        self._crane_freed = []
+        self._crane_tag = None
         # Same reasoning, and the same trap: a panel is a list of node
         # INDICES, so one kept across a regenerate would weld itself to
         # whichever four nodes now hold those numbers.

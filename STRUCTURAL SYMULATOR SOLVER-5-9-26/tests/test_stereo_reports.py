@@ -1244,3 +1244,88 @@ def test_the_takeoff_keeps_two_units_on_purpose(unit_selector, tmp_path):
     # everything the selector DOES cover still followed it
     assert 'total L (ft)' in text
     assert 'A (in²)' in text
+
+
+# ── the Member Calculations sheet has to stay openable ──────────────────────
+
+def _mesh_model(span, module):
+    """A grid with a chosen number of rods, using this file's own generator
+    (sg.flat_grid) rather than a name that does not exist on the module."""
+    mesh = sg.flat_grid(span_x=span, span_y=span, depth=1.0, module=module,
+                        offset=True)
+    nodes, members = mesh['nodes'], mesh['members']
+    for m in members:
+        m.update(E=200.0, A=15.0, I=400.0, J=400.0, Fy=250.0, Fu=400.0,
+                 r_gyr=2.5, K=1.0)
+    supports = [{'node': i, 'type': 'pin'} for i in mesh['support_candidates']]
+    loads = sm.self_weight_loads(nodes, members)
+    return nodes, members, loads, supports
+
+
+def _grid_model():
+    """Comfortably past DEFAULT_MAX_CALC_MEMBERS."""
+    return _mesh_model(span=12.0, module=2.0)
+
+
+def _image_count(path):
+    import zipfile
+    with zipfile.ZipFile(path) as z:
+        return sum(1 for n in z.namelist() if n.startswith('xl/media/'))
+
+
+def test_the_member_calculations_sheet_is_capped_by_default(tmp_path):
+    """Three rendered PNGs per member: on the default grid that was 2,400
+    images and a 20 MB workbook, which is slow to open and can defeat Excel
+    outright. The cap already existed as a parameter and nothing passed it.
+    """
+    nodes, members, loads, supports = _grid_model()
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None
+    out = tmp_path / 'capped.xlsx'
+    sr.export_excel(nodes, members, loads, supports, res, str(out))
+    imgs = _image_count(str(out))
+    assert len(members) > sr.DEFAULT_MAX_CALC_MEMBERS, 'need a model past the cap'
+    assert imgs == 3 * sr.DEFAULT_MAX_CALC_MEMBERS, imgs
+    assert out.stat().st_size < 6_000_000, out.stat().st_size
+
+
+def test_passing_none_still_renders_every_member(tmp_path):
+    """The cap is a default, not a ceiling -- a caller that wants the lot
+    still gets it."""
+    nodes, members, loads, supports = _grid_model()
+    res, _err = sm.analyze(nodes, members, loads, supports)
+    out = tmp_path / 'everything.xlsx'
+    sr.export_excel(nodes, members, loads, supports, res, str(out),
+                    max_calc_members=None)
+    assert _image_count(str(out)) == 3 * len(members)
+
+
+def test_the_sheet_says_it_is_showing_only_the_worst(tmp_path):
+    """A shortened sheet that does not say so reads as "these are all the
+    rods", which is worse than the long file."""
+    from openpyxl import load_workbook
+    nodes, members, loads, supports = _grid_model()
+    res, _err = sm.analyze(nodes, members, loads, supports)
+    out = tmp_path / 'noted.xlsx'
+    sr.export_excel(nodes, members, loads, supports, res, str(out))
+    wb = load_workbook(str(out))
+    note = str(wb['Member Calculations'].cell(row=2, column=1).value)
+    assert str(sr.DEFAULT_MAX_CALC_MEMBERS) in note
+    assert str(len(members)) in note
+    assert 'most utilized' in note
+    # And it points at the sheets that DO cover every rod.
+    assert 'Member Forces' in note and 'Member Checks' in note
+
+
+def test_a_model_under_the_cap_gets_no_note_and_every_member(tmp_path):
+    from openpyxl import load_workbook
+    nodes, members, loads, supports = _mesh_model(span=6.0, module=3.0)
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None
+    assert len(members) <= sr.DEFAULT_MAX_CALC_MEMBERS
+    out = tmp_path / 'small.xlsx'
+    sr.export_excel(nodes, members, loads, supports, res, str(out))
+    assert _image_count(str(out)) == 3 * len(members)
+    wb = load_workbook(str(out))
+    note = str(wb['Member Calculations'].cell(row=2, column=1).value)
+    assert 'most utilized' not in note

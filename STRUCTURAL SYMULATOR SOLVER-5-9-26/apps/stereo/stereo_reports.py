@@ -332,8 +332,20 @@ def pil_draw_node_fbd_3d(node_idx, nodes, members, member_res, loads,
     return img
 
 
+# The Member Calculations sheet embeds THREE rendered PNGs per member (the
+# member in context, and a free-body diagram at each end). At three images a
+# member that is 2,400 images and 25 MB of PNG for an 800-rod model, in a
+# workbook that then takes 20 MB and a long time to open -- measured on the
+# default grid, which is not a large model by this app's standards. The cap
+# keeps the sheet to the members a reader would actually look at, chosen by
+# utilization, and `max_calc_members=None` still means every member for a
+# caller that wants it.
+DEFAULT_MAX_CALC_MEMBERS = 40
+
+
 def export_excel(nodes, members, loads, supports, results, path, checks=None,
-                  meta=None, max_calc_members=None, profiles=None):
+                  meta=None, max_calc_members=DEFAULT_MAX_CALC_MEMBERS,
+                  profiles=None):
     """Write a workbook with Nodes, Members, Loads, Supports, Results (if
     `results` is not None), Member Checks (if `checks` is not None) and a
     machine-parseable Model sheet. `meta` is an optional dict of free-text
@@ -342,7 +354,9 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     `import_excel_model`.
 
     `max_calc_members` caps the Member Calculations sheet to the N most
-    critical members (sorted by utilization desc). None = all members.
+    critical members (sorted by utilization desc), and defaults to
+    DEFAULT_MAX_CALC_MEMBERS for the reason given at that constant. Pass None
+    for every member, and expect the file size to show it.
     """
     if not _ensure_openpyxl():
         raise RuntimeError('openpyxl is required for Excel export and could not '
@@ -592,10 +606,18 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
             t_mc.font = Font(name='Arial', bold=True, size=13, color='1F4E79')
             t_mc.alignment = Alignment(horizontal='center', vertical='center')
             t_mc.fill = PatternFill('solid', start_color='D6E4F0')
+            _n_all = len(members)
+            _capped = (max_calc_members is not None
+                       and _n_all > max_calc_members)
             note_mc = ws_mc.cell(row=2, column=1,
                 value='Left: member location in the structure. '
                       'Middle/Right: free-body diagram at each end node '
-                      '(every member, load and reaction converging there).')
+                      '(every member, load and reaction converging there).'
+                      + (f'  Showing the {max_calc_members} most utilized of '
+                         f'{_n_all} rods -- each block carries three rendered '
+                         f'images, so every rod would make this workbook '
+                         f'unopenably large. Member Forces and Member Checks '
+                         f'cover all {_n_all}.' if _capped else ''))
             ws_mc.merge_cells('A2:N2')
             note_mc.font = Font(name='Arial', italic=True, size=9,
                                 color='555555')

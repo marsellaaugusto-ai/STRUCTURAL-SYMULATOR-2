@@ -34,6 +34,7 @@ class StereoAddonsMixin:
     COLUMN_ROLES = frozenset({'column_shaft', 'column_tie', 'column_chord',
                               'column_web', 'capital', 'capital_ring'})
     BEAM_ROLES = frozenset({'reinf_chord', 'reinf_web'})
+    CRANE_ROLES = frozenset({'crane_cable', 'crane_mast'})
 
     def _add_column(self):
         targets = sorted(self.selected_nodes)
@@ -215,6 +216,183 @@ class StereoAddonsMixin:
         self.results = None
         self.member_checks = None
         return len(victims)
+
+
+    # ── cable crane (roadmap v2, 3.6) ──────────────────────────────────────
+
+    def _add_cable_crane(self):
+        """Hang the selected nodes from a crane and FIX the top of its mast.
+
+        Fixed, not pinned -- see the comment at the support below, which is
+        where the reason lives.
+        """
+        targets = sorted(self.selected_nodes)
+        if len(targets) < 3:
+            messagebox.showerror(
+                'Crane',
+                'Select at least 3 nodes to lift -- drag a box over the '
+                'joints the slings hook onto. The hook goes over their '
+                'centroid, and two nodes have no centroid to speak of.')
+            return
+        try:
+            auto = bool(self.crane_auto.get())
+            rise = None if auto else float(self.crane_rise.get())
+            mast = float(self.crane_mast.get())
+        except (tk.TclError, ValueError):
+            messagebox.showerror('Crane', 'Enter a valid hook rise and mast length.')
+            return
+        if mast <= 0:
+            messagebox.showerror('Crane', 'The mast has to have some length.')
+            return
+
+        section = dict(E=self.web_E.get(), A=self.web_A.get(), I=self.web_I.get(),
+                       J=self.web_J.get(), Fy=self.web_Fy.get(),
+                       Fu=self.web_Fu.get(), K=self.web_K.get(),
+                       r_gyr=self.web_r.get())
+        try:
+            nodes, members, hook, anchor = sg.add_cable_crane(
+                self.nodes, self.members, targets, section,
+                rise=rise, mast=mast)
+        except ValueError as exc:
+            messagebox.showerror('Crane', str(exc))
+            return
+
+        self._push_undo('add crane')
+        self.nodes, self.members = nodes, members
+        # FIXED, where the roadmap says "pin", and the difference is not
+        # cosmetic. A lone rigid mast whose top can rotate has a zero-energy
+        # TORSIONAL mode about its own axis: the cables are pin-jointed and
+        # add no rotational stiffness at the hook, so nothing anywhere
+        # resists that rotation and the solve is singular before a single
+        # cable has gone slack -- which is exactly what happened when this
+        # was first written with a pin. Free rotations also let the whole
+        # mast swing about its top the moment the cables DO go slack, which
+        # is the state a tension-only member exists to represent. Fixing the
+        # anchor removes both, and a mast built into its mounting is the
+        # more honest idealisation of a crane anyway.
+        self.supports.append({'node': anchor, 'type': 'fixed'})
+
+        # A lifted structure is not also standing on the ground, and leaving
+        # its own supports in place is not a harmless extra: it is a rigid
+        # path to ground in parallel with the slings, and it wins every time.
+        # Measured on the default grid -- with the grid's own supports left
+        # in, ALL FOUR slings read 0.000 kN, so the crane is in the picture,
+        # in the member list and in the checks, and carrying nothing. This is
+        # the same trap the columns had, and it gets the same answer: the
+        # add-on takes the supports over, says so in the panel, and Clear
+        # every crane hands them back.
+        lifted_off = 0
+        tag = None
+        if self.crane_off_ground.get():
+            ground = [dict(sp) for sp in self.supports if sp['node'] != anchor]
+            if ground:
+                self._crane_freed = list(getattr(self, '_crane_freed', [])) + ground
+                self.supports = [sp for sp in self.supports if sp['node'] == anchor]
+                lifted_off = len(ground)
+            # Once it is off the ground the lifted body is a PENDULUM, and a
+            # linear analysis gives a pendulum no lateral stiffness: the
+            # restoring force of a hanging load is a geometric, second-order
+            # term this solver does not carry. Three modes therefore have
+            # ZERO stiffness -- swing in x, swing in y, and spin about the
+            # vertical through the hook. Measured on the default grid:
+            # condition number 6.2e16, with singular values dropping from
+            # 1.3e+04 to 1.9e-06 and 5.0e-08.
+            #
+            # The trap is that it does not reliably FAIL, because
+            # _beam_gauss_solve judges a system by its solution's RESIDUAL,
+            # which depends on the loads and not only on the matrix. Under a
+            # plain area load this returned a clean, plausible answer; with
+            # four rod span loads added -- changing the loads and not the
+            # matrix -- the same model returned displacements of 1.2e10 m,
+            # and equilibrium checks pass either way. A real rig steadies the
+            # load with tag lines while it hangs, and so does this: three
+            # restraints, the minimum that removes all three modes and no
+            # more. See crane_steady_lines for which, and why each.
+            steady = sg.crane_steady_lines(self.nodes, targets)
+            for node, dof in steady:
+                self.supports.append({'node': node, 'dofs': {dof: True}})
+            self._crane_tag = [{'node': n, 'dof': d} for n, d in steady]
+            tag = steady
+
+        self.results = None
+        self.member_checks = None
+        self._me_maybe_refresh_topology()
+        used = sg.crane_auto_rise(self.nodes, targets) if rise is None else rise
+        self._set_addon_note(
+            f'Crane on {len(targets)} node(s): {len(targets)} tension-only '
+            f'cable(s) to a hook {used:.2f} m up, a {mast:.2f} m mast, and a '
+            f'fixed top at node {anchor}. A cable goes slack rather than push, so '
+            f'Analyze solves it in passes.'
+            + (f' The model is off its own {lifted_off} support(s) -- it is '
+               f'hanging from the crane, and Clear every crane puts them back.'
+               if lifted_off else '')
+            + ((' Tag lines steady it: '
+                + ', '.join(f'{d} at node {n}' for n, d in tag)
+                + '. A hanging load swings and spins, and a linear solve '
+                  'gives those no stiffness at all, so without them the '
+                  'answer is numerically meaningless. In a symmetric lift '
+                  'they carry almost nothing -- check their reactions.')
+               if tag else
+               ' The model still stands on its own supports, so the slings may '
+               'well read zero: the ground is a stiffer path than a cable.'))
+        self._refresh_all()
+
+    def _clear_cable_cranes(self):
+        n = self._strip_members(self.CRANE_ROLES, 'clear cranes')
+        if not n:
+            self._set_addon_note('No cranes to clear.')
+            return
+        # The mast's own fixed top goes with it: _strip_members drops the
+        # orphaned hook and anchor nodes and rebuilds supports through its
+        # own remap, keeping only those whose node survived.
+        #
+        # The model's OWN supports are a different matter. The lift took
+        # them away, so putting the crane back in the box has to put them
+        # back, or the next Analyze reports a mechanism for a reason nothing
+        # on screen explains -- the model is on the ground again with
+        # nothing holding it.
+        # The tag line goes with the crane. Its node is an ordinary grid
+        # node, so _strip_members' remap keeps it -- it would otherwise be
+        # left holding a translation nothing on screen explains, and the
+        # model back on the ground with one corner pinned sideways.
+        tagged = getattr(self, '_crane_tag', None) or []
+        if tagged:
+            drop = {(t['node'], t['dof']) for t in tagged}
+            self.supports = [
+                sp for sp in self.supports
+                if not any(sp.get('node') == n and sp.get('dofs') == {d: True}
+                           for n, d in drop)]
+            self._crane_tag = None
+        back = self._restore_crane_supports()
+        self._apply_sections(members=self.members, redraw=False)
+        self._me_maybe_refresh_topology()
+        self._set_addon_note(
+            f'{n} crane member(s) removed.'
+            + (f' {back} support(s) handed back -- the model is back on the '
+               f'ground.' if back else ''))
+        self._refresh_all()
+
+    def _restore_crane_supports(self):
+        """Put back the supports the lift took away.
+
+        The entries themselves are kept, not just the node numbers: what
+        KIND of support each one was is not recoverable from the mesh
+        afterwards. Same reasoning as _restore_freed_supports for columns,
+        and kept separate from it so clearing one add-on cannot hand back
+        the other's.
+        """
+        have = {sp['node'] for sp in self.supports}
+        back = 0
+        for entry in getattr(self, '_crane_freed', []):
+            node = entry.get('node')
+            if node is not None and 0 <= node < len(self.nodes) and node not in have:
+                self.supports.append(dict(entry))
+                self._support_candidates = sorted(
+                    set(self._support_candidates) | {node})
+                have.add(node)
+                back += 1
+        self._crane_freed = []
+        return back
 
     def _clear_columns(self):
         """Remove every column and capital at once.

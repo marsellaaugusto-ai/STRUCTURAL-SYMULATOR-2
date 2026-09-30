@@ -105,6 +105,7 @@ from apps.stereo.stereo_geometry_domes import (
 from apps.stereo.stereo_geometry_bridges import truss_bridge
 from apps.stereo.stereo_geometry_addons import (          # noqa: F401
     add_column, reinforcement_beam,
+    add_cable_crane, crane_auto_rise, crane_tag_line, crane_steady_lines, CRANE_ROLES,
     COLUMN_PLAIN, COLUMN_SHAFT, COLUMN_LATTICE, COLUMN_TAPERED, COLUMN_LEGS, COLUMN_TRIPOD,
     COLUMN_STYLES,
     BEAM_TRIANGLE, BEAM_BOX, BEAM_TRAPEZOID, BEAM_GRID_STRIP,
@@ -138,6 +139,7 @@ __all__ = [
     'dome', 'cone_roof', 'paraboloid_dish', 'elliptic_dome', 'sphere_shell',
     'circular_flat_grid', 'truss_bridge',
     'add_column', 'reinforcement_beam',
+    'add_cable_crane', 'crane_auto_rise', 'crane_tag_line', 'crane_steady_lines', 'CRANE_ROLES',
     'make_height_field_surface', 'make_parametric_surface',
     'make_domain_fn', 'apply_domain_mask', 'vierendeel_grid',
     'custom_surface_grid', 'custom_surface_between', 'surface_summits',

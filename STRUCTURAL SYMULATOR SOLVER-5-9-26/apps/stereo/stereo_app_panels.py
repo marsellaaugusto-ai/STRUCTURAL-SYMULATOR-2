@@ -124,12 +124,13 @@ class StereoPanelsMixin(_ToolbarModes):
         #              where the joint is and the model reads as a pure bar
         #              diagram. Supports, loads and reactions still draw at
         #              that point; only the dot goes.
-        #   rod_thickness 0..8 -- width = 1 + 2*t, so 0 is a 1 px hairline.
+        #   rod_thickness 0..8 -- width = 1 + t, so 0 is a 1 px hairline and
+        #              the default of 1 is the 2 px the app has always drawn.
         #              This is the BASE width. 'Thickness = stress' and the
         #              selection/over-capacity cues still raise it from here,
         #              so the two controls stack instead of fighting.
         self.node_size = tk.IntVar(value=NODE_RADIUS_PX)
-        self.rod_thickness = tk.IntVar(value=0)
+        self.rod_thickness = tk.IntVar(value=1)      # 1 -> 2 px, as before
         self.shaded_faces = tk.BooleanVar(value=False)
         self.faces_mode = tk.StringVar(value=FILL_NONE)
         self.fill_density = tk.StringVar(value=FILL_DENSITY_DEFAULT)
@@ -288,7 +289,8 @@ class StereoPanelsMixin(_ToolbarModes):
                  bg=BG, highlightthickness=0, length=150, showvalue=True,
                  command=lambda _v: self._draw()).pack(side='left', fill='x', expand=True)
         tk.Label(g, text='Nodes at 0 draws no dots -- the rods just meet at the '
-                         'joint. Rods at 0 is a 1 px hairline.',
+                         'joint. Rods at 0 is a 1 px hairline; 1 is the normal '
+                         'width.',
                  bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
                  wraplength=PANEL_TEXT_W).pack(anchor='w', pady=(0, 2))
 

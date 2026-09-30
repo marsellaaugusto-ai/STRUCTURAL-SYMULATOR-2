@@ -603,11 +603,16 @@ class StereoRenderMixin:
                     color = force_color(N, max_abs_N)
                 else:
                     color = MEMBER_RIGID_COLOR if m.get('conn') == 'rigid' else MEMBER_PIN_COLOR
-                # Roadmap 2.2: the slider sets the BASE width (1 + 2*t, so 0
-                # is a 1 px hairline). Thickness-by-stress still overrides it
-                # with its own per-member width, and the cues below still only
-                # ever RAISE whatever we land on.
-                width = 1 + 2 * int(self.rod_thickness.get())
+                # Roadmap 2.2: the slider sets the BASE width. The roadmap
+                # writes the mapping as 1 + 2*t; this uses 1 + t, because the
+                # app's flat width has always been 2 px and 1 + 2*t cannot
+                # produce 2 -- it would jump 1, 3, 5. STRESS_WIDTH_MIN/MAX and
+                # two tests document that 2 px baseline, so the slider defaults
+                # to 1 and reproduces it exactly, while 0 still gives the 1 px
+                # hairline the roadmap asks for and 8 gives a fat 9 px rod.
+                # Thickness-by-stress still overrides this with its own
+                # per-member width, and the cues below only ever RAISE it.
+                width = 1 + int(self.rod_thickness.get())
                 if stress_widths is not None:
                     width = stress_widths[i]
                 # Both of these RAISE the width rather than setting it, so a

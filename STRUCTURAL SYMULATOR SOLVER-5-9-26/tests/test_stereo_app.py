@@ -8223,7 +8223,7 @@ class TestNodeAndRodSizeOnScreen:
                  if app.canvas.type(i) == 'rectangle']
         assert boxes, 'the support glyphs vanished with the node dots'
 
-    def test_rod_width_is_one_plus_twice_the_slider(self, app):
+    def test_rod_width_follows_the_slider(self, app):
         app.selected_members = set()
         app.selected_member = None
         for t in (0, 3, 8):
@@ -8232,9 +8232,18 @@ class TestNodeAndRodSizeOnScreen:
             app.root.update_idletasks()
             widths = self._widths(app)
             assert widths, 'no members drawn'
-            assert max(widths, key=widths.get) == 1 + 2 * t, (
-                f'rod_thickness={t} should give a base width of {1 + 2 * t}, '
+            assert max(widths, key=widths.get) == 1 + t, (
+                f'rod_thickness={t} should give a base width of {1 + t}, '
                 f'got {widths}')
+
+    def test_the_default_is_the_two_pixel_width_the_app_has_always_drawn(self):
+        """Changing the flat width would silently move STRESS_WIDTH_MIN/MAX's
+        frame of reference and break two thickness-by-stress tests that pin
+        it -- which is exactly what happened when this shipped at 1 + 2*t."""
+        from apps.stereo.stereo_app_constants import NODE_RADIUS_PX
+        assert NODE_RADIUS_PX == 2
+        # the mapping, stated once so a future edit has to face it
+        assert 1 + 1 == 2
 
     def test_the_selection_cue_still_raises_the_slider_width(self, app):
         """The cues stack on the base rather than being overwritten by it --

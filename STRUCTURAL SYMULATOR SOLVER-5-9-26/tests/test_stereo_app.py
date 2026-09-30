@@ -8157,3 +8157,93 @@ def test_the_sheet_chooser_cleans_up_even_when_the_wait_raises(app,
     # the window is gone, so nothing is holding a grab
     assert not [w for w in _toplevels(app.root)
                 if w.title() == 'Export PDF']
+
+
+class TestNodeAndRodSizeOnScreen:
+    """Roadmap v2, 2.1 and 2.2 -- the two items the roadmap itself names as
+    the fastest to build and the highest visual impact for a demo.
+
+    Both are measured off the CANVAS, not off the variable: a slider that
+    moves without changing what is drawn is the failure worth catching.
+    """
+
+    def _ovals(self, app):
+        c = app.canvas
+        out = []
+        for i in c.find_withtag('node'):
+            if c.type(i) != 'oval':
+                continue          # the support glyph is a rectangle
+            x0, _y0, x1, _y1 = c.coords(i)[:4]
+            out.append(round((x1 - x0) / 2))
+        return out
+
+    def _widths(self, app):
+        c = app.canvas
+        w = {}
+        for i in c.find_withtag('member'):
+            try:
+                n = int(float(c.itemcget(i, 'width')))
+            except (ValueError, tk.TclError):
+                continue
+            w[n] = w.get(n, 0) + 1
+        return w
+
+    def test_the_controls_exist_with_the_ranges_the_roadmap_asked_for(self, app):
+        assert app.node_size.get() >= 0
+        assert app.rod_thickness.get() >= 0
+        app.node_size.set(12)
+        assert app.node_size.get() == 12
+        app.rod_thickness.set(8)
+        assert app.rod_thickness.get() == 8
+
+    def test_node_radius_follows_the_slider(self, app):
+        for size in (1, 6, 12):
+            app.node_size.set(size)
+            app._draw()
+            app.root.update_idletasks()
+            radii = set(self._ovals(app))
+            assert radii, 'no node dots drawn at all'
+            assert size in radii, f'node_size={size} but radii were {sorted(radii)}'
+
+    def test_radius_zero_draws_no_dots_at_all(self, app):
+        """The roadmap's headline state: the rods simply meet where the joint
+        is and the model reads as a pure bar diagram."""
+        app.node_size.set(0)
+        app._draw()
+        app.root.update_idletasks()
+        assert self._ovals(app) == []
+
+    def test_radius_zero_keeps_the_supports_drawn(self, app):
+        """'Los soportes y las cargas siguen dibujandose en su posicion' --
+        losing the dot must not lose the boundary conditions with it."""
+        app.node_size.set(0)
+        app._draw()
+        app.root.update_idletasks()
+        boxes = [i for i in app.canvas.find_withtag('node')
+                 if app.canvas.type(i) == 'rectangle']
+        assert boxes, 'the support glyphs vanished with the node dots'
+
+    def test_rod_width_is_one_plus_twice_the_slider(self, app):
+        app.selected_members = set()
+        app.selected_member = None
+        for t in (0, 3, 8):
+            app.rod_thickness.set(t)
+            app._draw()
+            app.root.update_idletasks()
+            widths = self._widths(app)
+            assert widths, 'no members drawn'
+            assert max(widths, key=widths.get) == 1 + 2 * t, (
+                f'rod_thickness={t} should give a base width of {1 + 2 * t}, '
+                f'got {widths}')
+
+    def test_the_selection_cue_still_raises_the_slider_width(self, app):
+        """The cues stack on the base rather than being overwritten by it --
+        a hairline setting must not make the selected rod unfindable."""
+        app.rod_thickness.set(0)
+        app.selected_members = {0}
+        app._draw()
+        app.root.update_idletasks()
+        widths = self._widths(app)
+        assert 1 in widths, 'the base hairline is gone'
+        assert any(w >= 4 for w in widths), (
+            f'the selected rod is not drawn thicker than the base: {widths}')

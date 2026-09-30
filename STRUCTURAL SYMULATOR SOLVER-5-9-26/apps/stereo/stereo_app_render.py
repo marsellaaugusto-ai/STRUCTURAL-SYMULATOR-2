@@ -603,7 +603,11 @@ class StereoRenderMixin:
                     color = force_color(N, max_abs_N)
                 else:
                     color = MEMBER_RIGID_COLOR if m.get('conn') == 'rigid' else MEMBER_PIN_COLOR
-                width = 2
+                # Roadmap 2.2: the slider sets the BASE width (1 + 2*t, so 0
+                # is a 1 px hairline). Thickness-by-stress still overrides it
+                # with its own per-member width, and the cues below still only
+                # ever RAISE whatever we land on.
+                width = 1 + 2 * int(self.rod_thickness.get())
                 if stress_widths is not None:
                     width = stress_widths[i]
                 # Both of these RAISE the width rather than setting it, so a
@@ -715,10 +719,15 @@ class StereoRenderMixin:
             for i, (px, py, _) in (enumerate(proj) if self.show_nodes.get() else []):
                 sx, sy = to_screen(px, py)
                 sel = i in self.selected_nodes
+                # Roadmap 2.1: the slider sets the dot radius in screen px.
+                # Moment mode keeps its own larger dot -- the gradient IS the
+                # reading there, so shrinking it to 0 would delete the result
+                # rather than tidy the view.
+                base_r = int(self.node_size.get())
                 if by_moment and i in moment_by_node:
                     r = MOMENT_NODE_RADIUS_PX + 1 if sel else MOMENT_NODE_RADIUS_PX
                 else:
-                    r = NODE_RADIUS_SEL_PX if sel else NODE_RADIUS_PX
+                    r = (base_r + 2) if sel else base_r
                 if sel:
                     color = NODE_SEL_COLOR
                 elif i in self._disabled_supports and i in support_nodes:
@@ -737,8 +746,13 @@ class StereoRenderMixin:
                 # near-zero-moment node would otherwise vanish entirely
                 # against it without a border to still mark its position.
                 node_outline = MOMENT_NODE_OUTLINE if (by_moment and i in moment_by_node) else ''
-                c.create_oval(sx - r, sy - r, sx + r, sy + r, fill=color,
-                             outline=node_outline, tags=('node', f'node{i}'))
+                # r == 0 is a real setting, not a degenerate one: the rods
+                # simply meet where the joint is and the model reads as a pure
+                # bar diagram. The support box, the loads and the reactions
+                # below still draw at this point -- only the dot goes.
+                if r > 0:
+                    c.create_oval(sx - r, sy - r, sx + r, sy + r, fill=color,
+                                 outline=node_outline, tags=('node', f'node{i}'))
                 # A small box drawn AROUND a supported node -- the "box
                 # that symbolises the support" asked for, instead of
                 # relying on dot-color alone (which a selection highlight

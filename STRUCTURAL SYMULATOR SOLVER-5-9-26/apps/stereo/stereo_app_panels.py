@@ -37,7 +37,7 @@ from apps.stereo.stereo_app_constants import (
     AREA_UNIFORM, AREA_GRADIENT, AREA_FIELD, AREA_LAWS,
     LOAD_DIRECTION_NAMES, AREA_SCOPE_ALL, AREA_SCOPES,
     ROD_SCOPES, ROD_SCOPE_TOP,
-    SHAPE_PLAN_PRESETS, PANEL_TEXT_W,
+    SHAPE_PLAN_PRESETS, PANEL_TEXT_W, NODE_RADIUS_PX,
     SHAPE_SOURCES, SOURCE_FORMULA, SOURCE_EXTRUDE, SOURCE_SPIN, SOURCE_PATCH,
     PROJECTION_PARALLEL, PROJECTION_PERSPECTIVE,
     CAMERA_DISTANCE_DEFAULT, CAMERA_DISTANCE_MIN, CAMERA_DISTANCE_MAX,
@@ -118,6 +118,18 @@ class StereoPanelsMixin(_ToolbarModes):
         self.thickness_by_stress = tk.BooleanVar(value=False)
         self.hide_zero_force = tk.BooleanVar(value=False)
         self.flag_slender = tk.BooleanVar(value=False)
+        # Roadmap v2, 2.1 and 2.2: how big a node is drawn and how thick a rod
+        # is drawn, in SCREEN pixels, independent of the model's scale.
+        #   node_size  0..12 -- 0 draws no dot at all, so the rods simply meet
+        #              where the joint is and the model reads as a pure bar
+        #              diagram. Supports, loads and reactions still draw at
+        #              that point; only the dot goes.
+        #   rod_thickness 0..8 -- width = 1 + 2*t, so 0 is a 1 px hairline.
+        #              This is the BASE width. 'Thickness = stress' and the
+        #              selection/over-capacity cues still raise it from here,
+        #              so the two controls stack instead of fighting.
+        self.node_size = tk.IntVar(value=NODE_RADIUS_PX)
+        self.rod_thickness = tk.IntVar(value=0)
         self.shaded_faces = tk.BooleanVar(value=False)
         self.faces_mode = tk.StringVar(value=FILL_NONE)
         self.fill_density = tk.StringVar(value=FILL_DENSITY_DEFAULT)
@@ -259,6 +271,27 @@ class StereoPanelsMixin(_ToolbarModes):
         self.camera_note = tk.Label(g, text='', bg=BG, fg=HINT_FG,
                                     font=('Helvetica', 8), width=20, anchor='w')
         self.camera_note.pack(side='left')
+
+        g = self._pop_group(body, 'Size on screen')
+        row = tk.Frame(g, bg=BG)
+        row.pack(fill='x')
+        tk.Label(row, text='Nodes', bg=BG, width=7, anchor='w',
+                 font=('Helvetica', 9)).pack(side='left')
+        tk.Scale(row, from_=0, to=12, orient='horizontal', variable=self.node_size,
+                 bg=BG, highlightthickness=0, length=150, showvalue=True,
+                 command=lambda _v: self._draw()).pack(side='left', fill='x', expand=True)
+        row = tk.Frame(g, bg=BG)
+        row.pack(fill='x')
+        tk.Label(row, text='Rods', bg=BG, width=7, anchor='w',
+                 font=('Helvetica', 9)).pack(side='left')
+        tk.Scale(row, from_=0, to=8, orient='horizontal', variable=self.rod_thickness,
+                 bg=BG, highlightthickness=0, length=150, showvalue=True,
+                 command=lambda _v: self._draw()).pack(side='left', fill='x', expand=True)
+        tk.Label(g, text='Nodes at 0 draws no dots -- the rods just meet at the '
+                         'joint. Rods at 0 is a 1 px hairline.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', pady=(0, 2))
+
 
         g = self._pop_group(body, 'SHOW')
         tk.Checkbutton(g, text='Rods', variable=self.show_members, bg=BG,

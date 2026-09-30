@@ -933,33 +933,63 @@ tests for the preflight went with it, the six covering the doctor, the `.vscode`
 configurations and what ships in the zip stay, and the module docstring records the wrong
 turn so nobody re-derives it.
 
-### 12.6 The two failures that were not really failures
+### 12.6 The two sheet-chooser failures — WRONG TWICE, then found
 
-Two `TestPdfSheetChooser` tests failed in the full run and **passed when run alone or as
-their own class**. They are the only two in that class that drive the real dialog instead
-of replacing `_pdf_sheet_dialog` with a lambda, so the obvious reading was order-dependent
-state, and a plausible-sounding theory was easy to construct (a leaked Tk `grab`, since
-`_pdf_sheet_dialog` calls `win.grab_set()` and there is a test in the file specifically
-about a leaked grab hanging a whole run).
+This entry has been rewritten. Two diagnoses were recorded here and **both were
+wrong**; the third is the real one and is now fixed. It is left in full because the
+sequence is the most instructive thing in this document.
 
-That theory was never tested, because the file was re-run after the repairs above and the
-answer came out plainly:
+**Symptom.** `TestPdfSheetChooser::test_the_dialog_remembers_the_last_choice` and
+`::test_the_dialog_counts_the_sheets_it_will_write` fail in the FULL suite and pass
+when `test_stereo_app.py` runs alone. They are the only two tests in that class that
+drive the real dialog instead of replacing `_pdf_sheet_dialog` with a lambda.
+
+**Wrong diagnosis 1 (§9.1, 2026-09-28).** A grab/lifecycle problem from `969be84`.
+Never confirmed, never tested.
+
+**Wrong diagnosis 2 (this section, earlier on 2026-09-30).** Collateral from the
+`AttributeError` cascade of §12.2 — nine tests aborting earlier in the same file
+against a session-scoped `tk_root`. The evidence looked good: after the cascade was
+fixed, a dedicated run of `test_stereo_app.py` came back `1 failed, 683 passed`,
+the one failure being unrelated. **That evidence was worthless**, because the tests
+had always passed when that file ran alone. Running the file by itself could not
+distinguish the two hypotheses, and it was read as if it could. A later full-suite
+run put both failures straight back:
 
 ```
-FAILED tests/test_stereo_app.py::test_no_panel_asks_for_more_width_than_the_panel_has[section]
-1 failed, 683 passed in 2607.98s (0:43:27)
+2 failed, 3145 passed in 3737.59s (1:02:17)
 ```
 
-Both chooser tests passed. They had been **collateral from the `AttributeError` cascade**
-earlier in the same file: six `TestSnapAndCoordinateDisplay` tests and three
-`test_axis_extend_*` tests aborting part-way through their fixtures, against a
-**session-scoped** `tk_root`, left residue that the two dialog-driving tests were the
-first to trip over. Fix the dangling attributes and the chooser tests fix themselves.
+**The real cause.** `_pdf_sheet_dialog` created its checkbutton variables with no
+master:
 
-The lesson for anyone reading a red suite on this tree: **fix the earliest failures first
-and re-run before theorising about the later ones.** Nine aborted tests sharing one Tk
-root produced two failures 250 tests further down with no causal link visible in either
-traceback.
+```python
+v = tk.BooleanVar(value=key in chosen)        # binds to tkinter._default_root
+```
+
+A `tk.*Var` with no master binds to whatever `tkinter._default_root` is at that
+moment. That is not necessarily the interpreter the dialog's own widgets live in,
+because **this suite creates more than one `Tk()` root** — about twenty test files
+build their own (`grep -n 'tk\.Tk()' tests/`). When the two differ, the Checkbutton
+and its "own" `BooleanVar` talk to two different Tcl interpreters: ticking the box
+never reaches `v.get()`, which keeps reporting its untouched default. Hence a chosen
+set that never changes and a count label that never moves.
+
+**It was already written down.** `stereo_app_wizard.py` carries a comment over
+exactly this fix, ending: *"found by running this dialog's tests as part of the FULL
+suite rather than alone: every field read back as its untouched default, no matter
+what the widget visibly showed."* The wizard had hit it, solved it, and documented
+it. The sheet chooser, written later, did not get the same treatment, and two
+diagnoses were invented before anyone read the note.
+
+**The fix.** `master=win` on every `tk.*Var` created inside a dialog Toplevel:
+`_pdf_sheet_dialog`, the 3D-export options dialog (`fmt_var`, `nr_var`, `rr_var`),
+and the catalog picker and profile manager restored in §12.2.
+
+**What to take from it.** When a test fails only in the full suite, a run of its own
+file proves nothing — that is the configuration in which it already passed. Either
+reproduce in the failing configuration or do not claim a cause. And grep the codebase
+for the symptom before theorising: the answer had been sitting in a comment for weeks.
 
 ### 12.7 Two traps in this environment that cost real time
 

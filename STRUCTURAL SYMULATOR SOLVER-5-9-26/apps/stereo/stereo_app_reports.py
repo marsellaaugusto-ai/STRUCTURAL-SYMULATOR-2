@@ -305,8 +305,17 @@ class StereoReportsMixin:
         body = tk.Frame(win)
         body.pack(fill='x', padx=20, pady=(10, 0))
         vars_ = {}
+        # master=win, not left to default. A tk.*Var with no master binds to
+        # whatever tkinter._default_root happens to be at that moment, which
+        # is not necessarily the interpreter win's own widgets live in once
+        # more than one Tk() root exists in the process -- and this app's test
+        # suite makes one per file. When they differ, the Checkbutton and its
+        # "own" BooleanVar talk to two different interpreters: ticking the box
+        # never reaches v.get(), which reads back its untouched default. That
+        # is why these two tests passed alone and failed in the full suite.
+        # stereo_app_wizard.py carries the same note over the same fix.
         for row, (key, label, blurb) in enumerate(self.PDF_GROUP_LABELS):
-            v = tk.BooleanVar(value=key in chosen)
+            v = tk.BooleanVar(master=win, value=key in chosen)
             vars_[key] = v
             tk.Checkbutton(body, text=label, variable=v, anchor='w').grid(
                 row=row * 2, column=0, sticky='w')
@@ -522,20 +531,21 @@ class StereoReportsMixin:
         frm.pack(fill='x', padx=20, pady=(12, 0))
 
         tk.Label(frm, text='Format:').grid(row=0, column=0, sticky='w', pady=4)
-        fmt_var = tk.StringVar(value='obj')
+        # master=win for the same reason as the sheet chooser above
+        fmt_var = tk.StringVar(master=win, value='obj')
         fmt_menu = ttk.Combobox(frm, textvariable=fmt_var,
                                 values=['obj', 'xlsx (SketchUp plugin)'],
                                 state='readonly', width=22)
         fmt_menu.grid(row=0, column=1, sticky='w', padx=(8, 0), pady=4)
 
         tk.Label(frm, text='Node radius (m):').grid(row=1, column=0, sticky='w', pady=4)
-        nr_var = tk.DoubleVar(value=0.0)
+        nr_var = tk.DoubleVar(master=win, value=0.0)
         nr_scale = tk.Scale(frm, variable=nr_var, from_=0.0, to=0.5,
                             resolution=0.005, orient='horizontal', length=180)
         nr_scale.grid(row=1, column=1, sticky='w', padx=(8, 0), pady=4)
 
         tk.Label(frm, text='Rod radius (m):').grid(row=2, column=0, sticky='w', pady=4)
-        rr_var = tk.DoubleVar(value=0.0)
+        rr_var = tk.DoubleVar(master=win, value=0.0)
         rr_scale = tk.Scale(frm, variable=rr_var, from_=0.0, to=0.3,
                             resolution=0.005, orient='horizontal', length=180)
         rr_scale.grid(row=2, column=1, sticky='w', padx=(8, 0), pady=4)

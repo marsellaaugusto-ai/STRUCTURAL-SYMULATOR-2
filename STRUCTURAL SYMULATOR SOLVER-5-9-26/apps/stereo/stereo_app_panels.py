@@ -2103,7 +2103,13 @@ class StereoPanelsMixin(_ToolbarModes):
         top.pack(fill='x', padx=10, pady=4)
 
         tk.Label(top, text='Group:', bg='#f5f5f3', font=('Helvetica', 9)).pack(side='left')
-        group_var = tk.StringVar(value=sp.group_names()[0])
+        # master=win throughout this dialog: a Var with no master binds to
+        # tkinter._default_root, which need not be the interpreter win's own
+        # widgets live in once more than one Tk() root exists in the process.
+        # When they differ the widget and its Var talk to different
+        # interpreters and every field reads back its untouched default --
+        # see the note in stereo_app_wizard.py over the same fix.
+        group_var = tk.StringVar(master=win, value=sp.group_names()[0])
         group_combo = ttk.Combobox(top, textvariable=group_var,
                                    values=sp.group_names(), state='readonly',
                                    width=14, font=('Helvetica', 9))
@@ -2111,7 +2117,7 @@ class StereoPanelsMixin(_ToolbarModes):
 
         tk.Label(top, text='Material:', bg='#f5f5f3', font=('Helvetica', 9)).pack(side='left', padx=(8, 0))
         mat_names = list(sp.MATERIALS.keys())
-        mat_var = tk.StringVar(value=mat_names[0])
+        mat_var = tk.StringVar(master=win, value=mat_names[0])
         ttk.Combobox(top, textvariable=mat_var, values=mat_names,
                      state='readonly', width=22, font=('Helvetica', 8)
                     ).pack(side='left', padx=4)
@@ -2238,9 +2244,9 @@ class StereoPanelsMixin(_ToolbarModes):
             tk.Label(editfr, text=label, bg='#f5f5f3',
                      font=('Helvetica', 9)).grid(row=row_i, column=0, sticky='w')
             if key == 'name':
-                v = tk.StringVar(value='New Profile')
+                v = tk.StringVar(master=win, value='New Profile')
             else:
-                v = tk.DoubleVar(value=default)
+                v = tk.DoubleVar(master=win, value=default)
             tk.Entry(editfr, textvariable=v, width=w,
                      font=('Helvetica', 9)).grid(row=row_i, column=1, padx=4)
             edit_vars[key] = v

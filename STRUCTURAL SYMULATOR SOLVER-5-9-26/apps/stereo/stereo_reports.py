@@ -479,13 +479,18 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
 
     # ── Members ──────────────────────────────────────────────────────────────
     ws = wb.create_sheet('Members')
+    # c_cm is APPENDED, not inserted, so no existing column moves for anyone
+    # who reads these sheets by column letter. It is the real extreme-fibre
+    # depth of a catalog section; a hand-typed section has none and the cell
+    # is left empty rather than holding a guess.
     mem_hdrs = ['idx', 'a', 'b', 'conn', 'E_GPa', 'A_cm2', 'I_cm4', 'J_cm4',
-                'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role', 'profile']
+                'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role', 'profile', 'c_cm']
     styled_header(ws, mem_hdrs)
     for i, m in enumerate(members):
         ws.append([i, m['a'], m['b'], m.get('conn', 'pin'), m.get('E'), m.get('A'),
                    m.get('I'), m.get('J'), m.get('Fy'), m.get('Fu'), m.get('K', 1.0),
-                   m.get('r_gyr'), m.get('role', ''), m.get('profile', '')])
+                   m.get('r_gyr'), m.get('role', ''), m.get('profile', ''),
+                   m.get('c_cm')])
     style_data_range(ws, 2, 1 + len(members), len(mem_hdrs))
 
     # ── Loads ────────────────────────────────────────────────────────────────
@@ -786,15 +791,21 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
     row += 1
 
     ws.cell(row=row, column=1, value='[MEMBERS]'); row += 1
+    # c_cm travels in the machine-read table too, or a catalog section that
+    # makes the round trip through a workbook arrives without its depth and
+    # its bending check falls back to a thin-tube guess -- 39% unsafe for an
+    # angle. Appended, and read by column NAME on import, so a workbook
+    # written before this column existed still loads.
     for col, lbl in enumerate(['idx', 'a', 'b', 'conn', 'E_GPa', 'A_cm2', 'I_cm4',
                                 'J_cm4', 'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role',
-                                'profile'], 1):
+                                'profile', 'c_cm'], 1):
         ws.cell(row=row, column=col, value=lbl)
     row += 1
     for i, m in enumerate(members):
         vals = [i, m['a'], m['b'], m.get('conn', 'pin'), m.get('E'), m.get('A'),
                 m.get('I'), m.get('J'), m.get('Fy'), m.get('Fu'), m.get('K', 1.0),
-                m.get('r_gyr'), m.get('role', ''), m.get('profile', '')]
+                m.get('r_gyr'), m.get('role', ''), m.get('profile', ''),
+                m.get('c_cm')]
         for col, v in enumerate(vals, 1):
             ws.cell(row=row, column=col, value=v)
         row += 1
@@ -834,7 +845,8 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
         row += 1
         ws.cell(row=row, column=1, value='[PROFILES]'); row += 1
         prof_hdrs = ['name', 'E_GPa', 'A_cm2', 'I_cm4', 'J_cm4',
-                     'Fy_MPa', 'Fu_MPa', 'r_gyr_cm', 'K', 'catalog', 'material']
+                     'Fy_MPa', 'Fu_MPa', 'r_gyr_cm', 'K', 'catalog', 'material',
+                     'c_cm']
         for col, lbl in enumerate(prof_hdrs, 1):
             ws.cell(row=row, column=col, value=lbl)
         row += 1
@@ -843,7 +855,8 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
                     pdata.get('I', ''), pdata.get('J', ''),
                     pdata.get('Fy', ''), pdata.get('Fu', ''),
                     pdata.get('r_gyr', ''), pdata.get('K', ''),
-                    pdata.get('catalog', ''), pdata.get('material', '')]
+                    pdata.get('catalog', ''), pdata.get('material', ''),
+                    pdata.get('c_cm', '')]
             for col, v in enumerate(vals, 1):
                 ws.cell(row=row, column=col, value=v)
             row += 1
@@ -947,6 +960,17 @@ def import_excel_model(path):
         profile = r.get('profile')
         if profile and str(profile).strip():
             m['profile'] = str(profile).strip()
+        # Absent in a workbook written before the column existed: then the
+        # member simply has no depth, and the bending check's I/A fall-back
+        # applies -- conservative for the I and channel sections where the
+        # radius error was largest.
+        c = r.get('c_cm')
+        if c not in (None, ''):
+            try:
+                if float(c) > 0.0:
+                    m['c_cm'] = float(c)
+            except (TypeError, ValueError):
+                pass
         members.append(m)
 
     profiles = {}
@@ -966,6 +990,15 @@ def import_excel_model(path):
             pk = pr.get('K')
             if pk not in (None, ''):
                 pdata['K'] = float(pk)
+            # The catalog depth, so assigning a re-imported profile hands it
+            # on (stereo_profiles.write_section) instead of dropping it.
+            pc = pr.get('c_cm')
+            if pc not in (None, ''):
+                try:
+                    if float(pc) > 0.0:
+                        pdata['c_cm'] = float(pc)
+                except (TypeError, ValueError):
+                    pass
             for extra in ('catalog', 'material'):
                 v = pr.get(extra)
                 if v and str(v).strip():

@@ -38,6 +38,14 @@ original path unchanged, at the original cost.
 
 **Per-member properties.** `E` (GPa), `A` (cm²), `r` (radius of gyration, cm),
 `I` (cm⁴), `J` (cm⁴), `K` (effective-length factor), `Fy`, `Fu` (MPa).
+
+`r` is the **minor principal** radius — the one a strut buckles about. For an I or
+channel that is the web axis, for a rectangular tube the shorter side, and for an
+angle the v–v axis at 45° to the legs, which neither geometric axis captures. Until
+v24 the steel catalog supplied the *strong*-axis radius instead, overstating
+buckling capacity by up to 26× for I-sections and 30× for channels; see the account,
+§16. Catalog sections also carry their real extreme-fibre depth `c`, so the bending
+check uses `S = I/c` rather than a thin-tube estimate.
 Chord and web members carry independent property sets (`_apply_sections`), so a
 grid can have heavy chords and light webs without editing members one by one.
 
@@ -690,6 +698,9 @@ Stated plainly so nobody assumes otherwise:
   UI.
 - No per-member section rotation for rigid frames — `_local_axes` picks a
   default reference, which matters for non-symmetric sections.
+- A rigid frame's stiffness takes `Iy = Iz = I` for every member, so an open
+  section's weak-axis **stiffness** is overstated. That changes how load shares
+  out in a rigid frame; the member *check* uses the correct minor radius.
 - The Excel round-trip loses the wizard recipe, so an imported model cannot be
   reopened in the wizard.
 - The *Member Calculations* sheet shows the 40 most utilized rods, not all of

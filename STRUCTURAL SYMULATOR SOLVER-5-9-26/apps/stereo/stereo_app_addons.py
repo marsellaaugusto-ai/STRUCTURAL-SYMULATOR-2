@@ -253,10 +253,9 @@ class StereoAddonsMixin:
             messagebox.showerror('Crane', 'The mast has to have some length.')
             return
 
-        section = dict(E=self.web_E.get(), A=self.web_A.get(), I=self.web_I.get(),
-                       J=self.web_J.get(), Fy=self.web_Fy.get(),
-                       Fu=self.web_Fu.get(), K=self.web_K.get(),
-                       r_gyr=self.web_r.get())
+        # Through _panel_section so the mast -- which is RIGID and so takes a
+        # bending check -- carries the catalog depth when there is one.
+        section = self._panel_section('web')
         try:
             nodes, members, hook, anchor = sg.add_cable_crane(
                 self.nodes, self.members, targets, section,

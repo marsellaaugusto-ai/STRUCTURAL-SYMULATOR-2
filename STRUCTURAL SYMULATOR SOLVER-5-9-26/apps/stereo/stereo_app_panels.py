@@ -2087,6 +2087,34 @@ class StereoPanelsMixin(_ToolbarModes):
             var = getattr(self, f'{prefix}_{attr}', None)
             if var is not None and key in prof:
                 var.set(prof[key])
+        # The panel has no field for the extreme-fibre depth -- it is not a
+        # number anyone types -- so remember it beside the I it belongs to.
+        # _panel_section hands it on only while that I is still the one in
+        # the panel; type a different I and the depth quietly stops applying.
+        depths = getattr(self, '_panel_depth', None)
+        if depths is None:
+            depths = self._panel_depth = {}
+        depths[prefix] = ((prof['c_cm'], prof.get('I'))
+                          if prof.get('c_cm') else None)
+
+    def _panel_section(self, prefix):
+        """The Section panel's `prefix` values as a member section dict.
+
+        The ONE place a section is read out of the panel. Four places used to
+        build this dict by hand, identically, and none of them could carry
+        the catalog depth c_cm because the panel has no field for it -- so
+        every member made from the panel reached the bending check without
+        one. c_cm is included here exactly when the panel still holds the
+        catalog section it came from (stereo_profiles.depth_still_valid).
+        """
+        from apps.stereo import stereo_profiles as _sp
+        g = lambda attr: getattr(self, f'{prefix}_{attr}').get()
+        values = dict(E=g('E'), A=g('A'), I=g('I'), J=g('J'), Fy=g('Fy'),
+                      Fu=g('Fu'), K=g('K'), r_gyr=g('r'))
+        depth = (getattr(self, '_panel_depth', None) or {}).get(prefix)
+        if _sp.depth_still_valid(depth, values['I']):
+            values['c_cm'] = depth[0]
+        return values
 
     def _open_catalog_picker(self, prefix):
         from apps.stereo import stereo_profiles as sp
@@ -2152,9 +2180,12 @@ class StereoPanelsMixin(_ToolbarModes):
                 ix = sec.Ix_mm4 / 10_000.0
                 j = sec.J_mm4 / 10_000.0
                 r = sec.r_gyr_mm / 10.0
+                # "r min": the radius the compression check uses, which is
+                # the minor principal one. A bare "r" beside a strong-axis I
+                # reads as the strong-axis radius, which it is not.
                 info_label.config(text=f'{sec.name}  |  A = {a:.2f} cm²  '
                                        f'I = {ix:.1f} cm⁴  J = {j:.1f} cm⁴  '
-                                       f'r = {r:.2f} cm  |  {sec.shape}')
+                                       f'r min = {r:.2f} cm  |  {sec.shape}')
 
         lb.bind('<<ListboxSelect>>', on_select)
         group_combo.bind('<<ComboboxSelected>>', refresh_list)
@@ -2179,6 +2210,10 @@ class StereoPanelsMixin(_ToolbarModes):
                 'I': props['I'], 'J': props['J'],
                 'Fy': props.get('Fy', 235.0), 'Fu': props.get('Fu', 360.0),
                 'r_gyr': props['r_gyr'], 'K': 1.0,
+                # The real extreme-fibre depth. This dict used to copy the
+                # eight keys above and drop it, so no catalog section's
+                # depth ever reached a member (account, 9.2b).
+                'c_cm': props['c_cm'],
                 'catalog': sec_name, 'material': mat_var.get(),
             }
 
@@ -2268,14 +2303,25 @@ class StereoPanelsMixin(_ToolbarModes):
             if not name:
                 messagebox.showwarning('Profile', 'Name cannot be empty.')
                 return
+            from apps.stereo import stereo_profiles as _sp
             prof = {}
-            for key in ('E', 'A', 'I', 'J', 'Fy', 'Fu', 'r_gyr', 'K'):
+            for key in _sp.SECTION_KEYS:
                 prof[key] = edit_vars[key].get()
+            # A saved profile keeps its catalog depth only if its I is still
+            # the catalog I. Open a catalog profile, change nothing, save: the
+            # depth survives. Type a new I: it is a different section now,
+            # and the old depth paired with it would overstate bending.
+            old = self.profiles.get(name) or {}
+            if old.get('c_cm') and _sp.depth_still_valid(
+                    (old['c_cm'], old.get('I')), prof['I']):
+                prof['c_cm'] = old['c_cm']
+            for keep in ('catalog', 'material'):
+                if keep in old and 'c_cm' in prof:
+                    prof[keep] = old[keep]
             self.profiles[name] = prof
             for m in self.members:
                 if m.get('profile', '') == name:
-                    for k, v in prof.items():
-                        m[k] = v
+                    _sp.write_section(m, prof)
             self._refresh_section_profile_combo('chord')
             self._refresh_section_profile_combo('web')
             refresh_list()

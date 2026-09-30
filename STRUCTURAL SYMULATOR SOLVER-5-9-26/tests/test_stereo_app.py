@@ -9173,3 +9173,105 @@ def _walk_widgets(w):
     yield w
     for c in w.winfo_children():
         yield from _walk_widgets(c)
+
+
+class TestCatalogDepthReachesMembers:
+    """The catalog depth c_cm has to reach every member built from a catalog
+    section, by every path -- and has to LEAVE when the section changes.
+
+    Account 9.2b found that no path carried it at all. That was merely
+    conservative while r_gyr was the strong-axis radius; once r_gyr became
+    the minor radius it would have been unsafe, because the bending check's
+    old fall-back read the depth off r_gyr. Both halves are fixed; these
+    pin the propagation.
+    """
+
+    def _pick_catalog(self, app, prefix, name):
+        from apps.stereo import stereo_profiles as _sp
+        props = _sp.section_to_props(_sp.CATALOG[name], _sp.STEEL_F24)
+        app.profiles[name] = dict(E=props['E'], A=props['A'], I=props['I'],
+                                  J=props['J'], Fy=props['Fy'], Fu=props['Fu'],
+                                  r_gyr=props['r_gyr'], K=1.0,
+                                  c_cm=props['c_cm'], catalog=name,
+                                  material='F24')
+        getattr(app, '%s_profile_var' % prefix).set(name)
+        app._on_section_profile_selected(prefix)
+        return props
+
+    def test_applying_a_catalog_section_gives_the_members_its_depth(self, app):
+        props = self._pick_catalog(app, 'web', 'L 50x5')
+        self._pick_catalog(app, 'chord', 'IPE 200')
+        app._apply_sections()
+        webs = [m for m in app.members if m.get('role') not in sc.CHORD_ROLES]
+        assert webs
+        for m in webs:
+            assert m['c_cm'] == pytest.approx(props['c_cm'])
+            assert m['r_gyr'] == pytest.approx(props['r_gyr'])
+
+    def test_typing_a_different_I_after_picking_drops_the_depth(self, app):
+        """The depth belongs to the catalog section. Once the panel holds a
+        different I it is a different section, and the old depth beside it
+        would overstate bending capacity."""
+        self._pick_catalog(app, 'web', 'IPE 200')
+        app.web_I.set(app.web_I.get() * 3.0)
+        app._apply_sections()
+        webs = [m for m in app.members if m.get('role') not in sc.CHORD_ROLES]
+        assert webs and all('c_cm' not in m for m in webs)
+
+    def test_a_hand_typed_section_clears_a_depth_a_member_already_had(self, app):
+        self._pick_catalog(app, 'web', 'IPE 200')
+        app._apply_sections()
+        assert any('c_cm' in m for m in app.members)
+        app.web_profile_var.set('')
+        app._panel_depth['web'] = None
+        app.web_I.set(999.0)
+        app._apply_sections()
+        webs = [m for m in app.members if m.get('role') not in sc.CHORD_ROLES]
+        assert all('c_cm' not in m for m in webs)
+
+    def test_assigning_a_catalog_profile_carries_its_depth(self, app):
+        props = self._pick_catalog(app, 'web', 'UPN 100')
+        app.active_profile.set('UPN 100')
+        app.selected_members = {0, 1, 2}
+        app._assign_profile_to_selection()
+        for i in (0, 1, 2):
+            assert app.members[i]['c_cm'] == pytest.approx(props['c_cm'])
+
+    def test_a_new_rod_drawn_on_the_canvas_carries_the_panel_depth(self, app):
+        props = self._pick_catalog(app, 'web', 'L 50x5')
+        linked = {frozenset((m['a'], m['b'])) for m in app.members}
+        # Two nodes NOT already joined: _add_rod_between is silently a no-op
+        # on a pair that is, and a no-op would pass any assertion about "the
+        # new rod" by testing an old one.
+        a, b = next((i, j) for i in range(len(app.nodes))
+                    for j in range(i + 1, len(app.nodes))
+                    if frozenset((i, j)) not in linked)
+        n0 = len(app.members)
+        app._add_rod_between(a, b)
+        assert len(app.members) == n0 + 1, 'no rod was added'
+        rod = app.members[-1]
+        assert {rod['a'], rod['b']} == {a, b}
+        assert rod['c_cm'] == pytest.approx(props['c_cm'])
+
+    def test_the_crane_mast_carries_the_depth_it_needs_for_bending(self, app):
+        """The mast is RIGID, so it takes a bending check."""
+        props = self._pick_catalog(app, 'web', 'IPE 200')
+        top = max(p[2] for p in app.nodes)
+        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
+        app.selected_nodes = set(tops[:4])
+        app._add_cable_crane()
+        masts = [m for m in app.members if m.get('role') == 'crane_mast']
+        assert masts and masts[0]['c_cm'] == pytest.approx(props['c_cm'])
+
+    def test_the_depth_survives_an_excel_round_trip(self, app, tmp_path):
+        props = self._pick_catalog(app, 'web', 'L 50x5')
+        app._apply_sections()
+        path = tmp_path / 'depth.xlsx'
+        sr_module.export_excel(app.nodes, app.members, app._all_loads(),
+                               app.supports, None, str(path),
+                               profiles=app.profiles)
+        model = sr_module.import_excel_model(str(path))
+        members = model['members'] if isinstance(model, dict) else model[1]
+        with_depth = [m for m in members if m.get('c_cm')]
+        assert with_depth, 'c_cm did not survive the workbook'
+        assert with_depth[0]['c_cm'] == pytest.approx(props['c_cm'])

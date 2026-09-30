@@ -1,7 +1,8 @@
 # Stereo Roadmap v2 — Full Account of Execution
 
-**Written** 2026-09-28, **extended 2026-09-30** with §12, §13, §14 and §15, and the
-corrections they forced.
+**Written** 2026-09-28, **extended 2026-09-30** with §12 to §16, and the corrections
+they forced. **Read §16 first if you have sized anything with this app** — the steel
+catalog overstated buckling capacity by up to 30× until v24.
 **Covers** everything done since the Stereo Roadmap v2 began to be executed (2026-09-18
 onward), plus the shared history it built on.
 
@@ -1389,6 +1390,129 @@ Measured on the app's own default model, through the real Export Excel command:
 This one matters beyond tidiness. "I cannot open the document" was a real
 report earlier in this work, and a 20 MB workbook holding 2,400 images is a
 plausible way for a spreadsheet to appear not to open at all.
+
+---
+
+## 16 — The catalog overstated buckling capacity by up to 30×
+
+Found 2026-09-30 while reading `stereo_profiles.py` for the group sizing feature,
+fixed before v24 at the user's decision. **This is the most consequential defect in
+this document.** Anyone who sized a structure with v23 or earlier, using an I,
+channel, angle or rectangular-hollow catalog section in compression, has
+utilisations that are too low — some members reported as passing are overloaded.
+
+### 16.1 What was wrong
+
+Every section class computed its radius of gyration as `sqrt(Ix / A)` — about the
+**strong** axis. A compression member buckles about its **weak** axis. The solver's
+own documentation (`stereo_math.py`, line 23) states the contract correctly —
+`r_gyr : cm, weak-axis radius of gyration` — and the catalog violated it.
+
+Measured over the whole catalog:
+
+| Family | Radius overstated | Buckling load overstated |
+|---|---|---|
+| I (IPE/HEA/HEB), 52 sections | 1.6× – 5.1× | 2.5× – **26×** |
+| Channels (UPN), 12 | 3.0× – 5.5× | 8.7× – **30×** |
+| Angles, 11 | 1.7× | 2.9× |
+| RHS, 14 | 1.0× – 1.8× | up to 3.1× |
+| CHS tubes, 12 | exact | exact |
+
+Buckling load goes as `r²`, which is why a 5× radius becomes a 26× load.
+
+**One member, stated plainly.** A 4 m IPE 200 strut carrying 150 kN: the app
+reported slenderness 49 and utilisation **0.29**. The real slenderness is 175 and
+the utilisation **1.09** — overloaded. A member shown with 71% spare capacity fails.
+
+**Angles were worse than the table suggested at first.** `EqualAngle` set `Iy = Ix`
+and had no notion of principal axes, so `min(Ix, Iy)` could not reveal its error: an
+angle buckles about its **minor principal axis (v–v)**, at 45° to the legs, which is
+neither geometric axis. It has to come from the product of inertia. Its `Ix` was also
+16% high (L 50×5: 13.09 cm⁴ against a published 11.00).
+
+### 16.2 Why it went unnoticed
+
+The one test that checked a radius **pinned the wrong value**:
+`test_ipe300_radius_of_gyration` asserted 12.417 cm, which is IPE 300's
+*strong*-axis radius. The published weak-axis value is 3.35 cm. A test that encodes
+the bug makes the bug impossible to fix without a red suite — so for as long as it
+stood, the suite defended the error. It now asserts both radii against the published
+table.
+
+And the new sizing recommender would have **amplified** it. It picks the lightest
+section that passes, so it is systematically drawn to exactly the sections whose
+compression capacity was overstated. In the GUI sweep it had recommended `L 25×3` and
+`RHS 60×40×3`, both in affected families.
+
+### 16.3 The fix, and the trap inside it
+
+Correcting the radius alone would have been **unsafe**, and this is the part worth
+remembering.
+
+The bending check needs an extreme-fibre depth `c` to form `S = I/c`. Catalog
+sections are meant to carry it as `c_cm`; when it is missing, the check falls back to
+a thin-round-tube guess. §9.2b had already found that **no path ever delivered
+`c_cm` to a member** — so the fallback was live for every catalog section. And the
+fallback was `c = r_gyr·√2`: it read the depth off the **buckling radius**.
+
+So shrinking `r_gyr` to the minor axis would have shrunk `c` by the same factor, and
+overstated **bending** capacity by about 3× for an IPE — trading one unsafe error for
+another of the same size. The fix therefore had to be the whole chain:
+
+1. **`r_gyr` is the minor principal radius** for every shape. I and channel:
+   `√(Iy/A)`. RHS: `√(min(Ix,Iy)/A)`. CHS: unchanged, always right. Angle: `√(Iv/A)`
+   with `Iv` from exact two-rectangle geometry and the product of inertia.
+2. **Every shape has a real `c_mm`.** `section_to_props` looked for the depth as `d`
+   or `h`; `RoundTube`, `RectTube` and `EqualAngle` spell it `D`, `H` and `leg`, so
+   three families never had one.
+3. **`c_cm` reaches members by every path.** Four places built a member section from
+   the Section panel by hand, identically, and the panel has no field for a depth.
+   They now go through one helper, `_panel_section`, which remembers the catalog
+   depth beside the `I` it belongs to and hands it on **only while that `I` is still
+   in the panel** — type a different `I` and the depth stops applying. The catalog
+   picker, profile assignment, the profile manager and the Excel workbook (both the
+   member and profile tables, read by column name so older workbooks still load) all
+   carry it now.
+4. **A stale depth is removed, not left behind.** `write_section` replaces
+   `member.update(...)`, which only ever added keys. A small catalog depth left beside
+   a larger hand-typed `I` overstates bending capacity by the ratio of the two
+   sections.
+5. **The fallback no longer reads the buckling radius.** It is `c = √(2I/A)` — the
+   same number for a round tube, but built from the properties bending is actually
+   about. Checked across the catalog: conservative for every I (worst 1.14) and
+   channel (1.09), which are the families where the radius error was largest.
+
+The fallback is **still a guess** and no catalog section should reach it: it is 39%
+unsafe for an angle and 7% for a thick round tube. Point 3 is what keeps catalog
+sections away from it; point 5 is the net under point 3.
+
+### 16.4 Verified against published tables, not against itself
+
+Every test pins a published value, so a regression cannot pass by agreeing with its
+own arithmetic:
+
+| Check | Published | Catalog now |
+|---|---|---|
+| IPE 200 weak-axis radius i_z | 2.24 cm (ArcelorMittal) | 2.28 cm |
+| IPE 300 weak-axis radius i_z | 3.35 cm | 3.41 cm |
+| L 50×5 minor principal radius r_v | 0.98 cm (EN 10056-1) | 0.98 cm |
+| L 50×5 moment of inertia | 11.00 cm⁴ | 11.25 cm⁴ |
+| L 50×5 centroid from heel | 14.0 mm | 14.3 mm |
+
+The small remaining differences are root fillets, which the catalog does not model
+for any shape.
+
+### 16.5 What changes for a user
+
+Compression utilisations for I, channel, angle and RHS members **go up**, correctly,
+and some members that passed will now fail. Bending utilisations for catalog sections
+go **down** slightly, because the real depth replaces a conservative guess (§9.2b's
+9–18%). CHS tubes — the usual space-truss section — are unaffected in compression.
+
+**Still not modelled**, and worth knowing: the rigid-frame stiffness takes `Iy = Iz =
+I` for every member (`_rigid_local_stiffness`), so an open section's weak-axis
+**stiffness** is overstated in a rigid frame. That affects how load distributes, not
+the member check, and is documented in STEREO_FEATURES as a known limit.
 
 ## Appendix A — Complete commit history
 

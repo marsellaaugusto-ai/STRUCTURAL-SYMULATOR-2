@@ -617,20 +617,22 @@ class StereoModelMixin:
         members = self.members if members is None else members
         if redraw:
             self._push_undo('apply sections')
+        from apps.stereo import stereo_profiles as _sp
         conn = self.sec_conn.get()
-        chord = dict(E=self.chord_E.get(), A=self.chord_A.get(), I=self.chord_I.get(),
-                    J=self.chord_J.get(), Fy=self.chord_Fy.get(), Fu=self.chord_Fu.get(),
-                    K=self.chord_K.get(), r_gyr=self.chord_r.get())
-        web = dict(E=self.web_E.get(), A=self.web_A.get(), I=self.web_I.get(),
-                  J=self.web_J.get(), Fy=self.web_Fy.get(), Fu=self.web_Fu.get(),
-                  K=self.web_K.get(), r_gyr=self.web_r.get())
+        # Through _panel_section so the catalog depth c_cm comes too, and
+        # through write_section rather than m.update so a member that HAD a
+        # depth and is now given a hand-typed section loses it. update() only
+        # adds keys; a stale small depth left beside a larger I overstates
+        # bending capacity by the ratio of the two sections.
+        chord = self._panel_section('chord')
+        web = self._panel_section('web')
         chord_profile = self.chord_profile_var.get() if hasattr(self, 'chord_profile_var') else ''
         web_profile = self.web_profile_var.get() if hasattr(self, 'web_profile_var') else ''
         for m in members:
             if not m.get('rigid_required'):
                 m['conn'] = conn
             is_chord = m.get('role') in CHORD_ROLES
-            m.update(chord if is_chord else web)
+            _sp.write_section(m, chord if is_chord else web)
             m['profile'] = chord_profile if is_chord else web_profile
         if redraw:
             self.results = None
@@ -657,13 +659,15 @@ class StereoModelMixin:
         if not prof:
             messagebox.showwarning('Profile', f'Profile "{name}" not found.')
             return
+        from apps.stereo import stereo_profiles as _sp
         self._push_undo('assign profile')
         for mi in self.selected_members:
             if mi < len(self.members):
                 self.members[mi]['profile'] = name
-                for k in ('E', 'A', 'I', 'J', 'Fy', 'Fu', 'r_gyr', 'K'):
-                    if k in prof:
-                        self.members[mi][k] = prof[k]
+                # write_section, not a fixed key list: that list used to be
+                # the eight keys WITHOUT c_cm, so no catalog depth ever
+                # reached a member this way (account, 9.2b).
+                _sp.write_section(self.members[mi], prof)
         self.results = None
         self.member_checks = None
         self._refresh_all()

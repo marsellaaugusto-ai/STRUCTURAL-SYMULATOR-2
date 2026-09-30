@@ -10,6 +10,24 @@ catalog entry into a member-property dict.
 
 Materials carry Fy/Fu in MPa.  The two pre-built materials match the
 CIRSOC 301 / AISC designations the rest of the app already uses.
+
+    r_gyr IS THE MINOR PRINCIPAL RADIUS. That is the contract
+    stereo_math documents ("weak-axis radius of gyration"), and it is the
+    only radius a compression check may use, because a strut buckles about
+    its weakest axis. Until 2026-09-30 every class here returned
+    sqrt(Ix/A), the STRONG axis, which overstated buckling capacity by up
+    to 26x for I-sections and 30x for channels (Euler load, which goes as
+    r squared) -- a violation of the contract, not a choice. Angles were
+    worse than the Ix/Iy pair could show: an angle buckles about its minor
+    PRINCIPAL axis (v-v), which is not either geometric axis, so it is
+    computed here from the exact geometry. Checked against EN 10056-1:
+    L 50x5 gives r_v = 0.98 cm, the published value.
+
+    c_mm IS THE EXTREME-FIBRE DISTANCE for bending about the axis of Ix,
+    and every shape now has one. section_to_props used to look for it as
+    `d` or `h`, which three classes spell `D`, `H` and `leg`, so tubes and
+    angles never had one and bending fell back to a thin-round-tube guess
+    that is 39% unsafe for an angle.
 """
 from __future__ import annotations
 
@@ -51,8 +69,18 @@ class ISection:
         return (2 * self.bf * self.tf ** 3 + hw * self.tw ** 3) / 3.0
 
     @property
-    def r_gyr_mm(self) -> float:
+    def r_x_mm(self) -> float:
+        """Strong-axis radius -- for reporting, never for buckling."""
         return math.sqrt(self.Ix_mm4 / self.A_mm2)
+
+    @property
+    def r_gyr_mm(self) -> float:
+        """Minor principal radius: about the WEB axis, sqrt(Iy/A)."""
+        return math.sqrt(self.Iy_mm4 / self.A_mm2)
+
+    @property
+    def c_mm(self) -> float:
+        return self.d / 2.0
 
     @property
     def shape(self) -> str:
@@ -88,8 +116,19 @@ class ChannelSection:
         return (2 * self.bf * self.tf ** 3 + hw * self.tw ** 3) / 3.0
 
     @property
-    def r_gyr_mm(self) -> float:
+    def r_x_mm(self) -> float:
+        """Strong-axis radius -- for reporting, never for buckling."""
         return math.sqrt(self.Ix_mm4 / self.A_mm2)
+
+    @property
+    def r_gyr_mm(self) -> float:
+        """Minor principal radius, sqrt(Iy/A). The channel is symmetric
+        about its strong axis, so x and y are its principal axes."""
+        return math.sqrt(self.Iy_mm4 / self.A_mm2)
+
+    @property
+    def c_mm(self) -> float:
+        return self.d / 2.0
 
     @property
     def shape(self) -> str:
@@ -126,8 +165,18 @@ class RoundTube:
         return math.pi * (ro ** 4 - ri ** 4) / 2.0
 
     @property
-    def r_gyr_mm(self) -> float:
+    def r_x_mm(self) -> float:
         return math.sqrt(self.Ix_mm4 / self.A_mm2)
+
+    @property
+    def r_gyr_mm(self) -> float:
+        """Every axis is principal and alike, so this was always right."""
+        return math.sqrt(self.Ix_mm4 / self.A_mm2)
+
+    @property
+    def c_mm(self) -> float:
+        # D, not d: this lookup is what section_to_props used to miss.
+        return self.D / 2.0
 
     @property
     def shape(self) -> str:
@@ -163,8 +212,20 @@ class RectTube:
         return 2 * self.t * (h_m * b_m) ** 2 / (h_m + b_m)
 
     @property
-    def r_gyr_mm(self) -> float:
+    def r_x_mm(self) -> float:
         return math.sqrt(self.Ix_mm4 / self.A_mm2)
+
+    @property
+    def r_gyr_mm(self) -> float:
+        """Minor principal radius. x and y are principal (double symmetry);
+        min() rather than Iy because nothing guarantees H >= B in the table,
+        and a square section has them equal."""
+        return math.sqrt(min(self.Ix_mm4, self.Iy_mm4) / self.A_mm2)
+
+    @property
+    def c_mm(self) -> float:
+        # Ix is about the axis parallel to B, so its fibres are H/2 out.
+        return self.H / 2.0
 
     @property
     def shape(self) -> str:
@@ -178,27 +239,75 @@ class EqualAngle:
     leg: float     # leg length
     t: float       # thickness
 
+    def _geometry(self):
+        """(A, centroid from the heel, Ix, Ixy) about the centroid, exactly.
+
+        The angle is two rectangles -- the full vertical leg, and the
+        horizontal leg less the corner they share -- so every property
+        follows from the parallel-axis theorem with nothing approximated.
+        The previous closed-form Ix was 16% high (L 50x5: 13.09 cm4 against
+        a published 11.00), and it is what the bending check used.
+        """
+        L, t = self.leg, self.t
+        rects = ((0.0, t, 0.0, L), (t, L, 0.0, t))      # x0, x1, y0, y1
+        A = sum((x1 - x0) * (y1 - y0) for x0, x1, y0, y1 in rects)
+        cx = sum((x1 - x0) * (y1 - y0) * (x0 + x1) / 2.0
+                 for x0, x1, y0, y1 in rects) / A
+        cy = sum((x1 - x0) * (y1 - y0) * (y0 + y1) / 2.0
+                 for x0, x1, y0, y1 in rects) / A
+        Ix = Ixy = 0.0
+        for x0, x1, y0, y1 in rects:
+            b, h = x1 - x0, y1 - y0
+            dx, dy = (x0 + x1) / 2.0 - cx, (y0 + y1) / 2.0 - cy
+            Ix += b * h ** 3 / 12.0 + b * h * dy * dy
+            Ixy += b * h * dx * dy
+        return A, cy, Ix, Ixy
+
     @property
     def A_mm2(self) -> float:
         return self.t * (2 * self.leg - self.t)
 
     @property
     def Ix_mm4(self) -> float:
-        L, t = self.leg, self.t
-        return (L * t ** 3 + (L - t) * t ** 3) / 3.0 + \
-               t * (L - t) * ((L - t / 2.0) / 2.0) ** 2
+        """About the geometric axis parallel to one leg, through the centroid."""
+        return self._geometry()[2]
 
     @property
     def Iy_mm4(self) -> float:
+        # Equal legs: the two geometric axes are mirror images.
         return self.Ix_mm4
+
+    @property
+    def Iv_mm4(self) -> float:
+        """The MINOR PRINCIPAL moment, about the v-v axis (at 45 degrees to
+        the legs). Neither geometric axis is principal for an angle, so
+        min(Ix, Iy) cannot find this -- it has to come from the product of
+        inertia: I_v = (Ix + Iy)/2 - sqrt(((Ix - Iy)/2)^2 + Ixy^2)."""
+        _A, _cy, Ix, Ixy = self._geometry()
+        return Ix - abs(Ixy)          # Ix == Iy, so the root is just |Ixy|
 
     @property
     def J_mm4(self) -> float:
         return (2 * self.leg - self.t) * self.t ** 3 / 3.0
 
     @property
-    def r_gyr_mm(self) -> float:
+    def r_x_mm(self) -> float:
         return math.sqrt(self.Ix_mm4 / self.A_mm2)
+
+    @property
+    def r_gyr_mm(self) -> float:
+        """Minor principal radius r_v -- about 0.64 of r_x for an equal
+        angle, and the radius an angle strut actually buckles about.
+        L 50x5 gives 0.98 cm, the EN 10056-1 value."""
+        return math.sqrt(self.Iv_mm4 / self.A_mm2)
+
+    @property
+    def c_mm(self) -> float:
+        """Far fibre from the centroidal x axis: the tip of the leg. The
+        centroid sits near the heel, so this is most of the leg length --
+        which is exactly what the old thin-tube fallback could not see."""
+        _A, cy, _Ix, _Ixy = self._geometry()
+        return self.leg - cy
 
     @property
     def shape(self) -> str:
@@ -383,16 +492,14 @@ def section_to_props(section, material: Optional[Material] = None) -> dict:
         'A':     section.A_mm2 / 100.0,       # mm2 -> cm2
         'I':     section.Ix_mm4 / 10_000.0,   # mm4 -> cm4
         'J':     section.J_mm4 / 10_000.0,
-        'r_gyr': section.r_gyr_mm / 10.0,     # mm -> cm
+        'r_gyr': section.r_gyr_mm / 10.0,     # mm -> cm; MINOR principal
+        # Distance to the extreme fibre for bending about the axis of I, so
+        # a bending check forms S = I/c from real geometry and never falls
+        # back on the thin-round-tube guess, which is 39% unsafe for an
+        # angle. Every class carries c_mm; this used to look for `d` or
+        # `h` and so missed CHS (D), RHS (H) and angles (leg) entirely.
+        'c_cm':  section.c_mm / 10.0,
     }
-    # Distance to the extreme fibre, so a bending check can form the
-    # elastic section modulus S = I/c from real geometry instead of
-    # falling back on the equivalent-round-tube assumption
-    # (stereo_checks.elastic_section_modulus_cm3). Every catalog shape here
-    # is measured from its own overall depth.
-    depth_mm = getattr(section, 'd', None) or getattr(section, 'h', None)
-    if depth_mm:
-        props['c_cm'] = (depth_mm / 2.0) / 10.0    # mm -> cm
     if material is not None:
         props['E']  = material.E / 1000.0      # MPa -> GPa
         props['Fy'] = material.Fy
@@ -426,4 +533,59 @@ def profile_summary(name: str) -> str:
     a_cm2 = sec.A_mm2 / 100.0
     ix_cm4 = sec.Ix_mm4 / 10_000.0
     r_cm = sec.r_gyr_mm / 10.0
-    return f'{name}  (A={a_cm2:.1f} cm², I={ix_cm4:.0f} cm⁴, r={r_cm:.2f} cm)'
+    # "r min", not "r": a bare r beside a strong-axis I invites reading it as
+    # the strong-axis radius, which is precisely the mistake this table used
+    # to make on the reader's behalf.
+    return f'{name}  (A={a_cm2:.1f} cm², I={ix_cm4:.0f} cm⁴, r min={r_cm:.2f} cm)'
+
+
+# ── writing a section onto a member without leaving a stale depth ────────────
+
+# The member keys a section is made of. c_cm is deliberately NOT in this list:
+# it travels by its own rule (write_section), because it is only true of the
+# exact catalog section it came from.
+SECTION_KEYS = ('E', 'A', 'I', 'J', 'Fy', 'Fu', 'r_gyr', 'K')
+
+
+def write_section(target, values):
+    """Copy a section onto a member or profile dict, and keep c_cm honest.
+
+    `target` gets every SECTION_KEY present in `values`. It gets `c_cm` if
+    and only if `values` carries one -- otherwise any `c_cm` it already had
+    is REMOVED, not left behind.
+
+    Leaving it behind is not a tidiness problem, it is unsafe: a small
+    catalog depth kept beside a larger hand-typed I gives S = I/c too big,
+    so a member's bending capacity is overstated by exactly the ratio of
+    the two sections. Without c_cm the bending check falls back to a
+    thin-tube assumption derived from I and A, which is conservative for
+    the I and channel sections where that ratio is largest.
+    """
+    for k in SECTION_KEYS:
+        if k in values:
+            target[k] = values[k]
+    if values.get('c_cm'):
+        target['c_cm'] = values['c_cm']
+    else:
+        target.pop('c_cm', None)
+    return target
+
+
+def depth_still_valid(depth, I_now, rel_tol=1e-6):
+    """Does a remembered catalog depth still describe a section with I_now?
+
+    `depth` is (c_cm, I_at_pick) or None. The depth belongs to the catalog
+    section it was read from, and the only evidence available that the user
+    has not since typed a different section over it is that I is unchanged.
+    """
+    if not depth:
+        return False
+    c_cm, I_then = depth
+    if not c_cm or I_then is None:
+        return False
+    try:
+        I_now = float(I_now)
+    except (TypeError, ValueError):
+        return False
+    scale = max(abs(I_then), abs(I_now), 1e-12)
+    return abs(I_now - I_then) <= rel_tol * scale

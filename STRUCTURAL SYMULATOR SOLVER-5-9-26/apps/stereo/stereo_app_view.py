@@ -937,9 +937,7 @@ class StereoViewMixin:
                for m in self.members):
             return
         self._push_undo('add rod')
-        web = dict(E=self.web_E.get(), A=self.web_A.get(), I=self.web_I.get(),
-                  J=self.web_J.get(), Fy=self.web_Fy.get(), Fu=self.web_Fu.get(),
-                  K=self.web_K.get(), r_gyr=self.web_r.get())
+        web = self._panel_section('web')        # carries c_cm when valid
         web_profile = self.web_profile_var.get() if hasattr(self, 'web_profile_var') else ''
         self.members.append({'a': a, 'b': b, 'conn': self.sec_conn.get(),
                             'role': 'user_rod', 'profile': web_profile, **web})
@@ -998,9 +996,7 @@ class StereoViewMixin:
         self._push_undo('extend along axis')
         new_idx = len(self.nodes)
         self.nodes.append(new_pos)
-        web = dict(E=self.web_E.get(), A=self.web_A.get(), I=self.web_I.get(),
-                  J=self.web_J.get(), Fy=self.web_Fy.get(), Fu=self.web_Fu.get(),
-                  K=self.web_K.get(), r_gyr=self.web_r.get())
+        web = self._panel_section('web')        # carries c_cm when valid
         self.members.append({'a': src, 'b': new_idx,
                             'conn': self.sec_conn.get(),
                             'role': 'user_rod', **web})

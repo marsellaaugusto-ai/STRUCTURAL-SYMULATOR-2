@@ -24,19 +24,35 @@ def elastic_section_modulus_cm3(member):
     record does not directly carry.
 
     `c_cm` is present when the section came from the profile catalog,
-    where it is half the real depth. Otherwise the member is one of the
-    hand-typed E/A/I/J sets, and the fall-back is the equivalent
-    THIN-WALLED ROUND TUBE: for one, I/A = r^2/2, so c = r = r_gyr*sqrt(2).
+    where it is the real extreme-fibre distance. Otherwise the member is one
+    of the hand-typed E/A/I/J sets, and the fall-back is the equivalent
+    THIN-WALLED ROUND TUBE: for one, I = A*R^2/2, so c = R = sqrt(2*I/A).
     That is the same doubly-symmetric round/square hollow section
     stereo_math._rigid_local_stiffness already assumes when it takes
     Iy = Iz = I, so the two halves of the app agree about what an
     unspecified space-structure member is made of.
+
+    The fall-back is built from I and A, NOT from r_gyr. It used to be
+    r_gyr*sqrt(2), which is the same number for a round tube -- but it tied
+    the BENDING check to the BUCKLING radius. When r_gyr was corrected to
+    the minor principal radius (it had been the strong axis, overstating
+    buckling capacity up to 26x), that coupling would have shrunk c by the
+    same factor for any catalog section that lost its c_cm on the way to a
+    member, and overstated bending capacity about 3x for an IPE. I and A are
+    the properties the bending check is about; the radius a strut buckles
+    about is a different question. Built from I = Ix, this gives c about
+    14% larger than the real depth for I-sections and 9% for channels --
+    conservative, which is the direction a guess must err in.
+
+    It is still a GUESS, and no catalog section should reach it: it is 39%
+    unsafe for an angle and 7% for a thick round tube. stereo_profiles
+    gives every catalog shape its real c_mm for exactly that reason.
     """
     I = float(member.get('I', 0.0) or 0.0)
     c = float(member.get('c_cm', 0.0) or 0.0)
     if c <= 0.0:
-        r = float(member.get('r_gyr', 0.0) or 0.0)
-        c = r * math.sqrt(2.0)
+        A = float(member.get('A', 0.0) or 0.0)
+        c = math.sqrt(2.0 * I / A) if (A > 0.0 and I > 0.0) else 0.0
     return (I / c) if (c > 1e-12 and I > 0.0) else 0.0
 
 

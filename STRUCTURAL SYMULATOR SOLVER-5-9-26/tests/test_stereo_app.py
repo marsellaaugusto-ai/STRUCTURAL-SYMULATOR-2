@@ -10340,3 +10340,74 @@ class TestWindInTheApp:
         app._import_excel()
         assert app.wind_on.get() is False
         assert self._totals(app._all_loads()) == pytest.approx(before, rel=1e-9)
+
+
+class TestTimberInTheApp:
+    """Roadmap 4.3, timber half: CIRSOC 601 Supplement grades on rods."""
+
+    GRADE = 'Eucalipto grandis C1'
+
+    def test_the_picker_puts_a_timber_profile_in_the_panel(self, app):
+        name = app._make_timber_profile('chord', self.GRADE, 75, 200)
+        assert name == 'Eucalipto grandis C1 75x200'
+        assert app.profiles[name]['timber'] == self.GRADE
+        assert app.chord_profile_var.get() == name
+        assert app.chord_E.get() == pytest.approx(12.0)
+        assert app.chord_A.get() == pytest.approx(150.0)
+
+    def test_applying_the_panel_makes_the_chords_timber_and_leaves_the_webs(
+            self, app):
+        app._make_timber_profile('chord', self.GRADE, 75, 200)
+        app._apply_sections()
+        from apps.stereo.stereo_app_constants import CHORD_ROLES
+        chords = [m for m in app.members if m.get('role') in CHORD_ROLES]
+        webs = [m for m in app.members if m.get('role') not in CHORD_ROLES]
+        assert chords and webs
+        assert all(m.get('timber') == self.GRADE and 'Fy' not in m
+                   for m in chords)
+        assert not any(m.get('timber') for m in webs)
+
+    def test_timber_rods_are_reported_not_verified(self, app):
+        app._make_timber_profile('chord', self.GRADE, 75, 200)
+        app._apply_sections()
+        app._analyze()
+        assert app.results is not None
+        for m, chk in zip(app.members, app.member_checks):
+            if m.get('timber'):
+                assert chk['checked'] is False and chk['util'] is None
+                assert 'NOT a CIRSOC 601 verification' in chk['note']
+            else:
+                assert chk['checked'] is True
+
+    def test_self_weight_takes_each_rods_own_density(self, app):
+        from apps.stereo import stereo_math as sm
+        app._make_timber_profile('chord', self.GRADE, 75, 200)
+        app._apply_sections()
+        app.area_load_on.set(False)
+        app.self_weight_on.set(True)
+        total = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
+        want = 0.0
+        for m in app.members:
+            _, _, _, L = sm.member_vector(app.nodes, m)
+            want += m['A'] * 1e-4 * L * (m.get('gamma_kN_m3') or
+                                         app._unit_weight())
+        assert total == pytest.approx(want)
+
+    def test_assigning_the_profile_to_a_selection(self, app):
+        name = app._make_timber_profile('web', 'Álamo C2', 50, 100)
+        app.active_profile.set(name)
+        app.selected_members = {0, 1}
+        app._assign_profile_to_selection()
+        assert app.members[0]['timber'] == 'Álamo C2'
+        assert app.members[1]['profile'] == name
+        app._undo()
+        assert 'timber' not in app.members[0]
+
+    def test_the_dialog_opens_on_a_grade(self, app, tk_root):
+        app._open_timber_picker('chord')
+        tops = [w for w in app.root.winfo_children()
+                if isinstance(w, tk.Toplevel)
+                and w.title().startswith('Timber')]
+        assert tops
+        for w in tops:
+            w.destroy()

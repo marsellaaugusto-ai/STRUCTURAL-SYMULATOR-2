@@ -389,7 +389,8 @@ def group_summary(groups, nodes, members, member_res=None, checks=None,
             L = ((bx - ax) ** 2 + (by - ay) ** 2 + (bz - az) ** 2) ** 0.5
             L_tot += L
             A_m2 = (m.get('A', 0.0) or 0.0) * 1e-4      # cm2 -> m2
-            mass += A_m2 * L * unit_weight_kN_m3
+            mass += A_m2 * L * (float(m['gamma_kN_m3'])
+                                if m.get('gamma_kN_m3') else unit_weight_kN_m3)
             if checks and i < len(checks):
                 u = checks[i].get('util')
                 if u is not None and (worst is None or u > worst):

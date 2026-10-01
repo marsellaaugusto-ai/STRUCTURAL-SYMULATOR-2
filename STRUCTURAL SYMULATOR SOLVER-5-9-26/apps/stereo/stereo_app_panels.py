@@ -2076,9 +2076,14 @@ class StereoPanelsMixin(_ToolbarModes):
                              font=('Helvetica', 8), state='readonly')
         combo.pack(side='left', fill='x', expand=True)
         setattr(self, f'_{prefix}_profile_combo', combo)
-        tk.Button(box, text='Catalog…', font=('Helvetica', 8),
+        pick_row = tk.Frame(box, bg=BG)
+        pick_row.pack(anchor='w', padx=(56, 6), pady=(1, 2))
+        tk.Button(pick_row, text='Catalog…', font=('Helvetica', 8),
                   command=lambda p=prefix: self._open_catalog_picker(p)
-                 ).pack(anchor='w', padx=(56, 6), pady=(1, 2))
+                 ).pack(side='left')
+        tk.Button(pick_row, text='Timber…', font=('Helvetica', 8),
+                  command=lambda p=prefix: self._open_timber_picker(p)
+                 ).pack(side='left', padx=(4, 0))
         self._refresh_section_profile_combo(prefix)
         combo.bind('<<ComboboxSelected>>',
                    lambda _e, p=prefix: self._on_section_profile_selected(p))
@@ -2158,6 +2163,12 @@ class StereoPanelsMixin(_ToolbarModes):
         from apps.stereo import stereo_profiles as _sp
         extras = {k: prof[k] for k in _sp.CATALOG_EXTRAS if prof.get(k)}
         depths[prefix] = (extras, prof.get('I')) if extras else None
+        # and what it is made of: a timber profile's grade and unit weight,
+        # until a different profile is picked in this panel
+        timber = getattr(self, '_panel_timber', None)
+        if timber is None:
+            timber = self._panel_timber = {}
+        timber[prefix] = {k: prof[k] for k in _sp.TIMBER_KEYS if prof.get(k)}
 
     def _panel_section(self, prefix):
         """The Section panel's `prefix` values as a member section dict.
@@ -2177,6 +2188,8 @@ class StereoPanelsMixin(_ToolbarModes):
         # along while the panel still holds the catalog I they belong to.
         depth = (getattr(self, '_panel_depth', None) or {}).get(prefix)
         values.update(_sp.extras_still_valid(depth, values['I']))
+        _sp.keep_timber(values,
+                        (getattr(self, '_panel_timber', None) or {}).get(prefix))
         return values
 
     def _open_catalog_picker(self, prefix):
@@ -2294,6 +2307,133 @@ class StereoPanelsMixin(_ToolbarModes):
 
         refresh_list()
 
+    # ── timber (CIRSOC 601 Supplements) ─────────────────────────────────────
+    def _make_timber_profile(self, prefix, grade, b_mm, h_mm=None,
+                             unit_weight=None):
+        """Make the named profile for a timber section and put it in the
+        `prefix` (chord / web) panel, the way a catalog pick does. Returns
+        the profile's name. Raises ValueError on a section with no size."""
+        from apps.stereo import stereo_timber as stt
+        prof = stt.profile(grade, b_mm, h_mm, unit_weight=unit_weight)
+        name = stt.profile_name(grade, b_mm, h_mm)
+        self.profiles[name] = prof
+        getattr(self, f'{prefix}_profile_var').set(name)
+        self._refresh_section_profile_combo('chord')
+        self._refresh_section_profile_combo('web')
+        self._refresh_profile_combo()
+        self._on_section_profile_selected(prefix)
+        return name
+
+    def _open_timber_picker(self, prefix):
+        from apps.stereo import stereo_timber as stt
+        from tkinter import messagebox
+
+        win = tk.Toplevel(self.root)
+        win.title('Timber — CIRSOC 601 Supplements')
+        win.geometry('560x600')
+        win.configure(bg='#f5f5f3')
+        tk.Label(win, text='Timber: CIRSOC 601 reference design values',
+                 bg='#f5f5f3', font=('Helvetica', 12, 'bold'),
+                 fg='#1a6bbd').pack(pady=(10, 2))
+        tk.Label(win, text=stt.SOURCE, bg='#f5f5f3', fg='#555',
+                 font=('Helvetica', 8)).pack()
+
+        listfr = tk.Frame(win, bg='#f5f5f3')
+        listfr.pack(fill='both', expand=True, padx=10, pady=4)
+        lb = tk.Listbox(listfr, font=('Helvetica', 9), height=12,
+                        exportselection=False)
+        lb.pack(side='left', fill='both', expand=True)
+        sb = tk.Scrollbar(listfr, orient='vertical', command=lb.yview)
+        sb.pack(side='right', fill='y')
+        lb.configure(yscrollcommand=sb.set)
+        names = stt.grade_names()
+        for n in names:
+            lb.insert('end', n)
+
+        info = tk.Label(win, text='', bg='#f5f5f3', fg='#333',
+                        font=('Helvetica', 9), wraplength=520, justify='left')
+        info.pack(padx=10, pady=4, anchor='w')
+
+        size = tk.Frame(win, bg='#f5f5f3')
+        size.pack(padx=10, pady=2, anchor='w')
+        # master=win: see the note in _open_catalog_picker
+        b_var = tk.DoubleVar(master=win, value=50.0)
+        h_var = tk.DoubleVar(master=win, value=150.0)
+        g_var = tk.DoubleVar(master=win, value=0.0)
+        b_lbl = tk.Label(size, text='b (mm):', bg='#f5f5f3',
+                         font=('Helvetica', 9))
+        b_lbl.grid(row=0, column=0, sticky='w')
+        tk.Entry(size, textvariable=b_var, width=8).grid(row=0, column=1)
+        h_lbl = tk.Label(size, text='  h, depth (mm):', bg='#f5f5f3',
+                         font=('Helvetica', 9))
+        h_lbl.grid(row=0, column=2, sticky='w')
+        h_entry = tk.Entry(size, textvariable=h_var, width=8)
+        h_entry.grid(row=0, column=3)
+        tk.Label(size, text='Unit weight (kN/m³):', bg='#f5f5f3',
+                 font=('Helvetica', 9)).grid(row=1, column=0, columnspan=2,
+                                             sticky='w', pady=(4, 0))
+        tk.Entry(size, textvariable=g_var, width=8).grid(row=1, column=2,
+                                                         sticky='w',
+                                                         pady=(4, 0))
+        tk.Label(win, text='The unit weight starts at ρ0,05 × g -- the '
+                           'Supplement\'s density, a 5th-percentile value at '
+                           '12 % moisture, so lighter than a mean or a wet '
+                           'piece. Type a heavier figure where that matters.',
+                 bg='#f5f5f3', fg='#555', font=('Helvetica', 8),
+                 wraplength=520, justify='left').pack(padx=10, anchor='w')
+        tk.Label(win, text='Timber rods get the grade\'s E for the analysis '
+                           'and their own weight. Their stresses are shown '
+                           'beside the reference values, but they are NOT '
+                           'verified to CIRSOC 601: the adjustment factors '
+                           'and stability rules are in the Reglamento\'s '
+                           'chapters, not in the Supplements.',
+                 bg='#f5f5f3', fg='#a3241a', font=('Helvetica', 8),
+                 wraplength=520, justify='left').pack(padx=10, pady=(4, 0),
+                                                      anchor='w')
+
+        def chosen():
+            sel = lb.curselection()
+            return names[sel[0]] if sel else None
+
+        def on_select(_e=None):
+            key = chosen()
+            if key is None:
+                return
+            info.config(text=stt.describe(key))
+            g_var.set(round(stt.unit_weight_kN_m3(key), 3))
+            if stt.is_round(key):
+                b_lbl.config(text='d (mm):')
+                h_lbl.config(text='')
+                h_entry.grid_remove()
+            else:
+                b_lbl.config(text='b (mm):')
+                h_lbl.config(text='  h, depth (mm):')
+                h_entry.grid()
+        lb.bind('<<ListboxSelect>>', on_select)
+
+        def apply_selection():
+            key = chosen()
+            if key is None:
+                messagebox.showinfo('Timber', 'Select a grade first.')
+                return
+            try:
+                b = float(b_var.get())
+                h = None if stt.is_round(key) else float(h_var.get())
+                g = float(g_var.get())
+                self._make_timber_profile(prefix, key, b, h,
+                                          unit_weight=g if g > 0 else None)
+            except (tk.TclError, ValueError) as exc:
+                messagebox.showerror('Timber', 'Give the section its size '
+                                     'in mm (%s).' % exc)
+                return
+            win.destroy()
+
+        tk.Button(win, text='Apply to ' + prefix.title(), bg='#1a6bbd',
+                  fg='white', font=('Helvetica', 10, 'bold'), relief='flat',
+                  command=apply_selection).pack(pady=(6, 10))
+        lb.selection_set(0)
+        on_select()
+
     def _open_profile_manager(self):
         from tkinter import messagebox
 
@@ -2383,6 +2523,9 @@ class StereoPanelsMixin(_ToolbarModes):
             for keep in ('catalog', 'material'):
                 if keep in old and 'c_cm' in prof:
                     prof[keep] = old[keep]
+            # A timber profile stays timber when its numbers are edited: the
+            # grade is what it is made of, not a property of one size.
+            _sp.keep_timber(prof, old)
             self.profiles[name] = prof
             for m in self.members:
                 if m.get('profile', '') == name:

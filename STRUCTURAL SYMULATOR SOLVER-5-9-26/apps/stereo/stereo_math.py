@@ -792,6 +792,14 @@ def check_boundary_setup(nodes, members, supports):
     return None
 
 
+def member_unit_weight(member, default_kN_m3=DEFAULT_STEEL_UNIT_WEIGHT):
+    """The unit weight a rod's own weight is figured at, kN/m³: its own
+    (`gamma_kN_m3`, which a timber rod carries from its grade) when it has
+    one, else the model-wide figure the Loads panel sets."""
+    g = member.get('gamma_kN_m3')
+    return float(g) if g else float(default_kN_m3)
+
+
 def self_weight_loads(nodes, members, unit_weight_kN_m3=DEFAULT_STEEL_UNIT_WEIGHT):
     """Lump each member's self weight (kN) half-and-half onto its two end
     nodes as a downward (-z) nodal load -- the standard space-truss
@@ -800,7 +808,7 @@ def self_weight_loads(nodes, members, unit_weight_kN_m3=DEFAULT_STEEL_UNIT_WEIGH
     totals = {}
     for m in members:
         _, _, _, L = member_vector(nodes, m)
-        W = m['A'] * 1e-4 * L * unit_weight_kN_m3   # cm² -> m², times length, times kN/m3
+        W = m['A'] * 1e-4 * L * member_unit_weight(m, unit_weight_kN_m3)   # cm² -> m², times length, times kN/m3
         half = W / 2.0
         totals[m['a']] = totals.get(m['a'], 0.0) + half
         totals[m['b']] = totals.get(m['b'], 0.0) + half
@@ -926,7 +934,7 @@ def self_weight_split(nodes, members, unit_weight_kN_m3=DEFAULT_STEEL_UNIT_WEIGH
         _, _, _, L = member_vector(nodes, m)
         if L < 1e-12:
             continue
-        W = m['A'] * 1e-4 * L * unit_weight_kN_m3        # kN over the member
+        W = m['A'] * 1e-4 * L * member_unit_weight(m, unit_weight_kN_m3)  # kN over the member
         if m.get('conn', 'pin') == 'rigid':
             # w is an intensity and always positive; 'dir' carries the sense.
             span.append({'member': mi, 'w': W / L, 'dir': (0.0, 0.0, -1.0),

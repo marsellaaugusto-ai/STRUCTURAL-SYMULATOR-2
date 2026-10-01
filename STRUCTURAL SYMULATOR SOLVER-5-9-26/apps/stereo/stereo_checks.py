@@ -99,6 +99,12 @@ def check_member(member, axial_force_kN, code=cirsoc.CIRSOC_301,
     a meaningless utilisation -- a member's section may simply not be
     sized yet while the geometry is still being explored.
     """
+    if member.get('timber'):
+        # CIRSOC 601, not 301: see stereo_timber for what is and is not
+        # checked there, and why.
+        from apps.stereo import stereo_timber as stt
+        return stt.member_check(member, axial_force_kN, member_res)
+
     A_mm2 = member.get('A', 0.0) * 100.0        # cm^2 -> mm^2
     Fy = member.get('Fy')
     L_m = member.get('_length_m', 0.0)
@@ -255,9 +261,8 @@ def _trial_member(member, section, material=None):
     is not a decision to change its steel.
     """
     from apps.stereo import stereo_profiles as sp
-    props = sp.section_to_props(section, material)
     out = dict(member)
-    out.update(props)
+    sp.put_steel_section(out, section, material)
     return out
 
 
@@ -381,11 +386,10 @@ def apply_recommendation(members, indices, name, material=None):
     sec = sp.CATALOG.get(name)
     if sec is None:
         raise ValueError('no catalog section named %r' % (name,))
-    props = sp.section_to_props(sec, material)
     n = 0
     for i in sorted(set(indices)):
         if 0 <= i < len(members):
-            members[i].update(props)
+            sp.put_steel_section(members[i], sec, material)
             members[i]['profile'] = name
             n += 1
     return n

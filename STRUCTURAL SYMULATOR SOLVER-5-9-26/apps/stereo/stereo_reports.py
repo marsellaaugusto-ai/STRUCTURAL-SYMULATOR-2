@@ -934,14 +934,16 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
     # written before this column existed still loads.
     for col, lbl in enumerate(['idx', 'a', 'b', 'conn', 'E_GPa', 'A_cm2', 'I_cm4',
                                 'J_cm4', 'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role',
-                                'profile', 'c_cm', 'Iw_cm4', 'cw_cm'], 1):
+                                'profile', 'c_cm', 'Iw_cm4', 'cw_cm',
+                                'timber', 'gamma_kN_m3'], 1):
         ws.cell(row=row, column=col, value=lbl)
     row += 1
     for i, m in enumerate(members):
         vals = [i, m['a'], m['b'], m.get('conn', 'pin'), m.get('E'), m.get('A'),
                 m.get('I'), m.get('J'), m.get('Fy'), m.get('Fu'), m.get('K', 1.0),
                 m.get('r_gyr'), m.get('role', ''), m.get('profile', ''),
-                m.get('c_cm'), m.get('Iw'), m.get('cw_cm')]
+                m.get('c_cm'), m.get('Iw'), m.get('cw_cm'),
+                m.get('timber'), m.get('gamma_kN_m3')]
         for col, v in enumerate(vals, 1):
             ws.cell(row=row, column=col, value=v)
         row += 1
@@ -982,7 +984,7 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
         ws.cell(row=row, column=1, value='[PROFILES]'); row += 1
         prof_hdrs = ['name', 'E_GPa', 'A_cm2', 'I_cm4', 'J_cm4',
                      'Fy_MPa', 'Fu_MPa', 'r_gyr_cm', 'K', 'catalog', 'material',
-                     'c_cm', 'Iw_cm4', 'cw_cm']
+                     'c_cm', 'Iw_cm4', 'cw_cm', 'timber', 'gamma_kN_m3']
         for col, lbl in enumerate(prof_hdrs, 1):
             ws.cell(row=row, column=col, value=lbl)
         row += 1
@@ -993,7 +995,8 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
                     pdata.get('r_gyr', ''), pdata.get('K', ''),
                     pdata.get('catalog', ''), pdata.get('material', ''),
                     pdata.get('c_cm', ''), pdata.get('Iw', ''),
-                    pdata.get('cw_cm', '')]
+                    pdata.get('cw_cm', ''), pdata.get('timber', ''),
+                    pdata.get('gamma_kN_m3', '')]
             for col, v in enumerate(vals, 1):
                 ws.cell(row=row, column=col, value=v)
             row += 1
@@ -1035,6 +1038,25 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
             ws.cell(row=row, column=1, value=key)
             ws.cell(row=row, column=2, value=val)
             row += 1
+
+
+def _read_timber(row, target):
+    """The timber grade and unit weight, by column NAME (absent from a
+    workbook written before they existed -- the rod is then steel, as it
+    was). A timber rod has no steel strengths, so the import's Fy/Fu
+    defaults come off it again."""
+    grade = row.get('timber')
+    if not (grade and str(grade).strip()):
+        return
+    target['timber'] = str(grade).strip()
+    try:
+        g = float(row.get('gamma_kN_m3') or 0.0)
+    except (TypeError, ValueError):
+        g = 0.0
+    if g > 0.0:
+        target['gamma_kN_m3'] = g
+    target.pop('Fy', None)
+    target.pop('Fu', None)
 
 
 def import_excel_model(path):
@@ -1112,6 +1134,7 @@ def import_excel_model(path):
                         m[key] = float(v)
                 except (TypeError, ValueError):
                     pass
+        _read_timber(r, m)
         members.append(m)
 
     profiles = {}
@@ -1146,6 +1169,7 @@ def import_excel_model(path):
                 v = pr.get(extra)
                 if v and str(v).strip():
                     pdata[extra] = str(v).strip()
+            _read_timber(pr, pdata)
             profiles[pname] = pdata
 
     loads = []
@@ -4014,7 +4038,8 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                 e['L'] += L
                 # kN/m^3 -> kg/m^3 at standard gravity, so the sheet can
                 # report a mass rather than a weight.
-                e['kg'] += A * 1e-4 * L * unit_weight * 1000.0 / 9.80665
+                e['kg'] += (A * 1e-4 * L * _sm.member_unit_weight(m, unit_weight)
+                            * 1000.0 / 9.80665)
                 if abs(A - e['A']) > 1e-9:
                     e['mixed'] = True       # one name, two section areas
 

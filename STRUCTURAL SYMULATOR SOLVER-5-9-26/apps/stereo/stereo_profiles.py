@@ -677,6 +677,13 @@ SECTION_KEYS = ('E', 'A', 'I', 'J', 'Fy', 'Fu', 'r_gyr', 'K')
 # extreme-fibre depth, and the weak axis's second moment and depth.
 CATALOG_EXTRAS = ('c_cm', 'Iw', 'cw_cm')
 
+# What makes a rod timber (stereo_timber): the CIRSOC 601 grade it is, and its
+# own unit weight. They travel by the same carried-or-removed rule, so a steel
+# profile written over a timber rod leaves nothing timber behind -- and a
+# timber one takes the steel strengths (Fy, Fu) off, since they are not true
+# of wood.
+TIMBER_KEYS = ('timber', 'gamma_kN_m3')
+
 
 def write_section(target, values):
     """Copy a section onto a member or profile dict, and keep c_cm honest.
@@ -698,12 +705,42 @@ def write_section(target, values):
     # c_cm and the weak axis (Iw, cw_cm) by the same rule: carried when the
     # values have them, REMOVED when they do not. A weak-axis I left beside
     # a hand-typed strong one belongs to some other section entirely.
-    for k in CATALOG_EXTRAS:
+    for k in CATALOG_EXTRAS + TIMBER_KEYS:
         if values.get(k):
             target[k] = values[k]
         else:
             target.pop(k, None)
+    if values.get('timber'):
+        target.pop('Fy', None)
+        target.pop('Fu', None)
     return target
+
+
+def put_steel_section(member, section, material=None):
+    """Give `member` a steel catalog section. E/Fy/Fu stay with a steel
+    rod unless a material is given -- re-sizing is not a change of steel --
+    but a TIMBER rod given a steel section becomes steel: its grade and
+    unit weight go, and it takes the default steel when none is named."""
+    if member.get('timber'):
+        for k in TIMBER_KEYS:
+            member.pop(k, None)
+        if material is None:
+            material = STEEL_F24
+    member.update(section_to_props(section, material))
+    return member
+
+
+def keep_timber(values, source):
+    """Carry `source`'s timber grade and unit weight onto `values` (a
+    section being rebuilt from typed fields), and take the steel strengths
+    off it if it is timber. `source` may be None or a non-timber dict."""
+    for k in TIMBER_KEYS:
+        if source and source.get(k):
+            values[k] = source[k]
+    if values.get('timber'):
+        values.pop('Fy', None)
+        values.pop('Fu', None)
+    return values
 
 
 def depth_still_valid(depth, I_now, rel_tol=1e-6):

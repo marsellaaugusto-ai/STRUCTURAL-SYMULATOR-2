@@ -92,6 +92,40 @@ per-member axial force `N`, and for rigid members the local end actions
 and rupture, compression buckling with KL/r, reporting `util` (demand ÷
 capacity), the governing `mode`, and a slenderness flag at KL/r > 200.
 
+**Timber rods (CIRSOC 601 Supplements).** `stereo_timber.py` carries the
+reference design values of every grade in the *Suplementos del Reglamento
+CIRSOC 601-2016, Edición 2020-1*: sawn pino paraná, eucalipto grandis, pino
+taeda / elliotti, álamo and pino ponderosa (Supplement 1), glulam of the four
+IRAM 9660-1 species (Supplement 2) and green eucalipto poles (Supplement 3) —
+25 grades, each with Fb, Ft, Fv, Fc⊥, Fc, E, E0,05, Emin and ρ0,05 and the
+table it came from. The test file transcribes every row a second time from
+the page images.
+
+**Timber…** beside **Catalog…** in Section mode picks a grade and a size
+(b × h, or Ø for a pole) and makes it a named profile like any catalog
+section, so it applies through the chord / web panels, *Assign profile to
+selection*, the Profile Manager and the Groups sheet, and round-trips through
+Excel. A timber rod then:
+
+- uses the grade's **E** in the analysis;
+- weighs **its own density** — ρ0,05 × g by default, editable in the picker,
+  because ρ0,05 is a 5th-percentile value at 12 % moisture and lighter than a
+  mean or a wet piece. Self-weight, the take-off, group weights and variants
+  all use it;
+- has no Fy/Fu, and is **not** checked to CIRSOC 301.
+
+What it does **not** get is a CIRSOC 601 verification. The Supplements give
+values, not the method — they say so themselves (*"para ser utilizados con
+los métodos de cálculo que se indican en los Capítulos correspondientes"*).
+The adjustment factors (load duration, moisture, temperature, size) and the
+column and beam stability rules are in the Reglamento's chapters, which were
+not available. So a timber rod is reported `checked=False`: its stresses
+(ft or fc, fb about each axis, fv) sit beside the reference values with their
+ratios, and for a strut KL/d over the least dimension — with "buckling not
+applied" written next to it — but no utilisation is claimed, and it takes no
+part in the governing rod or the utilisation colours. Giving a timber rod a
+steel catalog section makes it steel again (F-24 unless a steel is named).
+
 ---
 
 ## 2. Geometry — 14 parametric families
@@ -872,3 +906,6 @@ Stated plainly so nobody assumes otherwise:
   grid made a 19.7 MB workbook with 2,400 images in it; at 40 it is 1.7 MB. The
   sheet says so, and *Member Forces* and *Member Checks* still cover every rod.
 - No dynamic, thermal or staged-construction analysis.
+- Timber rods are not verified to CIRSOC 601 — see §1, *Timber rods*: the
+  Supplements' reference values are in, the Reglamento's method is not.
+  Aluminium is not in at all.

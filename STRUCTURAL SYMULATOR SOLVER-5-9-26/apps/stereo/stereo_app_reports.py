@@ -776,7 +776,10 @@ class StereoReportsMixin:
             dx, dy, dz = nb[0]-na[0], nb[1]-na[1], nb[2]-na[2]
             L = math.sqrt(dx*dx + dy*dy + dz*dz)
             A = m.get('A', self.profiles.get(m.get('profile', ''), {}).get('A', 20.0))
-            total_weight += A * 1e-4 * L * 7850.0
+            # kg: steel at 7850 kg/m³, or the rod's own density (timber)
+            rho = (float(m['gamma_kN_m3']) * 1000.0 / 9.80665
+                   if m.get('gamma_kN_m3') else 7850.0)
+            total_weight += A * 1e-4 * L * rho
 
         # The variant stores the load case that was SOLVED, flattened to
         # explicit nodal loads -- not self.loads. Restoring a variant

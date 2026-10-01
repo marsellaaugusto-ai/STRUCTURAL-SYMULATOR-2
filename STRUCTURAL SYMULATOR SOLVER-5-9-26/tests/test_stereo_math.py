@@ -731,3 +731,68 @@ def test_crane_tag_line_still_answers_with_the_first_of_them():
 def test_three_picked_nodes_still_get_three_restraints():
     nodes = [(0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (2.0, 3.0, 0.0)]
     assert len(sg.crane_steady_lines(nodes, [0, 1, 2])) == 3
+
+
+# ── mechanisms: say where, and do not believe a kilometre ───────────────────
+
+def _hinged_pair():
+    """Two pin bars meeting at a free node in a straight line: the middle
+    node can move sideways with no stiffness at all."""
+    nodes = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    bar = {'E': 200.0, 'A': 10.0, 'I': 100.0, 'J': 100.0, 'conn': 'pin'}
+    members = [dict(bar, a=0, b=1), dict(bar, a=1, b=2)]
+    supports = [{'node': 0, 'type': 'pin'}, {'node': 2, 'type': 'pin'}]
+    return nodes, members, supports
+
+
+def test_a_mechanism_is_located_not_just_reported():
+    nodes, members, supports = _hinged_pair()
+    assert sm.mechanism(nodes, members, supports) == [1]
+    res, err = sm.analyze(nodes, members, [{'node': 1, 'fz': -1.0}], supports)
+    assert res is None
+    assert 'Free to move with no stiffness: node 1.' in err
+
+
+def test_a_stable_model_has_no_mechanism():
+    nodes, members, supports = _hinged_pair()
+    nodes.append((1.0, 1.0, 0.0))
+    nodes.append((1.0, 0.0, 1.0))
+    bar = dict(members[0])
+    members += [dict(bar, a=1, b=3), dict(bar, a=1, b=4)]
+    supports += [{'node': 3, 'type': 'pin'}, {'node': 4, 'type': 'pin'}]
+    assert sm.mechanism(nodes, members, supports) == []
+
+
+def test_describe_mechanism_caps_the_list():
+    text = sm.describe_mechanism(list(range(20)))
+    assert text.startswith(' Free to move') and '(and 12 more)' in text
+    assert sm.describe_mechanism([]) == ''
+
+
+def test_the_sparse_solve_matches_the_dense_one(monkeypatch):
+    """Above SPARSE_MIN_DOF the matrix is assembled sparse; the answer must
+    be the dense one, to round-off."""
+    from apps.stereo import stereo_geometry as sg
+    mesh = sg.flat_grid(12.0, 12.0, 1.5, 3.0)
+    nodes, members = mesh['nodes'], [dict(m, E=200.0, A=20.0, I=400.0,
+                                          J=400.0, conn='rigid')
+                                     for m in mesh['members']]
+    supports = [{'node': i, 'type': 'pin'}
+                for i in mesh['support_candidates']]
+    loads = [{'node': i, 'fz': -5.0} for i in range(len(nodes))]
+    monkeypatch.setattr(sm, 'SPARSE_MIN_DOF', 10 ** 9)
+    dense, err1 = sm.analyze(nodes, members, loads, supports)
+    monkeypatch.setattr(sm, 'SPARSE_MIN_DOF', 0)
+    sparse, err2 = sm.analyze(nodes, members, loads, supports)
+    assert err1 is None and err2 is None
+    for a, b in zip(dense['node_res'], sparse['node_res']):
+        assert a['uz'] == pytest.approx(b['uz'], abs=1e-9)
+    for a, b in zip(dense['member_res'], sparse['member_res']):
+        assert a['N'] == pytest.approx(b['N'], abs=1e-7)
+
+
+def test_the_sparse_solve_refuses_a_mechanism(monkeypatch):
+    nodes, members, supports = _hinged_pair()
+    monkeypatch.setattr(sm, 'SPARSE_MIN_DOF', 0)
+    res, err = sm.analyze(nodes, members, [{'node': 1, 'fz': -1.0}], supports)
+    assert res is None and 'Singular' in err

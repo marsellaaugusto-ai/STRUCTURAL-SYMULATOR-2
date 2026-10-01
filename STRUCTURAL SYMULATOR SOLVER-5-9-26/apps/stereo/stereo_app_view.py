@@ -28,6 +28,7 @@ from apps.stereo.stereo_app_constants import (
     DRAW_THROTTLE_MS, SNAP_RADIUS_PX,
     PROJECTION_PERSPECTIVE, PERSPECTIVE_MIN_DENOM,
     SOURCE_SPIN, SOURCE_EXTRUDE, BZ_HANDLE_GRAB_PX, LINE_PICK_COLOR,
+    SNAP_NODE_COLOR, SNAP_MIDPOINT_COLOR, SNAP_RING_RADIUS,
 )
 
 
@@ -724,6 +725,10 @@ class StereoViewMixin:
         with "Show deformed" on: that overlay is an ADDITIONAL green copy
         drawn in parallel, not a replacement, so interaction always targets
         the real structure."""
+        key = self._view_key()
+        cached = getattr(self, '_screen_cache', None)
+        if cached is not None and cached[0] == key:
+            return list(cached[1])
         self._refresh_camera_distance()
         proj = [self._project(x, y, z) for x, y, z in self.nodes]
         xs = [p[0] for p in proj]; ys = [p[1] for p in proj]
@@ -733,7 +738,28 @@ class StereoViewMixin:
             wx = (px - cx) * self.PX_PER_M
             wy = (py - cy) * self.PX_PER_M
             out.append(self.zc.w2s(wx, wy))
-        return out
+        # Cached until the view or the model moves: every mouse move asks
+        # for these (the snap, the line tool, the disc), and projecting a
+        # few thousand nodes for each one was most of the lag after an
+        # analysis on a big model.
+        self._screen_cache = (key, out, (cx, cy))
+        return list(out)
+
+    def _view_key(self):
+        """Everything a node's screen position depends on."""
+        zc = self.zc
+        try:
+            cam = float(self.camera_distance.get())
+        except Exception:
+            cam = None
+        try:
+            mode = self.projection_mode.get()
+        except Exception:
+            mode = None
+        return (self.azimuth, self.elevation, getattr(zc, 'zoom', None),
+                getattr(zc, 'pan_x', None), getattr(zc, 'pan_y', None),
+                mode, cam, self.PX_PER_M, len(self.nodes),
+                hash(tuple(self.nodes)))
 
     def _unproject_to_plane(self, sx, sy, z):
         """The world (x, y) that screen point (sx, sy) lands on, on the
@@ -1417,15 +1443,37 @@ class StereoViewMixin:
         changed = (self._snap_node != old_snap
                    or self._snap_midpoint != old_mid)
         if changed:
-            self._draw()
+            # The marker alone, on its own tag -- not the whole model, which
+            # on a few thousand rods is a third of a second per mouse move.
+            self._draw_snap_marker(pts)
+
+    def _draw_snap_marker(self, pts=None):
+        c = self.canvas
+        c.delete('snap')
+        if pts is None:
+            pts = self._screen_positions()
+        if self._snap_node is not None and self._snap_node < len(pts):
+            sx, sy = pts[self._snap_node]
+            r = SNAP_RING_RADIUS
+            c.create_oval(sx - r, sy - r, sx + r, sy + r,
+                          outline=SNAP_NODE_COLOR, width=2,
+                          dash=(3, 2), tags='snap')
+        elif self._snap_midpoint is not None:
+            msx, msy = self._snap_midpoint[0], self._snap_midpoint[1]
+            r = SNAP_RING_RADIUS - 2
+            c.create_oval(msx - r, msy - r, msx + r, msy + r,
+                          outline=SNAP_MIDPOINT_COLOR, fill='',
+                          width=2, tags='snap')
+            c.create_line(msx - 3, msy, msx + 3, msy,
+                          fill=SNAP_MIDPOINT_COLOR, width=1, tags='snap')
+            c.create_line(msx, msy - 3, msx, msy + 3,
+                          fill=SNAP_MIDPOINT_COLOR, width=1, tags='snap')
 
     def _unproject_to_z0(self, sx, sy):
         if not self.nodes:
             return None
-        proj = [self._project(x, y, z) for x, y, z in self.nodes]
-        xs = [p[0] for p in proj]
-        ys = [p[1] for p in proj]
-        cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+        self._screen_positions()             # fills the cache, if stale
+        cx, cy = self._screen_cache[2]
         wx, wy = self.zc.s2w(sx, sy)
         px = wx / self.PX_PER_M + cx
         py = wy / self.PX_PER_M + cy

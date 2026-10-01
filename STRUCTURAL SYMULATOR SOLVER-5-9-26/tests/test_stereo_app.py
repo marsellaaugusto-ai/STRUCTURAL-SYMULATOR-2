@@ -8753,17 +8753,23 @@ class TestTheLiftIsWellPosed:
         so it fails long before the answers do."""
         import numpy as np
         seen = {}
-        real = sm.gauss_solve
 
-        def spy(A, b):
-            if 'cond' not in seen:
-                sv = np.linalg.svd(np.asarray(A, float), compute_uv=False)
-                seen['cond'] = float(sv[0] / sv[-1])
-                seen['smin'] = float(sv[-1])
-                seen['smax'] = float(sv[0])
-            return real(A, b)
+        def spying(real):
+            # The reduced matrix goes to the dense or the sparse solver
+            # depending on its size; measure it whichever one gets it.
+            def spy(A, b):
+                if 'cond' not in seen:
+                    M = A.toarray() if hasattr(A, 'toarray') else A
+                    sv = np.linalg.svd(np.asarray(M, float),
+                                       compute_uv=False)
+                    seen['cond'] = float(sv[0] / sv[-1])
+                    seen['smin'] = float(sv[-1])
+                    seen['smax'] = float(sv[0])
+                return real(A, b)
+            return spy
 
-        monkeypatch.setattr(sm, 'gauss_solve', spy)
+        monkeypatch.setattr(sm, 'gauss_solve', spying(sm.gauss_solve))
+        monkeypatch.setattr(sm, '_sparse_solve', spying(sm._sparse_solve))
         self._lift(app)
         app._analyze()
         assert 'cond' in seen, 'the solve never ran'
@@ -10615,3 +10621,145 @@ class TestPdfDrawingScale:
         app._pdf_view = {'zoom': 1.25, 'ratio': None}
         app._export_pdf()
         assert seen['view_zoom'] == 1.25 and seen['view_ratio'] is None
+
+
+class TestCraneFixes:
+    """Item 4: the crane, diagnosed. The faults it had are each pinned here."""
+
+    def _top(self, app):
+        z = max(p[2] for p in app.nodes)
+        return [i for i, p in enumerate(app.nodes) if abs(p[2] - z) < 1e-9]
+
+    def _corners(self, app, ids):
+        xs = [app.nodes[i][0] for i in ids]
+        ys = [app.nodes[i][1] for i in ids]
+        out = []
+        for X in (min(xs), max(xs)):
+            for Y in (min(ys), max(ys)):
+                out.append(min(ids, key=lambda i: (app.nodes[i][0] - X) ** 2
+                               + (app.nodes[i][1] - Y) ** 2))
+        return out
+
+    def test_a_lift_that_leaves_a_mechanism_says_so_and_shows_where(
+            self, app, dialogs):
+        c = self._corners(app, self._top(app))[:3]
+        app.selected_nodes = set(c)
+        app._add_cable_crane()
+        assert len(app.selected_nodes) > 3, 'the loose part is selected'
+        assert 'no stiffness' in app.col_note.cget('text')
+        app._analyze()
+        assert app.results is None
+        assert 'Free to move with no stiffness' in app.err
+
+    def test_a_good_lift_still_solves_the_same(self, app):
+        app.selected_nodes = set(self._corners(app, self._top(app)))
+        app._add_cable_crane()
+        app._analyze()
+        assert app.results is not None
+        slings = [app.results['member_res'][i]['N']
+                  for i, m in enumerate(app.members)
+                  if m.get('role') == 'crane_cable']
+        assert slings == pytest.approx([636.396] * 4, rel=1e-4)
+
+    def test_a_second_crane_keeps_the_first_cranes_supports(self, app):
+        corners = self._corners(app, self._top(app))
+        app.selected_nodes = set(corners)
+        app._add_cable_crane()
+        first_tops = {m['b'] for m in app.members
+                      if m.get('role') == 'crane_mast'}
+        app.selected_nodes = set(corners)
+        app._add_cable_crane()
+        held = {sp['node'] for sp in app.supports}
+        assert first_tops <= held, 'the first mast lost its support'
+        assert len(app._crane_tag) == 6, "both cranes' tag lines are kept"
+        app._clear_cable_cranes()
+        assert not app._crane_tag
+        assert not any(sp.get('dofs') and len(sp['dofs']) == 1
+                       for sp in app.supports), 'a tag line was left behind'
+
+    def test_undo_takes_the_cranes_bookkeeping_back_too(self, app):
+        app.selected_nodes = set(self._corners(app, self._top(app)))
+        app._add_cable_crane()
+        assert app._crane_freed and app._crane_tag
+        app._undo()
+        assert app._crane_freed == [] and app._crane_tag is None
+        app._redo()
+        assert app._crane_freed and app._crane_tag
+
+    def test_the_cable_flag_survives_the_workbook(self, app, tmp_path):
+        from apps.stereo import stereo_reports as sr
+        app.selected_nodes = set(self._corners(app, self._top(app)))
+        app._add_cable_crane()
+        path = str(tmp_path / 'c.xlsx')
+        sr.export_excel(app.nodes, app.members, [], app.supports, None, path)
+        _n, members, *_ = sr.import_excel_model(path)
+        assert sum(1 for m in members if m.get('tension_only')) == 4
+
+    def test_an_unsettled_cable_set_keeps_its_last_pass(self, app,
+                                                        monkeypatch, dialogs):
+        from apps.stereo import stereo_math as sm_
+        real = sm_.analyze
+
+        def wobbly(*a, **k):
+            res, _err = real(*a, **k)
+            return res, ('The cable set did not settle: some cable keeps '
+                         'alternating. The results shown are the last pass.')
+        monkeypatch.setattr('apps.stereo.stereo_app_model.sm.analyze', wobbly)
+        app._analyze()
+        assert app.results is not None, 'the last pass is kept, with a caveat'
+        assert app.err is None
+
+    def test_a_huge_displacement_is_flagged(self, app):
+        z = self._top(app)
+        xs = sorted({round(app.nodes[i][0], 3) for i in z})
+        ys = sorted({round(app.nodes[i][1], 3) for i in z})
+        mid = [i for i in z if xs[3] <= round(app.nodes[i][0], 3) <= xs[5]
+               and ys[3] <= round(app.nodes[i][1], 3) <= ys[5]]
+        app.selected_nodes = set(mid)
+        app._add_cable_crane()
+        app._analyze()
+        if app.results is not None:
+            assert app.status_var.get().startswith('Caution')
+
+
+class TestResponsiveness:
+    """Item 5: what made the window lag after an analysis, pinned."""
+
+    def test_mouse_moves_do_not_redraw_the_whole_model(self, app,
+                                                       monkeypatch):
+        app._analyze()
+        calls = []
+        real = app._draw
+        monkeypatch.setattr(app, '_draw', lambda: (calls.append(1), real())[1])
+        sp = app._screen_positions()
+
+        class E:
+            state = 0
+        for i in range(0, 60, 3):
+            e = E()
+            e.x, e.y = sp[i]
+            app._on_mouse_motion(e)
+        assert calls == [], 'the snap marker is drawn on its own'
+        assert app.canvas.find_withtag('snap')
+
+    def test_screen_positions_are_cached_until_the_view_or_model_moves(
+            self, app):
+        a = app._screen_positions()
+        assert app._screen_positions() == a
+        app.azimuth += 15
+        b = app._screen_positions()
+        assert b != a
+        x, y, z = app.nodes[0]
+        app.nodes[0] = (x + 1.0, y, z)
+        assert app._screen_positions()[0] != b[0]
+
+    def test_a_short_panel_cannot_be_scrolled_off_its_top(self, app):
+        app._set_mode('support')
+        app.root.update_idletasks()
+        app.root.update()
+        po = app.panel_outer
+        po._sync()
+        if po.interior.winfo_reqheight() < po.canvas.winfo_height():
+            for _ in range(10):
+                po.canvas.yview_scroll(-1, 'units')
+            assert po.canvas.canvasy(0) == 0

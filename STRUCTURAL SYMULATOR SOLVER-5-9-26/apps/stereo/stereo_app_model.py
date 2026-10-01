@@ -1141,6 +1141,25 @@ class StereoModelMixin:
         self.member_checks = None
         self._refresh_all()
 
+    def _mechanism_selection(self, err):
+        """After a singular solve, select the nodes of the zero-stiffness
+        mode, so the drawing shows WHERE the structure is a mechanism rather
+        than leaving a list of numbers to look up. Returns them."""
+        if not err or not err.startswith('Singular') or \
+                'Free to move' not in err:
+            return []
+        try:
+            free = sm.mechanism(self.nodes, self.members,
+                                self._active_supports(), panels=self.panels)
+        except Exception:                   # a diagnosis must never crash
+            return []
+        if free:
+            self.selected_nodes = set(free)
+            self.selected_members = set()
+            self.selected_member = None
+            self._sync_selection_fields()
+        return free
+
     def _valid_member_loads(self):
         """The rod loads that still point at a member that exists.
 
@@ -1168,12 +1187,20 @@ class StereoModelMixin:
         res, err = sm.analyze(self.nodes, self.members, loads,
                               self._active_supports(), panels=self.panels,
                               member_loads=member_loads)
+        warning = None
+        if err and res is not None:
+            # A result WITH a caveat -- the cable set that never settled
+            # hands back its last pass and says so. Dropping it, as this
+            # used to, left a crane model with no answer at all.
+            warning, err = err, None
         self.err = err
         if err:
             self.results = None
             self.member_checks = None
             self.panel_checks = []
-            messagebox.showerror('Analysis', err)
+            free = self._mechanism_selection(err)
+            messagebox.showerror('Analysis', err + (
+                '\n\nThose nodes are selected on the drawing.' if free else ''))
         else:
             self.results = res
             self.member_checks = sc.check_all_members(self.nodes, self.members, res['member_res'])
@@ -1184,6 +1211,37 @@ class StereoModelMixin:
             self.panel_checks = [tp.panel_checks(pl, pr) for pl, pr
                                  in zip(self.panels, res.get('panel_res', []))]
         self._refresh_all()
+        if warning:
+            self._set_status(warning.split('.')[0] + '.', 'error')
+            messagebox.showwarning('Analysis', warning)
+        elif self.results is not None:
+            big = self._displacement_caution()
+            if big:
+                self._set_status(big, 'error')
+
+    LARGE_DISPLACEMENT_FRAC = 0.05      # of the model's own size
+
+    def _displacement_caution(self):
+        """A line for the status bar when the answer has moved further than
+        a small-deflection analysis can describe -- the commonest case being
+        a lift that tips on its slings, which only second-order (pendulum)
+        stiffness would hold level. '' when the displacements are modest."""
+        if not self.results or not self.nodes:
+            return ''
+        peak_mm = max((math.sqrt(r['ux'] ** 2 + r['uy'] ** 2 + r['uz'] ** 2)
+                       for r in self.results['node_res']), default=0.0)
+        span = max(max(p[k] for p in self.nodes) - min(p[k] for p in self.nodes)
+                   for k in range(3))
+        if span <= 0 or peak_mm / 1000.0 <= self.LARGE_DISPLACEMENT_FRAC * span:
+            return ''
+        crane = any(m.get('role') == 'crane_cable' for m in self.members)
+        return ('Caution: the peak displacement, %.0f mm, is %.0f%% of the '
+                'model\'s size -- beyond what a linear, small-deflection '
+                'analysis describes.%s' % (
+                    peak_mm, 100.0 * peak_mm / 1000.0 / span,
+                    ' On a crane lift this is the load tipping on its slings: '
+                    'hook them so it hangs level (around the centre of the '
+                    'load, out towards its edges).' if crane else ''))
 
     def _auto_deform_scale(self):
         """Set the deformation scale so the max visual displacement is about

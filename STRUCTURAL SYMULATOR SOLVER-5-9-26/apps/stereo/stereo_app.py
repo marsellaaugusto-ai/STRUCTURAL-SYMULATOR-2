@@ -269,7 +269,14 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
                 # same way the rods are. Left out, undoing a rod delete put
                 # the rod back while every group stayed remapped around its
                 # absence -- each branch then meant the wrong rods.
-                'groups': copy.deepcopy(self.groups)}
+                'groups': copy.deepcopy(self.groups),
+                # What the add-ons took off the ground, to hand back on
+                # Clear. Left out, an undone crane kept its list of freed
+                # supports and tag lines, and the next Clear handed back --
+                # or stripped -- supports the model no longer had reason to.
+                'column_freed': copy.deepcopy(getattr(self, '_column_freed', [])),
+                'crane_freed': copy.deepcopy(getattr(self, '_crane_freed', [])),
+                'crane_tag': copy.deepcopy(getattr(self, '_crane_tag', None))}
 
     def _restore_snapshot(self, snap):
         self.nodes = snap['nodes']
@@ -283,6 +290,9 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self._bz_grid = copy.deepcopy(snap.get('bz_grid'))
         self._bz_drag = None
         self.groups = snap.get('groups', [])
+        self._column_freed = copy.deepcopy(snap.get('column_freed', []))
+        self._crane_freed = copy.deepcopy(snap.get('crane_freed', []))
+        self._crane_tag = copy.deepcopy(snap.get('crane_tag'))
         self.results = None
         self.member_checks = None
         self.panel_checks = []

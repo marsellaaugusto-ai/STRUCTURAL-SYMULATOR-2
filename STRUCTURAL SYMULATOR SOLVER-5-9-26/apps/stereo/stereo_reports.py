@@ -935,7 +935,7 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
     for col, lbl in enumerate(['idx', 'a', 'b', 'conn', 'E_GPa', 'A_cm2', 'I_cm4',
                                 'J_cm4', 'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role',
                                 'profile', 'c_cm', 'Iw_cm4', 'cw_cm',
-                                'timber', 'gamma_kN_m3'], 1):
+                                'timber', 'gamma_kN_m3', 'tension_only'], 1):
         ws.cell(row=row, column=col, value=lbl)
     row += 1
     for i, m in enumerate(members):
@@ -943,7 +943,8 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
                 m.get('I'), m.get('J'), m.get('Fy'), m.get('Fu'), m.get('K', 1.0),
                 m.get('r_gyr'), m.get('role', ''), m.get('profile', ''),
                 m.get('c_cm'), m.get('Iw'), m.get('cw_cm'),
-                m.get('timber'), m.get('gamma_kN_m3')]
+                m.get('timber'), m.get('gamma_kN_m3'),
+                1 if m.get('tension_only') else None]
         for col, v in enumerate(vals, 1):
             ws.cell(row=row, column=col, value=v)
         row += 1
@@ -1135,6 +1136,12 @@ def import_excel_model(path):
                 except (TypeError, ValueError):
                     pass
         _read_timber(r, m)
+        # A cable that came back as an ordinary bar would push: the flag
+        # has to survive the workbook (a crane exported and re-imported
+        # used to lose it).
+        if str(r.get('tension_only') or '').strip() not in ('', '0',
+                                                            'False', 'false'):
+            m['tension_only'] = True
         members.append(m)
 
     profiles = {}

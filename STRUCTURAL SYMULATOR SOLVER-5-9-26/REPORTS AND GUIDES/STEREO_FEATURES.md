@@ -127,6 +127,22 @@ applied" written next to it — but no utilisation is claimed, and it takes no
 part in the governing rod or the utilisation colours. Giving a timber rod a
 steel catalog section makes it steel again (F-24 unless a steel is named).
 
+**Large models: a sparse solve.** Above 600 free DOF the stiffness matrix is
+assembled and solved sparse (SciPy `spsolve`, with the same residual check
+as the dense path); below that the dense solve is kept, since it is faster
+there. The answers agree to 1e-8. The default grid analyses about 10× faster
+(977 → 102 ms), a 1625-node model 9× (3.2 s → 0.36 s). A displacement over
+1000× the model's own span is treated as a singular matrix, not an answer.
+
+**Responsiveness after an analysis.** Moving the mouse no longer redraws the
+model: the snap marker is drawn on its own overlay, and the projected screen
+positions of the nodes are cached until the view or the geometry changes.
+On a 1201-node analysed model a mouse move went from ~95 ms to ~1 ms.
+
+**The side bar's scroll** stops at its content: a panel shorter than the
+window does not scroll at all, and a long one cannot be wheeled past its
+top, so its first item always sits right under the top edge.
+
 ---
 
 ## 2. Geometry — 14 parametric families
@@ -398,6 +414,36 @@ which has nowhere else to go.
 Steadied, the four-sling lift of 1800 kN reads **636.3961 kN** per sling with the
 vertical components summing to 1800.0000 kN — 1800/(4·cos 45°), the slings at 45°
 as the geometry says.
+
+**Off its supports, the model has to be stable on its own** — and a grid often
+is not. The default square-on-square grid, as a free body, has **seven**
+zero-stiffness modes, not six: the six rigid-body motions and a free-edge
+mechanism its perimeter supports were hiding. Hung from its four corners the
+slings hold that part; hung from three corners, or from a patch in the middle,
+nothing does, and the solve is singular. The crane checks this the moment it
+is added (`stereo_math.mechanism`, the softest mode of the supported stiffness
+matrix): it **selects the loose nodes** and says, in the panel and the status
+bar, to hook slings there too or keep the model on its supports. Any singular
+analysis now says the same — *"Free to move with no stiffness: nodes …"* — and
+selects them, rather than only "singular stiffness matrix".
+
+Fixed in the same pass (item 4):
+
+- a **second crane** used to take the first crane's mast support and tag lines
+  off as if they were ground; the crane's own supports now stay, and *Clear
+  every crane* removes every crane's tag lines, not just the last one's;
+- **undo** restores the list of supports the lift took off and the tag lines,
+  so a later *Clear* hands back exactly what the model had;
+- the **tension-only flag survives Excel** (a `tension_only` column) — a crane
+  exported and re-imported used to come back with cables that push;
+- a cable set that **never settles** keeps its last pass, with the caveat, where
+  it used to leave no result at all;
+- a lift that **tips on its slings** (picked well off its centre of load) moves
+  further than a linear analysis can describe — the status bar now says so
+  whenever the peak displacement passes 5 % of the model's size, rather than
+  presenting 12 m of rigid tilt as an answer;
+- a solve whose answer moves more than **a thousand times the model's size**
+  is refused as the mechanism it is: the residual test alone let one through.
 
 **The mast anchor is fixed, not pinned.** A rigid mast whose top can rotate has
 a zero-energy torsional mode about its own axis — the cables are pin-jointed and

@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from apps.stereo import stereo_geometry as sg
+from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_plates as splates
 
 
@@ -320,10 +321,16 @@ class StereoAddonsMixin:
         lifted_off = 0
         tag = None
         if self.crane_off_ground.get():
-            ground = [dict(sp) for sp in self.supports if sp['node'] != anchor]
+            # The ground is every support that is not the crane's own: the
+            # mast tops (this one and any earlier crane's) and the tag lines
+            # an earlier lift added stay. A second lift used to take the
+            # first crane's mast support and tag lines off as if they were
+            # ground, leaving the first mast hanging from nothing.
+            own = self._crane_support_ids()
+            ground = [dict(sp) for sp in self.supports if id(sp) not in own]
             if ground:
                 self._crane_freed = list(getattr(self, '_crane_freed', [])) + ground
-                self.supports = [sp for sp in self.supports if sp['node'] == anchor]
+                self.supports = [sp for sp in self.supports if id(sp) in own]
                 lifted_off = len(ground)
             # Once it is off the ground the lifted body is a PENDULUM, and a
             # linear analysis gives a pendulum no lateral stiffness: the
@@ -347,12 +354,29 @@ class StereoAddonsMixin:
             steady = sg.crane_steady_lines(self.nodes, targets)
             for node, dof in steady:
                 self.supports.append({'node': node, 'dofs': {dof: True}})
-            self._crane_tag = [{'node': n, 'dof': d} for n, d in steady]
+            # every crane's tag lines, not just the last one's, or Clear
+            # leaves the earlier ones behind
+            self._crane_tag = list(getattr(self, '_crane_tag', None) or []) + \
+                [{'node': n, 'dof': d} for n, d in steady]
             tag = steady
 
         self.results = None
         self.member_checks = None
         self._me_maybe_refresh_topology()
+        # Off its supports, the lifted body has to be stable ON ITS OWN, and
+        # a grid often is not: the default square-on-square grid has a free-
+        # edge mechanism that its perimeter supports were hiding (a free
+        # body with 7 zero modes, not 6). Hung from three corners, or from a
+        # patch in the middle, that part has nothing holding it and the
+        # solve is singular. Say so now, and show where, instead of leaving
+        # it to a generic error at Analyze.
+        loose = []
+        if lifted_off:
+            try:
+                loose = sm.mechanism(self.nodes, self.members, self.supports,
+                                     panels=self.panels)
+            except Exception:
+                loose = []
         used = sg.crane_auto_rise(self.nodes, targets) if rise is None else rise
         self._set_addon_note(
             f'Crane on {len(targets)} node(s): {len(targets)} tension-only '
@@ -371,7 +395,42 @@ class StereoAddonsMixin:
                if tag else
                ' The model still stands on its own supports, so the slings may '
                'well read zero: the ground is a stiffer path than a cable.'))
+        if loose:
+            self.selected_nodes = set(loose)
+            self.selected_members = set()
+            self.selected_member = None
+            self._sync_selection_fields()
+            self._set_addon_note(
+                'Hung from these %d point(s), part of the model can move with '
+                'no stiffness at all -- %d node(s), selected on the drawing. '
+                'On the ground its supports held them; in the air nothing '
+                'does, so Analyze will refuse it. Hook slings to that part '
+                'too (the corners usually do it), or untick "Take it off its '
+                'own supports".' % (len(targets), len(loose)))
+            self._set_status('The lifted model is a mechanism: %d node(s) '
+                             'have nothing holding them -- they are selected.'
+                             % len(loose), 'error')
         self._refresh_all()
+
+    def _crane_support_ids(self):
+        """id() of each support that belongs to a crane: a mast top, or a
+        tag line one of them added."""
+        tops = set()
+        for m in self.members:
+            if m.get('role') == 'crane_mast':
+                tops.update((m['a'], m['b']))
+        tags = {(t['node'], t['dof']) for t in
+                (getattr(self, '_crane_tag', None) or [])}
+        own = set()
+        for sp in self.supports:
+            if sp.get('node') in tops:
+                own.add(id(sp))
+                continue
+            d = sp.get('dofs') or {}
+            if len(d) == 1 and not sp.get('type') and \
+                    (sp.get('node'), next(iter(d))) in tags:
+                own.add(id(sp))
+        return own
 
     def _clear_cable_cranes(self):
         n = self._strip_members(self.CRANE_ROLES, 'clear cranes')

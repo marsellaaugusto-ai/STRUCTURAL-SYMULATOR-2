@@ -217,8 +217,127 @@ def _rotation_12(local_x, local_y, local_z):
     return T
 
 
+MECHANISM_REL_EIG = 1e-9      # an eigenvalue this small (vs. the largest
+                              # diagonal) is a zero-stiffness mode
+MECHANISM_MAX_DOF = 2500      # beyond this the dense eigensolve (seconds) is skipped
+MECHANISM_LIST = 8            # how many nodes a message names
+
+
+SPARSE_MIN_DOF = 600          # above this the matrix is assembled sparse
+
+
+def _scipy_sparse():
+    try:
+        import scipy.sparse as sps
+        import scipy.sparse.linalg  # noqa: F401  (loads .linalg)
+        return sps
+    except Exception:               # scipy absent: the dense path still works
+        return None
+
+
+def _sparse_solve(Kf, Ff):
+    """Sparse direct solve, judged the way gauss_solve judges a dense one:
+    None for a singular or unreliable system (a non-finite answer, or a
+    residual larger than the load's own scale allows)."""
+    import warnings
+    import scipy.sparse.linalg as spla
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            x = spla.spsolve(Kf.tocsc(), Ff)
+    except Exception:
+        return None
+    x = np.asarray(x, dtype=float)
+    if not np.all(np.isfinite(x)):
+        return None
+    residual = Kf @ x - Ff
+    scale = max(1.0, float(np.max(np.abs(Ff))) if len(Ff) else 1.0)
+    if np.max(np.abs(residual)) > 1e-8 * scale:
+        return None
+    return x.tolist()
+
+
+def _mechanism_nodes(Kf, free, dof_of):
+    """The nodes that move in the stiffness matrix's softest mode, if that
+    mode has (numerically) no stiffness at all -- [] when it has some, or
+    when the system is too big to look at here.
+
+    Kf is the reduced (supported) matrix and `free` maps its rows back to
+    global DOFs; `dof_of` is the per-node DOF table.
+    """
+    n = Kf.shape[0]
+    if n == 0 or n > MECHANISM_MAX_DOF:
+        return []
+    if hasattr(Kf, 'toarray'):          # a sparse matrix, small enough here
+        Kf = Kf.toarray()
+    scale = float(np.max(np.abs(np.diag(Kf)))) or 1.0
+    try:
+        w, v = np.linalg.eigh(Kf)
+    except np.linalg.LinAlgError:
+        return []
+    if w[0] > MECHANISM_REL_EIG * scale:
+        return []
+    owner = {}
+    for node, idx in enumerate(dof_of):
+        for g in idx:
+            if g is not None:
+                owner[g] = node
+    out = []
+    zero = [k for k in range(len(w)) if w[k] <= MECHANISM_REL_EIG * scale]
+    for k in zero[:6]:
+        mode = np.abs(v[:, k])
+        peak = float(mode.max()) or 1.0
+        for li in np.argsort(-mode):
+            if mode[li] < 0.3 * peak:
+                break
+            node = owner.get(free[li])
+            if node is not None and node not in out:
+                out.append(node)
+    return sorted(out)
+
+
+def _model_span(nodes):
+    if not nodes:
+        return 0.0
+    return max(max(p[k] for p in nodes) - min(p[k] for p in nodes)
+               for k in range(3))
+
+
+def _translational(dof_of):
+    return {g for idx in dof_of for g in idx[:3] if g is not None}
+
+
+def describe_mechanism(node_ids):
+    """' Free to move with no stiffness: nodes 3, 8, 12 (and 4 more).'"""
+    if not node_ids:
+        return ''
+    shown = ', '.join(str(n) for n in node_ids[:MECHANISM_LIST])
+    more = len(node_ids) - MECHANISM_LIST
+    return (' Free to move with no stiffness: node%s %s%s.'
+            % ('s' if len(node_ids) != 1 else '', shown,
+               ' (and %d more)' % more if more > 0 else ''))
+
+
+def stiffness_probe(nodes, members, supports, panels=None, slack=frozenset()):
+    """(Kf, free, dof_of): the supported stiffness matrix exactly as the
+    solve would build it, for checking stability before any load is
+    applied (stereo_app_addons uses it on a crane lift)."""
+    return _analyze_once(nodes, members, [], supports, panels, None,
+                         slack=slack, _probe=True)
+
+
+def mechanism(nodes, members, supports, panels=None):
+    """The nodes of any zero-stiffness mode the model has as supported,
+    or [] if it is stable (or too big to check here)."""
+    got = stiffness_probe(nodes, members, supports, panels)
+    if not isinstance(got, tuple) or len(got) != 3:
+        return []
+    Kf, free, dof_of = got
+    return _mechanism_nodes(Kf, free, dof_of)
+
+
 def _analyze_once(nodes, members, loads, supports, panels=None,
-                  member_loads=None, slack=frozenset()):
+                  member_loads=None, slack=frozenset(), _probe=False):
     """Solve the space structure. Returns (result, error). On failure,
     result is None and error is a human-readable string (mirroring every
     other solver in this app, e.g. truss_math.analyze).
@@ -309,7 +428,19 @@ def _analyze_once(nodes, members, loads, supports, panels=None,
             idx += [None, None, None]
         dof_of[i] = tuple(idx)
 
-    K = np.zeros((ndof, ndof))
+    # The element terms are COLLECTED (row, col, value) and summed once at
+    # the end -- dense for a small model, exactly as before, and sparse above
+    # SPARSE_MIN_DOF, where a dense matrix is the slow part of the whole app:
+    # its solve grows with ndof^3 and its memory with ndof^2 (650 MB at
+    # 9000 DOF), while a space truss has a few dozen terms per row.
+    K_rows, K_cols, K_vals = [], [], []
+
+    def _scatter(idx, ke):
+        n_ = len(idx)
+        K_rows.extend(np.repeat(idx, n_))
+        K_cols.extend(np.tile(idx, n_))
+        K_vals.extend(np.asarray(ke, dtype=float).ravel())
+
     for mi, m in enumerate(members):
         if mi in slack:
             # A slack tension-only member is ABSENT from the structure for
@@ -327,10 +458,12 @@ def _analyze_once(nodes, members, loads, supports, panels=None,
             dirn = np.array([lx, ly, lz])
             ke33 = k * np.outer(dirn, dirn)
             idx = [a_dof[0], a_dof[1], a_dof[2], b_dof[0], b_dof[1], b_dof[2]]
-            ke = np.block([[ke33, -ke33], [-ke33, ke33]])
-            for i in range(6):
-                for j in range(6):
-                    K[idx[i], idx[j]] += ke[i, j]
+            ke = np.empty((6, 6))
+            ke[:3, :3] = ke33
+            ke[3:, 3:] = ke33
+            ke[:3, 3:] = -ke33
+            ke[3:, :3] = -ke33
+            _scatter(idx, ke)
         else:
             local_x, local_y, local_z = _local_axes(dx, dy, dz, L)
             kloc = _rigid_local_stiffness(m['E'], m['A'], m.get('I', 0.0),
@@ -339,9 +472,7 @@ def _analyze_once(nodes, members, loads, supports, panels=None,
             T = _rotation_12(local_x, local_y, local_z)
             kgl = T.T @ kloc @ T
             idx = list(a_dof) + list(b_dof)
-            for i in range(12):
-                for j in range(12):
-                    K[idx[i], idx[j]] += kgl[i, j]
+            _scatter(idx, kgl)
 
     # ── welded shear panels ────────────────────────────────────────────────
     # K = G*t*A * Bg^T Bg over the loop's 3n translations: one rank-1 block
@@ -364,9 +495,8 @@ def _analyze_once(nodes, members, loads, supports, panels=None,
             gdof += [idx[0], idx[1], idx[2]]
             brow += list(Bg[k])
         scale = G_Pa * t_m * abs(area)
-        for i in range(len(gdof)):
-            for j in range(len(gdof)):
-                K[gdof[i], gdof[j]] += scale * brow[i] * brow[j]
+        b_ = np.asarray(brow, dtype=float)
+        _scatter(gdof, scale * np.outer(b_, b_))
         panel_dofs[pi] = (loop, _pts, area, brow, G_Pa, t_m, gdof)
 
     F = np.zeros(ndof)
@@ -398,14 +528,39 @@ def _analyze_once(nodes, members, loads, supports, panels=None,
     if not free:
         return None, 'All degrees of freedom are constrained -- nothing can move.'
 
-    Kf = K[np.ix_(free, free)]
+    sparse = ndof > SPARSE_MIN_DOF and _scipy_sparse() is not None
+    if sparse:
+        sps = _scipy_sparse()
+        K = sps.coo_matrix((K_vals, (K_rows, K_cols)),
+                           shape=(ndof, ndof)).tocsr()
+        Kf = K[free][:, free]
+    else:
+        K = np.zeros((ndof, ndof))
+        if K_vals:
+            np.add.at(K, (np.asarray(K_rows), np.asarray(K_cols)),
+                      np.asarray(K_vals))
+        Kf = K[np.ix_(free, free)]
+    if _probe:
+        return Kf, free, dof_of
     Ff = F[free]
-    U_free = gauss_solve(Kf, Ff)
+    U_free = _sparse_solve(Kf, Ff) if sparse else gauss_solve(Kf, Ff)
+    if U_free is not None:
+        # The solve is judged by its RESIDUAL, which depends on the loads:
+        # a matrix with a zero-stiffness mode can still pass it and hand
+        # back displacements of kilometres (measured: 1.2e10 m on a lifted
+        # grid). Nothing real moves a thousand times its own size, so an
+        # answer like that is the mechanism the residual missed.
+        span = _model_span(nodes)
+        tset = _translational(dof_of)
+        trans = [abs(U_free[li]) for li, g in enumerate(free) if g in tset]
+        if trans and max(trans) > 1e3 * max(span, 1e-3):
+            U_free = None
     if U_free is None:
         return None, ('Singular stiffness matrix -- the structure (or some part '
                        'of it) is a mechanism, or a node is floating with no '
                        'load path to a support. Check for missing members or '
-                       'missing boundary conditions.')
+                       'missing boundary conditions.'
+                       + describe_mechanism(_mechanism_nodes(Kf, free, dof_of)))
 
     U = np.zeros(ndof)
     for li, gi in enumerate(free):

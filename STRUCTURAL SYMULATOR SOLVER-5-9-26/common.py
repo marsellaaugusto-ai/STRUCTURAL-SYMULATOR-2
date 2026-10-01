@@ -1028,7 +1028,8 @@ class ScrollPanel(tk.Frame):
         try:
             if event.state & 0x0001:
                 self.canvas.xview_scroll(int(-1 * (event.delta / 120)), 'units')
-            else:
+            elif self.interior.winfo_reqheight() > self.canvas.winfo_height():
+                # nothing to scroll when it all fits
                 self.canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
         except Exception:
             pass
@@ -1050,7 +1051,16 @@ class ScrollPanel(tk.Frame):
             elif not need_h and self._hsb_shown:
                 self.hsb.grid_remove()
                 self._hsb_shown = False
-            self.canvas.configure(scrollregion=(0, 0, win_w, req_h))
+            # Never shorter than the view. A scroll region smaller than the
+            # window lets Tk scroll it anyway -- the wheel pushed a short
+            # panel down off its own top and left an empty band above it,
+            # with nothing up there to scroll to. At least the view's height,
+            # the region fits exactly and the content stays pinned to the top.
+            view_h = max(self.canvas.winfo_height(), 1)
+            region_h = max(req_h, view_h)
+            self.canvas.configure(scrollregion=(0, 0, win_w, region_h))
+            if req_h <= view_h:
+                self.canvas.yview_moveto(0.0)
         except Exception:
             pass
         finally:

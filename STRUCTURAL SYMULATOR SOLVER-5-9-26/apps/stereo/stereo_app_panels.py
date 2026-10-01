@@ -581,6 +581,13 @@ class StereoPanelsMixin(_ToolbarModes):
                     '<Prior>', '<Next>'):
             self.canvas.bind(key, self._on_axis_key)
         self.canvas.bind('<Escape>', self._on_axis_cancel)
+        # R / M / Shift+M: rotate, mirror, mirror a copy of the selection
+        # about the axis the arrow keys last chose (roadmap 3.4).
+        for key, handler in (('r', self._tx_key_rotate),
+                             ('R', self._tx_key_rotate),
+                             ('m', self._tx_key_mirror),
+                             ('M', self._tx_key_mirror_copy)):
+            self.canvas.bind(key, handler)
 
         # The single-key shortcuts for the four commands worth reaching
         # without the rail, and 1/2/3 for the three orthographic views.

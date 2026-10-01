@@ -451,6 +451,19 @@ card is a reference, not a second editor.
 - **Delete** selected nodes or a selected member.
 - **Click to inspect** a rod: endpoints, role, connectivity, axial force,
   utilisation and the governing check.
+- **Rotate / mirror the selection** (Build mode, or keys) — the arrow keys
+  pick the axis (←→ X, ↑↓ Y, PgUp/PgDn Z) whether or not a single node is
+  selected; **R**, an angle and Enter rotates the selected nodes (and the
+  ends of selected rods) about that axis through their own middle; **M**
+  mirrors them; **Shift+M** mirrors a **copy**, which is how half a
+  structure is drawn and the other half made. The mirror plane is *auto* by
+  default — through the middle when flipping in place, at the selection's +
+  edge for a copy, so the copy goes alongside rather than on top — or set
+  to middle, either edge, or the origin. Copy nodes that land on existing
+  ones merge, so the two halves share their joints on the plane; the copy
+  brings the originals' supports, roof-load areas and point loads (point
+  loads unreflected, so gravity stays down). A locked group turns whole, or
+  not at all if it shares a joint with another group.
 - **Show me this rod** — wherever a panel names a rod (Results: *Show me
   the governing rod*; a group's section recommendation: its governing rod
   and, when different, its largest-force rod; a group's properties: its

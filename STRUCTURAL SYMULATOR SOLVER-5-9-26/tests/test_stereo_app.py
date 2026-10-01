@@ -10068,3 +10068,118 @@ class TestUnitWeightFollowsTheSelector:
                 for k in range(app.export_menu.index('end') + 1)
                 if app.export_menu.type(k) == 'command']
         assert '_import_sketchup' in cmds[i]
+
+
+class TestRotateAndMirror:
+    """Roadmap 3.4 through the app: the arrow keys pick the axis, R rotates,
+    M mirrors, Shift+M mirrors a copy -- and a locked group turns whole."""
+
+    def _lengths(self, app, rods):
+        import math
+        return [math.dist(app.nodes[app.members[j]['a']],
+                          app.nodes[app.members[j]['b']]) for j in rods]
+
+    def test_rotating_keeps_every_rod_its_length_and_undo_undoes_it(self, app):
+        import math
+        rods = list(range(0, 40))
+        app.selected_nodes = set()
+        app.selected_members = set(rods)
+        before_nodes = list(app.nodes)
+        before = self._lengths(app, range(len(app.members)))
+        ids = app._tx_selected_nodes()
+        c0 = [sum(app.nodes[i][k] for i in ids) / len(ids) for k in range(3)]
+        assert app._tx_rotate(angle=30.0, axis='Z')
+        c1 = [sum(app.nodes[i][k] for i in ids) / len(ids) for k in range(3)]
+        assert c1 == pytest.approx(c0), 'turned about its own middle'
+        after = self._lengths(app, rods)
+        assert after == pytest.approx([before[j] for j in rods])
+        moved = [i for i in range(len(before_nodes))
+                 if app.nodes[i] != before_nodes[i]]
+        assert set(moved) == set(ids)
+        app._undo()
+        assert app.nodes == before_nodes
+
+    def test_a_locked_group_turns_whole(self, app, monkeypatch):
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: 'Bay')
+        app.selected_nodes = set()
+        app.selected_members = set(range(0, 30))
+        app._group_new_from_selection()
+        g = app.groups[-1]
+        mine = sgp.nodes_of_rods(app.members, sorted(g['members']))
+        before = list(app.nodes)
+        app.selected_members = set()
+        app.selected_nodes = {mine[0]}
+        assert app._tx_rotate(angle=15.0, axis='Z')
+        # every node of the group where turning the GROUP about its middle
+        # puts it (a node sitting on that axis stays put, correctly), and
+        # nothing outside the group touched
+        from apps.stereo import stereo_transform as st
+        expect = st.rotated(before, mine, 'Z', 15.0)
+        for i in range(len(before)):
+            assert app.nodes[i] == pytest.approx(expect[i]), i
+        assert sum(1 for i in mine if app.nodes[i] != before[i]) >             len(mine) // 2
+
+    def test_mirroring_in_place_flips_the_selection_over_its_middle(self, app):
+        app.selected_members = set()
+        app.selected_nodes = {0, 1, 2}
+        xs = [app.nodes[i][0] for i in (0, 1, 2)]
+        mid = (max(xs) + min(xs)) / 2.0
+        mean = sum(xs) / 3.0
+        before = {i: app.nodes[i] for i in (0, 1, 2)}
+        assert app._tx_mirror(axis='X')
+        for i in (0, 1, 2):
+            assert app.nodes[i][0] == pytest.approx(2 * mean - before[i][0])
+            assert app.nodes[i][1:] == before[i][1:]
+
+    def test_a_mirrored_copy_of_the_whole_grid_goes_alongside_it(self, app):
+        n_nodes, n_rods = len(app.nodes), len(app.members)
+        n_sup = len(app.supports)
+        top = max(p[0] for p in app.nodes)
+        on_edge = sum(1 for p in app.nodes if abs(p[0] - top) < 1e-9)
+        app.selected_members = set()
+        app.selected_nodes = set(range(n_nodes))
+        assert app._tx_mirror(copy=True, axis='X')
+        assert len(app.nodes) == 2 * n_nodes - on_edge, \
+            'the nodes on the mirror plane are shared, not doubled'
+        assert len(app.members) > n_rods
+        assert max(p[0] for p in app.nodes) == pytest.approx(
+            top + (top - min(p[0] for p in app.nodes[:n_nodes])))
+        assert len(app.supports) > n_sup, 'the copy is supported too'
+        app._analyze()
+        assert app.results is not None, 'the doubled structure solves'
+
+    def test_a_copy_onto_what_is_already_there_adds_nothing(self, app):
+        """The left half mirrored about the middle IS the right half."""
+        xs = [p[0] for p in app.nodes]
+        mid = (max(xs) + min(xs)) / 2.0
+        left = {i for i, p in enumerate(app.nodes) if p[0] <= mid + 1e-9}
+        app.selected_members = set()
+        app.selected_nodes = left
+        app.tx_plane.set('origin (0)') if abs(mid) < 1e-9 else \
+            app.tx_plane.set('selection + edge')
+        n = len(app.nodes)
+        app._tx_mirror(copy=True, axis='X')
+        assert len(app.nodes) == n
+
+    def test_an_arrow_key_sets_the_axis_with_several_nodes_selected(self, app):
+        app.selected_nodes = {0, 1, 2}
+        ev = type('E', (), {'keysym': 'Up'})()
+        app._on_axis_key(ev)
+        assert app.tx_axis.get() == 'Y'
+        assert app._axis_pending is None, 'extending still needs one node'
+
+    def test_the_keys(self, app):
+        app.selected_nodes = {0, 1, 2}
+        app._tx_key_rotate()
+        assert app.root.focus_get() is app._tx_angle_entry
+        before = [app.nodes[i] for i in (0, 1, 2)]
+        app.tx_axis.set('X')
+        app._tx_key_mirror()
+        assert [app.nodes[i] for i in (0, 1, 2)] != before
+
+    def test_nothing_selected_says_so(self, app, dialogs):
+        app.selected_nodes = set()
+        app.selected_members = set()
+        assert not app._tx_rotate(angle=10.0)
+        assert any('Select the nodes' in str(d) for d in dialogs)

@@ -1081,10 +1081,19 @@ class StereoViewMixin:
     }
 
     def _on_axis_key(self, event=None):
-        if not event or len(self.selected_nodes) != 1:
+        if not event:
             return
         info = self._AXIS_KEYS.get(event.keysym)
         if not info:
+            return
+        # Every arrow key sets the active axis for rotate and mirror, with or
+        # without a node to extend from; extending still needs exactly one.
+        if hasattr(self, 'tx_axis'):
+            self.tx_axis.set(info[3][-1])
+        if len(self.selected_nodes) != 1:
+            if self.selected_nodes or self.selected_members:
+                self._set_status('Axis %s -- R rotate, M mirror, Shift+M '
+                                 'mirror a copy.' % info[3][-1], 'ok')
             return
         dx, dy, dz, label = info
         self._axis_pending = (dx, dy, dz)

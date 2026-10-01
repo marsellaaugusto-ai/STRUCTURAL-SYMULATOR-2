@@ -84,13 +84,15 @@ from apps.stereo.stereo_app_addons import StereoAddonsMixin
 from apps.stereo.stereo_app_reports import StereoReportsMixin
 from apps.stereo.stereo_app_inspector import StereoInspectorMixin
 from apps.stereo.stereo_app_groups import StereoGroupsMixin
+from apps.stereo.stereo_app_transform import StereoTransformMixin
 from apps.stereo.stereo_reports import STORAGE_UNITS as sr_storage_units
 
 
 class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
                 StereoRenderMixin, StereoModuleEditorMixin,
                 StereoWizardMixin, StereoAddonsMixin, StereoReportsMixin,
-                StereoInspectorMixin, StereoGroupsMixin, UnitsMixin):
+                StereoInspectorMixin, StereoGroupsMixin, StereoTransformMixin,
+                UnitsMixin):
     """The Stereo tab.
 
     Holds the model (nodes, members, supports, loads), every Tk variable
@@ -162,6 +164,11 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         # Grouped / Ungrouped mode -- see _build_groups_panel. A view of the
         # model; the locks apply either way.
         self.group_view = tk.BooleanVar(value=False)
+        # Rotate / mirror (roadmap 3.4): the active axis, set by the arrow
+        # keys and the panel's radio buttons alike, and where the mirror
+        # plane sits.
+        self.tx_axis = tk.StringVar(value='Z')
+        self.tx_plane = tk.StringVar(value='auto')
         self._load_nodes = {}
         self._load_glyphs = {}
         self._disabled_supports = set()

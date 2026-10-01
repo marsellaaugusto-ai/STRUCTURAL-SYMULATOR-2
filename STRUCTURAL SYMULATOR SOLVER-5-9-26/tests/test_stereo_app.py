@@ -10411,3 +10411,80 @@ class TestTimberInTheApp:
         assert tops
         for w in tops:
             w.destroy()
+
+
+class TestLinearSelection:
+    """Line select picks the rods along the line as well as its nodes."""
+
+    def _arm(self, app):
+        _mode(app, 'build')
+        app.line_pick_mode.set(True)
+        app._on_pick_mode_toggle('line')
+
+    def test_the_rods_along_the_row_come_with_its_nodes(self, app):
+        self._arm(app)
+        row = _top_row(app)
+        sp = app._screen_positions()
+        app._handle_line_pick_click(*sp[row[0]])
+        app._handle_line_pick_click(*sp[row[-1]])
+        on = set(row)
+        along = {j for j, m in enumerate(app.members)
+                 if m['a'] in on and m['b'] in on}
+        assert along, 'a top row has chords'
+        assert set(app.selected_members) == along
+        assert 'rod(s)' in app.pick_note.cget('text')
+
+    def test_shift_adds_and_carries_on_from_the_far_end(self, app):
+        self._arm(app)
+        row = _top_row(app)
+        sp = app._screen_positions()
+        mid = row[len(row) // 2]
+        app._handle_line_pick_click(*sp[row[0]])
+        app._handle_line_pick_click(*sp[mid], additive=True)
+        first = set(app.selected_nodes)
+        assert app._line_pick_first == mid, 'the chain carries on from there'
+        app._handle_line_pick_click(*sp[row[-1]], additive=True)
+        assert first < set(app.selected_nodes)
+        assert set(app.selected_nodes) == set(row)
+        app._on_axis_cancel()
+        assert app._line_pick_first is None
+
+    def test_a_plain_line_replaces_the_selection(self, app):
+        self._arm(app)
+        app.selected_nodes = {0}
+        app.selected_members = {0}
+        row = _top_row(app)
+        sp = app._screen_positions()
+        app._handle_line_pick_click(*sp[row[0]])
+        app._handle_line_pick_click(*sp[row[1]])
+        assert 0 not in app.selected_members or 0 in row
+
+    def test_the_crossing_box_adds_rods_the_drawn_line_passes(self, app):
+        self._arm(app)
+        row = _top_row(app)
+        sp = app._screen_positions()
+        app._handle_line_pick_click(*sp[row[0]])
+        app._handle_line_pick_click(*sp[row[-1]])
+        plain = set(app.selected_members)
+        app.line_pick_cross.set(True)
+        app._handle_line_pick_click(*sp[row[0]])
+        app._handle_line_pick_click(*sp[row[-1]])
+        assert plain <= set(app.selected_members)
+
+    def test_the_rubber_band_follows_the_cursor(self, app):
+        self._arm(app)
+        row = _top_row(app)
+        sp = app._screen_positions()
+        app._handle_line_pick_click(*sp[row[0]])
+
+        class E:
+            x, y = sp[row[-1]]
+        app._on_canvas_hover(E)
+        assert app.canvas.find_withtag('pick_rubber')
+
+    def test_l_toggles_the_tool(self, app):
+        assert app.line_pick_mode.get() is False
+        app._toggle_line_pick()
+        assert app.line_pick_mode.get() is True
+        app._toggle_line_pick()
+        assert app.line_pick_mode.get() is False

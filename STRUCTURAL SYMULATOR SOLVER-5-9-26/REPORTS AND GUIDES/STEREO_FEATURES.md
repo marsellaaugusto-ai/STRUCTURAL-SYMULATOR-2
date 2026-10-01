@@ -495,6 +495,15 @@ card is a reference, not a second editor.
 ## 7. Editing the model directly
 
 - **Lasso multi-select** on the 3D canvas (drag a box; Shift adds).
+- **Line select** (Build mode, or **L**) — click a node, then another: every
+  node the straight run between them passes through is selected, measured in
+  the model (not on screen, so nothing on another layer that merely looks
+  close comes along), **and every rod along that run**. A dashed line follows
+  the cursor to the far end while the tool waits. **Shift** on the far end
+  adds to the selection and carries on from that node, so an L of supports or
+  a ring is a chain of Shift-clicks; **Esc** stops. *Also the rods the line
+  crosses on screen* takes the rods the drawn line passes through as well
+  (`stereo_select`).
 - **Add rod** — click two nodes.
 - **Delete** selected nodes or a selected member.
 - **Click to inspect** a rod: endpoints, role, connectivity, axial force,

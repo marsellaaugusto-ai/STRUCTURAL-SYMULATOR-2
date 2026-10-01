@@ -584,6 +584,8 @@ class StereoPanelsMixin(_ToolbarModes):
         self.canvas.bind('<Escape>', self._on_axis_cancel)
         # R / M / Shift+M: rotate, mirror, mirror a copy of the selection
         # about the axis the arrow keys last chose (roadmap 3.4).
+        self.canvas.bind('l', self._toggle_line_pick)
+        self.canvas.bind('L', self._toggle_line_pick)
         for key, handler in (('r', self._tx_key_rotate),
                              ('R', self._tx_key_rotate),
                              ('m', self._tx_key_mirror),
@@ -1084,15 +1086,21 @@ class StereoPanelsMixin(_ToolbarModes):
         self.disc_radius = tk.DoubleVar(value=0.8)
         self.disc_limit = tk.IntVar(value=4)
         self.add_rod_mode = tk.BooleanVar(value=False)
-        tk.Checkbutton(tools, text='Line select (click two nodes)',
+        self.line_pick_cross = tk.BooleanVar(value=False)
+        tk.Checkbutton(tools, text='Line select (click two nodes)  [L]',
                        variable=self.line_pick_mode, bg=BG, font=('Helvetica', 9),
                        anchor='w',
                        command=lambda: self._on_pick_mode_toggle('line')).pack(anchor='w')
         tk.Label(tools, text='Selects every node the straight run between them '
-                             'passes through -- a support line or a bracing row '
-                             'in two clicks.',
+                             'passes through, and every rod along it -- a '
+                             'support line, a chord or a bracing row in two '
+                             'clicks. Shift on the far end adds to the '
+                             'selection and carries on from there; Esc stops.',
                  bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
                  wraplength=PANEL_TEXT_W).pack(anchor='w', padx=(18, 0))
+        tk.Checkbutton(tools, text='Also the rods the line crosses on screen',
+                       variable=self.line_pick_cross, bg=BG,
+                       font=('Helvetica', 8)).pack(anchor='w', padx=(18, 0))
         self.pick_note = tk.Label(tools, text='', bg=BG, fg='#2f6f4f',
                                   font=('Helvetica', 8), justify='left',
                                   wraplength=PANEL_TEXT_W, anchor='w')

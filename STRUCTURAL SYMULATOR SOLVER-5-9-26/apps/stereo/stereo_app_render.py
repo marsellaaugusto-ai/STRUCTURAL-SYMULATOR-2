@@ -428,6 +428,8 @@ class StereoRenderMixin:
     def _draw(self):
         c = self.canvas
         c.delete('all')
+        # the line tool's cached node positions belong to the old view
+        self._rubber_screen = None
         if not self.nodes:
             return
         # Always the REST structure -- "Show deformed" draws an ADDITIONAL

@@ -27,7 +27,7 @@ from apps.stereo.stereo_app_constants import (
     DOF_LABELS, LASSO_DRAG_THRESHOLD_PX, MEMBER_SEL_HIT_PX,
     DRAW_THROTTLE_MS, SNAP_RADIUS_PX,
     PROJECTION_PERSPECTIVE, PERSPECTIVE_MIN_DENOM,
-    SOURCE_SPIN, SOURCE_EXTRUDE, BZ_HANDLE_GRAB_PX,
+    SOURCE_SPIN, SOURCE_EXTRUDE, BZ_HANDLE_GRAB_PX, LINE_PICK_COLOR,
 )
 
 
@@ -256,7 +256,7 @@ class StereoViewMixin:
             self._draw()
             return
         if self.line_pick_mode.get():
-            self._handle_line_pick_click(event.x, event.y)
+            self._handle_line_pick_click(event.x, event.y, additive=additive)
             self._lasso_press = None
             self._lasso_dragging = False
             self._lasso_cur = None
@@ -316,15 +316,22 @@ class StereoViewMixin:
     # ── line pick: every node a straight run passes through ─────────────────
     LINE_PICK_TOL_FRAC = 0.35     # of the model's own module size
 
-    def _handle_line_pick_click(self, ex, ey):
+    def _handle_line_pick_click(self, ex, ey, additive=False):
         """Two clicks, both on nodes: the first sets the start, the second
-        selects every node the straight run between them passes through.
+        selects every node the straight run between them passes through,
+        and every rod that runs along it (stereo_select.line_selection) --
+        plus the rods the drawn line crosses, when that box is ticked.
+
+        Shift on the second click ADDS to the selection and carries on from
+        that node, so a bent run -- an L of supports, a ring -- is a chain
+        of Shift-clicks. Escape ends the chain.
 
         Deliberately node-to-node rather than freehand. A support line, a
         row of purlins or a bracing run is defined by the joints at its
         ends; asking for a hand-drawn stroke would make an exact selection
         depend on how steady the mouse was.
         """
+        from apps.stereo import stereo_select as ssel
         hit = self._nearest_node_to(ex, ey)
         if hit is None:
             self._set_pick_note('Click ON a node to start the line.')
@@ -332,7 +339,8 @@ class StereoViewMixin:
             return
         if self._line_pick_first is None:
             self._line_pick_first = hit
-            self._set_pick_note(f'Line from node {hit} -- now click the far end.')
+            self._set_pick_note(f'Line from node {hit} -- now click the far '
+                                'end (Shift: add, and carry on from there).')
             self._draw()
             return
         if hit == self._line_pick_first:
@@ -340,17 +348,66 @@ class StereoViewMixin:
             self._draw()
             return
         tol = self.LINE_PICK_TOL_FRAC * self._typical_spacing()
-        found = self._nodes_near_segment(self._line_pick_first, hit, tol)
-        self.selected_nodes = set(found)
+        crossing = bool(getattr(self, 'line_pick_cross', None)
+                        and self.line_pick_cross.get())
+        screen = self._screen_positions() if crossing else None
+        nodes, rods = ssel.line_selection(self.nodes, self.members,
+                                          self._line_pick_first, hit, tol,
+                                          screen=screen, crossing=crossing)
+        if additive:
+            self.selected_nodes = set(self.selected_nodes) | set(nodes)
+            self.selected_members = set(self.selected_members) | set(rods)
+            self._line_pick_first = hit
+            tail = ' Shift-click the next node to carry on; Esc to stop.'
+        else:
+            self.selected_nodes = set(nodes)
+            self.selected_members = set(rods)
+            self._line_pick_first = None
+            tail = ''
         self.selected_member = None
-        self._line_pick_first = None
         self._sync_selection_fields()
-        self._set_pick_note(f'{len(found)} nodes on that line.')
+        self._set_pick_note(f'{len(nodes)} node(s) and {len(rods)} rod(s) on '
+                            f'that line -- {len(self.selected_nodes)} node(s), '
+                            f'{len(self.selected_members)} rod(s) selected.'
+                            + tail)
         self._draw()
 
-    def _nearest_node_to(self, ex, ey, max_px=14):
+    def _draw_line_rubber(self, ex, ey):
+        """The line from the first pick to the cursor, while the tool waits
+        for its far end -- snapped to the node under the cursor, so what is
+        drawn is the line the click will make. Drawn alone, on its own tag:
+        a full redraw on every mouse move would make the tool lag on a big
+        model."""
+        c = self.canvas
+        c.delete('pick_rubber')
+        first = self._line_pick_first
+        if first is None or not (0 <= first < len(self.nodes)):
+            return
+        screen = getattr(self, '_rubber_screen', None)
+        if screen is None or len(screen) != len(self.nodes):
+            screen = self._rubber_screen = self._screen_positions()
+        x0, y0 = screen[first]
+        hit = self._nearest_node_to(ex, ey, screen=screen)
+        x1, y1 = screen[hit] if hit is not None else (ex, ey)
+        c.create_line(x0, y0, x1, y1, fill=LINE_PICK_COLOR, width=2,
+                      dash=(6, 3), tags='pick_rubber')
+        if hit is not None and hit != first:
+            c.create_oval(x1 - 7, y1 - 7, x1 + 7, y1 + 7,
+                          outline=LINE_PICK_COLOR, width=2, tags='pick_rubber')
+
+    def _toggle_line_pick(self, _event=None):
+        """L: arm or disarm Line select from the keyboard."""
+        self.line_pick_mode.set(not self.line_pick_mode.get())
+        self._on_pick_mode_toggle('line')
+        self._set_status('Line select on: click two nodes (Shift adds and '
+                         'carries on; Esc stops).' if self.line_pick_mode.get()
+                         else 'Line select off.', 'ok')
+        return 'break'
+
+    def _nearest_node_to(self, ex, ey, max_px=14, screen=None):
         best, bestd = None, None
-        for i, (sx, sy) in enumerate(self._screen_positions()):
+        for i, (sx, sy) in enumerate(screen if screen is not None
+                                     else self._screen_positions()):
             d = (sx - ex) ** 2 + (sy - ey) ** 2
             if bestd is None or d < bestd:
                 best, bestd = i, d
@@ -365,6 +422,9 @@ class StereoViewMixin:
         Bound to plain <Motion>, so it costs nothing when the tool is off --
         the first line returns before any projection work is done.
         """
+        if self.line_pick_mode.get() and self._line_pick_first is not None:
+            self._draw_line_rubber(event.x, event.y)
+            return
         if not self.disc_pick_mode.get():
             return
         hits, centre = self._disc_under_cursor(event.x, event.y)
@@ -771,30 +831,11 @@ class StereoViewMixin:
         return gaps[len(gaps) // 2] if gaps else 1.0
 
     def _nodes_near_segment(self, a, b, tol):
-        """Every node within `tol` of the straight segment from node `a` to
-        node `b`, in WORLD space.
-
-        World space, not screen space, on purpose: a line drawn across a
-        perspective-less but tilted view passes near nodes on other layers
-        that merely look close. Measuring in the model's own coordinates
-        selects the row you meant rather than everything behind it.
-        """
-        if not (0 <= a < len(self.nodes) and 0 <= b < len(self.nodes)):
-            return []
-        ax, ay, az_ = self.nodes[a]
-        bx, by, bz = self.nodes[b]
-        dx, dy, dz = bx - ax, by - ay, bz - az_
-        L2 = dx * dx + dy * dy + dz * dz
-        if L2 < 1e-12:
-            return [a]
-        out = []
-        for i, (x, y, z) in enumerate(self.nodes):
-            t = ((x - ax) * dx + (y - ay) * dy + (z - az_) * dz) / L2
-            t = max(0.0, min(1.0, t))
-            px, py, pz = ax + dx * t, ay + dy * t, az_ + dz * t
-            if (x - px) ** 2 + (y - py) ** 2 + (z - pz) ** 2 <= tol * tol:
-                out.append(i)
-        return out
+        """Every node within `tol` of the segment node a -> node b, in WORLD
+        space (stereo_select.nodes_near_segment): a line across a tilted
+        view passes near nodes on other layers that merely look close."""
+        from apps.stereo import stereo_select as ssel
+        return ssel.nodes_near_segment(self.nodes, a, b, tol)
 
     def _nodes_in_disc(self, cx, cy, radius, layer_ids, limit=4):
         """The nodes of `layer_ids` whose PLAN position falls inside a disc,
@@ -1108,6 +1149,9 @@ class StereoViewMixin:
         self._draw()
 
     def _on_axis_cancel(self, event=None):
+        if getattr(self, '_line_pick_first', None) is not None:
+            self._line_pick_first = None
+            self._set_pick_note('Line stopped.')
         self._axis_pending = None
         self._axis_extend_frame.pack_forget()
         self.canvas.focus_set()

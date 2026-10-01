@@ -394,6 +394,23 @@ class StereoReportsMixin:
          'solicitation, steel take-off'),
     )
 
+    def _pdf_view_opts(self):
+        """The drawing scale the last export dialog chose -- or the fit."""
+        return dict(getattr(self, '_pdf_view', None) or sr.PDF_VIEW_DEFAULT)
+
+    @staticmethod
+    def _pdf_view_from(mode, zoom_pct, ratio_n):
+        """The dialog's three controls as export_pdf's two options."""
+        if mode == 'ratio' and float(ratio_n) > 0:
+            return {'zoom': 1.0, 'ratio': float(ratio_n)}
+        if mode == 'zoom' and float(zoom_pct) > 0:
+            return {'zoom': float(zoom_pct) / 100.0, 'ratio': None}
+        return dict(sr.PDF_VIEW_DEFAULT)
+
+    def _pdf_view_kwargs(self):
+        v = self._pdf_view_opts()
+        return {'view_zoom': v.get('zoom', 1.0), 'view_ratio': v.get('ratio')}
+
     def _pdf_sheet_dialog(self, title, results, checks, n_rigid):
         """Ask which groups of sheets to include; None if cancelled.
 
@@ -434,6 +451,38 @@ class StereoReportsMixin:
                 row=row * 2 + 1, column=0, sticky='w', padx=(22, 0),
                 pady=(0, 6))
 
+        # ── the drawing scale ─────────────────────────────────────────
+        # Fit is the default and is usually right: the structure as large
+        # as it goes without running under a panel. Zoom nudges that; 1:N
+        # is a true drawing scale for a sheet that will be measured.
+        view = dict(self._pdf_view_opts())
+        sc = tk.LabelFrame(win, text='Drawing scale')
+        sc.pack(fill='x', padx=20, pady=(8, 0))
+        mode = tk.StringVar(master=win, value=('ratio' if view.get('ratio')
+                                               else 'zoom' if abs(
+                                                   view.get('zoom', 1.0) - 1.0)
+                                               > 1e-9 else 'fit'))
+        zoom_pct = tk.DoubleVar(master=win,
+                                value=round(100.0 * view.get('zoom', 1.0), 1))
+        ratio_n = tk.DoubleVar(master=win, value=view.get('ratio') or 200.0)
+        r = tk.Frame(sc)
+        r.pack(fill='x', padx=6, pady=(2, 0))
+        tk.Radiobutton(r, text='Fit to the sheet', variable=mode,
+                       value='fit').pack(side='left')
+        r = tk.Frame(sc)
+        r.pack(fill='x', padx=6)
+        tk.Radiobutton(r, text='Zoom', variable=mode, value='zoom'
+                       ).pack(side='left')
+        tk.Spinbox(r, from_=25, to=400, increment=10, width=6,
+                   textvariable=zoom_pct).pack(side='left', padx=(4, 2))
+        tk.Label(r, text='% of the fit').pack(side='left')
+        r = tk.Frame(sc)
+        r.pack(fill='x', padx=6, pady=(0, 4))
+        tk.Radiobutton(r, text='True scale  1 :', variable=mode,
+                       value='ratio').pack(side='left')
+        tk.Entry(r, width=7, textvariable=ratio_n).pack(side='left',
+                                                         padx=(4, 0))
+
         count = tk.Label(win, text='', font=('', 10, 'bold'))
         count.pack(pady=(6, 0))
 
@@ -450,6 +499,11 @@ class StereoReportsMixin:
 
         def ok():
             out['groups'] = {k for k, v in vars_.items() if v.get()}
+            try:
+                self._pdf_view = self._pdf_view_from(
+                    mode.get(), zoom_pct.get(), ratio_n.get())
+            except (tk.TclError, ValueError):
+                self._pdf_view = None
             win.destroy()
 
         btns = tk.Frame(win)
@@ -537,7 +591,8 @@ class StereoReportsMixin:
                                 'grid_family': self._model_name()},
                           az_deg=self.azimuth, el_deg=self.elevation,
                           groups=groups,
-                          unit_weight_kN_m3=self._unit_weight())
+                          unit_weight_kN_m3=self._unit_weight(),
+                          **self._pdf_view_kwargs())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return
@@ -574,7 +629,8 @@ class StereoReportsMixin:
                           meta={'grid_family': self._model_name()},
                           az_deg=self.azimuth, el_deg=self.elevation,
                           groups=groups,
-                          unit_weight_kN_m3=self._unit_weight())
+                          unit_weight_kN_m3=self._unit_weight(),
+                          **self._pdf_view_kwargs())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return

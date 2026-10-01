@@ -101,11 +101,40 @@ def test_moving_a_named_group_takes_its_subgroups_along():
 
 # ── edit mode: the open group's parts, and nothing else ────────────────────
 
-def test_opening_a_group_unlocks_its_parts_and_its_subgroups():
+def test_opening_a_group_unlocks_its_own_parts_and_not_its_subgroups():
+    """Layers: a subgroup is a closed object inside its parent, as a group
+    is in the model. Node 2 is where A's own rod meets C, so it is C's."""
     _n, members, groups, A, B, C = _model()
-    assert sgp.editable_rods(groups, A, len(members)) == {0, 1, 2}
-    assert sgp.editable_nodes(groups, members, A) == {0, 1, 2, 3}
-    assert not sgp.rod_locked(groups, 2, editing=A)
+    assert sgp.editable_rods(groups, A, len(members)) == {0, 1}
+    assert sgp.editable_nodes(groups, members, A) == {0, 1}
+    assert sgp.rod_locked(groups, 2, editing=A), 'C is closed inside A'
+    assert not sgp.rod_locked(groups, 1, editing=A)
+
+
+def test_opening_the_subgroup_unlocks_its_parts():
+    _n, members, groups, A, B, C = _model()
+    assert sgp.editable_rods(groups, C, len(members)) == {2}
+    assert sgp.editable_nodes(groups, members, C) == {2, 3}
+    assert sgp.rod_locked(groups, 0, editing=C), 'its parent is outside it'
+
+
+def test_inside_a_group_a_subgroup_moves_as_a_whole():
+    _n, members, groups, A, B, C = _model()
+    sgp.unassign(groups, [3])            # free node 3 from B for this one
+    plan = sgp.move_plan(groups, members, {3}, editing=A)
+    assert plan['groups'] == [C]
+    assert plan['nodes'] == [2, 3]
+    assert plan['conflicts'] == {}
+
+
+def test_object_at_names_the_object_in_each_context():
+    _n, _m, groups, A, B, C = _model()
+    assert sgp.object_at(groups, C) == A
+    assert sgp.object_at(groups, C, editing=A) == C
+    assert sgp.object_at(groups, A, editing=A) == sgp.OWN
+    assert sgp.object_at(groups, B, editing=A) is None
+    assert sgp.context_objects(groups) == [A, B]
+    assert sgp.context_objects(groups, A) == [C]
 
 
 def test_while_one_group_is_open_everything_outside_it_is_blocked():
@@ -154,9 +183,11 @@ def test_ungrouped_rods_delete_freely_with_no_group_open():
 
 def test_in_edit_mode_the_open_groups_rods_delete_and_outside_ones_do_not():
     _n, members, groups, A, B, C = _model()
-    assert sgp.delete_blockers(groups, members, set(), {0, 2}, editing=A) == {}
+    assert sgp.delete_blockers(groups, members, set(), {0, 1}, editing=A) == {}
+    assert sgp.delete_blockers(groups, members, set(), {2}, editing=A) == \
+        {C: [2]}, 'a closed subgroup keeps its rods'
     assert sgp.delete_blockers(groups, members, {3}, set(), editing=A) == \
-        {B: [3]}
+        {B: [3], C: [2]}, 'node 3 takes a rod of B and of the closed C'
     assert sgp.delete_blockers(groups, members, set(), {6}, editing=A) == \
         {None: [6]}
 

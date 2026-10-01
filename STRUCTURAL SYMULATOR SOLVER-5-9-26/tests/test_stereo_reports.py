@@ -1458,3 +1458,71 @@ def test_the_data_panel_leaves_out_what_was_not_computed():
     assert 'Utilisation' not in rows
     assert rows['KL/r'] == '100'
     assert rows['N'].endswith('(zero)')
+
+
+# ── the drawing scale on the sheet ─────────────────────────────────────────
+
+def _fit_axes():
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    fig = plt.figure(figsize=sr.PDF_SHEET_IN)
+    return fig, sr._pdf_view_axes(fig)
+
+
+def _square(n=11, step=3.0):
+    return [(i * step, j * step) for i in range(n) for j in range(n)]
+
+
+def test_the_fit_uses_the_middle_of_the_sheet_the_panels_leave_free():
+    """A square plan used to get the band between the top panels and the
+    bottom furniture -- a third of the height. Clear of the panels'
+    RECTANGLES it is far larger, and still never under one."""
+    import matplotlib.pyplot as plt
+    fig, ax = _fit_axes()
+    try:
+        pts = _square()
+        obstacles = [(0.0, 0.80, 0.30, 1.0), (0.75, 0.70, 1.0, 1.0),
+                     (0.0, 0.0, 0.42, 0.16), (0.78, 0.0, 1.0, 0.24)]
+        old = sr._pdf_fit_window(ax, pts, reserve_top=0.30,
+                                 reserve_bottom=0.26)
+        new = sr._pdf_fit_window_clear(ax, pts, obstacles,
+                                       legacy_reserve_top=0.30,
+                                       legacy_reserve_bottom=0.26)
+        old_w, new_w = old[2] - old[0], new[2] - new[0]
+        assert new_w < 0.75 * old_w, 'the drawing should be much larger'
+        x0, y0, x1, y1 = new
+        for px, py in pts:
+            u, v = (px - x0) / (x1 - x0), (py - y0) / (y1 - y0)
+            for a0, b0, a1, b1 in obstacles:
+                assert not (a0 <= u <= a1 and b0 <= v <= b1)
+    finally:
+        plt.close(fig)
+
+
+def test_zoom_and_true_scale():
+    import matplotlib.pyplot as plt
+    fig, ax = _fit_axes()
+    try:
+        pts = _square()
+        fit = sr._pdf_fit_window_clear(ax, pts, [])
+        zoomed = sr._pdf_fit_window_clear(ax, pts, [], zoom=1.5)
+        assert (zoomed[2] - zoomed[0]) == pytest.approx(
+            (fit[2] - fit[0]) / 1.5)
+        w_in, _h = sr._pdf_axes_size_in(ax)
+        true = sr._pdf_fit_window_clear(ax, pts, [], ratio=200)
+        # 1:200 -- 200 m of structure per metre of paper
+        assert (true[2] - true[0]) == pytest.approx(200 * 0.0254 * w_in)
+    finally:
+        plt.close(fig)
+
+
+def test_export_pdf_takes_the_scale_and_puts_the_default_back(tmp_path):
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    path = str(tmp_path / 's.pdf')
+    sr.export_pdf(nodes, members, loads, supports, res, path, checks=checks,
+                  groups={'views'}, view_zoom=1.3, view_ratio=None)
+    assert sr._PDF_VIEW == sr.PDF_VIEW_DEFAULT
+    sr.export_pdf(nodes, members, loads, supports, res, path, checks=checks,
+                  groups={'views'}, view_ratio=100)
+    assert sr._PDF_VIEW == sr.PDF_VIEW_DEFAULT

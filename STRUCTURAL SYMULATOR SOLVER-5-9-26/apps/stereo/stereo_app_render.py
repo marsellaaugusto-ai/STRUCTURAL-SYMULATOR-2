@@ -561,7 +561,10 @@ class StereoRenderMixin:
                 open_nodes = set(sgp.nodes_of_rods(self.members, open_rods))
             # Grouped mode: a tint under each grouped rod, by top-level group.
             tints = None
-            if self.groups and self.group_view.get():
+            if self.groups and (self.group_view.get()
+                                or self._editing_gid() is not None):
+                # With a group open its closed subgroups are tinted even in
+                # the plain view: they are objects, and should look it.
                 tints, _key = self._group_tint_map()
             order = sorted(range(len(self.members)), key=lambda i: -(
                 proj[self.members[i]['a']][2] + proj[self.members[i]['b']][2])) \
@@ -977,7 +980,8 @@ class StereoRenderMixin:
     def _draw_group_key(self, c):
         """Grouped mode's key: a swatch and a name per top-level group, in
         the bottom-right corner (the legend owns the top-left)."""
-        if not (self.groups and self.group_view.get()):
+        if not (self.groups and (self.group_view.get()
+                                 or self._editing_gid() is not None)):
             return
         _rods, key = self._group_tint_map()
         if not key:
@@ -1019,8 +1023,9 @@ class StereoRenderMixin:
         c.create_rectangle(2, 2, w - 2, h - 2, outline=EDIT_BANNER_COLOR,
                            width=3, tags='edit_banner')
         text = ('EDITING  %s  --  everything else is locked.  '
-                'Groups > Done editing to finish.'
-                % self._group_display_name(gid))
+                'Right-click empty canvas, Esc or Done to close it.'
+                % ' › '.join(self._group_display_name(g)
+                             for g in self._group_path(gid)))
         # Along the BOTTOM edge: the legend card owns the top-left corner and
         # the view buttons the top-right, and a banner over either hides
         # something the drawing needs.

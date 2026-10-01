@@ -157,6 +157,7 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         # The group open for editing, or None. Every group is locked; this
         # is the one piece of state the lock needs (see stereo_groups).
         self._group_editing = None
+        self._group_edit_stack = []
         # (rod index, caption) of the rod a "Show me this rod" action is
         # pointing at, or None. Drawn only over a live solve: the claim it
         # makes ("this rod governs") is a claim about THAT solve.

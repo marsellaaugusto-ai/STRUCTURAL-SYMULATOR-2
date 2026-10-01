@@ -494,8 +494,15 @@ def member_remap(n_before, dropped):
 # So there is no per-group "locked" flag to forget to set. EVERY group is
 # locked, always, and the one piece of state is which group -- if any -- is
 # open. `editing` below is that group's id, or None when none is open.
-# Opening a group opens its whole subtree: a subgroup is "inside the group I
-# am editing", which is the rule as stated.
+#
+# Groups behave like LAYERS, at every depth alike. Opening a group opens its
+# OWN rods -- not its subgroups. A subgroup is a closed object inside its
+# parent, exactly as a top-level group is a closed object in the model: it
+# moves as a whole when one of its nodes is dragged, its parts stay put, and
+# to change them it is opened in its turn. So a subgroup has every feature
+# a group has, because the rules below never ask how deep a group sits --
+# only what the CONTEXT is: the model when nothing is open, the open group's
+# inside when one is.
 #
 # Three decisions the request left open, taken here so they are in one place:
 #
@@ -522,6 +529,38 @@ def top_group(groups, gid):
     return g['id'] if g is not None else None
 
 
+OWN = 'own'
+
+
+def object_at(groups, gid, editing=None):
+    """Which object `gid`'s rods are part of, seen from the current context.
+
+    No group open: the outermost group holding `gid`. A group open: OWN if
+    `gid` IS the open group (its own rods, editable one by one), the child of
+    the open group that holds `gid` (a closed object inside it), or None
+    when `gid` is outside the open group altogether.
+    """
+    if editing is None:
+        return top_group(groups, gid)
+    if gid == editing:
+        return OWN
+    g, seen = find(groups, gid), set()
+    while g is not None and g['id'] not in seen:
+        seen.add(g['id'])
+        if g['parent'] == editing:
+            return g['id']
+        if g['parent'] is None:
+            return None
+        g = find(groups, g['parent'])
+    return None
+
+
+def context_objects(groups, editing=None):
+    """The closed objects in the current context: the top-level groups,
+    or the open group's direct subgroups."""
+    return [g['id'] for g in groups if g['parent'] == editing]
+
+
 def owner_of_rod(groups):
     """{rod index: gid} for every grouped rod, leaf level."""
     out = {}
@@ -545,18 +584,21 @@ def editable_rods(groups, editing, n_members):
     """The rods that may be changed one by one right now.
 
     With no group open these are the Ungrouped rods -- every grouped rod is
-    part of a locked object. With a group open they are that group's rods,
-    subgroups included, and nothing else.
+    part of a locked object. With a group open they are that group's OWN
+    rods: its subgroups are closed objects inside it, as locked as any
+    top-level group, until they are opened in their turn.
     """
     if editing is None:
         return set(ungrouped_rods(groups, n_members))
-    return set(rods_of(groups, editing, deep=True))
+    g = find(groups, editing)
+    return set(g['members']) if g else set()
 
 
 def protected_rods(groups, editing):
-    """Grouped rods outside the open group: the ones nothing may change."""
-    inside = set(rods_of(groups, editing, deep=True)) if editing is not None \
-        else set()
+    """Grouped rods that may not be changed one by one: everything but the
+    open group's own rods (its subgroups are closed objects)."""
+    g = find(groups, editing) if editing is not None else None
+    inside = set(g['members']) if g else set()
     return set(owner_of_rod(groups)) - inside
 
 
@@ -564,13 +606,19 @@ def editable_nodes(groups, members, editing, n_nodes=None):
     """Nodes that may be selected and changed one by one right now.
 
     No group open: every node no grouped rod touches (a grouped node belongs
-    to an object and moves only with it). A group open: the nodes of that
-    group, and only those -- everything else is blocked while editing.
-    `n_nodes` counts nodes no rod touches at all, which the member list
-    alone cannot see.
+    to an object and moves only with it). A group open: the nodes of its
+    own rods that no subgroup of it touches -- a subgroup's node belongs to
+    that closed object, the same rule one level down. Everything outside
+    the open group is blocked while editing. `n_nodes` counts nodes no rod
+    touches at all, which the member list alone cannot see.
     """
     if editing is not None:
-        return set(nodes_of_rods(members, rods_of(groups, editing, deep=True)))
+        g = find(groups, editing)
+        own = set(nodes_of_rods(members, g['members'])) if g else set()
+        inner = set()
+        for d in descendant_ids(groups, editing):
+            inner |= set(nodes_of_rods(members, find(groups, d)['members']))
+        return own - inner
     touched = set(nodes_of_rods(members, owner_of_rod(groups)))
     if n_nodes is None:
         n_nodes = 1 + max((max(m['a'], m['b']) for m in members), default=-1)
@@ -605,32 +653,34 @@ def move_plan(groups, members, selected_nodes, editing=None):
     Returns {'nodes': [...], 'groups': [...], 'conflicts': {node: [gid]}}.
     With `conflicts` non-empty nothing may move.
 
-    No group open: a node that belongs to a group brings its whole
-    outermost group along -- the object moves as a whole. A free node moves
-    by itself. With a group open: only that group's nodes move, one by one,
-    and a selected node outside it is ignored rather than dragged along.
+    The same rule at every depth (see object_at): a node that belongs to a
+    closed object in the current context brings that whole object along --
+    the outermost group when nothing is open, a subgroup of the open group
+    when one is. A node only the open group's own rods (or, with nothing
+    open, no group at all) touch moves by itself. A selected node outside
+    the open group is ignored rather than dragged along.
     """
     adj = rods_at_nodes(members)
     own = owner_of_rod(groups)
     sel = {int(n) for n in selected_nodes}
-    if editing is None:
-        tops = set()
-        free = set()
-        for n in sel:
-            gids = {own[i] for i in adj.get(n, ()) if i in own}
-            if gids:
-                tops |= {top_group(groups, g) for g in gids}
-            else:
-                free.add(n)
-        rods = set()
-        for t in tops:
-            rods |= set(rods_of(groups, t, deep=True))
-        nodes = set(nodes_of_rods(members, rods)) | free
-    else:
-        tops = set()
-        rods = set()
-        nodes = sel & editable_nodes(groups, members, editing)
-    return {'nodes': sorted(nodes), 'groups': sorted(tops),
+    objs = set()
+    free = set()
+    for n in sel:
+        gids = {own[i] for i in adj.get(n, ()) if i in own}
+        if editing is None and not gids:
+            free.add(n)
+            continue
+        here = {object_at(groups, g, editing) for g in gids}
+        found = {o for o in here if o not in (None, OWN)}
+        if found:
+            objs |= found
+        elif OWN in here:
+            free.add(n)
+    rods = set()
+    for t in objs:
+        rods |= set(rods_of(groups, t, deep=True))
+    nodes = set(nodes_of_rods(members, rods)) | free
+    return {'nodes': sorted(nodes), 'groups': sorted(objs),
             'conflicts': _conflicts(groups, members, nodes, rods, editing, adj)}
 
 
@@ -666,7 +716,8 @@ def rod_locked(groups, i, editing=None):
     """May this rod NOT be changed on its own right now?"""
     if editing is None:
         return int(i) in owner_of_rod(groups)
-    return int(i) not in set(rods_of(groups, editing, deep=True))
+    g = find(groups, editing)
+    return int(i) not in (g['members'] if g else set())
 
 
 def node_locked(groups, members, n, editing=None):
@@ -684,8 +735,8 @@ def assign_blockers(groups, rod_idx, target, editing=None):
     empty another. `target` None means Ungroup.
     """
     own = owner_of_rod(groups)
-    inside = set(rods_of(groups, editing, deep=True)) if editing is not None \
-        else set()
+    g_open = find(groups, editing) if editing is not None else None
+    inside = set(g_open['members']) if g_open else set()
     out = {}
     for i in sorted({int(i) for i in rod_idx}):
         g = own.get(i)

@@ -581,7 +581,9 @@ class StereoPanelsMixin(_ToolbarModes):
         for key in ('<Left>', '<Right>', '<Up>', '<Down>',
                     '<Prior>', '<Next>'):
             self.canvas.bind(key, self._on_axis_key)
-        self.canvas.bind('<Escape>', self._on_axis_cancel)
+        self.canvas.bind('<Escape>', self._on_escape)
+        self.canvas.bind('<Control-g>', lambda _e: (
+            self._group_new_from_selection(), 'break')[1])
         # R / M / Shift+M: rotate, mirror, mirror a copy of the selection
         # about the axis the arrow keys last chose (roadmap 3.4).
         self.canvas.bind('l', self._toggle_line_pick)
@@ -1108,6 +1110,10 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Checkbutton(tools, text='Add rod (click two nodes)', variable=self.add_rod_mode,
                        bg=BG, font=('Helvetica', 9),
                        command=self._on_add_rod_mode_toggle).pack(anchor='w')
+        # Filled by _build_groups_panel (see _populate_modes): groups sit
+        # right under the selection tools they are used with.
+        self._groups_slot = tk.Frame(parent, bg=BG)
+        self._groups_slot.pack(fill='x')
 
         box = tk.LabelFrame(parent, text='Geometry', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=(6, 4))

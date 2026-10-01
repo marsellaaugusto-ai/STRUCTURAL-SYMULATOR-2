@@ -23,7 +23,8 @@ from apps.stereo.stereo_app_shell import HINT_FG
 from apps.stereo import stereo_groups as sgp
 from apps.stereo import stereo_checks as sk
 from apps.stereo import stereo_profiles as sp
-from apps.stereo.stereo_app_constants import BG, PANEL_TEXT_W, GROUP_TINTS
+from apps.stereo.stereo_app_constants import (BG, PANEL_TEXT_W, GROUP_TINTS,
+                                              EDIT_BANNER_COLOR)
 
 
 class StereoGroupsMixin:
@@ -31,27 +32,35 @@ class StereoGroupsMixin:
     # ── the panel ──────────────────────────────────────────────────────────
 
     def _build_groups_panel(self, parent):
-        box = tk.LabelFrame(parent, text='Groups', bg=BG,
-                            font=('Helvetica', 10, 'bold'))
-        box.pack(fill='both', padx=6, pady=(4, 8))
+        """Groups as LAYERS, in the Build panel.
 
-        tk.Label(box, text='A group is a named set of RODS -- a branch of the '
-                           'structure. Groups nest as deep as you like. The '
-                           'nodes a group touches follow from its rods, so a '
-                           'joint shared with another branch cannot be '
-                           'forgotten. Anything unassigned is Ungrouped.',
+        Everyday work is four buttons and the list: make a group from the
+        selection, add the selection to a group, take it out again, and
+        open a group -- right-click its row, or right-click one of its rods
+        on the canvas. Everything rarer (a section for the whole group, the
+        checks, the reports) is one click further, under More group tools
+        and the Actions menu, so the panel reads at a glance.
+        """
+        box = tk.LabelFrame(parent, text='Groups (layers)', bg=BG,
+                            font=('Helvetica', 10, 'bold'))
+        box.pack(fill='x', padx=6, pady=(6, 4))
+        self._groups_box = box
+
+        tk.Label(box, text='Every group -- and every subgroup -- is a closed '
+                           'object: it moves whole, its parts stay put. '
+                           'Right-click a group (here or on the canvas) to '
+                           'open it; right-click empty canvas or press Done '
+                           'to close it again.',
                  bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
                  wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(2, 4))
 
-        # Grouped / Ungrouped: how the model is DRAWN. Grouped marks every
-        # top-level group with its own tint and a key; Ungrouped is the plain
-        # model. The locks hold in both -- switching the view is not a way
-        # round them; Edit group is.
+        # Grouped / Ungrouped: how the model is DRAWN. The locks hold in
+        # both -- switching the view is not a way round them.
         mode = tk.Frame(box, bg=BG)
-        mode.pack(fill='x', padx=6, pady=(0, 4))
-        tk.Label(mode, text='Mode:', bg=BG,
+        mode.pack(fill='x', padx=6, pady=(0, 2))
+        tk.Label(mode, text='Show:', bg=BG,
                  font=('Helvetica', 8, 'bold')).pack(side='left')
-        for text, val in (('Ungrouped', False), ('Grouped', True)):
+        for text, val in (('Plain', False), ('Coloured by group', True)):
             tk.Radiobutton(mode, text=text, variable=self.group_view,
                            value=val, bg=BG, font=('Helvetica', 8),
                            command=self._draw).pack(side='left', padx=(4, 0))
@@ -62,9 +71,23 @@ class StereoGroupsMixin:
         self.group_list.bind('<<ListboxSelect>>', self._on_group_pick)
         self.group_list.bind('<Double-Button-1>',
                              lambda _e: self._group_select_rods())
-        # The properties box the user asked for, on the row itself.
+        # Right-click a row: open that group for editing (the request, in
+        # so many words). The other actions are on the Actions menu.
         for seq in ('<Button-3>', '<Button-2>', '<Control-Button-1>'):
             self.group_list.bind(seq, self._on_group_right_click)
+
+        # The one line that says what is open, with the way out beside it.
+        edit_row = tk.Frame(box, bg=BG)
+        edit_row.pack(fill='x', padx=6, pady=(0, 2))
+        self.group_edit_state = tk.Label(edit_row, text='', bg=BG,
+                                         fg='#1d2328', anchor='w',
+                                         font=('Helvetica', 8, 'bold'),
+                                         justify='left',
+                                         wraplength=PANEL_TEXT_W - 90)
+        self.group_edit_state.pack(side='left', fill='x', expand=True)
+        self.group_edit_btn = tk.Button(edit_row, font=('Helvetica', 8, 'bold'),
+                                        command=self._group_edit_toggle)
+        self.group_edit_btn.pack(side='right')
 
         self.group_note = tk.Label(box, text='No groups yet.', bg=BG,
                                    fg=HINT_FG, font=('Helvetica', 8),
@@ -73,61 +96,49 @@ class StereoGroupsMixin:
 
         mk = tk.Frame(box, bg=BG)
         mk.pack(fill='x', padx=6)
-        tk.Button(mk, text='New from selection', font=('Helvetica', 8),
+        tk.Button(mk, text='New group from selection', font=('Helvetica', 8),
                   command=self._group_new_from_selection
                   ).pack(side='left', expand=True, fill='x')
         tk.Button(mk, text='New subgroup', font=('Helvetica', 8),
                   command=self._group_new_subgroup
                   ).pack(side='left', expand=True, fill='x', padx=(3, 0))
 
-        ed = tk.Frame(box, bg=BG)
-        ed.pack(fill='x', padx=6, pady=(2, 0))
-        tk.Button(ed, text='Rename', font=('Helvetica', 8),
-                  command=self._group_rename).pack(side='left', expand=True,
-                                                   fill='x')
-        tk.Button(ed, text='Delete', font=('Helvetica', 8), fg='#a3241a',
-                  command=self._group_delete).pack(side='left', expand=True,
-                                                   fill='x', padx=(3, 0))
-
         asg = tk.Frame(box, bg=BG)
-        asg.pack(fill='x', padx=6, pady=(4, 0))
-        tk.Button(asg, text='Add selection', font=('Helvetica', 8),
+        asg.pack(fill='x', padx=6, pady=(3, 0))
+        tk.Button(asg, text='Add selection to group', font=('Helvetica', 8),
                   command=self._group_assign_selection
                   ).pack(side='left', expand=True, fill='x')
-        tk.Button(asg, text='Ungroup selection', font=('Helvetica', 8),
+        tk.Button(asg, text='Remove from group', font=('Helvetica', 8),
                   command=self._group_unassign_selection
                   ).pack(side='left', expand=True, fill='x', padx=(3, 0))
 
-        tk.Button(box, text='Select this group in the view',
-                  font=('Helvetica', 8), command=self._group_select_rods
-                  ).pack(fill='x', padx=6, pady=(4, 0))
+        act = tk.Frame(box, bg=BG)
+        act.pack(fill='x', padx=6, pady=(3, 4))
+        tk.Button(act, text='Select in view', font=('Helvetica', 8),
+                  command=self._group_select_rods
+                  ).pack(side='left', expand=True, fill='x')
+        self.group_actions_btn = tk.Menubutton(act, text='Actions ▾',
+                                               font=('Helvetica', 8),
+                                               relief='raised')
+        self.group_actions_btn.pack(side='left', expand=True, fill='x',
+                                    padx=(3, 0))
+        self.group_actions_btn['menu'] = self._group_actions_menu(
+            self.group_actions_btn)
 
-        # ── the lock ───────────────────────────────────────────────────────
-        lk = tk.LabelFrame(box, text='Locked groups', bg=BG,
-                           font=('Helvetica', 8, 'bold'))
-        lk.pack(fill='x', padx=6, pady=(6, 2))
-        tk.Label(lk, text='A group is one object: drag any of its nodes and '
-                          'the whole group moves; its parts stay put. Rods '
-                          'can still be drawn to its nodes. To change its '
-                          'parts, open it -- everything else locks while '
-                          'you work, and stays visible.',
-                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
-                 wraplength=PANEL_TEXT_W - 12).pack(anchor='w', padx=4,
-                                                    pady=(2, 2))
-        self.group_edit_btn = tk.Button(lk, font=('Helvetica', 8, 'bold'),
-                                        command=self._group_edit_toggle)
-        self.group_edit_btn.pack(fill='x', padx=4)
-        tk.Button(lk, text='Move group…', font=('Helvetica', 8),
-                  command=self._group_move_dialog).pack(fill='x', padx=4,
-                                                        pady=(2, 4))
-        self._refresh_group_edit_controls()
+        # ── rarer tools, folded away ──────────────────────────────────────
+        self.group_more_open = tk.BooleanVar(value=False)
+        tk.Checkbutton(box, text='More group tools (section, checks, PDF)',
+                       variable=self.group_more_open, bg=BG,
+                       font=('Helvetica', 8), anchor='w',
+                       command=self._group_toggle_more).pack(fill='x', padx=6)
+        more = self._group_more = tk.Frame(box, bg=BG)
 
-        # ── one section for the whole group ────────────────────────────────
-        sec = tk.LabelFrame(box, text='Section for the whole group', bg=BG,
+        sec = tk.LabelFrame(more, text='Section for the whole group', bg=BG,
                             font=('Helvetica', 8, 'bold'))
-        sec.pack(fill='x', padx=6, pady=(6, 2))
+        sec.pack(fill='x', padx=6, pady=(4, 2))
         tk.Label(sec, text='Rods in a group need not match. Setting a section '
-                           'here sets every rod in the group at once.',
+                           'here sets every rod in the group at once, locked '
+                           'or not.',
                  bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
                  wraplength=PANEL_TEXT_W - 12).pack(anchor='w', padx=4,
                                                     pady=(2, 2))
@@ -140,9 +151,6 @@ class StereoGroupsMixin:
         tk.Button(row, text='Apply', font=('Helvetica', 8),
                   command=self._group_apply_profile).pack(side='left',
                                                           padx=(3, 0))
-
-        # The family to size within, because "easier to build" usually means
-        # one family for the job, not the lightest thing in the catalog.
         fam = tk.Frame(sec, bg=BG)
         fam.pack(fill='x', padx=4, pady=(3, 0))
         tk.Label(fam, text='Size within:', bg=BG,
@@ -152,14 +160,12 @@ class StereoGroupsMixin:
                      width=13,
                      values=['(any)'] + sp.group_names()
                      ).pack(side='left', fill='x', expand=True, padx=(3, 0))
-
         tk.Button(sec, text='Recommend a section for this group',
                   font=('Helvetica', 8, 'bold'),
                   command=self._group_recommend).pack(fill='x', padx=4,
                                                       pady=(4, 4))
 
-        # ── the checks a grouped model wants ──────────────────────────────
-        chk = tk.Frame(box, bg=BG)
+        chk = tk.Frame(more, bg=BG)
         chk.pack(fill='x', padx=6, pady=(4, 2))
         tk.Button(chk, text='Shared joints', font=('Helvetica', 8),
                   command=self._group_shared_nodes
@@ -167,9 +173,7 @@ class StereoGroupsMixin:
         tk.Button(chk, text='Do the totals add up?', font=('Helvetica', 8),
                   command=self._group_reconcile
                   ).pack(side='left', expand=True, fill='x', padx=(3, 0))
-
-        # ── the report ────────────────────────────────────────────────────
-        rep = tk.Frame(box, bg=BG)
+        rep = tk.Frame(more, bg=BG)
         rep.pack(fill='x', padx=6, pady=(2, 6))
         tk.Button(rep, text='PDF of all groups…', font=('Helvetica', 8, 'bold'),
                   command=self._export_groups_pdf
@@ -178,7 +182,45 @@ class StereoGroupsMixin:
                   command=lambda: self._export_groups_pdf(only_picked=True)
                   ).pack(side='left', expand=True, fill='x', padx=(3, 0))
 
+        self._refresh_group_edit_controls()
         self._refresh_group_list()
+
+    def _group_toggle_more(self):
+        if self.group_more_open.get():
+            self._group_more.pack(fill='x')
+        else:
+            self._group_more.pack_forget()
+        outer = getattr(self, 'panel_outer', None)
+        if outer is not None:
+            outer.fit_to_content()
+
+    def _group_actions_menu(self, master):
+        """The picked group's actions -- the list's old right-click menu,
+        now on a button, since right-click opens the group instead."""
+        menu = tk.Menu(master, tearoff=False)
+        menu.add_command(label='Open for editing',
+                         command=lambda: self._group_open(self._current_group()))
+        menu.add_command(label='Properties…', command=self._group_properties)
+        menu.add_command(label='Recommend a section…',
+                         command=self._group_recommend)
+        menu.add_separator()
+        menu.add_command(label='Select in the view',
+                         command=self._group_select_rods)
+        menu.add_command(label='Add the current selection',
+                         command=self._group_assign_selection)
+        menu.add_command(label='PDF of this group…',
+                         command=lambda: self._export_groups_pdf(
+                             only_picked=True))
+        menu.add_separator()
+        menu.add_command(label='Move group…', command=self._group_move_dialog)
+        menu.add_command(label='Rename…', command=self._group_rename)
+        menu.add_command(label='Delete', command=self._group_delete)
+        menu.add_separator()
+        menu.add_command(label='Shared joints…',
+                         command=self._group_shared_nodes)
+        menu.add_command(label='Do the totals add up?',
+                         command=self._group_reconcile)
+        return menu
 
     # ── the list ───────────────────────────────────────────────────────────
 
@@ -190,11 +232,13 @@ class StereoGroupsMixin:
         assigned still are.
         """
         rows = []
+        editing = getattr(self, '_group_editing', None)
         for g, lvl in sgp.walk(self.groups):
             deep = len(sgp.rods_of(self.groups, g['id'], deep=True))
             own = len(g['members'])
             count = ('%d' % own) if deep == own else ('%d/%d' % (own, deep))
-            rows.append(('%s%s  [%s]' % ('   ' * lvl, g['name'], count),
+            mark = '✎ ' if g['id'] == editing else ''
+            rows.append(('%s%s%s  [%s]' % ('   ' * lvl, mark, g['name'], count),
                          g['id']))
         rest = sgp.ungrouped_rods(self.groups, len(self.members))
         if rest:
@@ -300,6 +344,7 @@ class StereoGroupsMixin:
         g = sgp.new_group(self.groups, name, parent=parent, members=idx)
         self._refresh_group_list(keep=g['id'])
         self._group_note_action('%s: %d rod(s).' % (g['name'], len(idx)))
+        self._draw()
 
     def _group_new_subgroup(self):
         gid = self._current_group()
@@ -327,6 +372,7 @@ class StereoGroupsMixin:
             '%s inside %s%s.' % (g['name'], self._group_display_name(gid),
                                  (', %d rod(s)' % len(idx)) if idx else
                                  ' (empty -- add a selection to it)'))
+        self._draw()
 
     def _group_rename(self):
         gid = self._current_group()
@@ -341,6 +387,7 @@ class StereoGroupsMixin:
         self._push_undo('rename group')
         sgp.rename(self.groups, gid, name)
         self._refresh_group_list(keep=gid)
+        self._draw()
 
     def _group_delete(self):
         gid = self._current_group()
@@ -363,9 +410,12 @@ class StereoGroupsMixin:
         self._refresh_group_list()
         self._group_note_action('%s deleted; its rods are Ungrouped again.'
                                 % name)
+        self._draw()
 
     def _group_assign_selection(self):
         gid = self._current_group()
+        if gid is False and self._editing_gid() is not None:
+            gid = self._editing_gid()     # the open group, when none is picked
         if gid is False:
             messagebox.showinfo('Groups', 'Pick the group to add them to.')
             return
@@ -398,6 +448,7 @@ class StereoGroupsMixin:
             '%d rod(s) moved to %s. A rod is only ever in one group, so any '
             'that were elsewhere have left it.'
             % (moved, self._group_display_name(gid)))
+        self._draw()
 
     def _group_unassign_selection(self):
         idx = sorted(self._selection_member_idx())
@@ -410,6 +461,7 @@ class StereoGroupsMixin:
         sgp.unassign(self.groups, idx)
         self._refresh_group_list(keep=self._group_sel)
         self._group_note_action('%d rod(s) are Ungrouped.' % len(idx))
+        self._draw()
 
     def _group_select_rods(self):
         """Put the group's rods in the view's selection, so it can be seen.
@@ -651,11 +703,11 @@ class StereoGroupsMixin:
     # ── right-click properties ────────────────────────────────────────────
 
     def _on_group_right_click(self, event):
-        """Select the row under the pointer, then offer its actions.
+        """Right-click a row: select it and open that group for editing.
 
-        Selecting first matters: a context menu that acts on whatever was
-        selected BEFORE the right-click acts on the wrong group about half
-        the time.
+        Selecting first matters: acting on whatever was selected BEFORE the
+        right-click would act on the wrong group about half the time. The
+        row's other actions are on the Actions menu.
         """
         try:
             i = self.group_list.nearest(event.y)
@@ -666,33 +718,12 @@ class StereoGroupsMixin:
         self.group_list.selection_clear(0, 'end')
         self.group_list.selection_set(i)
         self._on_group_pick()
-
-        menu = tk.Menu(self.group_list, tearoff=False)
-        menu.add_command(label='Properties…', command=self._group_properties)
-        menu.add_command(label='Recommend a section…',
-                         command=self._group_recommend)
-        menu.add_separator()
-        menu.add_command(label='Select in the view',
-                         command=self._group_select_rods)
-        menu.add_command(label='PDF of this group…',
-                         command=lambda: self._export_groups_pdf(
-                             only_picked=True))
-        menu.add_command(label='Add the current selection',
-                         command=self._group_assign_selection)
-        menu.add_separator()
-        menu.add_command(
-            label=('Done editing' if self._editing_gid() is not None
-                   else 'Edit group (unlock its parts)'),
-            command=self._group_edit_toggle)
-        menu.add_command(label='Move group…', command=self._group_move_dialog)
-        menu.add_separator()
-        menu.add_command(label='Rename…', command=self._group_rename)
-        menu.add_command(label='Delete', command=self._group_delete)
-        self._group_menu = menu
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
+        gid = self._current_group()
+        if gid is False or gid is None:
+            self._group_note_action('Ungrouped rods are not locked -- there '
+                                    'is nothing to open.')
+            return 'break'
+        self._group_open(gid)
         return 'break'
 
     def _group_properties(self):
@@ -852,7 +883,8 @@ class StereoGroupsMixin:
                 meta={'grid_family': self._model_name()}, gids=gids,
                 az_deg=self.azimuth, el_deg=self.elevation, groups=sheets,
                 ortho_views='views' in sheets,
-                unit_weight_kN_m3=self._unit_weight())
+                unit_weight_kN_m3=self._unit_weight(),
+                **self._pdf_view_kwargs())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return None
@@ -944,6 +976,7 @@ class StereoGroupsMixin:
         gid = getattr(self, '_group_editing', None)
         if gid is not None and sgp.find(self.groups, gid) is None:
             self._group_editing = None
+            self._group_edit_stack = []
             gid = None
         return gid
 
@@ -972,15 +1005,10 @@ class StereoGroupsMixin:
             self.selected_member = None
 
     def _group_edit_toggle(self, gid=False):
-        """Open the picked group for editing, or close the open one."""
+        """The Edit / Done button: open the picked group, or step out of the
+        open one (back to the group it was opened from, if any)."""
         if self._editing_gid() is not None:
-            name = self._group_display_name(self._group_editing)
-            self._group_editing = None
-            self._refresh_group_edit_controls()
-            self._refresh_all()
-            self._group_note_action('%s is locked again.' % name)
-            self._set_status('%s is locked again.' % name, 'ok')
-            return None
+            return self._group_step_out()
         if gid is False:
             gid = self._current_group()
         if gid is False or gid is None:
@@ -988,30 +1016,108 @@ class StereoGroupsMixin:
                 'Edit group',
                 'Pick a group to edit. Ungrouped rods are not locked, so there '
                 'is nothing to open.')
+        return self._group_open(gid)
+
+    def _group_open(self, gid, nested=False):
+        """Open `gid` for editing.
+
+        `nested`: opened from INSIDE the group currently open (a subgroup
+        right-clicked on the canvas), so Done comes back out to it -- the
+        way into a nest of layers is the way back out. Otherwise this
+        replaces whatever was open.
+        """
+        if gid is False or gid is None or sgp.find(self.groups, gid) is None:
+            return self._group_refuse('Edit group', 'Pick a group to open.')
+        stack = list(getattr(self, '_group_edit_stack', []) or [])
+        if nested and self._editing_gid() is not None:
+            stack.append(gid)
+        else:
+            stack = [gid]
+        self._group_edit_stack = stack
         self._group_editing = gid
         self._clip_selection_to_edit()
+        self._refresh_group_list(keep=gid)
         self._refresh_group_edit_controls()
         self._refresh_all()
         name = self._group_display_name(gid)
+        subs = len(sgp.children(self.groups, gid))
         self._group_note_action(
-            'Editing %s. Its nodes and rods can be moved, added and deleted; '
-            'everything else is locked until you press Done.' % name)
+            'Editing %s. Its own nodes and rods can be moved, added and '
+            'deleted%s; everything else is locked until you press Done.'
+            % (name, ('; its %d subgroup(s) stay closed -- right-click one '
+                      'to open it' % subs) if subs else ''))
         self._set_status('Editing %s -- everything outside it is locked.'
                          % name, 'ok')
         return gid
 
+    def _group_step_out(self):
+        """Close the open group: back to the one it was opened from, or to
+        the whole model."""
+        gid = self._editing_gid()
+        if gid is None:
+            return None
+        name = self._group_display_name(gid)
+        stack = [g for g in (getattr(self, '_group_edit_stack', []) or [])
+                 if sgp.find(self.groups, g) is not None]
+        if stack and stack[-1] == gid:
+            stack.pop()
+        self._group_edit_stack = stack
+        self._group_editing = stack[-1] if stack else None
+        self._clip_selection_to_edit()
+        self._refresh_group_list(keep=self._group_editing
+                                 if self._group_editing is not None else gid)
+        self._refresh_group_edit_controls()
+        self._refresh_all()
+        back = self._group_editing
+        text = ('%s is locked again; back in %s.'
+                % (name, self._group_display_name(back)) if back is not None
+                else '%s is locked again.' % name)
+        self._group_note_action(text)
+        self._set_status(text, 'ok')
+        return back
+
+    def _group_canvas_open(self, ex, ey):
+        """Right-click on the canvas without dragging.
+
+        On a grouped rod: open the object it belongs to in the current
+        context -- its top-level group, or, inside an open group, the
+        subgroup it is part of. On empty canvas (or on a rod outside the
+        open group): step out of the open group. Returns what it did.
+        """
+        if not self.groups:
+            return None
+        rod = self._select_member_at(ex, ey)
+        editing = self._editing_gid()
+        if rod is not None:
+            owner = sgp.owner_of_rod(self.groups).get(rod)
+            if owner is not None:
+                obj = sgp.object_at(self.groups, owner, editing)
+                if obj not in (None, sgp.OWN):
+                    self._group_open(obj, nested=editing is not None)
+                    return 'open'
+                if obj == sgp.OWN:
+                    return None         # already open: nothing to do
+        if editing is not None:
+            self._group_step_out()
+            return 'out'
+        return None
+
     def _group_tint_map(self):
         """{rod: tint} for Grouped mode, and [(name, tint)] for its key.
 
-        By TOP-LEVEL group, so a roof and its bays read as one object -- the
-        same object a drag moves. Ungrouped rods get no tint at all.
+        By OBJECT in the current context -- the top-level groups, or, with
+        a group open, its subgroups -- so what is tinted alike is exactly
+        what a drag moves alike. Ungrouped rods (and the open group's own
+        rods) get no tint at all.
         """
-        tops = [g for g in self.groups if g['parent'] is None]
+        editing = self._editing_gid()
+        tops = [sgp.find(self.groups, g)
+                for g in sgp.context_objects(self.groups, editing)]
         tint = {g['id']: GROUP_TINTS[k % len(GROUP_TINTS)]
                 for k, g in enumerate(tops)}
         rods = {}
         for rod, gid in sgp.owner_of_rod(self.groups).items():
-            t = tint.get(sgp.top_group(self.groups, gid))
+            t = tint.get(sgp.object_at(self.groups, gid, editing))
             if t:
                 rods[rod] = t
         return rods, [(g['name'], tint[g['id']]) for g in tops]
@@ -1022,19 +1128,39 @@ class StereoGroupsMixin:
         self.groups = []
         self._group_sel = None
         self._group_editing = None
+        self._group_edit_stack = []
         self._refresh_group_list()
         self._refresh_group_edit_controls()
+
+    def _group_path(self, gid):
+        """[outermost, ..., gid] -- where the open group sits."""
+        path, seen = [], set()
+        g = sgp.find(self.groups, gid)
+        while g is not None and g['id'] not in seen:
+            seen.add(g['id'])
+            path.append(g['id'])
+            g = sgp.find(self.groups, g['parent']) if g['parent'] is not None \
+                else None
+        return path[::-1]
 
     def _refresh_group_edit_controls(self):
         btn = getattr(self, 'group_edit_btn', None)
         if btn is None:
             return
         gid = self._editing_gid()
+        state = getattr(self, 'group_edit_state', None)
         if gid is None:
-            btn.config(text='Edit group (unlock its parts)', relief='raised')
+            btn.config(text='Open group', relief='raised')
+            if state is not None:
+                state.config(text='Nothing open -- every group is locked.',
+                             fg=HINT_FG)
         else:
-            btn.config(text='Done editing %s' % self._group_display_name(gid),
-                       relief='sunken')
+            btn.config(text='Done', relief='sunken')
+            path = [self._group_display_name(g)
+                    for g in self._group_path(gid)]
+            if state is not None:
+                state.config(text='Editing: ' + ' › '.join(path),
+                             fg=EDIT_BANNER_COLOR)
 
     # ── moving a whole group ──────────────────────────────────────────────
 

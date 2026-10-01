@@ -157,8 +157,13 @@ class StereoViewMixin:
             self._draw_throttled()
 
     def _on_orbit_release(self, event):
+        clicked = self._orbit_start is not None and not self._orbit_dragged
         self._orbit_start = None
         self._orbit_dragged = False
+        if clicked:
+            # A right-CLICK, not a drag: open the group under the pointer,
+            # or step out of the open one on empty canvas (layers).
+            self._group_canvas_open(event.x, event.y)
 
     # ── lasso (rubber-band) multi-select, mirroring truss_app.py's own
     # _on_press/_on_drag_motion/_on_release box-select ──────────────────────
@@ -1015,7 +1020,10 @@ class StereoViewMixin:
         # it, because then everything outside is blocked.
         editing = self._editing_gid() if self.groups else None
         if editing is not None:
-            inside = sgp.editable_nodes(self.groups, self.members, editing)
+            # Any node of the open group, its closed subgroups' included: a
+            # locked group's nodes take new rods, at every depth.
+            inside = set(sgp.nodes_of_rods(
+                self.members, sgp.rods_of(self.groups, editing, deep=True)))
             outside = [n for n in (a, b) if n not in inside]
             if outside:
                 self._group_refuse(
@@ -1147,6 +1155,17 @@ class StereoViewMixin:
         self._axis_len_entry.focus_set()
         self._axis_len_entry.select_range(0, 'end')
         self._draw()
+
+    def _on_escape(self, event=None):
+        """Esc backs out of the innermost thing in progress: a half-drawn
+        line, an armed axis extension -- and, with neither, the open group."""
+        if getattr(self, '_line_pick_first', None) is not None or \
+                getattr(self, '_axis_pending', None) is not None:
+            return self._on_axis_cancel(event)
+        if self.groups and self._editing_gid() is not None:
+            self._group_step_out()
+            return 'break'
+        return self._on_axis_cancel(event)
 
     def _on_axis_cancel(self, event=None):
         if getattr(self, '_line_pick_first', None) is not None:

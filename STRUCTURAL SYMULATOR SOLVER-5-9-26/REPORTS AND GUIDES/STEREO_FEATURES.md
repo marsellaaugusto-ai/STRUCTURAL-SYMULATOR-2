@@ -533,10 +533,17 @@ card is a reference, not a second editor.
 - **Support sandbox** — click a support to disable it and re-analyze without
   editing the model, to build intuition for redundancy.
 
-### Groups are locked objects
+### Groups are layers
 
-A group (Groups mode) is a named set of rods — a branch of the structure.
-Once made, it behaves as **one object**:
+A group is a named set of rods — a branch of the structure. The **Groups
+(layers)** box sits in **Build**, right under the selection tools it is used
+with: select (click, lasso, *Line select*), then **New group from
+selection** (or **Ctrl+G** on the canvas), **Add selection to group** or
+**Remove from group**. *Actions ▾* holds the rest (properties, move,
+rename, delete, PDF); *More group tools* folds away the section, checks and
+reports.
+
+Every group **and every subgroup** is a closed object, at every depth alike:
 
 - **Dragging any of its nodes moves the whole group**, subgroups included.
   Its parts do not move on their own, cannot be typed to new coordinates,
@@ -578,13 +585,14 @@ Excel*:
 Imports used to drop groups entirely; a workbook exported from a grouped
 model now comes back grouped.
 
-**Grouped and Ungrouped modes.** The Groups panel's *Mode* switch sets how
-the model is drawn. *Grouped* gives every top-level group its own pale tint
-— a halo under its rods, so force, utilisation and moment colours still
-read on top — and a key naming them in the corner; a subgroup takes its
-outer group's tint, because it is part of the same object. *Ungrouped* is
-the plain model. The locks hold in both: the mode is a view, and *Edit
-group* is the only way to change a group's parts.
+**Plain and Coloured by group.** The Groups box's *Show* switch sets how the
+model is drawn. *Coloured by group* gives every object in the current
+context its own pale tint — a halo under its rods, so force, utilisation and
+moment colours still read on top — and a key naming them in the corner: the
+top-level groups, or, with a group open, its subgroups (which are tinted
+then even in the plain view, because they are closed objects there). The
+locks hold in both: the switch is a view, and opening a group is the only
+way to change its parts.
 
 **Section properties.** The section recommendation shows the recommended
 section's own table — A, Ix, Iy, J, both radii of gyration (the minor one
@@ -594,17 +602,22 @@ mixed group, the one most of them carry, and says so). Values come from
 nominal plate dimensions without root fillets, a few per cent under
 published tables, and the box says that too.
 
-**Edit group (unlock its parts)** opens one group. Its nodes and rods — and
-its subgroups' — can then be moved, deleted and added to; new rods join it;
-a new group made from a selection nests inside it. **Everything outside it
-is blocked**: faded on the drawing but still there for context, not
-selectable, and refused by every tool. A blue frame and banner say which
-group is open. **Done editing** locks it again. Undo covers all of it: the
-groups are part of every undo step.
+**Opening a group.** **Right-click** it — its row in the list, or one of its
+rods on the canvas — or pick it and press *Open group*. Its **own** nodes
+and rods can then be moved, deleted and added to; new rods join it; a new
+group made from a selection nests inside it. Its **subgroups stay closed**:
+inside the open group each one moves whole, as a top-level group does in the
+model, and right-clicking one of its rods opens it in turn (the strip under
+the list reads *Editing: Roof › Bay A › Truss 1*). **Everything outside the
+open group is blocked**: faded on the drawing but still there for context,
+not selectable, and refused by every tool. A blue frame and banner say what
+is open. **Done**, **Esc** or a right-click on empty canvas steps back out
+one level — to the group it was opened from, then to the whole model. Undo
+covers all of it: the groups are part of every undo step.
 
 ---
 
-## 8. The window: eight modes, one canvas
+## 8. The window: nine modes, one canvas
 
 Rebuilt 2026-09-19. The old layout spent 196 px on five rows of toolbar and
 kept a 400 px control column and a 300 px Module Editor open at all times,
@@ -775,6 +788,16 @@ says so.
   or the circled dot / circled cross for the axis pointing at the reader),
   one compact colour key mirroring the on-screen legend, and its own
   statistics panel. See `PDF_REPORT_GUIDE_2026-09-27.md`.
+- **PDF drawing scale** — every view is fitted to its sheet as large as it
+  goes without running under a panel: the key and the stats panel are
+  corner blocks at the top, the scale bar and the orientation indicator
+  corner blocks at the bottom, and the drawing may use the free middle of
+  either edge (the first fit reserved the full width for each, which left
+  a squarish model a third of the sheet high). The export dialog's
+  *Drawing scale* overrides it: *Zoom* n % of the fit, or a *True scale*
+  1 : N on the paper — the scale bar is right either way. The choice is
+  remembered for the next export, and the selection and group PDFs use it
+  too.
 - **Serviceability verdict** — the deformed sheet states the L/250
   allowance (configurable), the span it is taken over, the ratio of worst
   displacement to allowance, and a pass/fail verdict, with the allowance
@@ -792,7 +815,7 @@ says so.
   from. Utilisation and the L/n deflection ratio stay unconverted, being
   ratios; the scale bar, grid spacing and triad arm pick their round
   number in the unit they are labelled in.
-- **Groups PDF** — Groups mode's *PDF of all groups* / *PDF of this group*:
+- **Groups PDF** — the Groups box's *PDF of all groups* / *PDF of this group*:
   one document with a summary and contents sheet, the joints shared between
   groups with the force each side hands across (as many sheets as needed),
   then a section per group. Numbered as one document. See the PDF guide.

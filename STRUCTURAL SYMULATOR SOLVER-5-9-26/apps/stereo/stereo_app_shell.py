@@ -44,8 +44,10 @@ MODES = (
     ('module',  '◫', 'Module',  'the repeating cell'),
     ('analyse', '◑', 'Analyse', 'how to draw it, and what the solve found'),
     ('results', 'Σ', 'Results', 'what came out'),
-    ('groups',  '⑃', 'Groups',  'branches, and one section for each'),
 )
+# Groups used to be a tenth mode. It now lives inside Build, beside the
+# selection tools it is used with; the old key still lands there.
+MODE_ALIASES = {'groups': 'build'}
 DEFAULT_MODE = 'build'
 
 # ── named views ─────────────────────────────────────────────────────────────
@@ -312,6 +314,12 @@ class StereoShellMixin:
         """Show one mode's panel and mark its rail item. Every other panel is
         forgotten rather than hidden, so nothing off-screen keeps claiming
         space from the canvas."""
+        alias = MODE_ALIASES.get(key)
+        if alias is not None:
+            self._set_mode(alias)
+            if key == 'groups':
+                self._scroll_panel_to(getattr(self, '_groups_box', None))
+            return
         if key not in self._mode_frames:
             return
         self.active_mode.set(key)
@@ -342,6 +350,22 @@ class StereoShellMixin:
         # not moved.
         self._draw()
 
+    def _scroll_panel_to(self, widget):
+        """Scroll the context panel so `widget` is at its top."""
+        outer = getattr(self, 'panel_outer', None)
+        if widget is None or outer is None:
+            return
+        try:
+            self.root.update_idletasks()
+            host = self.panel_host
+            y = widget.winfo_rooty() - host.winfo_rooty()
+            total = max(1, host.winfo_height())
+            canvas = getattr(outer, 'canvas', None)
+            if canvas is not None:
+                canvas.yview_moveto(max(0.0, min(1.0, y / total)))
+        except tk.TclError:
+            pass
+
     # ── context panel ───────────────────────────────────────────────────────
     def _build_context_panel(self, parent):
         from common import ScrollPanel
@@ -367,6 +391,9 @@ class StereoShellMixin:
             self._mode_frames[key] = tk.Frame(self.panel_host, bg=BG)
 
         self._build_geometry_panel(self._mode_frames['build'])
+        # Groups sit with the selection tools they are used with: select
+        # (lasso, line), then make a group or add to one.
+        self._build_groups_panel(self._groups_slot)
         self._build_axis_extend_strip(self._mode_frames['build'])
         self._build_transform_panel(self._mode_frames['build'])
         self._build_shape_panel(self._mode_frames['shape'])
@@ -389,7 +416,6 @@ class StereoShellMixin:
         # survives changing mode and coming back.
         self._build_properties_panel(self._mode_frames['results'])
         self._build_model_tree_panel(self._mode_frames['results'])
-        self._build_groups_panel(self._mode_frames['groups'])
         self._on_connectivity_change()   # hide I/J unless Rigid is selected
         self._on_col_style_change()      # hide the fields this style ignores
 

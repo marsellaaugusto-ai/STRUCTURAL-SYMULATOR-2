@@ -2338,7 +2338,7 @@ def _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view, u=None):
 
 
 def _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad, extra_pts=(),
-                 reserve_top=0.0, view=None, u=None):
+                 reserve_top=0.0, view=None, u=None, obstacles=None):
     """Fit the view, then hang the grid, the scale bar and the triad on it.
 
     `reserve_top` is how much of the axes the colour key and the stats
@@ -2351,8 +2351,14 @@ def _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad, extra_pts=(),
     """
     u = u or ReportUnits()
     band = PDF_FURNITURE_BAND if view is not None else PDF_FURNITURE_BAND_ISO
-    win = _pdf_fit_window(ax, list(proj_2d) + list(extra_pts),
-                          reserve_top=reserve_top, reserve_bottom=band)
+    if obstacles is not None:
+        win = _pdf_fit_window_clear(
+            ax, list(proj_2d) + list(extra_pts), obstacles,
+            legacy_reserve_top=reserve_top, legacy_reserve_bottom=band,
+            zoom=_PDF_VIEW.get('zoom', 1.0), ratio=_PDF_VIEW.get('ratio'))
+    else:
+        win = _pdf_fit_window(ax, list(proj_2d) + list(extra_pts),
+                              reserve_top=reserve_top, reserve_bottom=band)
     x0, y0, x1, y1 = win
     w, h = x1 - x0, y1 - y0
     dx, dy, dz = _pdf_model_extents(nodes)
@@ -2398,11 +2404,12 @@ def _pdf_finish_view(ax, nodes, proj_2d, az_rad, el_rad, key, stats,
     panels on top of the structure on any model tall enough to reach them.
     """
     reserve = max(key.height(), _pdf_stats_height(ax, stats))
+    obstacles = _pdf_view_obstacles(ax, key, stats, view is not None)
     key.finish()
     _pdf_stats_panel(ax, stats)
     return _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad,
                         extra_pts=extra_pts, reserve_top=reserve, view=view,
-                        u=u)
+                        u=u, obstacles=obstacles)
 
 
 def _pdf_stress_widths(members, member_res, lo=None, hi=None):
@@ -2653,6 +2660,129 @@ def _pdf_text_block_height(ax, n_lines, fontsize=PDF_KEY_FS, pad_pt=6.3):
     _, h_in = _pdf_axes_size_in(ax)
     h_pt = max(h_in * 72.0, 1e-6)
     return (n_lines * fontsize * 1.2 + pad_pt) / h_pt
+
+
+# How a view is scaled onto its sheet. export_pdf sets this for the length of
+# one report (and puts it back after), so the eight sheet builders do not
+# each have to carry it:
+#   zoom   1.0 is the automatic fit; 1.5 draws the structure half as large
+#          again about the same centre (and may run under the panels --
+#          that is what asking for it means); 0.8 leaves more paper round it.
+#   ratio  N for a true 1:N drawing scale on the paper, in place of a fit.
+PDF_VIEW_DEFAULT = {'zoom': 1.0, 'ratio': None}
+_PDF_VIEW = dict(PDF_VIEW_DEFAULT)
+
+# The automatic fit keeps the drawing clear of the panels, not of the BANDS
+# they sit in: the key and the stats panel are corner blocks, so the middle
+# of the top edge is free, and so is the middle of the bottom edge between
+# the scale bar and the orientation indicator. Reserving the full width for
+# each, as the first fit did, left a squarish model a third of the sheet.
+PDF_FIT_FLOOR = 0.035          # the ruler numbers along the bottom edge
+PDF_FIT_MARGIN = 0.03
+PDF_FIT_PAD = 0.012            # clearance kept round each panel
+
+
+def _pdf_view_obstacles(ax, key, stats, ortho):
+    """The panels on a view sheet, as axes-fraction rectangles
+    (x0, y0, x1, y1): the key (top-left), the stats panel (top-right), the
+    scale bar (bottom-left), the orientation indicator (bottom-right) and,
+    on an orthographic sheet, the view's caption (bottom-centre)."""
+    out = []
+    if key is not None and getattr(key, '_any', False):
+        pad = 0.012
+        w = min(key._width + 2 * pad, 0.62)
+        out.append((key.x0 - pad, key.y - pad, key.x0 - pad + w,
+                    PDF_KEY_Y + pad))
+    if stats:
+        w_in, _h_in = _pdf_axes_size_in(ax)
+        chars = max(len(s) for s in stats)
+        # a monospaced glyph is 0.6 em; 0.45 em of padding each side
+        w = (chars * 0.6 + 0.9) * PDF_KEY_FS / max(w_in * 72.0, 1e-6)
+        h = _pdf_stats_height(ax, stats)
+        out.append((PDF_STATS_X - w, PDF_STATS_Y - h + (1.0 - PDF_STATS_Y),
+                    1.0, 1.0))
+    out.append((0.0, 0.0, 0.42, PDF_BAND_SCALE + 0.055))       # scale bar
+    out.append((0.78, 0.0, 1.0, PDF_BAND_TRIAD + PDF_TRIAD_ARM_MAX + 0.03))
+    if ortho:
+        out.append((0.30, 0.0, 0.70, PDF_BAND_CAPTION + 0.035))  # caption
+    return out
+
+
+def _pdf_fit_window_clear(ax, pts, obstacles, legacy_reserve_top=0.0,
+                          legacy_reserve_bottom=0.20, zoom=1.0, ratio=None):
+    """Fit the drawing as LARGE as it can go without any point landing on a
+    panel, x and y scaled identically; then apply the manual zoom or the
+    true 1:N scale, if one was asked for.
+
+    The search runs between the fit that ignores the panels (the largest
+    the drawing could be) and the old banded fit, which is clear of them by
+    construction; whatever the panels' shape, the result is never smaller
+    than the old fit and usually much larger. Returns (x0, y0, x1, y1).
+    """
+    pts = list(pts)
+    if not pts:
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, 1.0)
+        return (0.0, 0.0, 1.0, 1.0)
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
+    dw = (maxx - minx) or 1.0
+    dh = (maxy - miny) or 1.0
+    cx, cy = (minx + maxx) / 2.0, (miny + maxy) / 2.0
+    box_w, box_h = _pdf_axes_size_in(ax)
+    m = PDF_FIT_MARGIN
+    fx = max(1.0 - 2 * m, 0.05)
+    fy = max(1.0 - PDF_FIT_FLOOR - 2 * m, 0.05)
+    cxf = 0.5
+    cyf = PDF_FIT_FLOOR + m + fy / 2.0
+
+    def window(s):
+        ww, wh = s * box_w, s * box_h
+        return cx - cxf * ww, cy - cyf * wh, ww, wh
+
+    rects = [(x0 - PDF_FIT_PAD, y0 - PDF_FIT_PAD, x1 + PDF_FIT_PAD,
+              y1 + PDF_FIT_PAD) for x0, y0, x1, y1 in obstacles]
+
+    def clear(s):
+        x0, y0, ww, wh = window(s)
+        for px, py in pts:
+            u, v = (px - x0) / ww, (py - y0) / wh
+            for a0, b0, a1, b1 in rects:
+                if a0 <= u <= a1 and b0 <= v <= b1:
+                    return False
+        return True
+
+    s_lo = max(dw / (box_w * fx), dh / (box_h * fy))
+    fx_old = max(1.0 - 0.04 - 2 * 0.04, 0.05)
+    fy_old = max(1.0 - legacy_reserve_top - legacy_reserve_bottom - 2 * 0.04,
+                 0.05)
+    s_hi = max(dw / (box_w * fx_old), dh / (box_h * fy_old), s_lo)
+    tries = 0
+    while not clear(s_hi) and tries < 12:      # centred differently: grow
+        s_hi *= 1.15
+        tries += 1
+    if clear(s_lo):
+        s = s_lo
+    else:
+        lo, hi = s_lo, s_hi
+        for _ in range(22):
+            mid = (lo + hi) / 2.0
+            if clear(mid):
+                hi = mid
+            else:
+                lo = mid
+        s = hi
+    if ratio:
+        # 1:N on the paper -- N metres of structure per metre of paper;
+        # s is metres of structure per inch of axes
+        s = float(ratio) * 0.0254
+    elif zoom and zoom > 0:
+        s = s / float(zoom)
+    x0, y0, ww, wh = window(s)
+    ax.set_xlim(x0, x0 + ww)
+    ax.set_ylim(y0, y0 + wh)
+    return (x0, y0, x0 + ww, y0 + wh)
 
 
 def _pdf_fit_window(ax, pts, reserve_top=0.0, reserve_bottom=0.20,
@@ -3131,7 +3261,36 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                meta=None, az_deg=30, el_deg=25, ortho_views=True,
                groups=None, deflection_denom=PDF_DEFLECTION_DENOM,
                unit_weight_kN_m3=None, into=None, sheet_base=0,
-               sheet_total=None):
+               sheet_total=None, view_zoom=1.0, view_ratio=None):
+    """The PDF report (see _export_pdf_impl), with the drawing scale.
+
+    `view_zoom` 1.0 is the automatic fit -- the structure as large as it
+    goes without running under the key, the stats panel, the scale bar or
+    the orientation indicator; 1.5 draws it half as large again, 0.8 a
+    little smaller. `view_ratio` N draws every view at a true 1:N on the
+    paper instead (and wins over the zoom).
+    """
+    global _PDF_VIEW
+    saved = _PDF_VIEW
+    _PDF_VIEW = {'zoom': float(view_zoom or 1.0),
+                 'ratio': float(view_ratio) if view_ratio else None}
+    try:
+        return _export_pdf_impl(
+            nodes, members, loads, supports, results, path, checks=checks,
+            meta=meta, az_deg=az_deg, el_deg=el_deg, ortho_views=ortho_views,
+            groups=groups, deflection_denom=deflection_denom,
+            unit_weight_kN_m3=unit_weight_kN_m3, into=into,
+            sheet_base=sheet_base, sheet_total=sheet_total)
+    finally:
+        _PDF_VIEW = saved
+
+
+def _export_pdf_impl(nodes, members, loads, supports, results, path,
+                     checks=None, meta=None, az_deg=30, el_deg=25,
+                     ortho_views=True, groups=None,
+                     deflection_denom=PDF_DEFLECTION_DENOM,
+                     unit_weight_kN_m3=None, into=None, sheet_base=0,
+                     sheet_total=None):
     """Generate the multi-sheet PDF analysis report.
 
     Sheets: 1) the general (axonometric) view with the load case, then the
@@ -4189,7 +4348,8 @@ def export_groups_pdf(nodes, members, loads, supports, results, path,
                       branch_groups, checks=None, meta=None, gids=None,
                       az_deg=30, el_deg=25, groups=None, ortho_views=False,
                       unit_weight_kN_m3=None,
-                      deflection_denom=PDF_DEFLECTION_DENOM):
+                      deflection_denom=PDF_DEFLECTION_DENOM,
+                      view_zoom=1.0, view_ratio=None):
     """The grouped model as ONE document: summary, shared joints, and then a
     section per group -- or per group in `gids` -- built by export_pdf.
 
@@ -4342,7 +4502,8 @@ def export_groups_pdf(nodes, members, loads, supports, results, path,
                 ortho_views=ortho_views, groups=groups,
                 deflection_denom=deflection_denom,
                 unit_weight_kN_m3=unit_weight_kN_m3,
-                into=pdf, sheet_base=base, sheet_total=total)
+                into=pdf, sheet_base=base, sheet_total=total,
+                view_zoom=view_zoom, view_ratio=view_ratio)
             if written != n:
                 # The contents and every "Sheet n / N" were numbered from n.
                 raise RuntimeError('section %r wrote %d sheets, planned %d'

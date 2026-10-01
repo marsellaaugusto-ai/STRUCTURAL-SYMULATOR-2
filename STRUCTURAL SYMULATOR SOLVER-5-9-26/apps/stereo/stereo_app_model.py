@@ -267,6 +267,7 @@ class StereoModelMixin:
         # otherwise protect whichever new rods happen to hold their numbers.
         self.groups = []
         self._group_editing = None
+        self._group_edit_stack = []
         self._apply_sections(members=self.members, redraw=False)
         # The reference module of the grid AS GENERATED -- before a node is
         # nudged, a column raised or a beam bolted on. Taken here and nowhere

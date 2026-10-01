@@ -8868,21 +8868,20 @@ class TestGroupsPanel:
             app._group_new_subgroup()
         return app.groups[-1]
 
-    def test_the_groups_mode_is_in_the_rail_with_a_panel(self, app):
-        assert 'groups' in app._mode_frames
+    def test_the_groups_live_inside_build(self, app):
+        """Groups moved into the Build panel, beside the selection tools;
+        the old 'groups' key still lands there."""
         keys = [k for k, _g, _l, _t in sh.MODES]
-        assert 'groups' in keys
+        assert 'groups' not in keys and 'groups' not in app._mode_frames
+        build = str(app._mode_frames['build'])
+        assert str(app.group_list).startswith(build)
         app._set_mode('groups')
-        assert app.active_mode.get() == 'groups'
-        assert app.group_list is not None
+        assert app.active_mode.get() == 'build'
 
-    def test_the_tenth_mode_is_on_alt_zero_and_the_first_nine_did_not_move(self, app):
-        """Renumbering to fit Groups in the middle would move nine shortcuts
-        that are already muscle memory."""
+    def test_the_nine_modes_keep_their_alt_keys(self, app):
         keys = [k for k, _g, _l, _t in sh.MODES]
-        assert len(keys) == 10
+        assert len(keys) == 9
         top = app.root.winfo_toplevel()
-        assert top.bind('<Alt-Key-0>'), 'Alt+0 is not bound'
         for n in range(1, 10):
             assert top.bind('<Alt-Key-%d>' % n), n
 
@@ -9135,8 +9134,8 @@ class TestGroupSectionRecommendationUI:
 
     def test_the_right_click_selects_the_row_under_the_pointer_first(self, app,
                                                                      monkeypatch):
-        """A context menu that acts on whatever was selected BEFORE the
-        right-click acts on the wrong group about half the time."""
+        """Right-click a row: that row -- not whatever was selected before --
+        is picked and OPENED for editing (groups as layers)."""
         self._group(app, monkeypatch, range(4), name='A')
         monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
                             '.askstring', lambda *a, **k: 'B')
@@ -9145,14 +9144,9 @@ class TestGroupSectionRecommendationUI:
         app.group_list.selection_clear(0, 'end')
         app.group_list.selection_set(0)
         app._on_group_pick()
-        posted = []
-        monkeypatch.setattr(tk.Menu, 'tk_popup',
-                            lambda self, *a, **k: posted.append(a))
-        monkeypatch.setattr(tk.Menu, 'grab_release', lambda self: None)
-        # The Listbox has no geometry until its own mode is on screen, so
-        # bbox() returns None and a y coordinate cannot be chosen. Show the
-        # mode first -- this is a real property of the widget, not a
-        # workaround.
+        # The Listbox has no geometry until its panel is on screen, so
+        # bbox() returns None and a y coordinate cannot be chosen. Show it
+        # first -- this is a real property of the widget, not a workaround.
         app._set_mode('groups')
         app.root.update_idletasks()
         app.root.update()
@@ -9165,8 +9159,14 @@ class TestGroupSectionRecommendationUI:
         e.x, e.y = 5, bbox[1] + 2
         e.x_root, e.y_root = 100, 100
         app._on_group_right_click(e)
-        assert posted, 'the menu was never posted'
         assert app._current_group() == app.groups[1]['id']
+        assert app._editing_gid() == app.groups[1]['id']
+        # the row's other actions moved to the Actions button
+        menu = app.group_actions_btn.nametowidget(
+            app.group_actions_btn.cget('menu'))
+        labels = [menu.entrycget(i, 'label') for i in range(menu.index('end') + 1)
+                  if menu.type(i) == 'command']
+        assert 'Properties…' in labels and 'Rename…' in labels
 
     def test_the_family_filter_restricts_the_candidates(self, app, monkeypatch):
         self._group(app, monkeypatch, range(8))
@@ -9461,10 +9461,11 @@ class TestLockedGroups:
     def test_opening_a_group_shows_it_on_the_button_and_the_drawing(
             self, app, monkeypatch):
         g = self._group(app, monkeypatch, 'Roof', range(6))
-        assert 'Edit group' in app.group_edit_btn.cget('text')
+        assert 'Open group' in app.group_edit_btn.cget('text')
         app._group_edit_toggle(g['id'])
         assert app._editing_gid() == g['id']
-        assert 'Done editing Roof' in app.group_edit_btn.cget('text')
+        assert app.group_edit_btn.cget('text') == 'Done'
+        assert 'Editing: Roof' in app.group_edit_state.cget('text')
         app._draw()
         assert app.canvas.find_withtag('edit_banner')
         dim = app.canvas.find_withtag('locked_dim')
@@ -9550,7 +9551,7 @@ class TestLockedGroups:
         app._undo()                         # undoes "new group"
         assert app.groups == []
         assert app._editing_gid() is None
-        assert 'Edit group' in app.group_edit_btn.cget('text')
+        assert 'Open group' in app.group_edit_btn.cget('text')
 
     def test_a_new_group_made_while_open_nests_inside_it(self, app,
                                                         monkeypatch):
@@ -9883,7 +9884,7 @@ class TestGroupsPdf:
                     pass
                 out += texts(c)
             return out
-        t = texts(app._mode_frames['groups'])
+        t = texts(app._groups_box)
         assert 'PDF of all groups…' in t and 'PDF of this group…' in t
 
 
@@ -9948,8 +9949,8 @@ class TestGroupedAndUngroupedModes:
                 if isinstance(c, tk.Radiobutton):
                     radios.append(c.cget('text'))
                 walk(c)
-        walk(app._mode_frames['groups'])
-        assert 'Ungrouped' in radios and 'Grouped' in radios
+        walk(app._groups_box)
+        assert 'Plain' in radios and 'Coloured by group' in radios
 
 
 class TestGroupsThroughExcel:
@@ -10488,3 +10489,129 @@ class TestLinearSelection:
         assert app.line_pick_mode.get() is True
         app._toggle_line_pick()
         assert app.line_pick_mode.get() is False
+
+
+class TestGroupsAsLayers:
+    """Groups behave like layers: every group and subgroup is a closed
+    object until it is opened; right-click opens, Done / Esc / right-click
+    on empty canvas steps back out."""
+
+    def _make(self, app, monkeypatch, name, rods, parent=None):
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: name)
+        app.selected_members = set(rods)
+        app.selected_member = None
+        app.selected_nodes = set()
+        if parent is not None:
+            app._group_open(parent)
+            app._group_new_from_selection()
+            app._group_step_out()
+        else:
+            app._group_new_from_selection()
+        return app.groups[-1]
+
+    def _tree(self, app, monkeypatch):
+        top = self._make(app, monkeypatch, 'Roof', range(12))
+        app._group_open(top['id'])
+        app.selected_members = {0, 1, 2}
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: 'Bay')
+        app._group_new_from_selection()
+        sub = app.groups[-1]
+        app._group_step_out()
+        return top, sub
+
+    def _screen_mid(self, app, rod):
+        sp = app._screen_positions()
+        m = app.members[rod]
+        (x0, y0), (x1, y1) = sp[m['a']], sp[m['b']]
+        return (x0 + x1) / 2.0, (y0 + y1) / 2.0
+
+    def test_a_subgroup_stays_closed_while_its_parent_is_open(self, app,
+                                                              monkeypatch):
+        top, sub = self._tree(app, monkeypatch)
+        assert sub['parent'] == top['id']
+        app._group_open(top['id'])
+        assert sgp.rod_locked(app.groups, 0, app._editing_gid())
+        assert not sgp.rod_locked(app.groups, 5, app._editing_gid())
+
+    def test_right_click_on_the_canvas_walks_into_the_layers_and_out(
+            self, app, monkeypatch):
+        top, sub = self._tree(app, monkeypatch)
+        x, y = self._screen_mid(app, 0)
+        assert app._group_canvas_open(x, y) == 'open'
+        assert app._editing_gid() == top['id'], 'first the outer object'
+        assert app._group_canvas_open(x, y) == 'open'
+        assert app._editing_gid() == sub['id'], 'then the subgroup inside'
+        assert 'Roof › Bay' in app.group_edit_state.cget('text')
+        app._group_step_out()
+        assert app._editing_gid() == top['id'], 'Done goes back to the parent'
+        app._on_escape()
+        assert app._editing_gid() is None
+
+    def test_right_click_on_empty_canvas_steps_out(self, app, monkeypatch):
+        top, _sub = self._tree(app, monkeypatch)
+        app._group_open(top['id'])
+        assert app._group_canvas_open(2, 2) == 'out'
+        assert app._editing_gid() is None
+
+    def test_add_selection_goes_to_the_open_group_when_none_is_picked(
+            self, app, monkeypatch):
+        top, _sub = self._tree(app, monkeypatch)
+        app._group_open(top['id'])
+        app.group_list.selection_clear(0, 'end')
+        free = max(sgp.ungrouped_rods(app.groups, len(app.members)))
+        app.selected_members = {free}
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.messagebox'
+                            '.askyesno', lambda *a, **k: True)
+        app._group_assign_selection()
+        assert free in sgp.find(app.groups, top['id'])['members']
+
+    def test_the_open_group_is_marked_in_the_list(self, app, monkeypatch):
+        top, _sub = self._tree(app, monkeypatch)
+        app._group_open(top['id'])
+        rows = app.group_list.get(0, 'end')
+        assert any(r.lstrip().startswith('✎ Roof') for r in rows)
+
+    def test_while_open_its_subgroups_are_tinted_as_objects(self, app,
+                                                            monkeypatch):
+        top, sub = self._tree(app, monkeypatch)
+        app.group_view.set(False)
+        app._group_open(top['id'])
+        tints, key = app._group_tint_map()
+        assert set(tints) == {0, 1, 2}
+        assert [k for k, _t in key] == ['Bay']
+        app._draw()
+        assert app.canvas.find_withtag('group_tint')
+
+    def test_ctrl_g_makes_a_group_from_the_selection(self, app, monkeypatch):
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: 'K')
+        app.selected_members = {3, 4}
+        app.canvas.event_generate('<Control-g>', when='now')
+        assert app.groups and app.groups[-1]['members'] == {3, 4}
+
+
+class TestPdfDrawingScale:
+
+    def test_the_dialog_choice_maps_to_the_export_options(self, app):
+        assert app._pdf_view_from('fit', 150, 200) == {'zoom': 1.0,
+                                                       'ratio': None}
+        assert app._pdf_view_from('zoom', 150, 200) == {'zoom': 1.5,
+                                                        'ratio': None}
+        assert app._pdf_view_from('ratio', 150, 200) == {'zoom': 1.0,
+                                                         'ratio': 200.0}
+
+    def test_the_export_passes_the_chosen_scale(self, app, monkeypatch,
+                                                tmp_path):
+        seen = {}
+        monkeypatch.setattr(app, '_pdf_sheet_dialog',
+                            lambda *a, **k: {'views'})
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog'
+                            '.asksaveasfilename',
+                            lambda *a, **k: str(tmp_path / 'x.pdf'))
+        monkeypatch.setattr('apps.stereo.stereo_reports.export_pdf',
+                            lambda *a, **k: seen.update(k))
+        app._pdf_view = {'zoom': 1.25, 'ratio': None}
+        app._export_pdf()
+        assert seen['view_zoom'] == 1.25 and seen['view_ratio'] is None

@@ -10183,3 +10183,79 @@ class TestRotateAndMirror:
         app.selected_members = set()
         assert not app._tx_rotate(angle=10.0)
         assert any('Select the nodes' in str(d) for d in dialogs)
+
+
+class TestMergeExcelFiles:
+    """Roadmap 4.5 through the app: design by parts, combine them."""
+
+    def _export_part(self, app, tmp_path, name, rods):
+        """Export a sub-model: the nodes and rods in `rods` only."""
+        from apps.stereo import stereo_reports as sr
+        sub = sr.submodel(app.nodes, app.members, [], app.supports,
+                          member_idx=rods)
+        nodes, members, loads, supports = sub[0], sub[1], sub[2], sub[3]
+        for m in members:
+            m.pop('_source_index', None)
+        path = str(tmp_path / name)
+        sr.export_excel(nodes, members, loads, supports, None, path)
+        return path
+
+    def test_two_halves_merge_back_into_the_whole(self, app, tmp_path,
+                                                  dialogs):
+        n_nodes, n_rods = len(app.nodes), len(app.members)
+        half = n_rods // 2
+        a = self._export_part(app, tmp_path, 'a.xlsx', range(0, half))
+        b = self._export_part(app, tmp_path, 'b.xlsx', range(half, n_rods))
+        app._clear_model()
+        lines = app._merge_excel_files([a, b], tol=0.001)
+        assert lines is not None
+        assert len(app.members) == n_rods
+        assert len(app.nodes) <= n_nodes, 'the shared joints merged'
+        assert any('coincident node(s) were merged' in ln for ln in lines)
+        assert any('Merge Excel files' in str(d) for d in dialogs)
+        app._undo()
+        assert app.nodes == []
+
+    def test_a_bad_file_leaves_the_model_alone(self, app, tmp_path, dialogs):
+        good = self._export_part(app, tmp_path, 'g.xlsx', range(0, 20))
+        bad = str(tmp_path / 'bad.xlsx')
+        open(bad, 'w').write('not a workbook')
+        n = len(app.nodes)
+        assert app._merge_excel_files([good, bad], tol=0.001) is None
+        assert len(app.nodes) == n
+        assert any('not changed' in str(d) for d in dialogs)
+
+    def test_it_is_on_the_menu(self, app):
+        labels = [app.export_menu.entrycget(i, 'label')
+                  for i in range(app.export_menu.index('end') + 1)
+                  if app.export_menu.type(i) == 'command']
+        assert 'Merge Excel files…' in labels
+
+
+class TestWeakAxisInTheApp:
+
+    def test_typing_a_new_I_in_the_inspector_drops_the_catalog_extras(self, app):
+        from apps.stereo import stereo_profiles as sp
+        sp.write_section(app.members[0],
+                         sp.section_to_props(sp.CATALOG['IPE 200']))
+        assert 'Iw' in app.members[0]
+        app.selected_nodes = set()
+        app.selected_member = 0
+        app.selected_members = {0}
+        app._update_properties_panel()
+        app._props_entries['I'].set(app.members[0]['I'] * 2)
+        app._apply_member_properties()
+        for k in ('c_cm', 'Iw', 'cw_cm'):
+            assert k not in app.members[0], k
+
+    def test_an_unchanged_I_keeps_them(self, app):
+        from apps.stereo import stereo_profiles as sp
+        sp.write_section(app.members[0],
+                         sp.section_to_props(sp.CATALOG['IPE 200']))
+        app.selected_nodes = set()
+        app.selected_member = 0
+        app.selected_members = {0}
+        app._update_properties_panel()
+        app._props_entries['Fy'].set(355.0)
+        app._apply_member_properties()
+        assert 'Iw' in app.members[0] and app.members[0]['Fy'] == 355.0

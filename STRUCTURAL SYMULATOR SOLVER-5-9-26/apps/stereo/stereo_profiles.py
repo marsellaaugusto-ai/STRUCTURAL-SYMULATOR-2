@@ -82,6 +82,17 @@ class ISection:
     def c_mm(self) -> float:
         return self.d / 2.0
 
+
+    # The weak axis, for a rigid joint's bending stiffness and check about it
+    # (see section_to_props): the second moment and the distance to the
+    # extreme fibre, the flange tip, half the flange width.
+    @property
+    def Iw_mm4(self) -> float:
+        return self.Iy_mm4
+
+    @property
+    def cw_mm(self) -> float:
+        return self.bf / 2.0
     @property
     def shape(self) -> str:
         return 'I'
@@ -130,6 +141,17 @@ class ChannelSection:
     def c_mm(self) -> float:
         return self.d / 2.0
 
+
+    # The weak axis, for a rigid joint's bending stiffness and check about it
+    # (see section_to_props): the second moment and the distance to the
+    # extreme fibre, the whole flange width -- an upper bound on the distance from the weak axis to the toe, so S comes out low.
+    @property
+    def Iw_mm4(self) -> float:
+        return self.Iy_mm4
+
+    @property
+    def cw_mm(self) -> float:
+        return self.bf
     @property
     def shape(self) -> str:
         return 'C'
@@ -178,6 +200,17 @@ class RoundTube:
         # D, not d: this lookup is what section_to_props used to miss.
         return self.D / 2.0
 
+
+    # The weak axis, for a rigid joint's bending stiffness and check about it
+    # (see section_to_props): the second moment and the distance to the
+    # extreme fibre, the same in every direction.
+    @property
+    def Iw_mm4(self) -> float:
+        return self.Ix_mm4
+
+    @property
+    def cw_mm(self) -> float:
+        return self.D / 2.0
     @property
     def shape(self) -> str:
         return 'CHS'
@@ -227,6 +260,17 @@ class RectTube:
         # Ix is about the axis parallel to B, so its fibres are H/2 out.
         return self.H / 2.0
 
+
+    # The weak axis, for a rigid joint's bending stiffness and check about it
+    # (see section_to_props): the second moment and the distance to the
+    # extreme fibre, half the side that bends about the weaker axis.
+    @property
+    def Iw_mm4(self) -> float:
+        return min(self.Ix_mm4, self.Iy_mm4)
+
+    @property
+    def cw_mm(self) -> float:
+        return (self.B if self.Iy_mm4 <= self.Ix_mm4 else self.H) / 2.0
     @property
     def shape(self) -> str:
         return 'RHS'
@@ -309,6 +353,17 @@ class EqualAngle:
         _A, cy, _Ix, _Ixy = self._geometry()
         return self.leg - cy
 
+
+    # The weak axis, for a rigid joint's bending stiffness and check about it
+    # (see section_to_props): the second moment and the distance to the
+    # extreme fibre, the leg tips, leg/sqrt(2) from the minor principal (v) axis.
+    @property
+    def Iw_mm4(self) -> float:
+        return self.Iv_mm4
+
+    @property
+    def cw_mm(self) -> float:
+        return self.leg / math.sqrt(2.0)
     @property
     def shape(self) -> str:
         return 'L'
@@ -499,6 +554,15 @@ def section_to_props(section, material: Optional[Material] = None) -> dict:
         # angle. Every class carries c_mm; this used to look for `d` or
         # `h` and so missed CHS (D), RHS (H) and angles (leg) entirely.
         'c_cm':  section.c_mm / 10.0,
+        # The WEAK axis, for a rigid joint. A frame element bends two ways,
+        # and taking both stiffnesses as I (the strong one) made an IPE as
+        # stiff sideways as it is in its own plane -- about 13 times too
+        # stiff for an IPE 200. Iw and cw are the weak axis's second moment
+        # and extreme-fibre distance; stereo_math puts the strong axis in
+        # the vertical plane through the rod (where gravity bends a beam)
+        # and this one square to it.
+        'Iw':    section.Iw_mm4 / 10_000.0,
+        'cw_cm': section.cw_mm / 10.0,
     }
     if material is not None:
         props['E']  = material.E / 1000.0      # MPa -> GPa
@@ -608,6 +672,12 @@ SECTION_PROPERTIES_NOTE = ('From nominal plate dimensions, without root '
 SECTION_KEYS = ('E', 'A', 'I', 'J', 'Fy', 'Fu', 'r_gyr', 'K')
 
 
+# Keys that are only true of the exact catalog section they came from, so
+# they travel by write_section's rule rather than as plain section keys: the
+# extreme-fibre depth, and the weak axis's second moment and depth.
+CATALOG_EXTRAS = ('c_cm', 'Iw', 'cw_cm')
+
+
 def write_section(target, values):
     """Copy a section onto a member or profile dict, and keep c_cm honest.
 
@@ -625,10 +695,14 @@ def write_section(target, values):
     for k in SECTION_KEYS:
         if k in values:
             target[k] = values[k]
-    if values.get('c_cm'):
-        target['c_cm'] = values['c_cm']
-    else:
-        target.pop('c_cm', None)
+    # c_cm and the weak axis (Iw, cw_cm) by the same rule: carried when the
+    # values have them, REMOVED when they do not. A weak-axis I left beside
+    # a hand-typed strong one belongs to some other section entirely.
+    for k in CATALOG_EXTRAS:
+        if values.get(k):
+            target[k] = values[k]
+        else:
+            target.pop(k, None)
     return target
 
 
@@ -646,6 +720,33 @@ def depth_still_valid(depth, I_now, rel_tol=1e-6):
         return False
     try:
         I_now = float(I_now)
+    except (TypeError, ValueError):
+        return False
+    scale = max(abs(I_then), abs(I_now), 1e-12)
+    return abs(I_now - I_then) <= rel_tol * scale
+
+
+def extras_still_valid(remembered, I_now, rel_tol=1e-6):
+    """The catalog extras (CATALOG_EXTRAS) remembered beside the I they were
+    picked with, if that I is still the one in use -- else {}.
+
+    `remembered` is ({key: value}, I_at_pick) or None. As depth_still_valid,
+    and for the same reason: an unchanged I is the only evidence there is
+    that the section has not been typed over.
+    """
+    if not remembered:
+        return {}
+    extras, I_then = remembered
+    if not extras:
+        return {}
+    return dict(extras) if same_I(I_then, I_now, rel_tol) else {}
+
+
+def same_I(I_then, I_now, rel_tol=1e-6):
+    """Is this still the same section, as far as its I can tell? Float noise
+    allowed; None or junk on either side is "no"."""
+    try:
+        I_then, I_now = float(I_then), float(I_now)
     except (TypeError, ValueError):
         return False
     scale = max(abs(I_then), abs(I_now), 1e-12)

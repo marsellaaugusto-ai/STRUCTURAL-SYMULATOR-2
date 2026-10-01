@@ -159,11 +159,19 @@ class StereoInspectorMixin:
             return
         self._push_undo('edit member properties')
         m = self.members[sm_idx]
+        I_before = m.get('I')
         for key, var in self._props_entries.items():
             try:
                 m[key] = var.get()
             except tk.TclError:
                 pass
+        # A typed I is a different section: the catalog depth and weak axis
+        # that belonged to the old one go (stereo_profiles.CATALOG_EXTRAS),
+        # or a small old depth beside a big new I would overstate bending.
+        from apps.stereo import stereo_profiles as _sp
+        if not _sp.same_I(I_before, m.get('I')):
+            for k in _sp.CATALOG_EXTRAS:
+                m.pop(k, None)
         self.results = None
         self.member_checks = None
         self._refresh_all()

@@ -56,6 +56,18 @@ def elastic_section_modulus_cm3(member):
     return (I / c) if (c > 1e-12 and I > 0.0) else 0.0
 
 
+def weak_axis_capacity_kNm(member, code=cirsoc.CIRSOC_301):
+    """phi_b * Fy * Iw / cw, about the weak axis -- or the strong-axis
+    capacity when the member has no weak axis of its own (a hand-typed
+    section, taken as doubly symmetric, as the stiffness matrix takes it)."""
+    Iw = float(member.get('Iw', 0.0) or 0.0)
+    cw = float(member.get('cw_cm', 0.0) or 0.0)
+    Fy = float(member.get('Fy', 0.0) or 0.0)
+    if Iw <= 0.0 or cw <= 0.0 or Fy <= 0.0:
+        return flexural_capacity_kNm(member, code)
+    return code.phi_flexure * Fy * (Iw / cw * 1e3) / 1e6
+
+
 def flexural_capacity_kNm(member, code=cirsoc.CIRSOC_301):
     """phi_b * Fy * S -- the YIELDING limit state only.
 
@@ -162,10 +174,14 @@ def _add_bending_interaction(out, member, member_res, Pr_N, Pc_N, code):
                                'be formed (needs I and r_gyr, or a catalog profile)')
         return out
 
-    # Iy = Iz = I is already assumed by the stiffness matrix, so one
-    # capacity serves both bending axes.
+    # Each moment against its own axis's capacity, as H1.1 writes it. My --
+    # about local y, the vertical plane -- is the strong axis; Mz the weak
+    # one (see stereo_math._rigid_local_stiffness). A section with no weak
+    # axis of its own is doubly symmetric and both capacities are Mc.
+    Mc_w = weak_axis_capacity_kNm(member, code)
+    out['M_capacity_weak_kNm'] = Mc_w
     ratio = (Pr_N / Pc_N) if Pc_N > 1e-9 else float('inf')
-    m_sum = (Mrx + Mry) / Mc
+    m_sum = Mry / Mc + (Mrx / Mc_w if Mc_w > 1e-12 else float('inf'))
     if ratio >= 0.2:
         h1 = ratio + (8.0 / 9.0) * m_sum
         branch = 'H1-1a (P/Pc >= 0.2)'

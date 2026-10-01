@@ -9,6 +9,7 @@ lists, labels and canvases need redrawing after an edit.
 Report/Excel formatting itself lives in stereo_reports.py.
 """
 import os
+import copy
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -228,6 +229,85 @@ class StereoReportsMixin:
                     '  No group row changed any rod -- the sections are as '
                     'they were exported.',
                     '\n  … and %d more' % more if more > 0 else ''))
+
+    def _merge_excel_files(self, paths=None, tol=None):
+        """Combine several workbooks -- roof, columns, bracing -- into this
+        model (roadmap 4.5). See stereo_merge for what happens at the seams.
+
+        Every file is read and merged BEFORE the model is touched, so one
+        bad workbook leaves the model as it was rather than half-merged.
+        """
+        from tkinter import simpledialog
+        from apps.stereo import stereo_merge as smg
+        from apps.stereo import stereo_groups_excel as sge
+        if paths is None:
+            paths = filedialog.askopenfilenames(
+                title='Merge Excel files into this model',
+                filetypes=[('Excel workbook', '*.xlsx')])
+        paths = list(paths or ())
+        if not paths:
+            return None
+        if tol is None:
+            tol = simpledialog.askfloat(
+                'Merge Excel files',
+                'Nodes closer than this are the same joint (m):',
+                initialvalue=smg.DEFAULT_TOL_M, minvalue=0.0,
+                parent=self.root)
+            if tol is None:
+                return None
+        started_empty = not self.nodes
+        merged = {'nodes': list(self.nodes), 'members': list(self.members),
+                  'loads': list(self.loads), 'supports': list(self.supports),
+                  'groups': copy.deepcopy(self.groups),
+                  'profiles': dict(self.profiles)}
+        lines = []
+        try:
+            for path in paths:
+                nodes, members, loads, supports, profiles = (
+                    sr.import_excel_model(path))
+                groups, _rep = sge.import_groups(
+                    path, members, dict(merged['profiles'], **(profiles or {})))
+                part = {'nodes': nodes, 'members': members, 'loads': loads,
+                        'supports': supports, 'groups': groups or [],
+                        'profiles': profiles or {}}
+                n_before = len(merged['members'])
+                merged, rep = smg.merge_models(merged, part, tol=tol,
+                                               label=os.path.basename(path))
+                lines.append(os.path.basename(path))
+                lines += ['  ' + ln for ln in smg.describe(rep, n_before,
+                                                            len(members))]
+        except Exception as exc:
+            messagebox.showerror('Merge failed',
+                                 '%s\n\nThe model was not changed.' % exc)
+            return None
+        self._push_undo('merge Excel files')
+        self.nodes, self.members = merged['nodes'], merged['members']
+        self.loads, self.supports = merged['loads'], merged['supports']
+        self.profiles = merged['profiles']
+        self._drop_groups()
+        self.groups = merged['groups']
+        self._refresh_group_list()
+        self._support_candidates = [s['node'] for s in self.supports]
+        if started_empty:
+            # As for Import: a workbook's [LOADS] is the whole solved case.
+            self._model_label = 'Merged: ' + ', '.join(
+                os.path.basename(p) for p in paths)
+            self._load_nodes = {}
+            self.area_load_on.set(False)
+            self.self_weight_on.set(False)
+            self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
+        self.results = None
+        self.member_checks = None
+        self.selected_nodes = set()
+        self.selected_member = None
+        self.selected_members = set()
+        self._refresh_profile_combo()
+        self._refresh_all()
+        self._reset_view()
+        messagebox.showinfo('Merge Excel files', '\n'.join(
+            lines + ['', 'Model now: %d nodes, %d rods.'
+                     % (len(self.nodes), len(self.members))]))
+        return lines
 
     def _import_sketchup(self):
         path = filedialog.askopenfilename(

@@ -411,6 +411,9 @@ def apply_group_values(sheet_rows, groups, members, profiles=None):
                           % (name, hdr, was, v, len(todo)))
         if I_changed and not c_given:
             dropped = [i for i in I_changed if members[i].pop('c_cm', None)]
+            for i in I_changed:               # the weak axis was the old
+                members[i].pop('Iw', None)    # section's too
+                members[i].pop('cw_cm', None)
             if dropped:
                 report.append('%s: I changed without a c, so %d rod(s) lost '
                               'their catalog depth (bending falls back to '

@@ -148,18 +148,28 @@ def _pin_stiffness(E_GPa, A_cm2, L):
     return k
 
 
-def _rigid_local_stiffness(E_GPa, A_cm2, I_cm4, J_cm4, L, nu=DEFAULT_NU):
+def _rigid_local_stiffness(E_GPa, A_cm2, I_cm4, J_cm4, L, nu=DEFAULT_NU,
+                           Iw_cm4=None):
     """The standard 12x12 local stiffness matrix for a 3D Euler-Bernoulli
     beam-column, DOF order (ux,uy,uz,rx,ry,rz) at node a then node b.
     Bending about local z (in-plane uy/rz) uses Iz; bending about local y
-    (in-plane uz/ry) uses Iy. A doubly-symmetric section is assumed
-    (Iy = Iz = I, the member's one given `I`), which is exact for a round
-    or square hollow section -- the common choice for space-structure
-    members -- and a documented simplification otherwise."""
+    (in-plane uz/ry) uses Iy.
+
+    WHICH IS WHICH. _local_axes puts local z in the vertical plane through
+    the rod, so bending about local y is the bending gravity does to a beam
+    -- that is the STRONG axis, the member's `I`. Bending about local z, in
+    the horizontal plane, gets the WEAK axis, `Iw_cm4`, which a catalog
+    section carries (stereo_profiles.section_to_props). A section without
+    one -- a hand-typed E/A/I/J set, whose I and r_gyr are not guaranteed to
+    describe one real section -- is taken as doubly symmetric, Iy = Iz = I:
+    exact for the round and square hollow sections space structures are
+    usually built from, and the previous behaviour for every section. Taking
+    both as I made an IPE 200 thirteen times too stiff sideways."""
     E = E_GPa * 1e9
     G = E / (2.0 * (1.0 + nu))
     A = A_cm2 * 1e-4
-    Iy = Iz = I_cm4 * 1e-8
+    Iy = I_cm4 * 1e-8
+    Iz = (Iw_cm4 if Iw_cm4 else I_cm4) * 1e-8
     J = J_cm4 * 1e-8
 
     EA_L = E * A / L
@@ -324,7 +334,8 @@ def _analyze_once(nodes, members, loads, supports, panels=None,
         else:
             local_x, local_y, local_z = _local_axes(dx, dy, dz, L)
             kloc = _rigid_local_stiffness(m['E'], m['A'], m.get('I', 0.0),
-                                           m.get('J', m.get('I', 0.0)), L)
+                                           m.get('J', m.get('I', 0.0)), L,
+                                           Iw_cm4=m.get('Iw'))
             T = _rotation_12(local_x, local_y, local_z)
             kgl = T.T @ kloc @ T
             idx = list(a_dof) + list(b_dof)
@@ -441,7 +452,8 @@ def _analyze_once(nodes, members, loads, supports, panels=None,
         else:
             local_x, local_y, local_z = _local_axes(dx, dy, dz, L)
             kloc = _rigid_local_stiffness(m['E'], m['A'], m.get('I', 0.0),
-                                           m.get('J', m.get('I', 0.0)), L)
+                                           m.get('J', m.get('I', 0.0)), L,
+                                           Iw_cm4=m.get('Iw'))
             T = _rotation_12(local_x, local_y, local_z)
             idx = list(a_dof) + list(b_dof)
             dgl = np.array([U[i] for i in idx])

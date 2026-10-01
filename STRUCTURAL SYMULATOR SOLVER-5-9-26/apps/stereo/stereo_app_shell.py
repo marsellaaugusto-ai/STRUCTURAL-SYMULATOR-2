@@ -169,6 +169,8 @@ class StereoShellMixin:
         # existed with nothing calling it.
         menu.add_command(label='Import from SketchUp…',
                          command=self._import_sketchup)
+        menu.add_command(label='Merge Excel files…',
+                         command=self._merge_excel_files)
         # Drawings and models. These lived in an OUTPUT group on the old
         # toolbar, which this rail replaced; they belong on this menu rather
         # than as eleven more buttons competing with the mode rail for width.

@@ -934,14 +934,14 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
     # written before this column existed still loads.
     for col, lbl in enumerate(['idx', 'a', 'b', 'conn', 'E_GPa', 'A_cm2', 'I_cm4',
                                 'J_cm4', 'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role',
-                                'profile', 'c_cm'], 1):
+                                'profile', 'c_cm', 'Iw_cm4', 'cw_cm'], 1):
         ws.cell(row=row, column=col, value=lbl)
     row += 1
     for i, m in enumerate(members):
         vals = [i, m['a'], m['b'], m.get('conn', 'pin'), m.get('E'), m.get('A'),
                 m.get('I'), m.get('J'), m.get('Fy'), m.get('Fu'), m.get('K', 1.0),
                 m.get('r_gyr'), m.get('role', ''), m.get('profile', ''),
-                m.get('c_cm')]
+                m.get('c_cm'), m.get('Iw'), m.get('cw_cm')]
         for col, v in enumerate(vals, 1):
             ws.cell(row=row, column=col, value=v)
         row += 1
@@ -982,7 +982,7 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
         ws.cell(row=row, column=1, value='[PROFILES]'); row += 1
         prof_hdrs = ['name', 'E_GPa', 'A_cm2', 'I_cm4', 'J_cm4',
                      'Fy_MPa', 'Fu_MPa', 'r_gyr_cm', 'K', 'catalog', 'material',
-                     'c_cm']
+                     'c_cm', 'Iw_cm4', 'cw_cm']
         for col, lbl in enumerate(prof_hdrs, 1):
             ws.cell(row=row, column=col, value=lbl)
         row += 1
@@ -992,7 +992,8 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
                     pdata.get('Fy', ''), pdata.get('Fu', ''),
                     pdata.get('r_gyr', ''), pdata.get('K', ''),
                     pdata.get('catalog', ''), pdata.get('material', ''),
-                    pdata.get('c_cm', '')]
+                    pdata.get('c_cm', ''), pdata.get('Iw', ''),
+                    pdata.get('cw_cm', '')]
             for col, v in enumerate(vals, 1):
                 ws.cell(row=row, column=col, value=v)
             row += 1
@@ -1100,13 +1101,17 @@ def import_excel_model(path):
         # member simply has no depth, and the bending check's I/A fall-back
         # applies -- conservative for the I and channel sections where the
         # radius error was largest.
-        c = r.get('c_cm')
-        if c not in (None, ''):
-            try:
-                if float(c) > 0.0:
-                    m['c_cm'] = float(c)
-            except (TypeError, ValueError):
-                pass
+        # c_cm, Iw and cw_cm by column NAME -- absent from a workbook
+        # written before they existed, and then the member is simply doubly
+        # symmetric and depth-less, as it was.
+        for col, key in (('c_cm', 'c_cm'), ('Iw_cm4', 'Iw'), ('cw_cm', 'cw_cm')):
+            v = r.get(col)
+            if v not in (None, ''):
+                try:
+                    if float(v) > 0.0:
+                        m[key] = float(v)
+                except (TypeError, ValueError):
+                    pass
         members.append(m)
 
     profiles = {}
@@ -1128,13 +1133,15 @@ def import_excel_model(path):
                 pdata['K'] = float(pk)
             # The catalog depth, so assigning a re-imported profile hands it
             # on (stereo_profiles.write_section) instead of dropping it.
-            pc = pr.get('c_cm')
-            if pc not in (None, ''):
-                try:
-                    if float(pc) > 0.0:
-                        pdata['c_cm'] = float(pc)
-                except (TypeError, ValueError):
-                    pass
+            for col, key in (('c_cm', 'c_cm'), ('Iw_cm4', 'Iw'),
+                             ('cw_cm', 'cw_cm')):
+                pc = pr.get(col)
+                if pc not in (None, ''):
+                    try:
+                        if float(pc) > 0.0:
+                            pdata[key] = float(pc)
+                    except (TypeError, ValueError):
+                        pass
             for extra in ('catalog', 'material'):
                 v = pr.get(extra)
                 if v and str(v).strip():

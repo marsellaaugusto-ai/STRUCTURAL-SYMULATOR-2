@@ -22,6 +22,17 @@ small-deflection. Solves in SI; the UI converts at the boundary.
 - **Rigid** (`conn='rigid'`) — 6 DOF per node (3 translations + 3 rotations),
   full 12×12 frame element with axial, 2 bending planes, torsion and shear
   terms. This is what a Vierendeel needs; pinned, a Vierendeel is a mechanism.
+  **The two bending planes have their own stiffness.** The strong axis (the
+  section's `I`) bends in the vertical plane through the rod — where gravity
+  bends a beam; for a vertical column, towards global Y — and the weak axis
+  (`Iw`) square to it. Every catalog section carries its weak axis: an IPE 200
+  is 13× weaker sideways, which the frame used to ignore by taking both
+  stiffnesses as `I`. The member check follows: each moment is checked
+  against its own axis's capacity (CIRSOC 301 / AISC 360 H1.1, `Mrx/Mcx +
+  Mry/Mcy`). A hand-typed section, which has no weak axis of its own, stays
+  doubly symmetric. The weak axis travels with its section — the Excel
+  round trip, profiles, the section panels — and is dropped with the depth
+  `c` whenever a different I is typed over it.
 
 **Tension-only members (cables).** Any member may carry `tension_only=True`.
 Because a cable cannot push, the answer depends on which cables are slack, and
@@ -682,6 +693,18 @@ says so.
   in the structure and the free-body diagram at each end — and now, beside
   them, the rod's own data: section, A, r min, L, KL/r, N, V and M max,
   mode, capacity, utilisation and the check that governs.
+- **Merge Excel files** — design by parts (roof, columns, bracing, each its
+  own workbook) and combine them: pick several files and a tolerance (1 mm
+  by default); nodes that close are the same joint, the later files' rods
+  are re-indexed onto the combined nodes, and every rod keeps its own
+  section — nothing is averaged. At the seams: a rod lying on one already
+  there is kept once, with the first file's section; a rod whose ends merge
+  is dropped; loads on a shared joint add; supports there combine to the
+  stricter (held in either, held in both); each file's groups come along,
+  renamed only if a name is taken. Every file is read before the model is
+  touched, so a bad one leaves it as it was. A summary per file says what
+  merged, as the roadmap asks: *"Merged N nodes, combined M + K members.
+  X coincident nodes were merged."* Undo takes the whole merge back.
 - **Import from SketchUp** — on the Export menu beside Import Excel: reads
   the workbook the SketchUp extension writes, and says what it lacks (loads
   and supports).
@@ -809,11 +832,16 @@ Stated plainly so nobody assumes otherwise:
   during the lift.
 - One load case at a time. `combine_loads` exists but there is no combination
   UI.
-- No per-member section rotation for rigid frames — `_local_axes` picks a
-  default reference, which matters for non-symmetric sections.
-- A rigid frame's stiffness takes `Iy = Iz = I` for every member, so an open
-  section's weak-axis **stiffness** is overstated. That changes how load shares
-  out in a rigid frame; the member *check* uses the correct minor radius.
+- No per-member section rotation for rigid frames: the strong axis always
+  bends in the vertical plane through the rod (for a column, towards global
+  Y). Right for a beam carrying gravity; a section the drawing turns another
+  way is not modelled turned.
+- A hand-typed section has no weak axis of its own and is still taken as
+  doubly symmetric (`Iy = Iz = I`). Catalog sections carry theirs.
+- A channel's weak-axis I is taken about its web rather than its centroid
+  (UPN 200: 82 against a published 148 cm⁴) — low, so the stiffness and the
+  weak-axis capacity are on the safe side; it is the same figure its
+  buckling radius has always used.
 - The Excel round-trip loses the wizard recipe, so an imported model cannot be
   reopened in the wizard.
 - The *Member Calculations* sheet shows the 40 most utilized rods, not all of

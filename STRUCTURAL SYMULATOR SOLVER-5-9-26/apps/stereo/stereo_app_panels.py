@@ -2106,8 +2106,9 @@ class StereoPanelsMixin(_ToolbarModes):
         depths = getattr(self, '_panel_depth', None)
         if depths is None:
             depths = self._panel_depth = {}
-        depths[prefix] = ((prof['c_cm'], prof.get('I'))
-                          if prof.get('c_cm') else None)
+        from apps.stereo import stereo_profiles as _sp
+        extras = {k: prof[k] for k in _sp.CATALOG_EXTRAS if prof.get(k)}
+        depths[prefix] = (extras, prof.get('I')) if extras else None
 
     def _panel_section(self, prefix):
         """The Section panel's `prefix` values as a member section dict.
@@ -2123,9 +2124,10 @@ class StereoPanelsMixin(_ToolbarModes):
         g = lambda attr: getattr(self, f'{prefix}_{attr}').get()
         values = dict(E=g('E'), A=g('A'), I=g('I'), J=g('J'), Fy=g('Fy'),
                       Fu=g('Fu'), K=g('K'), r_gyr=g('r'))
+        # The depth and the weak axis (stereo_profiles.CATALOG_EXTRAS) come
+        # along while the panel still holds the catalog I they belong to.
         depth = (getattr(self, '_panel_depth', None) or {}).get(prefix)
-        if _sp.depth_still_valid(depth, values['I']):
-            values['c_cm'] = depth[0]
+        values.update(_sp.extras_still_valid(depth, values['I']))
         return values
 
     def _open_catalog_picker(self, prefix):
@@ -2226,6 +2228,8 @@ class StereoPanelsMixin(_ToolbarModes):
                 # eight keys above and drop it, so no catalog section's
                 # depth ever reached a member (account, 9.2b).
                 'c_cm': props['c_cm'],
+                # and the weak axis, for a rigid joint's sideways bending
+                'Iw': props['Iw'], 'cw_cm': props['cw_cm'],
                 'catalog': sec_name, 'material': mat_var.get(),
             }
 
@@ -2324,9 +2328,9 @@ class StereoPanelsMixin(_ToolbarModes):
             # depth survives. Type a new I: it is a different section now,
             # and the old depth paired with it would overstate bending.
             old = self.profiles.get(name) or {}
-            if old.get('c_cm') and _sp.depth_still_valid(
-                    (old['c_cm'], old.get('I')), prof['I']):
-                prof['c_cm'] = old['c_cm']
+            prof.update(_sp.extras_still_valid(
+                ({k: old[k] for k in _sp.CATALOG_EXTRAS if old.get(k)},
+                 old.get('I')), prof['I']))
             for keep in ('catalog', 'material'):
                 if keep in old and 'c_cm' in prof:
                     prof[keep] = old[keep]

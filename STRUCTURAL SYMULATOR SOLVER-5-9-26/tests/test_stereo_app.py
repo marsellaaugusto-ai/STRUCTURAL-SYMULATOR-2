@@ -10022,3 +10022,49 @@ class TestGroupsThroughExcel:
         assert [g['name'] for g in app.groups] == [g['name'] for g in groups_before]
         assert any('Import failed' in str(d) and '99999' in str(d)
                    for d in dialogs)
+
+
+class TestUnitWeightFollowsTheSelector:
+    """The self-weight box shows the selected convention and the model keeps
+    kN/m³ -- the take-off sheet, the self-weight load and the reports all
+    read the stored figure through _unit_weight()."""
+
+    def test_the_box_shows_pcf_under_aisc_and_the_model_keeps_kn_m3(self, app):
+        import units
+        was = units.current().key
+        try:
+            units.set_current('aisc')
+            assert app.unit_weight_var.get() == pytest.approx(499.72, abs=0.01)
+            assert 'pcf' in app._self_weight_check.cget('text')
+            assert app._unit_weight() == pytest.approx(78.5)
+            app.unit_weight_var.set(500.0)            # typed in pcf
+            assert app._unit_weight() == pytest.approx(78.544, abs=1e-3)
+        finally:
+            units.set_current(was)
+        assert 'kN/m³' in app._self_weight_check.cget('text')
+        assert app.unit_weight_var.get() == pytest.approx(78.544, abs=1e-3)
+
+    def test_the_self_weight_load_uses_the_stored_figure(self, app):
+        import units
+        app.self_weight_on.set(True)
+        loads_si = app._all_loads()
+        was = units.current().key
+        try:
+            units.set_current('aisc')
+            loads_us = app._all_loads()
+        finally:
+            units.set_current(was)
+        tot = lambda L: sum(ld.get('fz', 0.0) for ld in L)
+        assert tot(loads_us) == pytest.approx(tot(loads_si)), \
+            'switching the display must not change the load'
+
+    def test_the_sketchup_import_is_on_the_menu(self, app):
+        labels = [app.export_menu.entrycget(i, 'label')
+                  for i in range(app.export_menu.index('end') + 1)
+                  if app.export_menu.type(i) == 'command']
+        assert 'Import from SketchUp…' in labels
+        i = labels.index('Import from SketchUp…')
+        cmds = [app.export_menu.entrycget(k, 'command')
+                for k in range(app.export_menu.index('end') + 1)
+                if app.export_menu.type(k) == 'command']
+        assert '_import_sketchup' in cmds[i]

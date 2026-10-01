@@ -645,6 +645,18 @@ AISC is a different system (kip, foot, inch, ksi). Solvers always compute in
 SI; conversion happens only at the boundary — labels, entry boxes, tables,
 legends and colourbar tick values.
 
+That boundary now includes the **self-weight unit weight** box (pcf under
+AISC; the model keeps kN/m³, so switching the display never changes the
+load), the **PDF take-off note**, and the **Excel workbook**: every sheet a
+person reads — Summary, Nodes, Members, Loads, Node Properties, Member
+Forces, Reactions, Member Checks, Member Calculations, Gusset Plates — is
+written in the selected convention, a column's unit named after the
+underscore (`N_kip`, `A_in²`). Under the SI conventions nothing changes, so
+a workbook read by column name reads the same. The **Model** and **Groups**
+sheets stay in the stored units (m, kN, cm, MPa), because Import from Excel
+and the SketchUp extension read them by those headers; the Summary sheet
+says so.
+
 ---
 
 ## 10. Reports and I/O
@@ -652,7 +664,14 @@ legends and colourbar tick values.
 - **Member Report** — a sortable table of every rod: endpoints, role,
   connectivity, N, governing mode, utilisation, status, worst first.
 - **Excel export** — nodes, members, loads, supports, reactions, member
-  results and checks.
+  results and checks, in the selected units (see §9). The *Member
+  Calculations* sheet shows, for each of the most utilised rods, its place
+  in the structure and the free-body diagram at each end — and now, beside
+  them, the rod's own data: section, A, r min, L, KL/r, N, V and M max,
+  mode, capacity, utilisation and the check that governs.
+- **Import from SketchUp** — on the Export menu beside Import Excel: reads
+  the workbook the SketchUp extension writes, and says what it lacks (loads
+  and supports).
 - **Excel import** — reads a model back. Note it clears `load_nodes`: an
   imported model has no known roof surface, so the area load must not keep
   applying the previous mesh's tributary areas — and it switches the area

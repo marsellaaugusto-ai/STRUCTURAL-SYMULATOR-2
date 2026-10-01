@@ -620,6 +620,20 @@ class StereoModelMixin:
         self._load_mesh(mesh, push_undo=True, undo_label=f'load example: {label}')
         self._model_label = label   # after _load_mesh, which clears it
 
+    def _unit_weight(self):
+        """The material unit weight in kN/m³, whatever the box displays.
+
+        The box follows the unit selector, so under AISC it SHOWS pcf; this
+        is the stored figure, which the self-weight load, the take-off and
+        every report compute from.
+        """
+        from apps.stereo import stereo_math as _sm
+        try:
+            return float(self.unit_value(self.unit_weight_var,
+                                         _sm.DEFAULT_STEEL_UNIT_WEIGHT))
+        except (tk.TclError, ValueError, TypeError):
+            return _sm.DEFAULT_STEEL_UNIT_WEIGHT
+
     def _apply_sections(self, members=None, redraw=True):
         members = self.members if members is None else members
         if redraw:
@@ -1045,7 +1059,7 @@ class StereoModelMixin:
                     direction=self._area_direction(), only=only))
         if self.self_weight_on.get():
             loads = sm.combine_loads(loads, sm.self_weight_loads(
-                self.nodes, self.members, self.unit_weight_var.get()))
+                self.nodes, self.members, self._unit_weight()))
         return loads
 
     def _solve_loads(self):
@@ -1078,7 +1092,7 @@ class StereoModelMixin:
         member_loads = list(self._valid_member_loads())
         if self.self_weight_on.get():
             nodal_sw, span_sw = sm.self_weight_split(
-                self.nodes, self.members, self.unit_weight_var.get())
+                self.nodes, self.members, self._unit_weight())
             loads = sm.combine_loads(loads, nodal_sw)
             member_loads.extend(span_sw)
         return loads, member_loads

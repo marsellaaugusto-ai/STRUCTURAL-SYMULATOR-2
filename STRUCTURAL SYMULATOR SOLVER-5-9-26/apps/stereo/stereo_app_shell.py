@@ -164,6 +164,11 @@ class StereoShellMixin:
         menu.add_separator()
         menu.add_command(label='Export Excel…', command=self._export_excel)
         menu.add_command(label='Import Excel…', command=self._import_excel)
+        # The SketchUp extension writes a workbook of its own; this reads it
+        # with the notes that apply (no loads, no supports yet). The handler
+        # existed with nothing calling it.
+        menu.add_command(label='Import from SketchUp…',
+                         command=self._import_sketchup)
         # Drawings and models. These lived in an OUTPUT group on the old
         # toolbar, which this rail replaced; they belong on this menu rather
         # than as eleven more buttons competing with the mode rail for width.

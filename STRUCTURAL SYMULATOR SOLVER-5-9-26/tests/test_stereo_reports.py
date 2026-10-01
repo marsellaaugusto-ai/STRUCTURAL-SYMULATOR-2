@@ -1070,11 +1070,10 @@ def test_the_sheets_are_written_in_the_selected_convention(unit_selector,
     text = _read_pdf_text(path)
     assert 'kip' in text
     assert 'ft, kip, in' in text
-    # No line may still be written in SI. The one exemption is the line
-    # quoting the material unit weight, which the app itself labels kN/m³
-    # whatever is selected -- see test_the_takeoff_keeps_two_units_on_purpose.
+    # No line may still be written in SI -- the material unit weight
+    # included, now that the app's own box follows the selector too.
     si_only = [ln for ln in text.splitlines()
-               if ('kN' in ln or ' mm' in ln) and 'kN/m³' not in ln]
+               if 'kN' in ln or ' mm' in ln]
     assert si_only == [], si_only
 
 
@@ -1220,16 +1219,15 @@ def test_a_table_note_too_long_for_one_line_wraps_instead_of_running_off():
         plt.close(fig)
 
 
-def test_the_takeoff_keeps_two_units_on_purpose(unit_selector, tmp_path):
-    """Two things on the take-off sheet do not follow the selector, and
-    both are deliberate.
+def test_the_takeoff_quotes_the_unit_weight_in_the_selected_units(
+        unit_selector, tmp_path):
+    """The material unit weight follows the selector, like the box it was
+    typed into (which now does too). It used to be quoted in kN/m³ under
+    every convention, on the grounds that the box said kN/m³ -- true, and
+    the fix was to make both follow the selector rather than neither.
 
-    The material unit weight is quoted as the app holds it -- the tab's
-    own field is labelled kN/m³ whatever convention is selected -- so
-    converting it here would make the report disagree with the box the
-    number was typed into. And mass is simply not one of the quantities
-    the selector knows: there is no mass in units.QUANTITIES, so kg and
-    tonnes are the only honest answer. The sheet's note says both.
+    Mass is still kg and tonnes: there is no mass in units.QUANTITIES, and
+    the sheet's note says it is not a converted quantity.
     """
     nodes, members, loads, supports, res, checks = _rigid_model()
     unit_selector.set_current('aisc')
@@ -1237,7 +1235,8 @@ def test_the_takeoff_keeps_two_units_on_purpose(unit_selector, tmp_path):
     sr.export_pdf(nodes, members, loads, supports, res, path, checks=checks,
                   groups={'tables'})
     text = _read_pdf_text(path)
-    assert 'kN/m³' in text          # the unit weight, as the app holds it
+    assert 'kN/m³' not in text
+    assert '499.7 pcf' in text      # 78.5 kN/m³, the default, in lbf/ft³
     assert 'mass (kg)' in text      # not a converted quantity
     assert 'tonnes' in text
     assert 'not a converted quantity' in text   # and the sheet says so
@@ -1329,3 +1328,108 @@ def test_a_model_under_the_cap_gets_no_note_and_every_member(tmp_path):
     wb = load_workbook(str(out))
     note = str(wb['Member Calculations'].cell(row=2, column=1).value)
     assert 'most utilized' not in note
+
+
+# ── the workbook follows the selector too ─────────────────────────────────
+
+def _xl_export(tmp_path, name='w.xlsx'):
+    import openpyxl
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    path = str(tmp_path / name)
+    sr.export_excel(nodes, members, loads, supports, res, path, checks=checks,
+                    max_calc_members=2)
+    return openpyxl.load_workbook(path), (nodes, members, loads, supports,
+                                          res, checks), path
+
+
+def _hdrs(ws):
+    return [c.value for c in ws[1]]
+
+
+def test_under_si_the_workbook_is_exactly_as_it_was(tmp_path):
+    wb, (nodes, members, loads, supports, res, checks), _p = _xl_export(tmp_path)
+    assert _hdrs(wb['Member Forces'])[4] == 'N_kN'
+    assert _hdrs(wb['Nodes']) == ['idx', 'x_m', 'y_m', 'z_m']
+    assert wb['Member Forces'].cell(row=2, column=5).value == \
+        pytest.approx(res['member_res'][0]['N'])
+
+
+def test_under_aisc_the_readable_sheets_are_in_us_units(unit_selector,
+                                                        tmp_path):
+    unit_selector.set_current('aisc')
+    wb, (nodes, members, loads, supports, res, checks), _p = _xl_export(tmp_path)
+    mf = wb['Member Forces']
+    assert _hdrs(mf)[4:6] == ['N_kip', 'length_ft']
+    assert mf.cell(row=2, column=5).value == pytest.approx(
+        res['member_res'][0]['N'] * 0.224809, rel=1e-4)
+    assert _hdrs(wb['Nodes']) == ['idx', 'x_ft', 'y_ft', 'z_ft']
+    np_ = _hdrs(wb['Node Properties'])
+    assert 'ux_in' in np_ and 'Mz_kipft' in np_ and 'rx_rad' in np_
+    mem = _hdrs(wb['Members'])
+    assert 'E_ksi' in mem and 'A_in²' in mem and 'r_gyr_in' in mem
+    assert 'slenderness' in _hdrs(wb['Member Checks'])
+    summary = {r[0]: r[1] for r in wb['Summary'].iter_rows(values_only=True)
+               if r and r[0]}
+    assert 'Max tension (kip)' in summary
+    assert 'ft, kip, in' in summary['Units']
+
+
+def test_the_model_sheet_stays_in_stored_units_so_import_is_exact(
+        unit_selector, tmp_path):
+    """Import reads the Model sheet by its headers. A US workbook must still
+    bring back the same model, not one scaled by 0.2248."""
+    unit_selector.set_current('aisc')
+    wb, (nodes, members, loads, supports, res, checks), path = \
+        _xl_export(tmp_path)
+    n2, m2, l2, s2, _p = sr.import_excel_model(path)
+    assert n2 == [tuple(p) for p in nodes]
+    assert m2[0]['A'] == pytest.approx(members[0]['A'])
+    assert m2[0]['E'] == pytest.approx(members[0]['E'])
+    assert sum(ld['fz'] for ld in l2) == pytest.approx(
+        sum(ld.get('fz', 0.0) for ld in loads))
+
+
+def test_a_mixed_convention_converts_only_what_differs(unit_selector,
+                                                        tmp_path):
+    """CSA keeps kN and m but writes sections in mm: only those columns move."""
+    unit_selector.set_current('csa')
+    wb, (nodes, members, *_rest), _p = _xl_export(tmp_path)
+    mem = _hdrs(wb['Members'])
+    assert 'A_mm²' in mem and 'E_MPa' in mem
+    assert _hdrs(wb['Member Forces'])[4] == 'N_kN'
+    col = mem.index('A_mm²') + 1
+    assert wb['Members'].cell(row=2, column=col).value == pytest.approx(
+        members[0]['A'] * 100.0)
+
+
+def test_every_pictured_rod_has_its_data_beside_it(tmp_path):
+    """Roadmap 2.4: the free-body pictures "next to their data"."""
+    wb, (nodes, members, loads, supports, res, checks), _p = _xl_export(tmp_path)
+    ws = wb['Member Calculations']
+    labels = [c.value for c in ws['V'] if c.value]
+    assert labels.count('Data') == 2, 'one panel per pictured rod (cap 2)'
+    for lbl in ('Section', 'L', 'KL/r', 'N', 'Utilisation', 'Governs'):
+        assert lbl in labels, lbl
+    values = [c.value for c in ws['W'] if c.value]
+    assert any(v.endswith(' m') for v in values)
+    assert any(('OK' in v or 'OVER' in v) for v in values)
+
+
+def test_the_data_panel_follows_the_selector(unit_selector):
+    unit_selector.set_current('aisc')
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    rows = dict(sr.member_data_rows(members[0], res['member_res'][0],
+                                    checks[0], sr.ReportUnits()))
+    assert rows['L'].endswith(' ft')
+    assert 'kip' in rows['N'] and 'kip·ft' in rows['M max']
+    assert rows['r min'].endswith(' in')
+
+
+def test_the_data_panel_leaves_out_what_was_not_computed():
+    rows = dict(sr.member_data_rows(
+        {'profile': 'X', 'A': 10.0, 'r_gyr': 2.0, 'K': 1.0},
+        {'N': 0.0, 'length_m': 2.0}, None, sr.ReportUnits()))
+    assert 'V max' not in rows and 'M max' not in rows
+    assert 'Utilisation' not in rows
+    assert rows['KL/r'] == '100'
+    assert rows['N'].endswith('(zero)')

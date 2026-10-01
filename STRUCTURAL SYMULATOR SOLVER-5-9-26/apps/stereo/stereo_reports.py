@@ -123,6 +123,58 @@ def _iso_project(px, py, pz, az_rad, el_rad):
     return sx, sy
 
 
+def member_data_rows(m, mr, chk, u):
+    """(label, value) rows describing one rod, for the panel beside its
+    pictures on the Member Calculations sheet (roadmap 2.4: the free-body
+    images "next to their data").
+
+    `u` is a ReportUnits, so the panel reads in the selected convention like
+    the rest of the readable sheets. Anything the solve or the check did not
+    produce is left out rather than shown as a zero.
+    """
+    import math as _m
+    rows = [('Section', m.get('profile') or '—'),
+            ('Connection', m.get('conn', 'pin'))]
+    if m.get('A'):
+        rows.append(('A', u.fl('area', float(m['A']))))
+    if m.get('r_gyr'):
+        rows.append(('r min', u.fl('section_length', float(m['r_gyr']))))
+    L = float(mr.get('length_m') or 0.0)
+    if L:
+        rows.append(('L', u.fl('length', L, 3)))
+    if L and m.get('r_gyr'):
+        kl_r = float(m.get('K', 1.0)) * L * 100.0 / float(m['r_gyr'])
+        rows.append(('KL/r', '%.0f' % kl_r))
+    N = float(mr.get('N', 0.0) or 0.0)
+    rows.append(('N', '%s  (%s)' % (u.fl('force', N, 2, sign=True),
+                                    'tension' if N > 0.01 else
+                                    'compression' if N < -0.01 else 'zero')))
+    chk = chk or {}
+    V = chk.get('V_demand_kN')
+    if V is None and ('Vy_a' in mr or 'Vz_a' in mr):
+        V = _m.hypot(float(mr.get('Vy_a', 0.0)), float(mr.get('Vz_a', 0.0)))
+    if V is not None:
+        rows.append(('V max', u.fl('force', float(V), 2)))
+    M = chk.get('M_demand_kNm')
+    if M is None and any(k in mr for k in ('My_a', 'Mz_a', 'My_b', 'Mz_b')):
+        M = max(_m.hypot(float(mr.get('My_a', 0.0)), float(mr.get('Mz_a', 0.0))),
+                _m.hypot(float(mr.get('My_b', 0.0)), float(mr.get('Mz_b', 0.0))))
+    if M is not None:
+        rows.append(('M max', u.fl('moment', float(M), 2)))
+    if chk.get('checked'):
+        rows.append(('Mode', str(chk.get('mode', ''))))
+        if chk.get('capacity_MPa') is not None:
+            rows.append(('Capacity', u.fl('stress', float(chk['capacity_MPa']), 1)))
+        util = float(chk.get('util', 0.0))
+        rows.append(('Utilisation', '%.2f  %s' % (util,
+                                                  'OVER' if util > 1.0 else 'OK')))
+        if chk.get('governing'):
+            rows.append(('Governs', str(chk['governing'])))
+    elif chk.get('note'):
+        rows.append(('Check', str(chk['note'])))
+    return rows
+
+
 def pil_draw_member_context_3d(nodes, members, member_idx, member_res=None,
                                size=260):
     """Render the full 3D structure with one member highlighted, projected
@@ -373,6 +425,46 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
+    # The sheets a PERSON reads follow the app-wide unit selector, like the
+    # PDF. A header names its unit after the underscore ('N_kN'); under a
+    # convention that shows that quantity in some other unit, the header and
+    # every value under it are rewritten ('N_kip'). Under the SI conventions
+    # nothing changes, so a workbook anyone already reads by column name
+    # reads the same. The Model and Groups sheets stay in the stored units:
+    # Import from Excel and the SketchUp extension read them by those
+    # headers, and converting them would make a round trip change the model.
+    xu = ReportUnits()
+    _XL_TAGS = {'m': ('length', 1.0), 'mm': ('deflection', 1.0),
+                'kN': ('force', 1.0), 'kNm': ('moment', 1.0),
+                'MPa': ('stress', 1.0), 'GPa': ('modulus', 1.0),
+                'cm2': ('area', 1.0), 'mm2': ('area', 0.01),
+                'cm4': ('inertia', 1.0), 'cm': ('section_length', 1.0)}
+
+    def _xl_q(h):
+        if not isinstance(h, str) or '_' not in h:
+            return None
+        spec = _XL_TAGS.get(h.rsplit('_', 1)[1])
+        if spec is None or xu.lab(spec[0]) == STORAGE_UNITS.label(spec[0]):
+            return None
+        return spec
+
+    def xl_hdr(h):
+        spec = _xl_q(h)
+        if spec is None:
+            return h
+        return '%s_%s' % (h.rsplit('_', 1)[0],
+                          xu.lab(spec[0]).replace('·', '').replace(' ', ''))
+
+    def xl_row(hdrs, vals):
+        out = []
+        for h, v in zip(hdrs, vals):
+            spec = _xl_q(h)
+            if spec is not None and isinstance(v, (int, float)) and \
+                    not isinstance(v, bool):
+                v = xu.v(spec[0], v * spec[1])
+            out.append(v)
+        return out
+
     HDR_FILL = PatternFill('solid', fgColor='404040')
     HDR_FONT = Font(name='Arial', bold=True, color='FFFFFF', size=10)
     BODY_FONT = Font(name='Arial', size=10)
@@ -387,7 +479,7 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
 
     def styled_header(ws, labels, row=1):
         for col, lbl in enumerate(labels, 1):
-            c = ws.cell(row=row, column=col, value=lbl)
+            c = ws.cell(row=row, column=col, value=xl_hdr(lbl))
             c.font = HDR_FONT
             c.fill = HDR_FILL
             c.border = THIN_BORDER
@@ -425,6 +517,10 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     r += 1
 
     cover_data = [
+        ('Units', '%s — %s' % (xu.system.name, xu.title_block())),
+        ('Model & Groups sheets', 'stored units (m, kN, cm, MPa), '
+                                  'for Import'),
+        ('', ''),
         ('Nodes', len(nodes)),
         ('Members', len(members)),
         ('Loads', len(loads)),
@@ -445,10 +541,14 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
         tot_fz = sum(r.get('Fz', 0.0) for r in rxns.values())
         cover_data += [
             ('', ''),
-            ('Max tension (kN)', round(max_t, 2)),
-            ('Max compression (kN)', round(max_c, 2)),
-            ('Max displacement (mm)', round(max_d, 4)),
-            ('Total vertical reaction (kN)', round(tot_fz, 2)),
+            ('Max tension (%s)' % xu.lab('force'),
+             round(xu.v('force', max_t), 2)),
+            ('Max compression (%s)' % xu.lab('force'),
+             round(xu.v('force', max_c), 2)),
+            ('Max displacement (%s)' % xu.lab('deflection'),
+             round(xu.v('deflection', max_d), 4)),
+            ('Total vertical reaction (%s)' % xu.lab('force'),
+             round(xu.v('force', tot_fz), 2)),
         ]
 
     if checks is not None:
@@ -477,7 +577,7 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     ws = wb.create_sheet('Nodes')
     styled_header(ws, ['idx', 'x_m', 'y_m', 'z_m'])
     for i, (x, y, z) in enumerate(nodes):
-        ws.append([i, x, y, z])
+        ws.append(xl_row(['idx', 'x_m', 'y_m', 'z_m'], [i, x, y, z]))
     style_data_range(ws, 2, 1 + len(nodes), 4)
 
     # ── Members ──────────────────────────────────────────────────────────────
@@ -490,10 +590,11 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
                 'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role', 'profile', 'c_cm']
     styled_header(ws, mem_hdrs)
     for i, m in enumerate(members):
-        ws.append([i, m['a'], m['b'], m.get('conn', 'pin'), m.get('E'), m.get('A'),
-                   m.get('I'), m.get('J'), m.get('Fy'), m.get('Fu'), m.get('K', 1.0),
-                   m.get('r_gyr'), m.get('role', ''), m.get('profile', ''),
-                   m.get('c_cm')])
+        ws.append(xl_row(mem_hdrs, [
+            i, m['a'], m['b'], m.get('conn', 'pin'), m.get('E'), m.get('A'),
+            m.get('I'), m.get('J'), m.get('Fy'), m.get('Fu'), m.get('K', 1.0),
+            m.get('r_gyr'), m.get('role', ''), m.get('profile', ''),
+            m.get('c_cm')]))
     style_data_range(ws, 2, 1 + len(members), len(mem_hdrs))
 
     # ── Loads ────────────────────────────────────────────────────────────────
@@ -501,8 +602,9 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     ld_hdrs = ['node', 'fx_kN', 'fy_kN', 'fz_kN', 'mx_kNm', 'my_kNm', 'mz_kNm']
     styled_header(ws, ld_hdrs)
     for ld in loads:
-        ws.append([ld['node'], ld.get('fx', 0.0), ld.get('fy', 0.0), ld.get('fz', 0.0),
-                   ld.get('mx', 0.0), ld.get('my', 0.0), ld.get('mz', 0.0)])
+        ws.append(xl_row(ld_hdrs, [
+            ld['node'], ld.get('fx', 0.0), ld.get('fy', 0.0), ld.get('fz', 0.0),
+            ld.get('mx', 0.0), ld.get('my', 0.0), ld.get('mz', 0.0)]))
     style_data_range(ws, 2, 1 + len(loads), len(ld_hdrs))
 
     # ── Supports ─────────────────────────────────────────────────────────────
@@ -525,10 +627,11 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
         reactions = results.get('reactions', {})
         for i, nr in enumerate(results['node_res']):
             rx = reactions.get(i, {})
-            ws.append([i, nr['ux'], nr['uy'], nr['uz'],
-                       nr['rx'], nr['ry'], nr['rz'],
-                       rx.get('Fx', ''), rx.get('Fy', ''), rx.get('Fz', ''),
-                       rx.get('Mx', ''), rx.get('My', ''), rx.get('Mz', '')])
+            ws.append(xl_row(np_hdrs, [
+                i, nr['ux'], nr['uy'], nr['uz'],
+                nr['rx'], nr['ry'], nr['rz'],
+                rx.get('Fx', ''), rx.get('Fy', ''), rx.get('Fz', ''),
+                rx.get('Mx', ''), rx.get('My', ''), rx.get('Mz', '')]))
         style_data_range(ws, 2, 1 + len(results['node_res']), len(np_hdrs))
 
         # ── Member Forces (with axial-force color scale) ─────────────────────
@@ -536,8 +639,9 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
         mf_hdrs = ['member', 'a', 'b', 'conn', 'N_kN', 'length_m']
         styled_header(ws2, mf_hdrs)
         for i, (m, mr) in enumerate(zip(members, results['member_res'])):
-            ws2.append([i, m['a'], m['b'], mr.get('conn', 'pin'), mr.get('N', 0.0),
-                        mr.get('length_m', 0.0)])
+            ws2.append(xl_row(mf_hdrs, [
+                i, m['a'], m['b'], mr.get('conn', 'pin'), mr.get('N', 0.0),
+                mr.get('length_m', 0.0)]))
         n_mf = len(members)
         style_data_range(ws2, 2, 1 + n_mf, len(mf_hdrs))
         if n_mf > 0:
@@ -553,8 +657,9 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
         rxn_hdrs = ['node', 'Fx_kN', 'Fy_kN', 'Fz_kN', 'Mx_kNm', 'My_kNm', 'Mz_kNm']
         styled_header(ws3, rxn_hdrs)
         for node, rx in results['reactions'].items():
-            ws3.append([node, rx.get('Fx', 0.0), rx.get('Fy', 0.0), rx.get('Fz', 0.0),
-                        rx.get('Mx', 0.0), rx.get('My', 0.0), rx.get('Mz', 0.0)])
+            ws3.append(xl_row(rxn_hdrs, [
+                node, rx.get('Fx', 0.0), rx.get('Fy', 0.0), rx.get('Fz', 0.0),
+                rx.get('Mx', 0.0), rx.get('My', 0.0), rx.get('Mz', 0.0)]))
         style_data_range(ws3, 2, 1 + len(results['reactions']), len(rxn_hdrs))
 
     # ── Member Checks (with utilization color scale) ─────────────────────────
@@ -570,7 +675,7 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
             row_num = i + 2
             m = members[i]
             mr = member_res[i] if i < len(member_res) else {}
-            ws.append([
+            ws.append(xl_row(chk_hdrs, [
                 i, m['a'], m['b'], m.get('role', ''), m.get('conn', 'pin'),
                 mr.get('N', ''),
                 c.get('mode', ''),
@@ -584,7 +689,7 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
                 c.get('util'),
                 c.get('governing', ''), c.get('ok', ''),
                 c.get('note', ''),
-            ])
+            ]))
             if c.get('checked') and c.get('util', 0) > 1.0:
                 for col in range(1, len(chk_hdrs) + 1):
                     ws.cell(row=row_num, column=col).fill = OVER_FILL
@@ -635,6 +740,12 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
             COLS_PER_IMG = 7
             for c in range(1, 3 * COLS_PER_IMG + 3):
                 ws_mc.column_dimensions[get_column_letter(c)].width = 9
+            # the data panel: a label column and a value wide enough for
+            # "H1-1b (P/Pc < 0.2), axial + bending"
+            ws_mc.column_dimensions[get_column_letter(
+                1 + 3 * COLS_PER_IMG)].width = 12
+            ws_mc.column_dimensions[get_column_letter(
+                2 + 3 * COLS_PER_IMG)].width = 40
 
             member_res = results['member_res']
             reactions = results.get('reactions', {})
@@ -666,7 +777,8 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
                                   end_row=hdr_row, end_column=14)
                 hc = ws_mc.cell(row=hdr_row, column=1,
                     value=(f'Member {mi}  (Node {a} → Node {b})   '
-                           f'L={Lm:.3f} m   N={N:+.2f} kN   [{kind}]'))
+                           f'L={xu.fl("length", Lm, 3)}   '
+                           f'N={xu.fl("force", N, 2, sign=True)}   [{kind}]'))
                 hc.font = Font(name='Arial', bold=True, size=11,
                                color='1F4E79')
                 hc.fill = PatternFill('solid', start_color='EFF4FA')
@@ -701,6 +813,22 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
                     XLImage(_pil_to_xlsx_buf(fbd_b)),
                     f'{get_column_letter(1 + 2 * COLS_PER_IMG)}{img_row + 1}')
 
+                # The rod's own numbers, beside its pictures -- the section,
+                # its slenderness, the forces and the check that governs --
+                # so the free-body diagram can be read against them without
+                # going to another sheet (roadmap 2.4).
+                data_col = 1 + 3 * COLS_PER_IMG
+                ws_mc.cell(row=img_row, column=data_col,
+                           value='Data').font = Font(
+                    size=9, italic=True, color='777777')
+                chk_i = (checks[mi] if checks and mi < len(checks) else None)
+                for k, (lbl, val) in enumerate(member_data_rows(
+                        mem, member_res[mi], chk_i, xu)):
+                    ws_mc.cell(row=img_row + 1 + k, column=data_col,
+                               value=lbl).font = Font(bold=True, size=9)
+                    ws_mc.cell(row=img_row + 1 + k, column=data_col + 1,
+                               value=val).font = Font(size=9)
+
                 row0 = hdr_row + ROWS_PER_BLOCK
         except Exception:
             pass
@@ -723,7 +851,7 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
                        'utilization', 'governing', 'ok']
             styled_header(ws_gp, gp_hdrs)
             for gc in gusset_checks:
-                ws_gp.append([
+                ws_gp.append(xl_row(gp_hdrs, [
                     gc['group'], gc['node'], gc['member'], gc['other'],
                     gc['N_kN'], gc['mode'], gc['t_mm'], gc['whitmore_mm'],
                     gc['sigma_MPa'], gc['whitmore_util'],
@@ -732,7 +860,7 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
                     gc['buckling_applies'], gc['buckling_util'],
                     gc.get('buckling_Pd_kN', ''),
                     gc['util'], gc['governing'], gc['ok'],
-                ])
+                ]))
                 row_num = ws_gp.max_row
                 if gc['util'] > 1.0:
                     for col in range(1, len(gp_hdrs) + 1):
@@ -3913,9 +4041,13 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                  f'total L ({u.lab("length")})',
                  f'mean L ({u.lab("length")})', 'kg/m', 'mass (kg)'],
                 rows, [2.2, 0.8, 1.1, 1.35, 1.35, 1.0, 1.3],
-                note=f'Mass from the section area at {unit_weight:g} '
-                     f'kN/m³ — the unit weight the self-weight load case '
-                     f'uses, so the two cannot disagree. Bars with no '
+                # The unit weight through the selector like every other
+                # number on the sheet: "78.5 kN/m³" under a US heading was
+                # the one quantity the report still printed in SI regardless.
+                note=f'Mass from the section area at '
+                     f'{u.f("unit_weight", unit_weight, 1)} '
+                     f'{u.lab("unit_weight")} — the unit weight the '
+                     f'self-weight load case uses, so the two cannot disagree. Bars with no '
                      f'section contribute none. kg whatever the '
                      f'convention: mass is not a converted quantity.{foot}',
                 tail_rows=tail)

@@ -704,7 +704,7 @@ class StereoGroupsMixin:
                                  self.results['member_res'] if self.results
                                  else None,
                                  self.member_checks,
-                                 unit_weight_kN_m3=self.unit_weight_var.get())
+                                 unit_weight_kN_m3=self._unit_weight())
         row = next((r for r in rows if r['id'] == gid), None)
 
         win = tk.Toplevel(self.root)
@@ -852,7 +852,7 @@ class StereoGroupsMixin:
                 meta={'grid_family': self._model_name()}, gids=gids,
                 az_deg=self.azimuth, el_deg=self.elevation, groups=sheets,
                 ortho_views='views' in sheets,
-                unit_weight_kN_m3=self.unit_weight_var.get())
+                unit_weight_kN_m3=self._unit_weight())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return None
@@ -909,7 +909,7 @@ class StereoGroupsMixin:
 
     def _group_reconcile(self):
         rec = sgp.totals_reconcile(self.groups, self.nodes, self.members,
-                                   unit_weight_kN_m3=self.unit_weight_var.get())
+                                   unit_weight_kN_m3=self._unit_weight())
         if rec['ok']:
             messagebox.showinfo(
                 'Totals',

@@ -1841,9 +1841,14 @@ class StereoPanelsMixin(_ToolbarModes):
         self.unit_weight_var = tk.DoubleVar(value=sm.DEFAULT_STEEL_UNIT_WEIGHT)
         row2 = tk.Frame(box, bg=BG)
         row2.pack(fill='x', padx=6, pady=(0, 6))
-        tk.Checkbutton(row2, text='Include self-weight, unit wt (kN/m³):',
-                       variable=self.self_weight_on, bg=BG, font=('Helvetica', 8)
-                      ).pack(side='left')
+        # The label and the box follow the unit selector (registered in
+        # __init__, once init_units has run): the value is STORED in kN/m³,
+        # and read through _unit_weight(), never unit_weight_var.get(),
+        # which under AISC would hand the solver a number in pcf.
+        self._self_weight_check = tk.Checkbutton(
+            row2, text='Include self-weight, unit wt (kN/m³):',
+            variable=self.self_weight_on, bg=BG, font=('Helvetica', 8))
+        self._self_weight_check.pack(side='left')
         tk.Entry(row2, textvariable=self.unit_weight_var, width=7).pack(side='left', padx=4)
 
         # ── distributed load ALONG the rods ─────────────────────────────

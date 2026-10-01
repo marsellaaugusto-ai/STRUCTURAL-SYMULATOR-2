@@ -220,6 +220,10 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
 
         self._build_ui()
         self.init_units(repaint=self._on_units_changed)
+        self.unit_var(self.unit_weight_var, 'unit_weight', digits=4)
+        self.unit_label(self._self_weight_check,
+                        lambda: 'Include self-weight, unit wt (%s):'
+                        % self.u('unit_weight'))
         # The app opens EMPTY. It used to generate a flat grid here, which
         # meant every session started by deleting someone else's model
         # before building your own -- and made "what am I looking at?" the

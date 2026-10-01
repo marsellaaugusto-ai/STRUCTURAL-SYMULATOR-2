@@ -454,7 +454,7 @@ class StereoReportsMixin:
                                 'grid_family': self._model_name()},
                           az_deg=self.azimuth, el_deg=self.elevation,
                           groups=groups,
-                          unit_weight_kN_m3=self.unit_weight_var.get())
+                          unit_weight_kN_m3=self._unit_weight())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return
@@ -491,7 +491,7 @@ class StereoReportsMixin:
                           meta={'grid_family': self._model_name()},
                           az_deg=self.azimuth, el_deg=self.elevation,
                           groups=groups,
-                          unit_weight_kN_m3=self.unit_weight_var.get())
+                          unit_weight_kN_m3=self._unit_weight())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return

@@ -1201,6 +1201,31 @@ def test_the_takeoff_sheet_reports_a_mass(tmp_path):
     assert 'tonnes' in text
 
 
+def test_a_model_with_timber_gets_a_material_takeoff_at_its_own_density(
+        tmp_path):
+    """Timber rods (stereo_timber) weigh their grade's density, not the
+    steel unit weight, and the sheet stops calling itself a steel take-off."""
+    from apps.stereo import stereo_timber as stt
+    from apps.stereo import stereo_profiles as sp
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    steel = str(tmp_path / 's.pdf')
+    sr.export_pdf(nodes, members, loads, supports, res, steel, checks=checks,
+                  groups={'tables'})
+    assert 'Steel take-off' in _read_pdf_text(steel)
+    sp.write_section(members[0], stt.profile('Eucalipto grandis C1', 50, 150))
+    members[0]['profile'] = 'EG 50x150'
+    path = str(tmp_path / 't.pdf')
+    sr.export_pdf(nodes, members, loads, supports, res, path, checks=checks,
+                  groups={'tables'})
+    text = _read_pdf_text(path)
+    assert 'Material take-off' in text and 'Steel take-off' not in text
+    assert '1 timber bar(s)' in text
+    import math
+    m = members[0]
+    kg = 75e-4 * math.dist(nodes[m['a']], nodes[m['b']]) * 430.0
+    assert f'{kg:,.1f}' in text
+
+
 def test_a_table_note_too_long_for_one_line_wraps_instead_of_running_off():
     """Text that runs past the paper's edge is not clipped with a mark --
     it simply stops, and the sentence that fell off is invisible."""

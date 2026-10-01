@@ -4025,7 +4025,12 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
             # brief is costed from and the one an audience remembers
             # ("this dome is four tonnes"), and it comes free out of data
             # the report already has.
-            fig = new_sheet('Steel take-off')
+            # With timber rods in the model it is no longer a steel take-off;
+            # each rod is already weighed at its own density (timber at its
+            # grade's, stereo_math.member_unit_weight), only the words change.
+            n_timber = sum(1 for m in members if m.get('timber'))
+            takeoff_title = 'Material take-off' if n_timber else 'Steel take-off'
+            fig = new_sheet(takeoff_title)
             by_profile = {}
             for i, m in enumerate(members):
                 na, nb = nodes[m['a']], nodes[m['b']]
@@ -4068,7 +4073,7 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                         'NAME but not the same area, so its area and mass '
                         'per length are not one number.')
             _pdf_table_page(
-                fig, 'Steel take-off, by section',
+                fig, takeoff_title + ', by section',
                 ['profile', 'bars', f'A ({u.lab("area")})',
                  f'total L ({u.lab("length")})',
                  f'mean L ({u.lab("length")})', 'kg/m', 'mass (kg)'],
@@ -4081,7 +4086,11 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                      f'{u.lab("unit_weight")} — the unit weight the '
                      f'self-weight load case uses, so the two cannot disagree. Bars with no '
                      f'section contribute none. kg whatever the '
-                     f'convention: mass is not a converted quantity.{foot}',
+                     f'convention: mass is not a converted quantity.'
+                     + (f' The {n_timber} timber bar(s) are weighed at their '
+                        f'own unit weight instead (their grade\'s ρ0,05 × g '
+                        f'unless another was typed in the Timber picker).'
+                        if n_timber else '') + foot,
                 tail_rows=tail)
             pdf.savefig(fig)
             plt.close(fig)

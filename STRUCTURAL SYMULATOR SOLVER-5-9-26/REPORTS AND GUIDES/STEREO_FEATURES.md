@@ -111,7 +111,8 @@ Excel. A timber rod then:
 - weighs **its own density** — ρ0,05 × g by default, editable in the picker,
   because ρ0,05 is a 5th-percentile value at 12 % moisture and lighter than a
   mean or a wet piece. Self-weight, the take-off, group weights and variants
-  all use it;
+  all use it, and with timber in the model the PDF's *Steel take-off* sheet
+  becomes a *Material take-off*;
 - has no Fy/Fu, and is **not** checked to CIRSOC 301.
 
 What it does **not** get is a CIRSOC 601 verification. The Supplements give

@@ -12,7 +12,15 @@ from tkinter import messagebox
 from apps.stereo import stereo_geometry as sg
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_plates as splates
+from apps.stereo import stereo_addon_codes as sac
+from apps.stereo import stereo_lift as slift
+from apps.stereo import stereo_groups as sgp
 
+
+
+# How far (m) outside the pick points the centre of gravity may sit before a
+# lift is flagged as one that tips -- rounding, not engineering.
+CRANE_COG_TOL = 1e-3
 
 class StereoAddonsMixin:
     """Column and reinforcement-beam commands for the Add-ons panel."""
@@ -36,6 +44,7 @@ class StereoAddonsMixin:
                               'column_web', 'capital', 'capital_ring'})
     BEAM_ROLES = frozenset({'reinf_chord', 'reinf_web'})
     CRANE_ROLES = frozenset({'crane_cable', 'crane_mast'})
+    CRANE_LIFT_PIECE = 'Piece under the hook'
 
     def _add_column(self):
         targets = sorted(self.selected_nodes)
@@ -79,6 +88,11 @@ class StereoAddonsMixin:
         self._carry_groups(self.members, members)
         self.nodes, self.members = nodes, members
         self._adopt_new_rods(n_before)
+        code = sac.tag(self.members, range(n_before, len(self.members)),
+                        sac.next_code(sac.COLUMN, self.members[:n_before],
+                                      self.panels))
+        self._set_status(f'{sac.describe(code)} added -- its rods carry '
+                         f'the code {code}.', 'ok')
         # EVERY foot is pinned, not just the first. A latticed or splay-
         # footed column is rigid as a body, so restraining one node of it
         # leaves three rotations free and the solver reports a mechanism
@@ -116,8 +130,9 @@ class StereoAddonsMixin:
             heads = sorted(set(targets))
             self.supports.extend({'node': h, 'dofs': {'ux': True, 'uy': True}}
                                  for h in heads)
-        self._set_column_note(freed, bases)
-        self._apply_sections(members=self.members, redraw=False)
+        self._set_column_note(freed, bases, code)
+        self._apply_sections(members=self.members, redraw=False,
+                             only=range(n_before, len(self.members)))
         self.selected_nodes = set(bases)
         self.results = None
         self.member_checks = None
@@ -159,12 +174,14 @@ class StereoAddonsMixin:
             self._set_addon_note('There is already a panel on those nodes.')
             return
         self._push_undo('add shear panel')
+        panel['addon'] = sac.next_code(sac.PANEL, self.members, self.panels)
         self.panels.append(panel)
         self.results = None
         self.member_checks = None
         self.panel_checks = []
         area = geom[2]
-        self._set_addon_note(f'Panel welded over {len(loop)} nodes, '
+        self._set_addon_note(f'{sac.describe(panel["addon"])} welded over '
+                             f'{len(loop)} nodes, '
                              f'{abs(area):.2f} m\u00b2. Analyze to solve it.')
         self._refresh_all()
 
@@ -276,13 +293,29 @@ class StereoAddonsMixin:
             messagebox.showerror('Crane', 'The mast has to have some length.')
             return
 
+        # Which piece is lifted -- decided BEFORE the crane's own rods exist.
+        lift = self._crane_lift_rods(targets)
+        if lift is None:
+            return
+        lift_rods, lift_gid = lift
+        lifted_nodes = slift.nodes_of(self.members, lift_rods)
+
         # Through _panel_section so the mast -- which is RIGID and so takes a
         # bending check -- carries the catalog depth when there is one.
         section = self._panel_section('web')
+        # The hook over the piece's centre of gravity, as a rigger hangs it,
+        # not over the middle of the picks: on a pitched or lopsided piece
+        # those differ, the piece tips, the light side's slings go slack and
+        # the tag lines carry the lift (45 kN on a pitched module).
+        try:
+            cog = slift.centre_of_gravity(self.nodes, self.members, lift_rods,
+                                          self._all_loads())
+        except Exception:
+            cog = None
         try:
             nodes, members, hook, anchor = sg.add_cable_crane(
                 self.nodes, self.members, targets, section,
-                rise=rise, mast=mast)
+                rise=rise, mast=mast, hook_xy=cog)
         except ValueError as exc:
             messagebox.showerror('Crane', str(exc))
             return
@@ -296,6 +329,11 @@ class StereoAddonsMixin:
         self._carry_groups(self.members, members)
         self.nodes, self.members = nodes, members
         self._adopt_new_rods(n_before)
+        code = sac.tag(self.members, range(n_before, len(self.members)),
+                        sac.next_code(sac.CRANE, self.members[:n_before],
+                                      self.panels))
+        self._set_status(f'{sac.describe(code)} added -- its rods carry '
+                         f'the code {code}.', 'ok')
         # FIXED, where the roadmap says "pin", and the difference is not
         # cosmetic. A lone rigid mast whose top can rotate has a zero-energy
         # TORSIONAL mode about its own axis: the cables are pin-jointed and
@@ -327,10 +365,17 @@ class StereoAddonsMixin:
             # first crane's mast support and tag lines off as if they were
             # ground, leaving the first mast hanging from nothing.
             own = self._crane_support_ids()
-            ground = [dict(sp) for sp in self.supports if id(sp) not in own]
+            # Only the LIFTED piece's supports. Another truss in the same
+            # file stays on the ground: taking its supports too left it
+            # floating, and the whole model was refused as a mechanism.
+            drop = [sp for sp in self.supports if id(sp) not in own
+                    and sp.get('node') in lifted_nodes]
+            ground = [dict(sp) for sp in drop]
             if ground:
+                gone = {id(sp) for sp in drop}
                 self._crane_freed = list(getattr(self, '_crane_freed', [])) + ground
-                self.supports = [sp for sp in self.supports if id(sp) in own]
+                self.supports = [sp for sp in self.supports
+                                 if id(sp) not in gone]
                 lifted_off = len(ground)
             # Once it is off the ground the lifted body is a PENDULUM, and a
             # linear analysis gives a pendulum no lateral stiffness: the
@@ -363,6 +408,14 @@ class StereoAddonsMixin:
         self.results = None
         self.member_checks = None
         self._me_maybe_refresh_topology()
+        # What this lift is, for the crane report: its code, the joints the
+        # slings hook onto, the rods of the piece it lifts.
+        wll, spec = self._crane_cable_capacity()
+        self._crane_lifts = list(getattr(self, '_crane_lifts', None) or []) + [{
+            'code': code, 'picks': list(targets), 'rods': list(lift_rods),
+            'group': lift_gid, 'hook': hook, 'anchor': anchor,
+            'wll_kN': wll, 'cable_spec': spec}]
+
         # Off its supports, the lifted body has to be stable ON ITS OWN, and
         # a grid often is not: the default square-on-square grid has a free-
         # edge mechanism that its perimeter supports were hiding (a free
@@ -370,17 +423,30 @@ class StereoAddonsMixin:
         # patch in the middle, that part has nothing holding it and the
         # solve is singular. Say so now, and show where, instead of leaving
         # it to a generic error at Analyze.
-        loose = []
-        if lifted_off:
-            try:
-                loose = sm.mechanism(self.nodes, self.members, self.supports,
-                                     panels=self.panels)
-            except Exception:
-                loose = []
-        used = sg.crane_auto_rise(self.nodes, targets) if rise is None else rise
+        # Checked on the lifted piece with its own crane -- small, so the
+        # search always runs -- and on every lift, not only one that took
+        # supports away: a piece that had none (a truss lying in the file to
+        # be lifted) is just as able to swing loose. A flat truss hung from
+        # slings in its own plane can turn about them, and this is where
+        # that is caught rather than as a singular matrix at Analyze.
+        try:
+            loose = self._crane_loose_nodes(code, lift_rods)
+        except Exception:
+            loose = []
+        used = (sg.crane_auto_rise(self.nodes, targets, cog) if rise is None
+                else rise)
+        n_struct = sum(1 for m in self.members
+                       if m.get('role') not in slift.CRANE_ROLES)
+        what = (f'group {self._group_display_name(lift_gid)}'
+                if lift_gid is not None else 'the piece under the hook')
+        stays = n_struct - len(lift_rods)
         self._set_addon_note(
-            f'Crane on {len(targets)} node(s): {len(targets)} tension-only '
-            f'cable(s) to a hook {used:.2f} m up, a {mast:.2f} m mast, and a '
+            f'{sac.describe(code)} lifts {what} ({len(lift_rods)} rods)'
+            + (f'; the other {stays} rod(s) stay on their supports. '
+               if stays > 0 else '. ')
+            + f'On {len(targets)} node(s): {len(targets)} tension-only '
+            f'cable(s) to a hook {used:.2f} m up over the piece\'s centre of '
+            f'gravity, a {mast:.2f} m mast, and a '
             f'fixed top at node {anchor}. A cable goes slack rather than push, so '
             f'Analyze solves it in passes.'
             + (f' The model is off its own {lifted_off} support(s) -- it is '
@@ -395,22 +461,170 @@ class StereoAddonsMixin:
                if tag else
                ' The model still stands on its own supports, so the slings may '
                'well read zero: the ground is a stiffer path than a cable.'))
+        off = (slift.cog_outside_picks(self.nodes, targets, cog)
+               if cog is not None else 0.0)
+        tips = ''
+        if off > CRANE_COG_TOL:
+            tips = ('The piece\'s centre of gravity, at x %.2f, y %.2f, is '
+                    '%.2f m outside the pick points seen from above. The hook '
+                    'hangs over it, so the slings on the far side would have '
+                    'to push: they go slack, the piece tips, and Analyze will '
+                    'say so. Pick points around the centre of gravity -- the '
+                    'outer corners of the piece usually are.'
+                    % (cog[0], cog[1], off))
+        warn = None
         if loose:
             self.selected_nodes = set(loose)
             self.selected_members = set()
             self.selected_member = None
             self._sync_selection_fields()
+            flat = self._picks_in_one_plane_with_hook(targets, hook)
             self._set_addon_note(
-                'Hung from these %d point(s), part of the model can move with '
-                'no stiffness at all -- %d node(s), selected on the drawing. '
-                'On the ground its supports held them; in the air nothing '
-                'does, so Analyze will refuse it. Hook slings to that part '
-                'too (the corners usually do it), or untick "Take it off its '
-                'own supports".' % (len(targets), len(loose)))
-            self._set_status('The lifted model is a mechanism: %d node(s) '
-                             'have nothing holding them -- they are selected.'
-                             % len(loose), 'error')
+                'Hung from these %d point(s), part of the lifted piece can '
+                'move with no stiffness at all -- %d node(s), selected on the '
+                'drawing -- so Analyze will refuse it. '
+                % (len(targets), len(loose))
+                + ('The slings all hang in one plane, so the piece can turn '
+                   'about them like a flag: hook onto points off that plane '
+                   '(a flat truss needs a spreader or a second line), or '
+                   'lift it together with what holds it upright.'
+                   if flat else
+                   'On the ground its supports held them; in the air '
+                   'nothing does. Hook slings to that part too (the corners '
+                   'usually do it), or untick "Take it off its own '
+                   'supports".')
+                + (' ' + tips if tips else ''))
+            warn = ('The lifted model is a mechanism: %d node(s) have '
+                    'nothing holding them -- they are selected.' % len(loose)
+                    + (' And the piece would tip.' if tips else ''))
+        elif tips:
+            self._set_addon_note(tips)
+            warn = ('%s: the centre of gravity is outside the pick points '
+                    '-- the piece would tip.' % sac.describe(code))
         self._refresh_all()
+        # after the refresh, which rewrites the status line from the model
+        if warn:
+            self._set_status(warn, 'error')
+
+    def _picks_in_one_plane_with_hook(self, picks, hook, tol=1e-3):
+        """True when the pick points and the hook all lie in one plane --
+        the slings form a fan, and the piece can rotate about it."""
+        import numpy as np
+        pts = np.array([self.nodes[n] for n in list(picks) + [hook]], float)
+        if len(pts) < 4:
+            return True
+        c = pts - pts.mean(axis=0)
+        sv = np.linalg.svd(c, compute_uv=False)
+        return sv[-1] <= tol * max(sv[0], 1e-9)
+
+    def _crane_loose_nodes(self, code, lift_rods):
+        """Nodes of the lifted piece (with crane `code`) that can move with
+        no stiffness, as model node numbers; [] if it hangs stable."""
+        rods = sorted(set(lift_rods) | set(sac.index(self.members)
+                                           .get(code, ())))
+        ns = sorted(slift.nodes_of(self.members, rods))
+        idx = {n: k for k, n in enumerate(ns)}
+        sub_n = [self.nodes[n] for n in ns]
+        sub_m = [dict(self.members[j], a=idx[self.members[j]['a']],
+                      b=idx[self.members[j]['b']]) for j in rods]
+        sub_s = [dict(sp, node=idx[sp['node']]) for sp in self.supports
+                 if sp.get('node') in idx]
+        return [ns[k] for k in sm.mechanism(sub_n, sub_m, sub_s)]
+
+    def _crane_cable_capacity(self):
+        """(working load limit kN or None, how it was arrived at)."""
+        mode = self.crane_cap_mode.get() if hasattr(self, 'crane_cap_mode') \
+            else 'none'
+        try:
+            if mode == 'wll':
+                w = float(self.crane_wll.get())
+                if w > 0:
+                    return w, f'WLL {w:g} kN per cable, as entered'
+            elif mode == 'dia':
+                d = float(self.crane_dia.get())
+                w = slift.rope_wll_kN(d)
+                if w > 0:
+                    return w, (f'wire rope Ø{d:g} mm, 6x36 IWRC grade 1770: '
+                               f'breaking force ≈ {slift.ROPE_MBF_K:g}·d² = '
+                               f'{slift.ROPE_MBF_K * d * d:,.0f} kN, '
+                               f'÷ {slift.ROPE_FACTOR:g} → WLL '
+                               f'{w:,.1f} kN per cable')
+        except (tk.TclError, ValueError):
+            pass
+        return None, 'no cable capacity set -- tensions only'
+
+    def _crane_meta(self):
+        """{code: what the crane report needs to know about each lift} --
+        what it lifts (re-read now, so it follows edits made since), and
+        the cables' capacity."""
+        out = {}
+        for lift in getattr(self, '_crane_lifts', None) or []:
+            code = lift.get('code')
+            gid = lift.get('group')
+            if gid is not None and sgp.find(self.groups, gid):
+                rods = sorted(sgp.rods_of(self.groups, gid, deep=True))
+                what = f'group {self._group_display_name(gid)}'
+            else:
+                picks = [p for p in lift.get('picks', ())
+                         if p < len(self.nodes)]
+                rods = slift.connected_piece(self.members, picks)
+                what = 'the piece under the hook'
+            out[code] = {'rods': rods, 'what': what,
+                         'wll_kN': lift.get('wll_kN'),
+                         'cable_spec': lift.get('cable_spec', '')}
+        return out
+
+    def _refresh_crane_lift_choices(self):
+        """'Piece under the hook', then every group, by name."""
+        choices = [self.CRANE_LIFT_PIECE]
+        self._crane_lift_gids = {}
+        for g, lvl in sgp.walk(getattr(self, 'groups', None) or []):
+            label = '   ' * lvl + self._group_display_name(g['id'])
+            self._crane_lift_gids[label] = g['id']
+            choices.append(label)
+        box = getattr(self, 'crane_lift_box', None)
+        if box is not None:
+            box.configure(values=choices)
+        if self.crane_lift_target.get() not in choices:
+            self.crane_lift_target.set(self.CRANE_LIFT_PIECE)
+        return choices
+
+    def _crane_lift_rods(self, targets):
+        """(rods lifted, group id or None) for a lift from `targets`, or
+        None -- after saying why -- when it cannot be lifted."""
+        self._refresh_crane_lift_choices()
+        gid = self._crane_lift_gids.get(self.crane_lift_target.get())
+        if gid is None:
+            return slift.connected_piece(self.members, targets), None
+        rods = sorted(sgp.rods_of(self.groups, gid, deep=True))
+        name = self._group_display_name(gid)
+        if not rods:
+            messagebox.showerror('Crane', f'Group {name} has no rods to lift.')
+            return None
+        mine = slift.nodes_of(self.members, rods)
+        off = [n for n in targets if n not in mine]
+        if off:
+            messagebox.showerror(
+                'Crane',
+                f'The slings have to hook onto group {name}: '
+                f'{len(off)} of the selected joints are not on it '
+                f'(node {", ".join(str(n) for n in off[:6])}'
+                f'{" ..." if len(off) > 6 else ""}).')
+            return None
+        joined = slift.joined_to_rest(self.members, rods)
+        if joined:
+            messagebox.showerror(
+                'Crane',
+                f'Group {name} is still joined to the rest of the model at '
+                f'{len(joined)} node(s) (node '
+                f'{", ".join(str(n) for n in joined[:6])}'
+                f'{" ..." if len(joined) > 6 else ""}). A lift shows how a '
+                f'piece takes being picked up on its own; joined to rods '
+                f'that stay on the ground it is held, not lifted. Lift a '
+                f'group that is a separate piece -- or put the rods it shares '
+                f'those nodes with into the group too.')
+            return None
+        return rods, gid
 
     def _crane_support_ids(self):
         """id() of each support that belongs to a crane: a mast top, or a
@@ -458,8 +672,8 @@ class StereoAddonsMixin:
                 if not any(sp.get('node') == n and sp.get('dofs') == {d: True}
                            for n, d in drop)]
             self._crane_tag = None
+        self._crane_lifts = []
         back = self._restore_crane_supports()
-        self._apply_sections(members=self.members, redraw=False)
         self._me_maybe_refresh_topology()
         self._set_addon_note(
             f'{n} crane member(s) removed.'
@@ -506,7 +720,6 @@ class StereoAddonsMixin:
             self._set_addon_note('No columns to clear.')
             return
         restored = self._restore_freed_supports()
-        self._apply_sections(members=self.members, redraw=False)
         self._me_maybe_refresh_topology()
         self._set_addon_note(
             f'{n} column member(s) removed.'
@@ -518,7 +731,6 @@ class StereoAddonsMixin:
         if not n:
             self._set_addon_note('No reinforcement beams to clear.')
             return
-        self._apply_sections(members=self.members, redraw=False)
         self._me_maybe_refresh_topology()
         self._set_addon_note(f'{n} beam member(s) removed.')
         self._refresh_all()
@@ -605,7 +817,7 @@ class StereoAddonsMixin:
         if note is not None:
             note.config(text=text)
 
-    def _set_column_note(self, freed, bases):
+    def _set_column_note(self, freed, bases, code=None):
         """Say what the column did to the boundary conditions.
 
         Removing a support is not a detail the user should have to discover
@@ -618,6 +830,8 @@ class StereoAddonsMixin:
         if note is None:
             return
         feet = f"{len(bases)} {'foot' if len(bases) == 1 else 'feet'} pinned"
+        if code:
+            feet = f'{sac.describe(code)}: {feet}'
         if freed:
             which = ', '.join(str(i) for i in freed[:6])
             more = f" (+{len(freed) - 6} more)" if len(freed) > 6 else ''
@@ -687,7 +901,13 @@ class StereoAddonsMixin:
         self._carry_groups(self.members, members)
         self.nodes, self.members = nodes, members
         self._adopt_new_rods(n_before)
-        self._apply_sections(members=self.members, redraw=False)
+        code = sac.tag(self.members, range(n_before, len(self.members)),
+                        sac.next_code(sac.BEAM, self.members[:n_before],
+                                      self.panels))
+        self._set_status(f'{sac.describe(code)} added -- its rods carry '
+                         f'the code {code}.', 'ok')
+        self._apply_sections(members=self.members, redraw=False,
+                             only=range(n_before, len(self.members)))
         self.selected_nodes = set(apex)
         self.results = None
         self.member_checks = None

@@ -219,7 +219,9 @@ def _rotation_12(local_x, local_y, local_z):
 
 MECHANISM_REL_EIG = 1e-9      # an eigenvalue this small (vs. the largest
                               # diagonal) is a zero-stiffness mode
-MECHANISM_MAX_DOF = 2500      # beyond this the dense eigensolve (seconds) is skipped
+MECHANISM_MAX_DOF = 20000     # beyond this the mechanism search is skipped
+MECHANISM_DENSE_DOF = 400     # up to this a dense eigensolve; above it the
+                              # sparse one, for the lowest few modes only
 MECHANISM_LIST = 8            # how many nodes a message names
 
 
@@ -257,6 +259,42 @@ def _sparse_solve(Kf, Ff):
     return x.tolist()
 
 
+def _lowest_modes(Kf, k=8):
+    """(eigenvalues, eigenvectors, scale) of the stiffness matrix's lowest
+    modes, ascending -- or None if they cannot be had.
+
+    Dense for a small matrix. Above MECHANISM_DENSE_DOF, the sparse
+    shift-invert solve for the lowest k only: a dense eigensolve of a
+    2,000-DOF roof took 4 s, and a file of eighteen pieces a minute. The
+    shift is just below zero, so K - shift*I is positive definite and
+    factorises even when K itself is singular -- which is the case being
+    looked for."""
+    n = Kf.shape[0]
+    sparse = hasattr(Kf, 'toarray')
+    diag = Kf.diagonal() if sparse else np.diag(Kf)
+    scale = float(np.max(np.abs(diag))) or 1.0
+    if n <= MECHANISM_DENSE_DOF or _scipy_sparse() is None:
+        K = Kf.toarray() if sparse else Kf
+        try:
+            w, v = np.linalg.eigh(K)
+        except np.linalg.LinAlgError:
+            return None
+        return w, v, scale
+    import warnings
+    import scipy.sparse as sps
+    from scipy.sparse.linalg import eigsh
+    K = Kf.tocsc() if sparse else sps.csc_matrix(Kf)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            w, v = eigsh(K, k=min(k, n - 2), sigma=-1e-7 * scale,
+                         which='LM')
+    except Exception:
+        return None
+    order = np.argsort(w)
+    return w[order], v[:, order], scale
+
+
 def _mechanism_nodes(Kf, free, dof_of):
     """The nodes that move in the stiffness matrix's softest mode, if that
     mode has (numerically) no stiffness at all -- [] when it has some, or
@@ -268,13 +306,10 @@ def _mechanism_nodes(Kf, free, dof_of):
     n = Kf.shape[0]
     if n == 0 or n > MECHANISM_MAX_DOF:
         return []
-    if hasattr(Kf, 'toarray'):          # a sparse matrix, small enough here
-        Kf = Kf.toarray()
-    scale = float(np.max(np.abs(np.diag(Kf)))) or 1.0
-    try:
-        w, v = np.linalg.eigh(Kf)
-    except np.linalg.LinAlgError:
+    got = _lowest_modes(Kf)
+    if got is None:
         return []
+    w, v, scale = got
     if w[0] > MECHANISM_REL_EIG * scale:
         return []
     owner = {}
@@ -316,6 +351,69 @@ def describe_mechanism(node_ids):
     return (' Free to move with no stiffness: node%s %s%s.'
             % ('s' if len(node_ids) != 1 else '', shown,
                ' (and %d more)' % more if more > 0 else ''))
+
+
+MECHANISM_PIECES_LISTED = 4
+
+
+def describe_loose_pieces(nodes, members, supports, panels=None):
+    """Which separate pieces of the model cannot stand, and why -- for a
+    model too big for the whole-matrix mechanism search.
+
+    A file often holds several pieces (trusses side by side, a module and
+    the roof made of it). Each is checked on its own, with its own
+    supports: first the same coarse check the whole model gets (no
+    support at all, or translation held along fewer than three axes),
+    then, if it is small enough, the zero-stiffness search. Returns a
+    sentence naming up to MECHANISM_PIECES_LISTED of them, or ''."""
+    from apps.stereo import stereo_lift as sl
+    found = []
+    for rods in sl.pieces(members, skip_roles=()):
+        ns = sorted(sl.nodes_of(members, rods))
+        idx = {n: k for k, n in enumerate(ns)}
+        sub_n = [nodes[n] for n in ns]
+        sub_m = [dict(members[j], a=idx[members[j]['a']],
+                      b=idx[members[j]['b']]) for j in rods]
+        sub_s = [dict(sp, node=idx[sp['node']]) for sp in supports
+                 if sp.get('node') in idx]
+        xs = [p[0] for p in sub_n]
+        ys = [p[1] for p in sub_n]
+        where = ('the piece of %d rods at x %.1f to %.1f, y %.1f to %.1f'
+                 % (len(rods), min(xs), max(xs), min(ys), max(ys)))
+        why = check_boundary_setup(sub_n, sub_m, sub_s)
+        if why:
+            if not sub_s:
+                why = 'it has no support at all'
+            else:
+                why = why.split(';')[0].replace(
+                    'The supports restrain', 'its %d support(s) restrain'
+                    % len(sub_s))
+            found.append('%s: %s' % (where, why))
+        else:
+            loose = mechanism(sub_n, sub_m, sub_s)
+            if loose:
+                found.append('%s: %d of its nodes can move with no '
+                             'stiffness (node %s)'
+                             % (where, len(loose),
+                                ', '.join(str(ns[k]) for k in loose[:5])))
+        if len(found) > MECHANISM_PIECES_LISTED:
+            break
+    if not found:
+        return ''
+    more = len(found) > MECHANISM_PIECES_LISTED
+    return (' Pieces that cannot stand: ' + '; '.join(
+        found[:MECHANISM_PIECES_LISTED]) + (' -- and more.' if more else '.'))
+
+
+def _describe_singular(nodes, members, supports, panels, Kf, free, dof_of):
+    """Where a singular model is loose. A file of several separate pieces
+    is checked piece by piece -- each one small and quick, and the answer
+    names the piece; one piece gets the whole-matrix search, which names
+    its free nodes."""
+    from apps.stereo import stereo_lift as sl
+    if len(sl.pieces(members, skip_roles=())) > 1:
+        return describe_loose_pieces(nodes, members, supports, panels)
+    return describe_mechanism(_mechanism_nodes(Kf, free, dof_of))
 
 
 def stiffness_probe(nodes, members, supports, panels=None, slack=frozenset()):
@@ -560,7 +658,8 @@ def _analyze_once(nodes, members, loads, supports, panels=None,
                        'of it) is a mechanism, or a node is floating with no '
                        'load path to a support. Check for missing members or '
                        'missing boundary conditions.'
-                       + describe_mechanism(_mechanism_nodes(Kf, free, dof_of)))
+                       + _describe_singular(nodes, members, supports, panels,
+                                            Kf, free, dof_of))
 
     U = np.zeros(ndof)
     for li, gi in enumerate(free):

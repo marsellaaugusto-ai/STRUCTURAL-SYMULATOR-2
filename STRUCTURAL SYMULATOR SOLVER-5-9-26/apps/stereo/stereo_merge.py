@@ -167,6 +167,10 @@ def merge_models(base, part, tol=DEFAULT_TOL_M, label='part'):
             continue
         profiles.setdefault(name, dict(pdata))
 
+    # where each of the part's nodes and rods went -- a paste carries rod
+    # loads, roof-load areas and group membership across with these
+    rep['node_map'] = dict(node_map)
+    rep['member_map'] = dict(member_map)
     return ({'nodes': nodes, 'members': members, 'loads': loads,
              'supports': supports, 'groups': groups, 'profiles': profiles},
             rep)

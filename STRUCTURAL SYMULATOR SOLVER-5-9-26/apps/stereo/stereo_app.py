@@ -85,6 +85,7 @@ from apps.stereo.stereo_app_reports import StereoReportsMixin
 from apps.stereo.stereo_app_inspector import StereoInspectorMixin
 from apps.stereo.stereo_app_groups import StereoGroupsMixin
 from apps.stereo.stereo_app_transform import StereoTransformMixin
+from apps.stereo.stereo_app_clipboard import StereoClipboardMixin
 from apps.stereo.stereo_reports import STORAGE_UNITS as sr_storage_units
 
 
@@ -92,7 +93,7 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
                 StereoRenderMixin, StereoModuleEditorMixin,
                 StereoWizardMixin, StereoAddonsMixin, StereoReportsMixin,
                 StereoInspectorMixin, StereoGroupsMixin, StereoTransformMixin,
-                UnitsMixin):
+                StereoClipboardMixin, UnitsMixin):
     """The Stereo tab.
 
     Holds the model (nodes, members, supports, loads), every Tk variable
@@ -149,6 +150,11 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self._crane_freed = []
         # The lift's tag line, so clearing the crane takes it away too.
         self._crane_tag = None
+        self._crane_lifts = []
+        # the last copy, and a paste waiting for the click that places it
+        self._clip = None
+        self._paste_pending = None
+        self._paste_opts = None
         # Named branches of the model (roadmap 4.1). A list of dicts whose
         # shape and rules stereo_groups documents; empty means everything is
         # Ungrouped, which is a real state rather than a missing one.
@@ -225,6 +231,9 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         # them; the sheet chooser writes the reader's last choice back here
         # so a second export does not have to be configured again.
         self._pdf_groups = None
+        # the cover sheet (item 8): on or off, and what it says
+        self._pdf_cover = False
+        self.project_info = {}
 
         self._build_ui()
         self.init_units(repaint=self._on_units_changed)
@@ -276,7 +285,9 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
                 # or stripped -- supports the model no longer had reason to.
                 'column_freed': copy.deepcopy(getattr(self, '_column_freed', [])),
                 'crane_freed': copy.deepcopy(getattr(self, '_crane_freed', [])),
-                'crane_tag': copy.deepcopy(getattr(self, '_crane_tag', None))}
+                'crane_tag': copy.deepcopy(getattr(self, '_crane_tag', None)),
+                'crane_lifts': copy.deepcopy(getattr(self, '_crane_lifts', [])),
+                'project_info': dict(getattr(self, 'project_info', None) or {})}
 
     def _restore_snapshot(self, snap):
         self.nodes = snap['nodes']
@@ -293,6 +304,8 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self._column_freed = copy.deepcopy(snap.get('column_freed', []))
         self._crane_freed = copy.deepcopy(snap.get('crane_freed', []))
         self._crane_tag = copy.deepcopy(snap.get('crane_tag'))
+        self._crane_lifts = copy.deepcopy(snap.get('crane_lifts', []))
+        self.project_info = dict(snap.get('project_info') or {})
         self.results = None
         self.member_checks = None
         self.panel_checks = []

@@ -697,21 +697,25 @@ CRANE_AUTO_RISE = 1.0
 CRANE_MAST_FRACTION = 0.35
 
 
-def crane_auto_rise(nodes, target_nodes):
-    """The default hook height above the centroid of the picked nodes.
+def crane_auto_rise(nodes, target_nodes, hook_xy=None):
+    """The default hook height above the picked nodes.
 
-    Proportional to how far apart they are, as the roadmap asks: a wide
-    pick needs a high hook to keep the cables off the flat.
+    Proportional to how far they spread from the point under the hook, as
+    the roadmap asks: a wide pick needs a high hook to keep the cables off
+    the flat. `hook_xy` is that point; by default the picks' centroid.
     """
     pts = [nodes[i] for i in target_nodes]
-    cx = sum(p[0] for p in pts) / len(pts)
-    cy = sum(p[1] for p in pts) / len(pts)
+    if hook_xy is None:
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+    else:
+        cx, cy = float(hook_xy[0]), float(hook_xy[1])
     spread = sum(math.hypot(p[0] - cx, p[1] - cy) for p in pts) / len(pts)
     return max(0.5, CRANE_AUTO_RISE * spread)
 
 
 def add_cable_crane(nodes, members, target_nodes, section,
-                    rise=None, mast=None):
+                    rise=None, mast=None, hook_xy=None):
     """Hang the picked nodes from a crane: cables to a hook, then a mast.
 
     Returns (nodes, members, hook_index, anchor_index).
@@ -719,7 +723,11 @@ def add_cable_crane(nodes, members, target_nodes, section,
     The shape is the roadmap's 3.6: the centroid of the picked nodes, a hook
     node raised above it, one TENSION-ONLY cable from each picked node up to
     the hook, and a mast from the hook to an anchor node that the caller
-    restrains. The caller FIXES that anchor rather than pinning it, which
+    restrains. `hook_xy` puts the hook over another point in plan -- the
+    lifted piece's centre of gravity, where a rigger puts it: hung off the
+    picks' centroid instead, a piece whose weight is not centred under them
+    tips, the slings on the light side go slack and the tag lines end up
+    holding it. The caller FIXES that anchor rather than pinning it, which
     the roadmap's wording does not anticipate: a rigid mast free to rotate
     at its top has a zero-energy TORSIONAL mode about its own axis, because
     the cables are pin-jointed and add no rotational stiffness at the hook.
@@ -745,12 +753,15 @@ def add_cable_crane(nodes, members, target_nodes, section,
     nodes = list(nodes)
     members = list(members)
     pts = [nodes[i] for i in target_nodes]
-    cx = sum(p[0] for p in pts) / len(pts)
-    cy = sum(p[1] for p in pts) / len(pts)
+    if hook_xy is None:
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+    else:
+        cx, cy = float(hook_xy[0]), float(hook_xy[1])
     top = max(p[2] for p in pts)
 
     if rise is None:
-        rise = crane_auto_rise(nodes, target_nodes)
+        rise = crane_auto_rise(nodes, target_nodes, hook_xy)
     rise = float(rise)
     if rise <= 0:
         raise ValueError('The hook has to be above the nodes it lifts: '

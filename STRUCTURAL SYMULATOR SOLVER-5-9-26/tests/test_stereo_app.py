@@ -8098,9 +8098,11 @@ class TestPdfSheetChooser:
             for w in _descendants(win, tk.Widget):
                 if w.winfo_class() == 'Checkbutton':
                     label = w.cget('text')
-                    key = [k for k, lab, _ in app.PDF_GROUP_LABELS
-                           if lab == label][0]
-                    (w.select if key in chosen else w.deselect)()
+                    keys = [k for k, lab, _ in app.PDF_GROUP_LABELS
+                            if lab == label]
+                    if not keys:
+                        continue        # the cover, not a sheet group
+                    (w.select if keys[0] in chosen else w.deselect)()
             [b for b in _descendants(win, tk.Widget)
              if b.winfo_class() == 'Button'
              and b.cget('text').startswith('Export')][0].invoke()
@@ -9891,7 +9893,7 @@ class TestGroupsPdf:
                 out += texts(c)
             return out
         t = texts(app._groups_box)
-        assert 'PDF of all groups…' in t and 'PDF of this group…' in t
+        assert 'PDF of groups…' in t and 'PDF of this group…' in t
 
 
 class TestGroupedAndUngroupedModes:
@@ -10715,11 +10717,33 @@ class TestCraneFixes:
         ys = sorted({round(app.nodes[i][1], 3) for i in z})
         mid = [i for i in z if xs[3] <= round(app.nodes[i][0], 3) <= xs[5]
                and ys[3] <= round(app.nodes[i][1], 3) <= ys[5]]
-        app.selected_nodes = set(mid)
-        app._add_cable_crane()
+        # The hook hung over the picks' centroid (13.5, 13.5), as it was
+        # before it went over the centre of gravity (15, 15): off-centre,
+        # the grid tips on its slings and the answer runs away.
+        from apps.stereo import stereo_lift as slift
+        real = slift.centre_of_gravity
+        slift.centre_of_gravity = lambda *a, **k: None
+        try:
+            app.selected_nodes = set(mid)
+            app._add_cable_crane()
+        finally:
+            slift.centre_of_gravity = real
         app._analyze()
         if app.results is not None:
             assert app.status_var.get().startswith('Caution')
+
+    def test_the_same_patch_hung_over_its_centre_of_gravity_hangs_level(
+            self, app):
+        z = self._top(app)
+        xs = sorted({round(app.nodes[i][0], 3) for i in z})
+        ys = sorted({round(app.nodes[i][1], 3) for i in z})
+        mid = [i for i in z if xs[3] <= round(app.nodes[i][0], 3) <= xs[5]
+               and ys[3] <= round(app.nodes[i][1], 3) <= ys[5]]
+        app.selected_nodes = set(mid)
+        app._add_cable_crane()
+        app._analyze()
+        assert app.results is not None, app.err
+        assert not app.status_var.get().startswith('Caution')
 
 
 class TestResponsiveness:
@@ -10763,3 +10787,821 @@ class TestResponsiveness:
             for _ in range(10):
                 po.canvas.yview_scroll(-1, 'units')
             assert po.canvas.canvasy(0) == 0
+
+
+class TestAddonCodes:
+    """Round 2, item 3: every add-on has a short code -- C1, B1, K1, P1 --
+    on its rods, shown the same way on the canvas, in the inspector, in the
+    groups, in the PDF and in Excel."""
+
+    def _column(self, app, node):
+        app.col_style.set(sg.COLUMN_PLAIN)
+        app.col_height.set(4.0)
+        app.selected_nodes = {node}
+        app._add_column()
+
+    def _crane(self, app):
+        top = max(p[2] for p in app.nodes)
+        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
+        xs = [app.nodes[i][0] for i in tops]
+        ys = [app.nodes[i][1] for i in tops]
+        app.selected_nodes = {
+            min(tops, key=lambda i: (app.nodes[i][0] - tx) ** 2
+                + (app.nodes[i][1] - ty) ** 2)
+            for tx in (min(xs), max(xs)) for ty in (min(ys), max(ys))}
+        app._add_cable_crane()
+
+    def test_each_add_on_gets_the_next_code_of_its_kind(self, app):
+        from apps.stereo import stereo_addon_codes as sac
+        self._column(app, 0)
+        self._column(app, 5)
+        app.selected_nodes = {0, 1, 2, 11, 12, 13}
+        app.beam_depth.set(1.2)
+        app.beam_dir.set('Down (-Z)')
+        app._add_reinforcement_beam()
+        _mode(app, 'addons')
+        app.selected_nodes = _top_quad(app)
+        app._add_shear_panel()
+        idx = sac.index(app.members)
+        assert list(idx) == ['B1', 'C1', 'C2']
+        assert all(app.members[i].get('role') == 'column_shaft'
+                   for i in idx['C1'] + idx['C2'])
+        assert {app.members[i].get('role') for i in idx['B1']} <= {
+            'reinf_chord', 'reinf_web'}
+        assert app.panels[-1]['addon'] == 'P1'
+
+    def test_a_crane_is_K1_and_its_rods_are_its_mast_and_cables(self, app):
+        from apps.stereo import stereo_addon_codes as sac
+        self._crane(app)
+        rods = sac.index(app.members)['K1']
+        assert {app.members[i]['role'] for i in rods} == {'crane_mast',
+                                                          'crane_cable'}
+
+    def test_undo_takes_the_code_back_and_the_next_one_is_not_reused(self, app):
+        from apps.stereo import stereo_addon_codes as sac
+        self._column(app, 0)
+        self._column(app, 5)
+        app._undo()
+        assert list(sac.index(app.members)) == ['C1']
+        self._column(app, 7)
+        assert list(sac.index(app.members)) == ['C1', 'C2']
+
+    def test_a_mirrored_copy_of_a_column_is_a_new_column(self, app):
+        from apps.stereo import stereo_addon_codes as sac
+        self._column(app, 0)
+        rod = sac.index(app.members)['C1'][0]
+        # with a stretch of grid, so the copy lands clear of the original
+        app.selected_members = {rod} | set(range(20))
+        app.selected_nodes = set()
+        assert app._tx_mirror(copy=True, axis='X')
+        idx = sac.index(app.members)
+        assert list(idx) == ['C1', 'C2']
+        assert len(idx['C2']) == len(idx['C1'])
+
+    def test_the_canvas_tags_each_add_on(self, app):
+        self._column(app, 0)
+        self._crane(app)
+        app.show_addon_codes.set(True)
+        app._draw()
+        texts = {app.canvas.itemcget(t, 'text')
+                 for t in app.canvas.find_withtag('addon_code')
+                 if app.canvas.type(t) == 'text'}
+        assert texts == {'C1', 'K1'}
+        app.show_addon_codes.set(False)
+        app._draw()
+        assert not app.canvas.find_withtag('addon_code')
+
+    def test_the_inspector_names_the_add_on(self, app):
+        from apps.stereo import stereo_addon_codes as sac
+        self._column(app, 0)
+        rod = sac.index(app.members)['C1'][0]
+        app.selected_nodes = set()
+        app.selected_member = rod
+        app.selected_members = {rod}
+        app._update_properties_panel()
+        texts = []
+
+        def walk(w):
+            for ch in w.winfo_children():
+                if isinstance(ch, tk.Label):
+                    texts.append(ch.cget('text'))
+                walk(ch)
+        walk(app._props_frame)
+        assert any('Column C1' in t for t in texts), texts
+
+    def test_codes_survive_the_workbook(self, app, tmp_path):
+        from apps.stereo import stereo_addon_codes as sac
+        self._column(app, 0)
+        self._crane(app)
+        p = str(tmp_path / 'm.xlsx')
+        sr_module.export_excel(app.nodes, app.members, app._all_loads(),
+                        app.supports, None, p)
+        _n, members, *_ = sr_module.import_excel_model(p)
+        assert sac.index(members) == sac.index(app.members)
+
+    def test_a_group_made_from_one_add_on_is_named_after_it(self, app,
+                                                           monkeypatch):
+        from apps.stereo import stereo_addon_codes as sac
+        from tkinter import simpledialog
+        self._column(app, 0)
+        seen = {}
+
+        def ask(title, prompt, **kw):
+            seen['initial'] = kw.get('initialvalue')
+            return kw.get('initialvalue')
+        monkeypatch.setattr(simpledialog, 'askstring', ask)
+        app.selected_nodes = set()
+        app.selected_members = set(sac.index(app.members)['C1'])
+        app._group_new_from_selection()
+        assert seen['initial'] == 'Column C1'
+        assert app.groups[-1]['name'] == 'Column C1'
+
+    def test_a_group_holding_add_ons_lists_their_codes(self, app,
+                                                       monkeypatch):
+        from apps.stereo import stereo_addon_codes as sac
+        from tkinter import simpledialog
+        self._column(app, 0)
+        self._column(app, 5)
+        monkeypatch.setattr(simpledialog, 'askstring',
+                            lambda *a, **k: 'Supports')
+        app.selected_nodes = set()
+        idx = sac.index(app.members)
+        app.selected_members = set(idx['C1'] + idx['C2'])
+        app._group_new_from_selection()
+        gid = app.groups[-1]['id']
+        assert app._group_display_name(gid) == 'Supports · C1, C2'
+        assert any(lbl.startswith('Supports · C1, C2')
+                   for lbl, _g in app._group_rows())
+
+    def test_the_pdf_names_the_add_ons(self, app, tmp_path):
+        self._column(app, 0)
+        self._crane(app)
+        app._analyze()
+        p = str(tmp_path / 'r.pdf')
+        sr_module.export_pdf(app.nodes, app.members, app._all_loads(), app.supports,
+                      app.results, p, checks=app.member_checks,
+                      groups={'views'})
+        import subprocess
+        txt = subprocess.run(['pdftotext', '-f', '1', '-l', '2', p, '-'],
+                             capture_output=True, text=True).stdout
+        assert 'ADD-ONS' in txt
+        assert 'Column C1' in txt and 'Crane K1' in txt
+
+
+class TestCraneLiftsAPiece:
+    """Round 2, item 4: a crane lifts ONE piece -- the one under the hook,
+    or a group -- and only that piece comes off its supports. The rest of
+    the file stays on the ground and still solves."""
+
+    def _second_truss(self, app, dx=45.0):
+        """A copy of the default grid, 45 m along x: a separate piece with
+        its own supports, in the same file."""
+        n0, m0 = len(app.nodes), len(app.members)
+        app.nodes = list(app.nodes) + [(x + dx, y, z) for x, y, z in app.nodes]
+        app.members = list(app.members) + [
+            dict(m, a=m['a'] + n0, b=m['b'] + n0) for m in app.members]
+        app.supports = list(app.supports) + [
+            dict(s, node=s['node'] + n0) for s in app.supports]
+        app.loads = list(app.loads)
+        app.results = None
+        return n0, m0
+
+    def _corners(self, app, lo_x, hi_x):
+        top = max(p[2] for p in app.nodes)
+        tops = [i for i, p in enumerate(app.nodes)
+                if abs(p[2] - top) < 1e-9 and lo_x <= p[0] <= hi_x]
+        xs = [app.nodes[i][0] for i in tops]
+        ys = [app.nodes[i][1] for i in tops]
+        return {min(tops, key=lambda i: (app.nodes[i][0] - tx) ** 2
+                    + (app.nodes[i][1] - ty) ** 2)
+                for tx in (min(xs), max(xs)) for ty in (min(ys), max(ys))}
+
+    def test_lifting_one_truss_leaves_the_other_on_its_supports(self, app):
+        n0, m0 = self._second_truss(app)
+        b_supports = [s for s in app.supports if s['node'] >= n0]
+        app.selected_nodes = self._corners(app, -1.0, 40.0)
+        app._add_cable_crane()
+        # B's supports are all still there; A's are gone (handed to the
+        # crane and its tag lines)
+        assert all(s in app.supports for s in b_supports)
+        a_ground = [s for s in app.supports if s['node'] < n0
+                    and s.get('type') and s['node'] not in
+                    {t['node'] for t in app._crane_tag or []}]
+        assert a_ground == []
+        assert 'stay on their supports' in app.col_note.cget('text')
+        app._analyze()
+        assert app.results is not None, app.err
+        # B still stands -- before, its supports went with A's and the
+        # solve refused the whole file as a mechanism -- and A hangs: its
+        # loads go up the slings, none to the ground under B
+        assert all(abs(r.get('Fz', 0.0)) < 1e-6
+                   for node, r in app.results['reactions'].items()
+                   if n0 <= node < 2 * n0)
+        assert app._crane_lifts[-1]['rods'] == list(range(m0))
+
+    def test_a_group_can_be_lifted_by_name(self, app):
+        from apps.stereo import stereo_groups as sgp
+        n0, m0 = self._second_truss(app)
+        g = sgp.new_group(app.groups, 'Truss B', members=range(m0, 2 * m0))
+        app._refresh_crane_lift_choices()
+        label = [c for c in app.crane_lift_box.cget('values')
+                 if 'Truss B' in c][0]
+        app.crane_lift_target.set(label)
+        app.selected_nodes = self._corners(app, 44.0, 100.0)
+        app._add_cable_crane()
+        assert app._crane_lifts[-1]['group'] == g['id']
+        a_supports = [s for s in app.supports if s['node'] < n0]
+        assert len(a_supports) > 4          # A untouched
+        app._analyze()
+        assert app.results is not None, app.err
+
+    def test_a_group_still_joined_to_the_rest_is_refused(self, app, dialogs):
+        from apps.stereo import stereo_groups as sgp
+        half = list(range(len(app.members) // 2))
+        sgp.new_group(app.groups, 'Half', members=half)
+        app._refresh_crane_lift_choices()
+        app.crane_lift_target.set('Half')
+        m_before = len(app.members)
+        top = max(p[2] for p in app.nodes)
+        mine = {n for j in half for n in (app.members[j]['a'],
+                                         app.members[j]['b'])}
+        app.selected_nodes = set(sorted(i for i in mine
+                                        if app.nodes[i][2] == top)[:4])
+        app._add_cable_crane()
+        assert len(app.members) == m_before
+        assert any('still joined' in str(a) for a in dialogs), dialogs
+
+    def test_slings_off_the_group_are_refused(self, app, dialogs):
+        from apps.stereo import stereo_groups as sgp
+        n0, m0 = self._second_truss(app)
+        sgp.new_group(app.groups, 'Truss B', members=range(m0, 2 * m0))
+        app._refresh_crane_lift_choices()
+        app.crane_lift_target.set('Truss B')
+        m_before = len(app.members)
+        app.selected_nodes = self._corners(app, -1.0, 40.0)   # on A
+        app._add_cable_crane()
+        assert len(app.members) == m_before
+        assert any('hook onto group' in str(a) for a in dialogs), dialogs
+
+    def test_undo_and_clear_take_the_lift_record_back(self, app):
+        app.selected_nodes = self._corners(app, -1.0, 100.0)
+        app._add_cable_crane()
+        assert len(app._crane_lifts) == 1
+        app._undo()
+        assert app._crane_lifts == []
+        app._redo() if hasattr(app, '_redo') else None
+        app.selected_nodes = self._corners(app, -1.0, 100.0)
+        app._add_cable_crane()
+        app._clear_cable_cranes()
+        assert app._crane_lifts == []
+
+
+class TestCraneHangsOverTheCentreOfGravity:
+    """A rigger hangs the hook over the centre of gravity of what is lifted.
+    Over the middle of the PICKS instead, a piece whose weight is not
+    centred under them tips: the light side's slings go slack and the tag
+    lines -- there only to stop a linear solve's pendulum modes -- end up
+    carrying the lift. Found on a pitched roof module: two slings in
+    compression and 45 kN in the tag lines."""
+
+    def _corners(self, app):
+        top = max(p[2] for p in app.nodes)
+        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
+        xs = [app.nodes[i][0] for i in tops]
+        ys = [app.nodes[i][1] for i in tops]
+        return tops, {min(tops, key=lambda i: (app.nodes[i][0] - tx) ** 2
+                          + (app.nodes[i][1] - ty) ** 2)
+                      for tx in (min(xs), max(xs)) for ty in (min(ys), max(ys))}
+
+    def test_an_uneven_load_moves_the_hook_and_the_tag_lines_stay_idle(
+            self, app):
+        from apps.stereo import stereo_lift as slift
+        tops, picks = self._corners(app)
+        heavy = max(tops, key=lambda i: app.nodes[i][0] + 0.5 * app.nodes[i][1])
+        app.loads = list(app.loads) + [{'node': heavy, 'fz': -400.0}]
+        rods = [j for j, m in enumerate(app.members)]
+        cog = slift.centre_of_gravity(app.nodes, app.members, rods,
+                                      app._all_loads())
+        mid = (sum(app.nodes[i][0] for i in picks) / 4,
+               sum(app.nodes[i][1] for i in picks) / 4)
+        assert abs(cog[0] - mid[0]) + abs(cog[1] - mid[1]) > 0.5
+        app.selected_nodes = set(picks)
+        app._add_cable_crane()
+        hook = app._crane_lifts[-1]['hook']
+        assert abs(app.nodes[hook][0] - cog[0]) < 1e-9
+        assert abs(app.nodes[hook][1] - cog[1]) < 1e-9
+        assert 'centre of gravity' in app.col_note.cget('text')
+        app._analyze()
+        assert app.results is not None, app.err
+        total = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
+        tags = {t['node'] for t in app._crane_tag}
+        pull = sum(abs(v) for n, r in app.results['reactions'].items()
+                   if n in tags for v in r.values())
+        assert pull < 1e-3 * total, (pull, total)
+
+    def test_picks_all_to_one_side_of_the_weight_are_flagged(self, app):
+        tops, _picks = self._corners(app)
+        xs = sorted({round(app.nodes[i][0], 6) for i in tops})
+        ys = [app.nodes[i][1] for i in tops]
+        # three joints along the low-x edge: the grid's weight is off to
+        # the side of them, so no sling tension can hold it level
+        edge = sorted((i for i in tops if round(app.nodes[i][0], 6) == xs[0]),
+                      key=lambda i: app.nodes[i][1])
+        picks = {edge[0], edge[len(edge) // 2], edge[-1]}
+        nxt = [i for i in tops if round(app.nodes[i][0], 6) == xs[1]]
+        picks.add(min(nxt, key=lambda i: abs(app.nodes[i][1]
+                                             - (min(ys) + max(ys)) / 2)))
+        app.selected_nodes = picks
+        app._add_cable_crane()
+        note = app.col_note.cget('text')
+        assert 'outside the pick points' in note, note
+        assert 'tip' in app.status_var.get()
+
+
+    def test_a_flat_truss_hung_in_its_own_plane_is_named(self, app):
+        """A plane truss picked along its top chord hangs from slings that
+        all lie in its plane with the hook: it can turn about them like a
+        flag. Caught when it is lifted, with what to do about it."""
+        tpl = dict(app.members[0])
+        for k in ('addon', 'role', 'tension_only'):
+            tpl.pop(k, None)
+        tpl['conn'] = 'pin'
+        nodes = [(2.0 * i, 0.0, 0.0) for i in range(5)] + \
+            [(2.0 * i, 0.0, 1.5) for i in range(5)]
+        pairs = [(i, i + 1) for i in range(4)] + \
+            [(5 + i, 6 + i) for i in range(4)] + \
+            [(i, 5 + i) for i in range(5)] + [(i, 6 + i) for i in range(4)]
+        app.nodes = nodes
+        app.members = [dict(tpl, a=a, b=b) for a, b in pairs]
+        app.supports, app.loads, app.groups = [], [], []
+        app.panels = []
+        app.loads = [{'node': i, 'fz': -2.0} for i in range(5)]
+        app.results = None
+        app.selected_nodes = {5, 7, 9}
+        app._add_cable_crane()
+        note = app.col_note.cget('text')
+        assert 'one plane' in note, note
+
+
+class TestCraneReport:
+    """Round 2, item 5: the crane lift report in the PDF, with the cable
+    check against a capacity set when the crane goes on."""
+
+    def _lift(self, app, mode='none', value=None):
+        top = max(p[2] for p in app.nodes)
+        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
+        xs = [app.nodes[i][0] for i in tops]
+        ys = [app.nodes[i][1] for i in tops]
+        app.selected_nodes = {
+            min(tops, key=lambda i: (app.nodes[i][0] - tx) ** 2
+                + (app.nodes[i][1] - ty) ** 2)
+            for tx in (min(xs), max(xs)) for ty in (min(ys), max(ys))}
+        app.crane_cap_mode.set(mode)
+        if mode == 'wll':
+            app.crane_wll.set(value)
+        elif mode == 'dia':
+            app.crane_dia.set(value)
+        app._add_cable_crane()
+
+    def test_the_cable_capacity_is_kept_with_the_lift(self, app):
+        from apps.stereo import stereo_lift as slift
+        self._lift(app, 'dia', 20.0)
+        meta = app._crane_meta()
+        assert list(meta) == ['K1']
+        assert meta['K1']['wll_kN'] == pytest.approx(slift.rope_wll_kN(20.0))
+        assert 'Ø20 mm' in meta['K1']['cable_spec']
+        assert meta['K1']['what'] == 'the piece under the hook'
+
+    def test_a_typed_wll_and_none(self, app):
+        self._lift(app, 'wll', 700.0)
+        assert app._crane_meta()['K1']['wll_kN'] == 700.0
+        app._clear_cable_cranes()
+        self._lift(app)
+        assert app._crane_meta()['K1']['wll_kN'] is None
+
+    def test_the_pdf_carries_the_crane_report(self, app, tmp_path):
+        import subprocess
+        from apps.stereo import stereo_lift as slift
+        self._lift(app, 'wll', 700.0)
+        app._analyze()
+        assert app.results is not None
+        rep = slift.crane_report(app.nodes, app.members, app.results,
+                                 app.member_checks, 'K1', wll_kN=700.0)
+        # the slings carry the whole lifted load
+        applied = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
+        assert rep['sum_vertical'] == pytest.approx(applied, rel=1e-6)
+        p = str(tmp_path / 'c.pdf')
+        sr_module.export_pdf(
+            app.nodes, app.members, app._all_loads(), app.supports,
+            app.results, p, checks=app.member_checks,
+            meta={'crane_lifts': app._crane_meta()}, groups={'crane'})
+        plan = sr_module.plan_sheets(app.results, app.member_checks, 0,
+                                     {'crane'}, members=app.members)
+        assert plan == ['general', 'crane_K1', 'crane_K1_table']
+        txt = subprocess.run(['pdftotext', p, '-'], capture_output=True,
+                             text=True).stdout
+        assert 'Crane K1' in txt
+        assert 'WLL 700 kN per cable, as entered' in txt
+        T = rep['cables'][0]['T']
+        assert f'{T:.2f}' in txt
+        assert f'{T / 700.0:.2f}' in txt
+
+    def test_no_crane_no_crane_sheets(self, app):
+        app._analyze()
+        plan = sr_module.plan_sheets(app.results, app.member_checks, 0,
+                                     members=app.members)
+        assert not any(k.startswith('crane_') for k in plan)
+
+    def test_the_chooser_offers_the_crane_report(self, app):
+        keys = [k for k, _l, _b in app.PDF_GROUP_LABELS]
+        assert 'crane' in keys
+        assert set(keys) == set(sr_module.PDF_SHEET_GROUPS)
+
+
+
+class TestGroupsPdfControl:
+    """Round 2, item 6: the Groups PDF is the user's to shape -- which
+    groups, in what order, under what titles, with which sheets each, and
+    one document or one PDF per group."""
+
+    def _groups(self, app, monkeypatch):
+        names = iter(['Roof A', 'Roof B'])
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
+                            '.askstring', lambda *a, **k: next(names))
+        app.selected_nodes = set()
+        app.selected_members = set(range(0, 200))
+        app._group_new_from_selection()
+        app.selected_members = set(range(200, 420))
+        app._group_new_from_selection()
+        app._analyze()
+        return [g['id'] for g in app.groups]
+
+    def _pages(self, path):
+        import subprocess
+        out = subprocess.run(['pdfinfo', path], capture_output=True,
+                             text=True).stdout
+        return int([ln for ln in out.splitlines()
+                    if ln.startswith('Pages:')][0].split()[1])
+
+    def test_the_rows_are_every_group_then_ungrouped_all_ticked(
+            self, app, monkeypatch):
+        a, b = self._groups(app, monkeypatch)
+        items = app._groups_pdf_items()
+        assert [(it['gid'], it['title'], it['on']) for it in items] == [
+            (a, 'Roof A', True), (b, 'Roof B', True), (None, 'Ungrouped', True)]
+
+    def test_order_titles_and_sheets_are_the_users(self, app, monkeypatch,
+                                                   tmp_path):
+        from apps.stereo import stereo_reports as sr
+        a, b = self._groups(app, monkeypatch)
+        cfg = {'mode': 'one', 'sheets': {'tables'},
+               'items': [
+                   {'gid': b, 'title': 'East roof', 'sheets': {'force'},
+                    'on': True},
+                   {'gid': a, 'title': 'West roof', 'sheets': None,
+                    'on': True},
+                   {'gid': None, 'title': 'Ungrouped', 'sheets': None,
+                    'on': False}]}
+        path = str(tmp_path / 'g.pdf')
+        written = app._groups_pdf_custom(cfg=cfg, path=path)
+        (out_path, contents), = written
+        assert out_path == path
+        assert [t.strip() for t, _ in contents[2:]] == ['East roof',
+                                                        'West roof']
+        # East carries its own sheets, West the default
+        n_east = contents[3][1] - contents[2][1]
+        assert n_east == len(sr.plan_sheets(app.results, app.member_checks,
+                                            0, {'force'}))
+        import subprocess
+        txt = subprocess.run(['pdftotext', path, '-'], capture_output=True,
+                             text=True).stdout
+        assert 'East roof' in txt and 'West roof' in txt
+        # remembered, order and titles too
+        items = app._groups_pdf_items()
+        assert [it['title'] for it in items] == ['East roof', 'West roof',
+                                                 'Ungrouped']
+        assert items[2]['on'] is False
+
+    def test_one_pdf_per_group(self, app, monkeypatch, tmp_path):
+        a, b = self._groups(app, monkeypatch)
+        cfg = {'mode': 'each', 'sheets': {'tables'},
+               'items': [{'gid': a, 'title': 'Roof A', 'sheets': None,
+                          'on': True},
+                         {'gid': b, 'title': 'Roof B', 'sheets': None,
+                          'on': True}]}
+        written = app._groups_pdf_custom(cfg=cfg,
+                                         path=str(tmp_path / 'job.pdf'))
+        paths = [p for p, _c in written]
+        assert [os.path.basename(p) for p in paths] == ['job_Roof_A.pdf',
+                                                        'job_Roof_B.pdf']
+        for p, contents in written:
+            assert os.path.exists(p)
+            assert len(contents) == 3          # summary, joints, its section
+            assert self._pages(p) >= 3
+
+    def test_nothing_ticked_writes_nothing(self, app, monkeypatch, tmp_path,
+                                           dialogs):
+        a, b = self._groups(app, monkeypatch)
+        cfg = {'mode': 'one', 'sheets': {'tables'},
+               'items': [{'gid': a, 'title': 'A', 'sheets': None,
+                          'on': False}]}
+        assert app._groups_pdf_custom(cfg=cfg,
+                                      path=str(tmp_path / 'n.pdf')) is None
+        assert any('No group is ticked' in str(d) for d in dialogs)
+
+    def test_the_dialog_reorders_retitles_and_returns_the_choice(
+            self, app, monkeypatch):
+        a, b = self._groups(app, monkeypatch)
+        seen = {}
+
+        def fake_wait(win):
+            def buttons(text):
+                return [w for w in _descendants(win, tk.Widget)
+                        if w.winfo_class() == 'Button'
+                        and w.cget('text') == text]
+            buttons('↓')[0].invoke()        # Roof A below Roof B
+            entries = [w for w in _descendants(win, tk.Widget)
+                       if w.winfo_class() == 'Entry']
+            entries[0].delete(0, 'end')
+            entries[0].insert(0, 'East roof')
+            # untick Ungrouped (the last row's checkbutton)
+            rows = [w for w in _descendants(win, tk.Widget)
+                    if w.winfo_class() == 'Checkbutton'
+                    and not w.cget('text')]
+            rows[-1].deselect()
+            [r for r in _descendants(win, tk.Widget)
+             if r.winfo_class() == 'Radiobutton'
+             and r.cget('text') == 'One PDF per group'][0].select()
+            seen['n_rows'] = len(rows)
+            buttons('Export…')[0].invoke()
+
+        monkeypatch.setattr(app.root, 'wait_window', fake_wait)
+        cfg = app._groups_pdf_dialog()
+        assert seen['n_rows'] == 3
+        assert [(it['gid'], it['title'], it['on']) for it in cfg['items']] \
+            == [(b, 'East roof', True), (a, 'Roof A', True),
+                (None, 'Ungrouped', False)]
+        assert cfg['mode'] == 'each'
+
+
+class TestCopyPaste:
+    """Round 2, item 7: copy and paste, through the system clipboard, at an
+    offset or at a clicked node, once or as an array."""
+
+    def _opts(self, **kw):
+        o = {'place': 'offset', 'dx': 0.0, 'dy': 0.0, 'dz': 0.0, 'count': 1,
+             'supports': False, 'loads': False, 'groups': False}
+        o.update(kw)
+        return o
+
+    def test_copy_puts_the_selection_on_the_system_clipboard(self, app):
+        from apps.stereo import stereo_clipboard as scb
+        app.selected_nodes = set()
+        app.selected_members = set(range(10))
+        app._copy_selection()
+        clip = scb.from_text(app.root.clipboard_get())
+        assert clip is not None and len(clip['members']) == 10
+        assert app._clipboard_clip()['members'] == clip['members']
+
+    def test_paste_at_an_offset_adds_a_copy_and_undo_takes_it_away(
+            self, app, monkeypatch):
+        n0, m0 = len(app.nodes), len(app.members)
+        app.selected_nodes = set()
+        app.selected_members = set(range(10))
+        app._copy_selection()
+        monkeypatch.setattr(app, '_paste_ask',
+                            lambda clip: self._opts(dz=-5.0))
+        app._paste_dialog()
+        assert len(app.members) == m0 + 10
+        assert app.selected_members == set(range(m0, m0 + 10))
+        for j in range(10):
+            a, b = app.members[j], app.members[m0 + j]
+            assert app.nodes[b['a']][2] == pytest.approx(
+                app.nodes[a['a']][2] - 5.0)
+        app._undo()
+        assert (len(app.nodes), len(app.members)) == (n0, m0)
+
+    def test_paste_at_a_clicked_node_puts_the_corner_node_there(
+            self, app, monkeypatch):
+        from apps.stereo import stereo_clipboard as scb
+        app.selected_nodes = set()
+        app.selected_members = {0}
+        app._copy_selection()
+        monkeypatch.setattr(app, '_paste_ask', lambda clip: self._opts(
+            place='point', dz=-2.0, count=2))
+        app._paste_dialog()
+        assert app._paste_pending is not None
+        # a node on the +x edge of rod 0's own layer: the copy of rod 0
+        # placed there sticks out past the grid instead of landing on a rod
+        z0 = app.nodes[app.members[0]['a']][2]
+        target = max((i for i, p in enumerate(app.nodes)
+                      if abs(p[2] - z0) < 1e-9),
+                     key=lambda i: (app.nodes[i][0], -app.nodes[i][1]))
+        sx, sy = app._screen_positions()[target]
+
+        class E:
+            x, y, state = sx, sy, 0
+        app._lasso_press = (sx, sy)
+        app._on_canvas_release(E()) if hasattr(app, '_on_canvas_release') \
+            else app._paste_at_click(sx, sy)
+        assert app._paste_pending is None
+        clip = app._clip
+        rx, ry, rz = scb.ref_point(clip)
+        tx, ty, tz = app.nodes[target]
+        new = sorted(app.selected_members)
+        assert len(new) == 2          # the first at the node, one a step on
+        firsts = [app.nodes[app.members[j]['a']] for j in new] + \
+            [app.nodes[app.members[j]['b']] for j in new]
+        assert any(p == pytest.approx((tx, ty, tz)) for p in firsts)
+        assert any(p[2] == pytest.approx(tz - 2.0) for p in firsts)
+
+    def test_escape_cancels_a_waiting_paste(self, app, monkeypatch):
+        app.selected_members = {0}
+        app.selected_nodes = set()
+        app._copy_selection()
+        monkeypatch.setattr(app, '_paste_ask',
+                            lambda clip: self._opts(place='point'))
+        app._paste_dialog()
+        m0 = len(app.members)
+        app._on_escape()
+        assert app._paste_pending is None and len(app.members) == m0
+
+    def test_a_copy_pastes_into_another_file(self, app, monkeypatch):
+        """The clipboard is text the next file -- or another window -- reads:
+        copy, start a new model, paste."""
+        app.selected_nodes = set()
+        app.selected_members = set(range(12))
+        app._copy_selection()
+        app._clear_model()
+        assert app.members == []
+        monkeypatch.setattr(app, '_paste_ask', lambda clip: self._opts())
+        app._paste_dialog()
+        assert len(app.members) == 12
+
+    def test_an_array_of_columns_gets_a_code_each(self, app, monkeypatch):
+        from apps.stereo import stereo_addon_codes as sac
+        app.col_style.set(sg.COLUMN_PLAIN)
+        app.col_height.set(4.0)
+        app.selected_nodes = {0}
+        app._add_column()
+        app.selected_nodes = set()
+        app.selected_members = set(sac.index(app.members)['C1'])
+        app._copy_selection()
+        monkeypatch.setattr(app, '_paste_ask',
+                            lambda clip: self._opts(dx=3.0, count=3))
+        app._paste_dialog()
+        assert list(sac.index(app.members)) == ['C1', 'C2', 'C3', 'C4']
+
+    def test_the_build_panel_offers_copy_and_paste(self, app):
+        def texts(w):
+            out = []
+            for c in w.winfo_children():
+                try:
+                    out.append(c.cget('text'))
+                except tk.TclError:
+                    pass
+                out += texts(c)
+            return out
+        t = texts(app._mode_frames['build'])
+        assert 'Copy' in t and 'Paste…' in t
+
+
+
+class TestCoverAndSavedSettings:
+    """Round 2, item 8: a cover sheet with the project's details and the
+    contents, and PDF settings saved by name for the next report."""
+
+    def test_the_cover_sheet_carries_the_project_and_the_contents(
+            self, app, tmp_path):
+        import subprocess
+        app._analyze()
+        app.project_info = {'project': 'Hangar 3 roof', 'client': 'ACME',
+                            'author': 'M. A.', 'revision': 'B'}
+        app._pdf_cover = True
+        path = str(tmp_path / 'r.pdf')
+        sr_module.export_pdf(app.nodes, app.members, app._all_loads(),
+                             app.supports, app.results, path,
+                             checks=app.member_checks, groups={'force'},
+                             cover=app._pdf_cover_info())
+        plan = sr_module.plan_sheets(app.results, app.member_checks, 0,
+                                     {'force'}, members=app.members,
+                                     cover=True)
+        assert plan[0] == 'cover'
+        out = subprocess.run(['pdfinfo', path], capture_output=True,
+                             text=True).stdout
+        assert 'Pages:           %d' % len(plan) in out
+        txt = subprocess.run(['pdftotext', '-f', '1', '-l', '1', path, '-'],
+                             capture_output=True, text=True).stdout
+        for want in ('Hangar 3 roof', 'ACME', 'Revision', 'Contents',
+                     'Axial force, plan', 'Sheet 1 / %d' % len(plan)):
+            assert want in txt, want
+
+    def test_no_cover_unless_asked(self, app):
+        app._pdf_cover = False
+        assert app._pdf_cover_info() is None
+
+    def test_project_details_go_with_undo(self, app):
+        app.project_info = {'project': 'A'}
+        app._push_undo('x')
+        app.project_info = {'project': 'B'}
+        app._undo()
+        assert app.project_info == {'project': 'A'}
+
+    def test_settings_saved_by_name_come_back(self, app, monkeypatch,
+                                              tmp_path):
+        from apps.stereo import stereo_pdf_presets as spp
+        monkeypatch.setenv(spp.ENV, str(tmp_path / 'presets.json'))
+        app.project_info = {'project': 'Hangar 3'}
+        app._groups_pdf_cfg = None
+        spp.put('mine', app._pdf_preset_from({'force', 'crane'},
+                                             {'zoom': 1.3, 'ratio': None},
+                                             True))
+        app._pdf_groups = None
+        app._pdf_cover = False
+        app.project_info = {}
+        app._apply_pdf_preset(spp.load()['mine'])
+        assert app._pdf_groups == {'force', 'crane'}
+        assert app._pdf_view == {'zoom': 1.3, 'ratio': None}
+        assert app._pdf_cover is True
+        assert app.project_info == {'project': 'Hangar 3'}
+
+    def test_the_dialog_applies_a_saved_preset(self, app, monkeypatch,
+                                               tmp_path):
+        from apps.stereo import stereo_pdf_presets as spp
+        monkeypatch.setenv(spp.ENV, str(tmp_path / 'presets.json'))
+        spp.put('two sheets', spp.make({'deformed'}, cover=True))
+        app._analyze()
+
+        def fake_wait(win):
+            boxes = [w for w in _descendants(win, tk.Widget)
+                     if w.winfo_class() == 'TCombobox']
+            boxes[0].set('two sheets')
+            [b for b in _descendants(win, tk.Widget)
+             if b.winfo_class() == 'Button'
+             and b.cget('text') == 'Apply'][0].invoke()
+            [b for b in _descendants(win, tk.Widget)
+             if b.winfo_class() == 'Button'
+             and b.cget('text').startswith('Export')][0].invoke()
+
+        monkeypatch.setattr(app.root, 'wait_window', fake_wait)
+        got = app._pdf_sheet_dialog('Export PDF', app.results,
+                                    app.member_checks, 0,
+                                    members=app.members)
+        assert got == {'deformed'}
+        assert app._pdf_cover is True
+
+
+class TestAddonsLeaveTheModelsOwnRodsAlone:
+    """Found on a user's file (three roofs, modules and trusses, all rigid):
+    clearing the cranes turned every rod in the file into a pin, and the
+    roofs became mechanisms. Every add-on -- adding OR clearing a column, a
+    beam or a crane -- re-applied the Sections panel to every rod in the
+    model. An add-on now writes the panel's section onto its own new rods
+    only, and clearing one does not touch the rest."""
+
+    def _own_rods(self, app):
+        for k, m in enumerate(app.members):
+            m['conn'] = 'rigid'
+            m['profile'] = 'Mine'
+            m['A'] = 33.0 + k % 3
+        return [(m['conn'], m['profile'], m['A'])
+                for m in app.members]
+
+    def test_add_and_clear_a_column(self, app):
+        before = self._own_rods(app)
+        n = len(before)
+        app.sec_conn.set('pin')
+        app.col_style.set(sg.COLUMN_PLAIN)
+        app.col_height.set(4.0)
+        app.selected_nodes = {0}
+        app._add_column()
+        assert [(m['conn'], m['profile'], m['A'])
+                for m in app.members[:n]] == before
+        assert app.members[n]['conn'] == 'pin'       # the column's own rod
+        app._clear_columns()
+        assert [(m['conn'], m['profile'], m['A'])
+                for m in app.members] == before
+
+    def test_add_and_clear_a_beam(self, app):
+        before = self._own_rods(app)
+        n = len(before)
+        app.selected_nodes = {0, 1, 2, 11, 12, 13}
+        app.beam_depth.set(1.2)
+        app.beam_dir.set('Down (-Z)')
+        app._add_reinforcement_beam()
+        assert len(app.members) > n
+        assert [(m['conn'], m['profile'], m['A'])
+                for m in app.members[:n]] == before
+        app._clear_beams()
+        assert [(m['conn'], m['profile'], m['A'])
+                for m in app.members] == before
+
+    def test_add_and_clear_a_crane(self, app):
+        before = self._own_rods(app)
+        top = max(p[2] for p in app.nodes)
+        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
+        app.selected_nodes = set(tops[:4])
+        app._add_cable_crane()
+        app._clear_cable_cranes()
+        assert [(m['conn'], m['profile'], m['A'])
+                for m in app.members] == before

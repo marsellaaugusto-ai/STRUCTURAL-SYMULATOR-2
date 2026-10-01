@@ -247,6 +247,13 @@ class StereoViewMixin:
         self._drag_node = None
         self._drag_node_active = False
         additive = bool(event.state & 0x0001)   # Shift held: add to selection
+        if getattr(self, '_paste_pending', None) is not None:
+            # a paste is waiting for the node it goes on
+            self._paste_at_click(event.x, event.y)
+            self._lasso_press = None
+            self._lasso_dragging = False
+            self._lasso_cur = None
+            return
         if self.disc_pick_mode.get():
             # Commit whatever the hover disc is currently covering. The
             # highlight the user has been watching IS the selection, so
@@ -1185,6 +1192,10 @@ class StereoViewMixin:
     def _on_escape(self, event=None):
         """Esc backs out of the innermost thing in progress: a half-drawn
         line, an armed axis extension -- and, with neither, the open group."""
+        if getattr(self, '_paste_pending', None) is not None:
+            self._paste_pending = None
+            self._set_status('Paste cancelled.', 'ok')
+            return 'break'
         if getattr(self, '_line_pick_first', None) is not None or \
                 getattr(self, '_axis_pending', None) is not None:
             return self._on_axis_cancel(event)

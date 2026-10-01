@@ -175,8 +175,8 @@ class StereoGroupsMixin:
                   ).pack(side='left', expand=True, fill='x', padx=(3, 0))
         rep = tk.Frame(more, bg=BG)
         rep.pack(fill='x', padx=6, pady=(2, 6))
-        tk.Button(rep, text='PDF of all groups…', font=('Helvetica', 8, 'bold'),
-                  command=self._export_groups_pdf
+        tk.Button(rep, text='PDF of groups…', font=('Helvetica', 8, 'bold'),
+                  command=self._groups_pdf_custom
                   ).pack(side='left', expand=True, fill='x')
         tk.Button(rep, text='PDF of this group…', font=('Helvetica', 8),
                   command=lambda: self._export_groups_pdf(only_picked=True)
@@ -238,7 +238,9 @@ class StereoGroupsMixin:
             own = len(g['members'])
             count = ('%d' % own) if deep == own else ('%d/%d' % (own, deep))
             mark = '✎ ' if g['id'] == editing else ''
-            rows.append(('%s%s%s  [%s]' % ('   ' * lvl, mark, g['name'], count),
+            rows.append(('%s%s%s  [%s]' % ('   ' * lvl, mark,
+                                           self._group_display_name(g['id']),
+                                           count),
                          g['id']))
         rest = sgp.ungrouped_rods(self.groups, len(self.members))
         if rest:
@@ -291,7 +293,14 @@ class StereoGroupsMixin:
         if gid is None:
             return sgp.UNGROUPED_NAME
         g = sgp.find(self.groups, gid)
-        return g['name'] if g else '?'
+        if not g:
+            return '?'
+        # The add-ons the group holds, by code -- unless its name already
+        # says so (a group made from one add-on is named after it).
+        from apps.stereo import stereo_addon_codes as sac
+        codes = [c for c in sac.codes_of(self.members, g.get('members', ()))
+                 if c not in g['name']]
+        return g['name'] + (' · %s' % ', '.join(codes) if codes else '')
 
     def _refresh_group_note(self):
         if not hasattr(self, 'group_note'):
@@ -336,8 +345,16 @@ class StereoGroupsMixin:
         # While a group is open, a new one is made INSIDE it: everything
         # outside is locked, so that is the only place it could go.
         parent = self._editing_gid()
+        # Selecting exactly one add-on's rods suggests its name.
+        from apps.stereo import stereo_addon_codes as sac
+        codes = sac.codes_of(self.members, idx)
+        suggest = ''
+        if len(codes) == 1 and set(idx) == set(sac.index(self.members)
+                                               .get(codes[0], ())):
+            suggest = sac.describe(codes[0])
         name = simpledialog.askstring('New group', 'Name for this group:',
-                                      parent=self.root)
+                                      parent=self.root,
+                                      initialvalue=suggest)
         if not name:
             return
         self._push_undo('new group')
@@ -380,7 +397,8 @@ class StereoGroupsMixin:
             messagebox.showinfo('Groups', 'Pick a group to rename.')
             return
         name = simpledialog.askstring('Rename group', 'New name:',
-                                      initialvalue=self._group_display_name(gid),
+                                      initialvalue=sgp.find(self.groups,
+                                                            gid)['name'],
                                       parent=self.root)
         if not name:
             return
@@ -894,6 +912,272 @@ class StereoGroupsMixin:
         messagebox.showinfo('Groups PDF', 'Saved to %s\n\n%s' % (path, lines))
         return contents
 
+    # ── the groups PDF, the way the user wants it ─────────────────────────
+
+    def _groups_pdf_items(self):
+        """The rows of the Groups PDF dialog: every group (and Ungrouped,
+        when it has rods) as {'gid', 'title', 'sheets', 'on'}, in the order
+        last used -- what was chosen before is kept for the groups still
+        there, and new groups join at the end, ticked."""
+        known = []
+        for g, lvl in sgp.walk(self.groups):
+            known.append((g['id'], g['name']))
+        if sgp.ungrouped_rods(self.groups, len(self.members)):
+            known.append((None, sgp.UNGROUPED_NAME))
+        ids = {gid for gid, _n in known}
+        names = dict(known)
+        prev = (getattr(self, '_groups_pdf_cfg', None) or {}).get('items', [])
+        out, seen = [], set()
+        for it in prev:
+            gid = it.get('gid')
+            if gid in ids and gid not in seen:
+                out.append(dict(it))
+                seen.add(gid)
+        for gid, name in known:
+            if gid not in seen:
+                out.append({'gid': gid, 'title': name, 'sheets': None,
+                            'on': True})
+        for it in out:
+            if not (it.get('title') or '').strip():
+                it['title'] = names.get(it['gid'], '?')
+        return out
+
+    def _groups_pdf_dialog(self):
+        """Which groups go in the PDF, in what order, under what titles,
+        with which sheets each, and one document or a PDF per group.
+        Returns the choice -- {'items': [...], 'sheets': default set,
+        'mode': 'one' | 'each'} -- or None if cancelled."""
+        from apps.stereo import stereo_reports as sr
+        prev = getattr(self, '_groups_pdf_cfg', None) or {}
+        items = self._groups_pdf_items()
+        default = set(prev.get('sheets') or (
+            sr.PDF_SHEET_GROUPS if self._pdf_groups is None
+            else self._pdf_groups))
+        labels = {k: lbl for k, lbl, _b in self.PDF_GROUP_LABELS}
+
+        win = tk.Toplevel(self.root)
+        win.title('Groups PDF')
+        win.transient(self.root)
+        tk.Label(win, text='Groups PDF', font=('', 12, 'bold')).pack(
+            pady=(12, 2))
+        tk.Label(win, text='Tick the groups to include, give each the title '
+                           'it should carry, set its sheets, and put them '
+                           'in order. The summary and the shared joints '
+                           'come first.', fg='grey', wraplength=560,
+                 justify='left').pack(padx=16)
+
+        rows_box = tk.Frame(win)
+        rows_box.pack(fill='x', padx=16, pady=(8, 4))
+        state = {'items': items}
+        on_vars, title_vars = [], []
+
+        def sheets_text(it):
+            sh = it.get('sheets')
+            return 'default sheets' if sh is None else (
+                ', '.join(labels.get(k, k) for k in sr.PDF_SHEET_GROUPS
+                          if k in sh) or 'general view only')
+
+        def pick_sheets(k):
+            it = state['items'][k]
+            got = self._groups_pdf_sheet_picker(
+                it['title'], it.get('sheets') or default)
+            if got is not None:
+                it['sheets'] = None if got == default else got
+                build()
+
+        def move(k, d):
+            sync()
+            lst = state['items']
+            j = k + d
+            if 0 <= j < len(lst):
+                lst[k], lst[j] = lst[j], lst[k]
+                build()
+
+        def sync():
+            for it, ov, tv in zip(state['items'], on_vars, title_vars):
+                it['on'] = bool(ov.get())
+                it['title'] = tv.get()
+
+        def build():
+            for w in rows_box.winfo_children():
+                w.destroy()
+            on_vars.clear()
+            title_vars.clear()
+            for k, it in enumerate(state['items']):
+                ov = tk.BooleanVar(master=win, value=it.get('on', True))
+                tv = tk.StringVar(master=win, value=it.get('title', ''))
+                on_vars.append(ov)
+                title_vars.append(tv)
+                tk.Checkbutton(rows_box, variable=ov).grid(row=k, column=0)
+                tk.Entry(rows_box, textvariable=tv, width=26).grid(
+                    row=k, column=1, sticky='w', padx=(0, 6))
+                tk.Button(rows_box, text='Sheets…', font=('Helvetica', 8),
+                          command=lambda k=k: (sync(), pick_sheets(k))
+                          ).grid(row=k, column=2)
+                tk.Label(rows_box, text=sheets_text(it), fg='grey',
+                         font=('Helvetica', 8), width=34, anchor='w'
+                         ).grid(row=k, column=3, sticky='w', padx=4)
+                tk.Button(rows_box, text='↑', width=2,
+                          command=lambda k=k: move(k, -1)
+                          ).grid(row=k, column=4)
+                tk.Button(rows_box, text='↓', width=2,
+                          command=lambda k=k: move(k, +1)
+                          ).grid(row=k, column=5)
+        build()
+
+        dbox = tk.LabelFrame(win, text='Default sheets (any group set to '
+                                       '"default sheets")')
+        dbox.pack(fill='x', padx=16, pady=(6, 0))
+        dvars = {}
+        for k, (key, lbl, _b) in enumerate(self.PDF_GROUP_LABELS):
+            v = tk.BooleanVar(master=win, value=key in default)
+            dvars[key] = v
+            tk.Checkbutton(dbox, text=lbl, variable=v).grid(
+                row=k // 3, column=k % 3, sticky='w', padx=4)
+
+        mode = tk.StringVar(master=win, value=prev.get('mode', 'one'))
+        mbox = tk.Frame(win)
+        mbox.pack(fill='x', padx=16, pady=(8, 0))
+        tk.Radiobutton(mbox, text='One document', variable=mode,
+                       value='one').pack(side='left')
+        tk.Radiobutton(mbox, text='One PDF per group', variable=mode,
+                       value='each').pack(side='left', padx=(12, 0))
+
+        out = {'cfg': None}
+
+        def ok():
+            sync()
+            out['cfg'] = {'items': [dict(it) for it in state['items']],
+                          'sheets': {k for k, v in dvars.items() if v.get()},
+                          'mode': mode.get()}
+            win.destroy()
+
+        btns = tk.Frame(win)
+        btns.pack(pady=(10, 12))
+        tk.Button(btns, text='Export…', command=ok, width=12).pack(
+            side='left', padx=4)
+        tk.Button(btns, text='Cancel', command=win.destroy, width=10).pack(
+            side='left', padx=4)
+        win.grab_set()
+        try:
+            self.root.wait_window(win)
+        finally:
+            try:
+                if win.winfo_exists():
+                    win.grab_release()
+                    win.destroy()
+            except tk.TclError:
+                pass
+        return out['cfg']
+
+    def _groups_pdf_sheet_picker(self, title, current):
+        """The sheet groups one group's section carries; None if
+        cancelled."""
+        win = tk.Toplevel(self.root)
+        win.title('Sheets for %s' % title)
+        win.transient(self.root)
+        vs = {}
+        for key, lbl, blurb in self.PDF_GROUP_LABELS:
+            v = tk.BooleanVar(master=win, value=key in current)
+            vs[key] = v
+            tk.Checkbutton(win, text=lbl, variable=v, anchor='w').pack(
+                fill='x', padx=14)
+        out = {'s': None}
+
+        def ok():
+            out['s'] = {k for k, v in vs.items() if v.get()}
+            win.destroy()
+        tk.Button(win, text='OK', command=ok, width=10).pack(pady=10)
+        win.grab_set()
+        try:
+            self.root.wait_window(win)
+        finally:
+            try:
+                if win.winfo_exists():
+                    win.grab_release()
+                    win.destroy()
+            except tk.TclError:
+                pass
+        return out['s']
+
+    def _groups_pdf_custom(self, cfg=None, path=None):
+        """The Groups PDF as chosen in its dialog (or as `cfg` says):
+        the ticked groups, in their order, under their titles, each with
+        its own sheets -- as one document, or one PDF per group. Returns
+        [(path, contents)] for what was written, or None."""
+        from tkinter import filedialog
+        import os
+        import re
+        from apps.stereo import stereo_reports as sr
+        if not self.members:
+            messagebox.showinfo('Groups PDF', 'No model to export.')
+            return None
+        if not self.groups:
+            messagebox.showinfo('Groups PDF',
+                                'No groups yet. Make one from a selection '
+                                'first -- a whole-model report is Export > PDF.')
+            return None
+        if self.results is None:
+            messagebox.showinfo(
+                'Groups PDF',
+                'Analyze first. A group\'s section is a view of the '
+                'whole-model solve, and the joints sheet reports the force '
+                'each group hands across -- both need the solve.')
+            return None
+        if cfg is None:
+            cfg = self._groups_pdf_dialog()
+            if cfg is None:
+                return None
+        self._groups_pdf_cfg = cfg
+        items = [it for it in cfg['items'] if it.get('on')]
+        if not items:
+            messagebox.showinfo('Groups PDF', 'No group is ticked.')
+            return None
+        default = set(cfg.get('sheets') or ())
+        plan = [{'gid': it['gid'], 'title': it.get('title'),
+                 'sheets': it.get('sheets')} for it in items]
+        if path is None:
+            path = filedialog.asksaveasfilename(
+                defaultextension='.pdf', filetypes=[('PDF document', '*.pdf')])
+        if not path:
+            return None
+        kw = dict(checks=self.member_checks,
+                  meta={'grid_family': self._model_name(),
+                        'crane_lifts': self._crane_meta()},
+                  az_deg=self.azimuth, el_deg=self.elevation, groups=default,
+                  ortho_views='views' in default,
+                  unit_weight_kN_m3=self._unit_weight(),
+                  **self._pdf_view_kwargs())
+        jobs = []
+        if cfg.get('mode') == 'each':
+            stem, ext = os.path.splitext(path)
+            used = set()
+            for it in plan:
+                safe = re.sub(r'[^A-Za-z0-9._-]+', '_',
+                              it['title'] or 'group').strip('_') or 'group'
+                name, n = safe, 2
+                while name in used:
+                    name, n = '%s_%d' % (safe, n), n + 1
+                used.add(name)
+                jobs.append(('%s_%s%s' % (stem, name, ext or '.pdf'), [it]))
+        else:
+            jobs.append((path, plan))
+        written = []
+        try:
+            for out_path, part in jobs:
+                contents = sr.export_groups_pdf(
+                    self.nodes, self.members, self._all_loads(),
+                    self._active_supports(), self.results, out_path,
+                    self.groups, plan=part, **kw)
+                written.append((out_path, contents))
+        except Exception as exc:
+            messagebox.showerror('Export failed', str(exc))
+            return None
+        messagebox.showinfo(
+            'Groups PDF', 'Saved %d file(s):\n%s'
+            % (len(written), '\n'.join(p for p, _c in written)))
+        return written
+
     # ── the two checks a grouped model wants ──────────────────────────────
 
     def _group_shared_nodes(self):
@@ -1293,6 +1577,11 @@ class StereoGroupsMixin:
         """Rods made while a group is open join it; otherwise they are
         Ungrouped, which is what adding a rod to a locked group's node means
         -- the rod is new, the object it was drawn from is unchanged."""
+        # A copy of an add-on is another add-on: its rods get a code of
+        # their own (C1 copied is C2), so no code names two things.
+        from apps.stereo import stereo_addon_codes as sac
+        sac.renumber_copies(self.members, range(first_new, len(self.members)),
+                            getattr(self, 'panels', ()))
         gid = self._editing_gid()
         if gid is not None and first_new < len(self.members):
             sgp.assign(self.groups, gid, range(first_new, len(self.members)))

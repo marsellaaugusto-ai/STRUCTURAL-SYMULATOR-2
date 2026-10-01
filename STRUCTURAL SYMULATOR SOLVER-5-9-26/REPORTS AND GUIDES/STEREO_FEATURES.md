@@ -81,6 +81,13 @@ per-member axial force `N`, and for rigid members the local end actions
 - `check_boundary_setup` — catches a floating node, a missing load path, and
   insufficient restraint *before* the matrix goes singular, so the user gets a
   sentence instead of a LinAlgError.
+- A singular model of **several separate pieces** is diagnosed piece by piece
+  (`describe_loose_pieces`): *"Pieces that cannot stand: the piece of 164 rods
+  at x 18.98 to 26.18, y 11.70 to 21.60: …"*, each with its own reason,
+  instead of one list of loose nodes scattered over the whole file. The
+  softest modes are found with a sparse shift-invert eigen-solve
+  (`_lowest_modes`) above 400 degrees of freedom; on a 1582-node file of
+  eighteen pieces the diagnosis went from 70–141 s to 1–3 s.
 - `node_moment_vectors` — the internal moment each rigid member end imposes on
   its joint, in global axes, taking the largest incident end rather than the
   sum (a sum reads ~0 at a continuous joint by equilibrium, which is the
@@ -307,6 +314,36 @@ finer than the mesh lattice, so a crossing that dips between two nodes is caught
 `stereo_geometry_addons.py`. Select nodes in the 3D view, set dimensions, press
 the button.
 
+**Every add-on has a short code** (`stereo_addon_codes.py`): **C**1, C2 …
+for columns, **B**1 … for reinforcement beams, **K**1 … for cranes and
+**P**1 … for welded shear panels. The code is written onto each of the
+add-on's rods (`addon`), so it goes wherever the rod goes -- undo, the Excel
+workbook (an `addon` column, read back by name), a group, a copy. It shows
+the same way everywhere:
+
+- on the canvas, as a boxed tag beside the add-on (*Show → Add-on codes*);
+- in the inspector, as *Add-on: Column C1 (n rods)* for any of its rods;
+- in the Groups list, after the group's name (*Supports · C1, C2*); a group
+  made from exactly one add-on's rods is offered its name (*Column C1*);
+- in the PDF, tagged on the general view and the plan and elevations, and
+  listed with its bar count in the general sheet's panel;
+- in the status bar and the column note when it is added.
+
+The next code is one past the highest in use, so a deleted C2 is never
+handed out again while C3 stands -- a code on an old printout keeps meaning
+one thing. A copy of an add-on (a mirrored copy, a merged file) is another
+add-on and gets a code of its own; rods that shared a code in the copy share
+the new one. A file saved before codes existed gets them on import
+(`backfill`): the add-on rods of one kind that meet each other -- a crane's
+cables and mast at the hook, a column's shaft, capital and ties -- are one
+add-on, and each such cluster takes the next code.
+
+**Adding or clearing an add-on leaves the model's own rods alone.** Adding a
+column used to re-apply the panel's connection and section to *every* rod in
+the file: on an imported roof with rigid joints, one column turned the whole
+roof into pins. Now the section is applied to the new rods only, and *Clear*
+touches nothing but what it removes.
+
 **Six column styles.**
 
 | Style | What it is | Feet |
@@ -382,15 +419,30 @@ Each with a **constant** or **parabolic** depth law, any offset direction, and
 multi-tier stacking for a deeper girder.
 
 **Cable crane** (`add_cable_crane`). Select three or more joints and press *Lift
-the selected nodes* in the Crane group: a hook node goes up above the centroid of
-the selection, one **tension-only cable** runs from each selected node to the
-hook, and a vertical mast runs from the hook to an anchor above it. This answers
+the selected nodes* in the Crane group: a hook node goes up above the **centre
+of gravity of the piece it lifts**, one **tension-only cable** runs from each
+selected node to the hook, and a vertical mast runs from the hook to an anchor above it. This answers
 "what happens to my structure while it is being lifted", which is a different
 load case from the finished structure and often the governing one.
 
+**Why the centre of gravity, not the middle of the picks.** A rigger hangs
+the hook over the centre of gravity, and so does the crane
+(`stereo_lift.centre_of_gravity`: the downward loads on the piece's joints,
+self-weight included when it is on; with none, the rods' own lengths). On a
+symmetric grid the two points coincide. On a pitched roof module they do
+not, and with the hook over the picks the module tipped: two slings went into
+compression (slack), and the tag lines -- there only to stop the linear
+solve's pendulum modes -- carried the lift, **45 kN** on one module. Hung over
+the centre of gravity, the same lift reads all four slings in tension, their
+vertical components summing to the 69.65 kN lifted, and **0.00 kN** in the
+tag lines. If the centre of gravity is **outside** the pick points seen from
+above (`cog_outside_picks`), no set of sling tensions can hold the piece
+level: the crane says so the moment it is added -- how far outside, and to
+pick around it -- rather than leaving it to a slack-cable error at Analyze.
+
 Hook rise and mast length are typed, or worked out from the spread of the
-selection: the mean horizontal distance from the centroid out to the picked
-nodes, floored at 0.5 m, which puts the slings near 45° — the angle a rigger
+selection: the mean horizontal distance from the point under the hook out to
+the picked nodes, floored at 0.5 m, which puts the slings near 45° — the angle a rigger
 aims for, because steeper wastes height and flatter multiplies the tension for
 the same lift. The mast defaults to 35% of the rise. **Clear every crane**
 removes each crane member and node by role, so the action is repeatable.
@@ -407,6 +459,54 @@ A support left in place is a rigid path to ground in parallel with the slings an
 it wins every time: with the grid's own supports in, all four slings read exactly
 0.000 kN. *Clear every crane* hands them back, kind and all. With the checkbox off
 the panel warns you that the slings may read zero.
+
+**It lifts one piece, not the whole file** (`stereo_lift.py`). The point of the
+crane is how a piece takes being picked up -- the stress the lift itself puts
+into it. A file can hold more than one piece (two trusses side by side, a roof
+beside its columns), and the lift used to take *every* support in the file away,
+leaving the others floating and the whole model refused as a mechanism. The
+crane's **Lift** box chooses what comes off the ground:
+
+- *Piece under the hook* (the default): every rod connected, through any chain
+  of rods, to the joints the slings hook onto. A crane's own rods do not count
+  as a connection, so two pieces each on its own crane stay two pieces.
+- *a group*, by name: its rods (with its subgroups'). The slings must hook onto
+  the group, and the group must be a separate piece -- one still joined to rods
+  that stay on the ground is held, not lifted, so the crane refuses it and names
+  the nodes where it is joined.
+
+Only the lifted piece's supports are taken away; everything else stands, and
+the note says how many rods stay on their supports. Each lift is recorded --
+its code, the joints it hooks onto, the piece it lifts -- for the crane report.
+
+**The crane report** (PDF, *Crane lift report* in the sheet chooser): two
+sheets per crane.
+
+- *Crane K1 — lift of …*: the lifted piece coloured by member utilisation --
+  what the lift does to it, the reason for the crane -- with bars over
+  capacity dashed, every sling drawn and labelled with its tension, the hook
+  marked, and the rods that stay on the ground pale. The view is framed on
+  the lifted piece and its crane, and any other crane is drawn pale and left
+  unlabelled: in a file of fifteen lifts, the whole model with fifteen black
+  cranes made the one the sheet is about a corner of it. The panel gives the
+  hook position, the sum of the slings' vertical components (the load
+  lifted), the mast force, the worst member and how many are over capacity,
+  how many slings are flatter than 45°, and how many cables exceed their
+  capacity.
+- *Crane K1 — slings, hook and mast*: per sling its rod, pick node, length,
+  angle from horizontal, tension and its x/y/z components, tension ÷ WLL and
+  flags (*slack*, *flat* below 45°, *OVER WLL*); then the totals, the mast's
+  axial force and the anchor reaction, and the members the lift puts over
+  capacity, worst first.
+
+**The cable check.** The crane panel's *Cable check* sets each cable's
+capacity when the crane goes on: *none* (tensions only), a typed **WLL** in
+kN, or a wire **rope diameter** -- a 6x36 IWRC grade 1770 rope breaks at about
+0.65·d² kN (d in mm) and a sling works at a fifth of that, so Ø20 mm gives
+WLL 52 kN. The basis is printed on the report. On the default grid lifted
+from its four corners each sling carries 636 kN at 45°, and 116 bars of the
+grid go over capacity (worst 2.63) -- the lift check says so on its first
+sheet.
 
 **It also adds three tag lines**, and it has to. A body hanging from concurrent
 cables is a pendulum, and a linear small-deflection solve gives a pendulum no
@@ -456,6 +556,24 @@ Fixed in the same pass (item 4):
   presenting 12 m of rigid tilt as an answer;
 - a solve whose answer moves more than **a thousand times the model's size**
   is refused as the mechanism it is: the residual test alone let one through.
+
+Found on a real file -- three versions of a roof, each as its trusses, its
+module and the complete roof, eighteen pieces and 1582 nodes in one workbook:
+
+- the hook hangs over the **centre of gravity** (above), and a lift whose
+  centre of gravity is outside its picks is flagged when it is made;
+- the **"can it hang?" check runs on every lift**, on the lifted piece and its
+  own crane -- not on the whole file, and not only when the lift took
+  supports away. A truss lying in the file to be lifted has no supports to
+  take, and was never checked; the check was also skipped above 2500 degrees
+  of freedom, which this file exceeds. Small, the piece is always checked;
+- slings that all hang **in one plane** with the hook (a flat truss picked
+  along its top chord) are named as such: the piece can turn about them like
+  a flag, and needs a spreader, a second line, or lifting with what holds it
+  upright;
+- the mechanism message, the tipping warning and the status line are set
+  after the panel refresh, which used to overwrite them with the plain model
+  summary.
 
 **The mast anchor is fixed, not pinned.** A rigid mast whose top can rotate has
 a zero-energy torsional mode about its own axis — the cables are pin-jointed and
@@ -587,6 +705,27 @@ card is a reference, not a second editor.
   select something else, or when an edit invalidates the solve it came from.
   *Centre on node* in the model tree now really centres (it used to ignore
   the zoom and the model's own centre).
+- **Copy / paste** (Build mode, *Copy* / *Paste…*, or **Ctrl+C** / **Ctrl+V**
+  on the canvas; `stereo_clipboard.py`). Copy takes the selected rods, and
+  every rod with both ends among the selected nodes, with every property
+  they carry (section, profile, connection, add-on code) and what hangs on
+  them -- supports, point loads, rod loads, roof-load areas, group
+  membership. It goes onto the **system clipboard** as text, so it pastes
+  into the same file, into another file opened afterwards, or into another
+  window of the app. *Paste…* asks:
+  - **where**: at a typed **offset** (dx, dy, dz -- by default one copy's
+    width along x, alongside), or **at a node you click**: the copy's corner
+    node (the one nearest its lowest corner) goes on it; Esc cancels;
+  - **how many**: an **array** of N copies, each one more offset further on
+    (from the clicked node, the offset is the array's step);
+  - **what comes along**: supports, loads, group membership (each optional;
+    loads and groups on by default). A pasted rod joins the group its
+    original was in.
+  A paste is a merge: a pasted node on an existing node IS that node, so a
+  copy dropped against the structure joins it, and a rod pasted exactly over
+  an existing rod is not added twice. Each copy of an add-on gets a code of
+  its own (C1 pasted three times: C2, C3, C4). One undo step takes the whole
+  paste back; the new rods and nodes are left selected.
 - **Undo / redo**, 60 deep, covering every model-changing command.
 - **Support sandbox** — click a support to disable it and re-analyze without
   editing the model, to build intuition for redundancy.
@@ -852,7 +991,13 @@ says so.
   block, a horizontal graphic scale bar, an orientation indicator (arrows,
   or the circled dot / circled cross for the axis pointing at the reader),
   one compact colour key mirroring the on-screen legend, and its own
-  statistics panel. See `PDF_REPORT_GUIDE_2026-09-27.md`.
+  statistics panel. See `PDF_REPORT_GUIDE_2026-09-27.md`. The orientation
+  indicator is sized to the paper -- its longest arm fills the corner kept
+  for it, whatever the model's size (it used to be capped at 16% of the
+  model's span, which on a large grid drawn large left it a few
+  millimetres across) -- with its three arms still one world length, and
+  each axis letter set just past its own arrow tip, reading outward, so a
+  foreshortened arm no longer drops its label onto another arm.
 - **PDF drawing scale** — every view is fitted to its sheet as large as it
   goes without running under a panel: the key and the stats panel are
   corner blocks at the top, the scale bar and the orientation indicator
@@ -870,9 +1015,22 @@ says so.
 - **Steel take-off sheet** — bars, area, total and mean length, kg/m and
   mass per section, ranked by mass, totalling in kg and tonnes, computed
   from the same unit weight the self-weight load case uses.
-- **Sheet chooser** — both PDF exports open with a chooser: six groups of
-  sheets, the resulting sheet count shown live, and the choice remembered
-  for the next export. The general view is always included.
+- **Sheet chooser** — both PDF exports open with a chooser: the groups of
+  sheets (now seven, with the crane lift report), the resulting sheet count
+  shown live, and the choice remembered for the next export. The general
+  view is always included.
+- **Cover sheet** — a tick box in the chooser puts a cover first: the
+  project, client, prepared by, revision and notes (*Project details…*, kept
+  with the model and its undo), the date, the model and its units, and the
+  **contents**, sheet by sheet with its number. The whole-model PDF and the
+  PDF of Selection both carry it.
+- **Saved settings** — the chooser's *Saved settings* row saves everything
+  that shapes a report under a name -- the sheet groups, the drawing scale,
+  the cover and its project details, and the Groups PDF's choice (by group
+  NAME, so it applies to another file with the same groups) -- and *Apply*
+  brings them back, in this model or the next. They live in one file in the
+  user's home (`~/.structural_simulator/pdf_presets.json`;
+  `stereo_pdf_presets.py`), so a preset made today is there tomorrow.
 - **The report follows the app-wide unit selector.** Every number on every
   sheet, and the title block's UNITS field, are written in the convention
   selected at export time — so a report made with AISC selected is in ft,
@@ -880,10 +1038,18 @@ says so.
   from. Utilisation and the L/n deflection ratio stay unconverted, being
   ratios; the scale bar, grid spacing and triad arm pick their round
   number in the unit they are labelled in.
-- **Groups PDF** — the Groups box's *PDF of all groups* / *PDF of this group*:
+- **Groups PDF** — the Groups box's *PDF of groups…* / *PDF of this group*:
   one document with a summary and contents sheet, the joints shared between
   groups with the force each side hands across (as many sheets as needed),
   then a section per group. Numbered as one document. See the PDF guide.
+  *PDF of groups…* opens a dialog that makes the document the user's: a row
+  per group (and Ungrouped) with a **tick box** to include it, the **title**
+  its section and the summary carry, its **own sheets** (*Sheets…*; or the
+  default set chosen below the rows), and **↑ / ↓ to set the order** -- the
+  sections and the summary follow it. **One document** or **one PDF per
+  group** (each named after its group, each with its own summary and joints).
+  The choice is remembered: the next export opens with the same groups,
+  titles, sheets and order, new groups added at the end.
 - **PDF of Selection** — the same report for the selected group **alone**,
   with the rest of the model cut out rather than dimmed, so nothing
   obstructs it. The title block names both the file and the group.

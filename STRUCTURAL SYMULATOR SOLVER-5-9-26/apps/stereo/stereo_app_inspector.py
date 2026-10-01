@@ -97,6 +97,20 @@ class StereoInspectorMixin:
             tk.Label(role_row, text=m.get('role', 'web'), bg=BG,
                      font=('Helvetica', 8), fg='#555').pack(side='left', padx=2)
 
+            if m.get('addon'):
+                from apps.stereo import stereo_addon_codes as sac
+                addon_row = tk.Frame(self._props_frame, bg=BG)
+                addon_row.pack(fill='x', pady=1)
+                tk.Label(addon_row, text='Add-on:', bg=BG,
+                         font=('Helvetica', 8), width=10,
+                         anchor='e').pack(side='left')
+                n_rods = sum(1 for q in self.members
+                             if q.get('addon') == m['addon'])
+                tk.Label(addon_row,
+                         text=f'{sac.describe(m["addon"])} ({n_rods} rods)',
+                         bg=BG, font=('Helvetica', 8, 'bold'),
+                         fg='#0b5c6e').pack(side='left', padx=2)
+
             conn_row = tk.Frame(self._props_frame, bg=BG)
             conn_row.pack(fill='x', pady=1)
             tk.Label(conn_row, text='Conn:', bg=BG, font=('Helvetica', 8),

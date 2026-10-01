@@ -1587,3 +1587,83 @@ def test_the_fit_moves_the_drawing_off_centre_to_grow_it():
     finally:
         import matplotlib.pyplot as plt
         plt.close(fig)
+
+
+# ── The orientation indicator ──────────────────────────────────────────────
+
+def test_round_down_keeps_most_of_the_length():
+    assert sr._pdf_round_down(3.7) == 3.0
+    assert sr._pdf_round_down(2.6) == 2.5
+    assert sr._pdf_round_down(0.47) == 0.4
+    assert sr._pdf_round_down(12.0) == 12.0
+    for bad in (0.0, -1.0, float('nan'), float('inf'), None):
+        assert sr._pdf_round_down(bad) == 0.0
+    for raw in (0.13, 1.7, 9.9, 42.0, 777.0):
+        assert 0.74 * raw <= sr._pdf_round_down(raw) <= raw   # 6 of 8
+
+
+def test_the_triad_is_sized_to_the_paper_not_the_model():
+    """A large grid drawn large used to get a triad a few millimetres
+    across: the arm was capped at 16% of the model's span. It fills its
+    corner whatever the model."""
+    import math
+    nodes, members, loads, supports = _built_model()
+    big = [(x * 20.0, y * 20.0, z * 20.0) for x, y, z in nodes]
+    for pts in (nodes, big):
+        fig, ax = _diagram_axes()
+        try:
+            az, el = math.radians(30.0), math.radians(25.0)
+            proj = [sr._pdf_project(x, y, z, az, el) for x, y, z in pts]
+            win, _s, arm, _g = sr._pdf_furnish(ax, pts, proj, az, el,
+                                               obstacles=[])
+            h = win[3] - win[1]
+            longest = max(sr._pdf_foreshortening(az, el).values())
+            drawn = arm * longest / h        # the longest arm, as a share
+            assert 0.74 * sr.PDF_TRIAD_ARM_MAX <= drawn <= \
+                sr.PDF_TRIAD_ARM_MAX + 1e-9
+        finally:
+            import matplotlib.pyplot as plt
+            plt.close(fig)
+
+
+def test_triad_labels_sit_outside_their_arrow_tips():
+    import math
+    fig, ax = _diagram_axes()
+    try:
+        az, el = math.radians(30.0), math.radians(25.0)
+        ax.set_xlim(-5, 5)
+        ax.set_ylim(-5, 5)
+        sr._pdf_orientation_triad(ax, az, el, 2.0, (0.0, 0.0))
+        dirs = sr._pdf_axis_dirs(az, el)
+        labels = {t.get_text().split()[0]: t for t in ax.texts
+                  if t.get_text().split() and
+                  t.get_text().split()[0] in ('X', 'Y', 'Z')}
+        assert set(labels) == {'X', 'Y', 'Z'}
+        for name, t in labels.items():
+            dx, dy = dirs[name]
+            tip = (dx * 2.0, dy * 2.0)
+            assert t.xy == pytest.approx(tip)
+            ox, oy = t.get_position()          # offset, in points
+            # pushed further along its own arm, never back toward the origin
+            assert ox * dx + oy * dy > 0
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+
+def test_a_crane_sheet_names_only_its_own_crane():
+    """Fifteen crane codes on the sheet for one lift hid the one it is
+    about: the crane sheet labels its own code alone."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    nodes = [(0, 0, 0), (1, 0, 1), (5, 0, 0), (6, 0, 1)]
+    members = [{'a': 0, 'b': 1, 'addon': 'K1', 'role': 'crane_cable'},
+               {'a': 2, 'b': 3, 'addon': 'K2', 'role': 'crane_cable'}]
+    proj = [(x, z) for x, _y, z in nodes]
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    assert sr._pdf_addon_codes(ax, nodes, members, proj) == ['K1', 'K2']
+    assert sr._pdf_addon_codes(ax, nodes, members, proj,
+                               only={'K2'}) == ['K2']
+    plt.close(fig)

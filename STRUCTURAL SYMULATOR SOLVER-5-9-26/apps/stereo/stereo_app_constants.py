@@ -430,3 +430,6 @@ LINE_PICK_COLOR = '#1a6bbd'
 # nor the ramp's near-zero white -- so it cannot be misread either as a
 # governing direction or as a panel carrying nothing.
 BALANCED_PANEL_COLOR = '#b39ddb'
+
+# Add-on short codes (C1, B1, K1, P1) on the canvas and the PDF
+ADDON_CODE_COLOR = '#0b5c6e'

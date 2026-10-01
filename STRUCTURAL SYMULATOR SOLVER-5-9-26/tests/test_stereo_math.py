@@ -796,3 +796,62 @@ def test_the_sparse_solve_refuses_a_mechanism(monkeypatch):
     monkeypatch.setattr(sm, 'SPARSE_MIN_DOF', 0)
     res, err = sm.analyze(nodes, members, [{'node': 1, 'fz': -1.0}], supports)
     assert res is None and 'Singular' in err
+
+
+# ── a file of several pieces: which one cannot stand ──────────────────────
+
+def _tetra(dx, supports):
+    """A pin-jointed tetrahedron at x offset dx, base pinned at `supports`
+    of its three base nodes (each a dict of restrained dofs)."""
+    base = [(dx, 0.0, 0.0), (dx + 2.0, 0.0, 0.0), (dx + 1.0, 2.0, 0.0)]
+    nodes = base + [(dx + 1.0, 0.7, 1.5)]
+    pairs = [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)]
+    members = [{'a': a, 'b': b, 'conn': 'pin', 'E': 200.0, 'A': 10.0,
+                'I': 50.0, 'J': 50.0, 'Fy': 250.0} for a, b in pairs]
+    sups = [dict(sp, node=k) for k, sp in enumerate(supports)]
+    return nodes, members, sups
+
+
+def _three_pieces():
+    roll = [{'type': 'pin'}, {'dofs': {'uy': True, 'uz': True}},
+            {'dofs': {'uz': True}}]
+    pieces = [_tetra(0.0, roll),                      # stands
+              _tetra(10.0, []),                       # no support at all
+              _tetra(20.0, [{'dofs': {'ux': True}}] * 3)]   # ux only
+    nodes, members, supports = [], [], []
+    for n, m, s in pieces:
+        off = len(nodes)
+        nodes += n
+        members += [dict(x, a=x['a'] + off, b=x['b'] + off) for x in m]
+        supports += [dict(x, node=x['node'] + off) for x in s]
+    return nodes, members, supports
+
+
+def test_each_piece_that_cannot_stand_is_named_with_its_reason():
+    nodes, members, supports = _three_pieces()
+    msg = sm.describe_loose_pieces(nodes, members, supports)
+    assert msg.startswith(' Pieces that cannot stand:')
+    assert 'x 10.0 to 12.0' in msg and 'no support at all' in msg
+    assert 'x 20.0 to 22.0' in msg
+    assert 'x 0.0 to 2.0' not in msg          # the one that stands
+
+
+def test_a_singular_file_of_pieces_says_which_piece():
+    nodes, members, supports = _three_pieces()
+    loads = [{'node': 3, 'fz': -10.0}]
+    _res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is not None
+    assert 'Pieces that cannot stand' in err
+    assert 'x 10.0 to 12.0' in err and 'x 0.0 to 2.0' not in err
+
+
+def test_the_sparse_mode_search_finds_the_zero_mode_the_dense_one_does():
+    import numpy as np
+    import scipy.sparse as sps
+    n = sm.MECHANISM_DENSE_DOF + 100
+    d = np.arange(n, dtype=float)                    # one exact zero
+    w, v, _scale = sm._lowest_modes(sps.diags(d).tocsr(), k=4)
+    assert abs(w[0]) < 1e-9 and list(w) == sorted(w)
+    assert abs(abs(v[0, 0]) - 1.0) < 1e-6           # the mode is dof 0
+    wd, _vd, _s = sm._lowest_modes(np.diag(d[:50]), k=4)
+    assert abs(wd[0]) < 1e-12

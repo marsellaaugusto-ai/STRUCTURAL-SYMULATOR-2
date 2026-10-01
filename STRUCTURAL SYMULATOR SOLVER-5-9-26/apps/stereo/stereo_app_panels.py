@@ -144,6 +144,7 @@ class StereoPanelsMixin(_ToolbarModes):
         self.show_nodes = tk.BooleanVar(value=True)
         self.show_node_labels = tk.BooleanVar(value=True)
         self.show_member_labels = tk.BooleanVar(value=False)
+        self.show_addon_codes = tk.BooleanVar(value=True)
         self.show_loads = tk.BooleanVar(value=True)
         self.show_reactions = tk.BooleanVar(value=False)
         self.show_axes = tk.BooleanVar(value=True)
@@ -305,6 +306,8 @@ class StereoPanelsMixin(_ToolbarModes):
                        command=self._draw).pack(side='left', padx=(4, 0))
         tk.Checkbutton(g, text='Rod #', variable=self.show_member_labels, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
+        tk.Checkbutton(g, text='Add-on codes', variable=self.show_addon_codes,
+                       bg=BG, command=self._draw).pack(side='left', padx=(4, 0))
         tk.Checkbutton(g, text='Loads', variable=self.show_loads, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
         tk.Checkbutton(g, text='Reactions', variable=self.show_reactions, bg=BG,
@@ -441,6 +444,7 @@ class StereoPanelsMixin(_ToolbarModes):
         grid.pack(fill='x', padx=6, pady=(0, 6))
         toggles = (('Rods', self.show_members), ('Nodes', self.show_nodes),
                    ('Rod #', self.show_member_labels),
+                   ('Add-on codes', self.show_addon_codes),
                    ('Node #', self.show_node_labels),
                    ('Loads', self.show_loads), ('Reactions', self.show_reactions),
                    ('Axes + ground', self.show_axes),
@@ -584,6 +588,8 @@ class StereoPanelsMixin(_ToolbarModes):
         self.canvas.bind('<Escape>', self._on_escape)
         self.canvas.bind('<Control-g>', lambda _e: (
             self._group_new_from_selection(), 'break')[1])
+        self.canvas.bind('<Control-c>', self._copy_selection)
+        self.canvas.bind('<Control-v>', self._paste_dialog)
         # R / M / Shift+M: rotate, mirror, mirror a copy of the selection
         # about the axis the arrow keys last chose (roadmap 3.4).
         self.canvas.bind('l', self._toggle_line_pick)
@@ -2857,6 +2863,18 @@ class StereoPanelsMixin(_ToolbarModes):
         # cable reads zero and the crane appears to be carrying nothing.
         # Clear every crane hands the supports back.
         self.crane_off_ground = tk.BooleanVar(value=True)
+        # WHAT is lifted: the piece the picked joints belong to, or a group.
+        # Only that comes off its supports; the rest of the file stands.
+        self.crane_lift_target = tk.StringVar(value=self.CRANE_LIFT_PIECE)
+        lift_row = tk.Frame(crane, bg=BG)
+        lift_row.pack(fill='x', padx=6, pady=(0, 2))
+        tk.Label(lift_row, text='Lift:', bg=BG, width=6, anchor='w',
+                 font=('Helvetica', 9)).pack(side='left')
+        self.crane_lift_box = ttk.Combobox(
+            lift_row, textvariable=self.crane_lift_target, state='readonly',
+            width=16, postcommand=self._refresh_crane_lift_choices)
+        self.crane_lift_box.pack(side='left', fill='x', expand=True)
+        self._refresh_crane_lift_choices()
         tk.Checkbutton(crane, text='Take it off its own supports while lifting',
                        variable=self.crane_off_ground, bg=BG,
                        font=('Helvetica', 8)).pack(anchor='w', padx=6)
@@ -2875,6 +2893,28 @@ class StereoPanelsMixin(_ToolbarModes):
         # which is not where the user left it.
         self._crane_mast_row = self._labeled_entry(crane, 'Mast (m):',
                                                    self.crane_mast)
+        # The cables' own capacity, for the crane report: a working load
+        # limit as typed, or one worked out from a wire rope's diameter.
+        self.crane_cap_mode = tk.StringVar(value='none')
+        self.crane_wll = tk.DoubleVar(value=50.0)
+        self.crane_dia = tk.DoubleVar(value=20.0)
+        cap = tk.Frame(crane, bg=BG)
+        cap.pack(fill='x', padx=6, pady=(2, 0))
+        tk.Label(cap, text='Cable check:', bg=BG, font=('Helvetica', 9)
+                 ).grid(row=0, column=0, sticky='w')
+        tk.Radiobutton(cap, text='none', variable=self.crane_cap_mode,
+                       value='none', bg=BG, font=('Helvetica', 8)
+                       ).grid(row=0, column=1, sticky='w')
+        tk.Radiobutton(cap, text='WLL (kN)', variable=self.crane_cap_mode,
+                       value='wll', bg=BG, font=('Helvetica', 8)
+                       ).grid(row=1, column=1, sticky='w')
+        tk.Entry(cap, textvariable=self.crane_wll, width=7,
+                 font=('Helvetica', 9)).grid(row=1, column=2, sticky='w')
+        tk.Radiobutton(cap, text='rope Ø (mm)', variable=self.crane_cap_mode,
+                       value='dia', bg=BG, font=('Helvetica', 8)
+                       ).grid(row=2, column=1, sticky='w')
+        tk.Entry(cap, textvariable=self.crane_dia, width=7,
+                 font=('Helvetica', 9)).grid(row=2, column=2, sticky='w')
         tk.Button(crane, text='Lift the selected nodes',
                   command=self._add_cable_crane).pack(fill='x', padx=6, pady=(2, 2))
         tk.Button(crane, text='Clear every crane', fg='#a3241a',

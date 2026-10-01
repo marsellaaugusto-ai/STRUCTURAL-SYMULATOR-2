@@ -284,6 +284,7 @@ class StereoModelMixin:
         # supports whose node numbers mean something else now.
         self._crane_freed = []
         self._crane_tag = None
+        self._crane_lifts = []
         # And the groups, for the same reason and more sharply: a group holds
         # MEMBER indices, so one kept across a regenerate would name whatever
         # rods now hold those numbers -- a branch pointing at the wrong part
@@ -636,7 +637,12 @@ class StereoModelMixin:
         except (tk.TclError, ValueError, TypeError):
             return _sm.DEFAULT_STEEL_UNIT_WEIGHT
 
-    def _apply_sections(self, members=None, redraw=True):
+    def _apply_sections(self, members=None, redraw=True, only=None):
+        """The Sections panel's connection and sections onto the rods --
+        all of them, or the rods `only` names. An add-on passes its own new
+        rods: re-applying the panel to EVERY rod, as adding or clearing an
+        add-on used to, turned an imported model's rigid rods into pins
+        and wiped every section assigned rod by rod."""
         members = self.members if members is None else members
         if redraw:
             self._push_undo('apply sections')
@@ -659,8 +665,9 @@ class StereoModelMixin:
         web = self._panel_section('web')
         chord_profile = self.chord_profile_var.get() if hasattr(self, 'chord_profile_var') else ''
         web_profile = self.web_profile_var.get() if hasattr(self, 'web_profile_var') else ''
+        only = None if only is None else set(only)
         for mi, m in enumerate(members):
-            if mi in keep:
+            if mi in keep or (only is not None and mi not in only):
                 continue
             if not m.get('rigid_required'):
                 m['conn'] = conn

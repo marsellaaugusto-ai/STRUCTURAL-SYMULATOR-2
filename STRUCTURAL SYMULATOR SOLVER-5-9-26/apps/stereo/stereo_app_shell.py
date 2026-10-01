@@ -396,6 +396,7 @@ class StereoShellMixin:
         self._build_groups_panel(self._groups_slot)
         self._build_axis_extend_strip(self._mode_frames['build'])
         self._build_transform_panel(self._mode_frames['build'])
+        self._build_clipboard_panel(self._mode_frames['build'])
         self._build_shape_panel(self._mode_frames['shape'])
         self._build_supports_panel(self._mode_frames['support'])
         self._build_loads_panel(self._mode_frames['load'])

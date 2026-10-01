@@ -935,7 +935,8 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
     for col, lbl in enumerate(['idx', 'a', 'b', 'conn', 'E_GPa', 'A_cm2', 'I_cm4',
                                 'J_cm4', 'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role',
                                 'profile', 'c_cm', 'Iw_cm4', 'cw_cm',
-                                'timber', 'gamma_kN_m3', 'tension_only'], 1):
+                                'timber', 'gamma_kN_m3', 'tension_only',
+                                'addon'], 1):
         ws.cell(row=row, column=col, value=lbl)
     row += 1
     for i, m in enumerate(members):
@@ -944,7 +945,8 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
                 m.get('r_gyr'), m.get('role', ''), m.get('profile', ''),
                 m.get('c_cm'), m.get('Iw'), m.get('cw_cm'),
                 m.get('timber'), m.get('gamma_kN_m3'),
-                1 if m.get('tension_only') else None]
+                1 if m.get('tension_only') else None,
+                m.get('addon') or None]
         for col, v in enumerate(vals, 1):
             ws.cell(row=row, column=col, value=v)
         row += 1
@@ -1142,6 +1144,13 @@ def import_excel_model(path):
         if str(r.get('tension_only') or '').strip() not in ('', '0',
                                                             'False', 'false'):
             m['tension_only'] = True
+        # The add-on's short code (C1, K2 ...), or which rods made up which
+        # column is lost on the round trip.
+        code = str(r.get('addon') or '').strip()
+        if code:
+            from apps.stereo import stereo_addon_codes as sac
+            if sac.parse(code):
+                m['addon'] = code
         members.append(m)
 
     profiles = {}
@@ -1699,6 +1708,27 @@ def _pdf_project(px, py, pz, az_rad, el_rad):
     return sx, -sy
 
 
+def _pdf_round_down(raw, steps=(1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0,
+                                 6.0, 8.0)):
+    """`raw` rounded DOWN to a round number on a finer ladder than the
+    scale bar's 1-2-5 -- for a length that only has to be stated, not
+    measured off, where giving up 60% of it to the rounding would waste the
+    space it was sized for. 0.0 for anything not a positive number."""
+    import math
+    try:
+        raw = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    if not (raw > 0.0) or math.isinf(raw):
+        return 0.0
+    k = 10.0 ** math.floor(math.log10(raw))
+    best = steps[0] * k
+    for st in steps:
+        if st * k <= raw * (1 + 1e-12):
+            best = st * k
+    return float(f'{best:.6g}')
+
+
 def _pdf_nice_length(raw):
     """`raw` rounded DOWN to the nearest 1, 2 or 5 times a power of ten.
 
@@ -2182,13 +2212,26 @@ def _pdf_orientation_triad(ax, az_rad, el_rad, arm_m, xy, caption_y=None,
         ex, ey = ox + dx * arm_m, oy + dy * arm_m
         ax.annotate('', xy=(ex, ey), xytext=(ox, oy),
                     arrowprops=dict(arrowstyle='-|>', color=cols[name],
-                                    linewidth=1.3, shrinkA=0, shrinkB=0,
-                                    mutation_scale=9),
+                                    linewidth=1.6, shrinkA=0, shrinkB=0,
+                                    mutation_scale=11),
                     zorder=16, annotation_clip=False)
-        lx, ly = ox + dx * arm_m * 1.26, oy + dy * arm_m * 1.26
+        # The label sits a fixed distance on the PAPER past the tip, along
+        # the arm, and is anchored on its far side: it reads outward from
+        # the origin whatever the arm's direction or length. Placed at a
+        # multiple of the arm instead, a foreshortened arm (Y on the
+        # general view) put its label back at the origin, over the Z arm.
+        ln = math.hypot(dx, dy)
+        ux, uy = dx / ln, dy / ln
         label = name + (' (N)' if name == 'Y' else '')
-        ax.text(lx, ly, label, fontsize=PDF_KEY_FS + 0.6, fontweight='bold',
-                color=cols[name], ha='center', va='center', zorder=17)
+        ax.annotate(label, xy=(ex, ey),
+                    xytext=(ux * PDF_TRIAD_LABEL_PT, uy * PDF_TRIAD_LABEL_PT),
+                    textcoords='offset points',
+                    ha='left' if ux > 0.35 else ('right' if ux < -0.35
+                                                 else 'center'),
+                    va='bottom' if uy > 0.35 else ('top' if uy < -0.35
+                                                   else 'center'),
+                    fontsize=PDF_KEY_FS + 1.2, fontweight='bold',
+                    color=cols[name], zorder=17, annotation_clip=False)
 
     notes = []
     for i, name in enumerate(flat):
@@ -2253,7 +2296,8 @@ PDF_BAND_TRIAD = 0.135         # orientation indicator's origin, right
 # Longest triad arm that still fits inside the band, as a fraction of the
 # window height. Without this the arm was sized from the MODEL and its +Z
 # tip reached up out of the band and into the drawing.
-PDF_TRIAD_ARM_MAX = 0.075
+PDF_TRIAD_ARM_MAX = 0.115
+PDF_TRIAD_LABEL_PT = 4.0       # label's gap past its arrow tip, in points
 
 
 def _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view, u=None):
@@ -2345,7 +2389,8 @@ def _pdf_ghost_grid(ax, win, nodes, az_rad, el_rad, view, u=None):
 
 
 def _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad, extra_pts=(),
-                 reserve_top=0.0, view=None, u=None, obstacles=None):
+                 reserve_top=0.0, view=None, u=None, obstacles=None,
+                 focus=None):
     """Fit the view, then hang the grid, the scale bar and the triad on it.
 
     `reserve_top` is how much of the axes the colour key and the stats
@@ -2353,10 +2398,18 @@ def _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad, extra_pts=(),
     rather than behind them. `view` is one of PDF_ORTHO_VIEWS' specs when
     this is an orthographic sheet, and None for the axonometric one.
 
+    `focus` is a set of node ids to frame instead of the whole model -- one
+    piece among many, drawn large, with the rest cropped at the border.
+
     Returns (window, scale_len_m, arm_m, grid) where grid is
     (spacing_m, n_levels) or (0.0, 0).
     """
     u = u or ReportUnits()
+    if focus:
+        keep = sorted(i for i in focus if 0 <= i < len(proj_2d))
+        if keep:
+            proj_2d = [proj_2d[i] for i in keep]
+            nodes = [nodes[i] for i in keep]
     band = PDF_FURNITURE_BAND if view is not None else PDF_FURNITURE_BAND_ISO
     if obstacles is not None:
         win = _pdf_fit_window_clear(
@@ -2385,8 +2438,12 @@ def _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad, extra_pts=(),
     scale_len = _pdf_scale_bar(ax, span, bar_xy, unit_len_data=unit,
                                ref_axis=ref, exact=view is not None, u=u)
 
-    want = min(span * 0.16, h * PDF_TRIAD_ARM_MAX)
-    arm_shown = _pdf_nice_length(u.v('length', want))
+    # Sized to the PAPER: the longest projected arm fills the corner kept
+    # for it. Sized from the model (16% of its span), a big grid drawn
+    # large got a triad a few millimetres across.
+    longest = max(_pdf_foreshortening(az_rad, el_rad).values()) or 1.0
+    want = h * PDF_TRIAD_ARM_MAX / longest
+    arm_shown = _pdf_round_down(u.v('length', want))
     arm = (u.to_storage('length', arm_shown) if arm_shown > 0
            else max(want, 1e-3))
     triad_xy = (x1 - w * 0.12, y0 + h * PDF_BAND_TRIAD)
@@ -2401,7 +2458,7 @@ def _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad, extra_pts=(),
 
 
 def _pdf_finish_view(ax, nodes, proj_2d, az_rad, el_rad, key, stats,
-                     extra_pts=(), view=None, u=None):
+                     extra_pts=(), view=None, u=None, focus=None):
     """Close one view sheet.
 
     The order matters and is the whole point: the key and the stats panel
@@ -2416,7 +2473,7 @@ def _pdf_finish_view(ax, nodes, proj_2d, az_rad, el_rad, key, stats,
     _pdf_stats_panel(ax, stats)
     return _pdf_furnish(ax, nodes, proj_2d, az_rad, el_rad,
                         extra_pts=extra_pts, reserve_top=reserve, view=view,
-                        u=u, obstacles=obstacles)
+                        u=u, obstacles=obstacles, focus=focus)
 
 
 def _pdf_stress_widths(members, member_res, lo=None, hi=None):
@@ -2626,6 +2683,38 @@ def _pdf_members(ax, members, proj_2d, color_fn, linewidth=1.0, zorder=3,
                                          linewidths=dash_wids,
                                          zorder=zorder + 0.1,
                                          linestyles=(0, (3.5, 2.2))))
+
+
+def _pdf_addon_codes(ax, nodes, members, proj_2d, zorder=8, only=None):
+    """Each add-on's short code (C1, B1, K1) as a boxed tag beside its
+    rods -- the name the inspector, the tables and the canvas use for it.
+    `only` limits it to those codes. Returns the codes drawn, in order."""
+    from apps.stereo import stereo_addon_codes as sac
+    from apps.stereo.stereo_app_constants import ADDON_CODE_COLOR
+    drawn = []
+    for code, ids in sac.index(members).items():
+        if only is not None and code not in only:
+            continue
+        at = sac.anchor(nodes, members, ids)
+        if at is None:
+            continue
+        # the projected middle of the add-on's own rods
+        pts = [proj_2d[members[i][e]] for i in ids for e in ('a', 'b')
+               if members[i][e] < len(proj_2d)]
+        if not pts:
+            continue
+        px = sum(p[0] for p in pts) / len(pts)
+        py = sum(p[1] for p in pts) / len(pts)
+        ax.annotate(code, (px, py), xytext=(9, 9),
+                    textcoords='offset points', ha='left', va='bottom',
+                    fontsize=PDF_KEY_FS + 0.6, fontweight='bold',
+                    color=ADDON_CODE_COLOR, zorder=zorder,
+                    bbox=dict(boxstyle='round,pad=0.2', fc='white',
+                              ec=ADDON_CODE_COLOR, lw=0.6),
+                    arrowprops=dict(arrowstyle='-', lw=0.6,
+                                    color=ADDON_CODE_COLOR))
+        drawn.append(code)
+    return drawn
 
 
 def _pdf_supports(ax, supports, proj_2d):
@@ -3237,6 +3326,102 @@ PDF_TABLE_NOTE_CHARS = 168
 PDF_TABLE_NOTE_PITCH = 0.021
 
 
+PDF_SHEET_TITLES = {
+    'cover': 'Cover',
+    'general': 'General view — model and load case',
+    'plan': 'Plan — view from above', 'front': 'Front elevation',
+    'back': 'Back elevation', 'right': 'Right elevation',
+    'left': 'Left elevation',
+    'force_iso': 'Axial force, general view', 'force_top': 'Axial force, plan',
+    'util_iso': 'Member utilization, general view',
+    'util_top': 'Member utilization, plan',
+    'util_rel': 'Member utilization, scaled to this model',
+    'moment_nodes': 'Node moments',
+    'moment_rods': 'Bending moment along the rods, general view',
+    'shear_rods': 'Shear along the rods, general view',
+    'deformed': 'Deformed shape',
+    'reactions': 'Support reactions and equilibrium',
+    'governing': 'Most utilized members',
+    'solicitation_rods': 'Maximum solicitation of the rods',
+    'solicitation_nodes': 'Maximum solicitation of the nodes',
+    'takeoff': 'Material take-off',
+}
+
+
+def sheet_title(key):
+    """What a sheet in the plan is called, for a contents list."""
+    if key in PDF_SHEET_TITLES:
+        return PDF_SHEET_TITLES[key]
+    for kind, name in (('moment_rods_plan_', 'Bending moment along the rods'),
+                       ('shear_rods_plan_', 'Shear along the rods')):
+        if key.startswith(kind):
+            layer = key[len(kind):]
+            return '%s, plan, %s' % (name, ROD_LAYER_TITLES.get(layer, layer))
+    if key.startswith('crane_'):
+        code = key[len('crane_'):]
+        if code.endswith('_table'):
+            return 'Crane %s — slings, hook and mast' % code[:-len('_table')]
+        return 'Crane %s — lift' % code
+    return key
+
+
+PDF_COVER_FIELDS = (('project', 'Project'), ('client', 'Client'),
+                    ('author', 'Prepared by'), ('revision', 'Revision'),
+                    ('notes', 'Notes'))
+
+
+def _pdf_cover(fig, info, plan, sheet_base, meta, nodes, members, u):
+    """The cover: the project's details and the contents, sheet by sheet."""
+    import datetime
+    import textwrap
+    x0, y0, x1, y1 = PDF_FRAME
+    ax = fig.add_axes([x0 + 0.03, y0 + PDF_TITLE_H + 0.02,
+                       (x1 - x0) - 0.06, (y1 - y0) - PDF_TITLE_H - 0.05])
+    ax.set_axis_off()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    title = (info.get('project') or (meta or {}).get('grid_family')
+             or 'Structural report')
+    ax.text(0.0, 0.98, title, fontsize=22, fontweight='bold',
+            color='#1a1a1a', va='top', ha='left')
+    ax.text(0.0, 0.905, 'Space structure — analysis report', fontsize=11,
+            color='#555555', va='top', ha='left')
+    y = 0.82
+    rows = [(lbl, str(info.get(k) or '').strip())
+            for k, lbl in PDF_COVER_FIELDS]
+    rows.append(('Date', info.get('date') or
+                 datetime.date.today().isoformat()))
+    rows.append(('Model', '%s — %d nodes, %d bars'
+                 % ((meta or {}).get('grid_family') or 'model', len(nodes),
+                    len(members))))
+    rows.append(('Units', u.lab('length') + ', ' + u.lab('force') + ', '
+                 + u.lab('moment')))
+    for lbl, val in rows:
+        if not val:
+            continue
+        lines = textwrap.wrap(val, 38) or ['']
+        ax.text(0.0, y, lbl, fontsize=10, fontweight='bold',
+                color='#333333', va='top')
+        for ln in lines:
+            ax.text(0.16, y, ln, fontsize=10, color='#1a1a1a', va='top')
+            y -= 0.045
+        y -= 0.01
+    # contents, in two columns when long
+    ax.text(0.52, 0.82, 'Contents', fontsize=12, fontweight='bold',
+            color='#1a1a1a', va='top')
+    entries = [(sheet_base + k + 1, sheet_title(key))
+               for k, key in enumerate(plan)]
+    per_col = 26
+    for k, (no, t) in enumerate(entries):
+        col, row = divmod(k, per_col)
+        if col > 1:
+            break
+        xx = 0.52 + col * 0.25
+        yy = 0.77 - row * 0.028
+        ax.text(xx, yy, '%3d  %s' % (no, t[:44]), fontsize=7.5,
+                family='monospace', color='#1a1a1a', va='top')
+
+
 def _pdf_table_page(fig, title, headers, rows, widths, note='', tail_rows=()):
     """A plain monospaced table sheet, with alternating row shading.
 
@@ -3329,11 +3514,11 @@ def _pdf_table_page(fig, title, headers, rows, widths, note='', tail_rows=()):
 
 
 PDF_SHEET_GROUPS = ('views', 'force', 'utilization', 'moment',
-                    'deformed', 'tables')
+                    'deformed', 'tables', 'crane')
 
 
 def plan_sheets(results=None, checks=None, n_rigid=0, groups=None,
-                members=None):
+                members=None, cover=False):
     """Which sheets this report will actually contain, in order.
 
     Returned as a list of keys so the title block's "Sheet n / N" is
@@ -3346,7 +3531,7 @@ def plan_sheets(results=None, checks=None, n_rigid=0, groups=None,
     """
     want = set(PDF_SHEET_GROUPS if groups is None else groups)
     have_checks = bool(checks) and any(c.get('checked') for c in (checks or ()))
-    plan = ['general']
+    plan = (['cover'] if cover else []) + ['general']
     if 'views' in want:
         plan += [name for name, _ in PDF_ORTHO_VIEWS]
     if results is None:
@@ -3371,6 +3556,10 @@ def plan_sheets(results=None, checks=None, n_rigid=0, groups=None,
                 plan += [f'{kind}_plan_{k}' for k in layers]
     if 'deformed' in want:
         plan.append('deformed')
+    if 'crane' in want and members is not None:
+        from apps.stereo import stereo_lift as slift
+        for code in slift.crane_codes(members):
+            plan += [f'crane_{code}', f'crane_{code}_table']
     if 'tables' in want:
         plan += ['reactions', 'governing', 'solicitation_rods']
         if n_rigid:
@@ -3385,8 +3574,11 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
                meta=None, az_deg=30, el_deg=25, ortho_views=True,
                groups=None, deflection_denom=PDF_DEFLECTION_DENOM,
                unit_weight_kN_m3=None, into=None, sheet_base=0,
-               sheet_total=None, view_zoom=1.0, view_ratio=None):
+               sheet_total=None, view_zoom=1.0, view_ratio=None, cover=None):
     """The PDF report (see _export_pdf_impl), with the drawing scale.
+
+    `cover`, a dict of project details (project, client, author, revision,
+    notes), puts a cover sheet first: those details and a contents list.
 
     `view_zoom` 1.0 is the automatic fit -- the structure as large as it
     goes without running under the key, the stats panel, the scale bar or
@@ -3404,7 +3596,7 @@ def export_pdf(nodes, members, loads, supports, results, path, checks=None,
             meta=meta, az_deg=az_deg, el_deg=el_deg, ortho_views=ortho_views,
             groups=groups, deflection_denom=deflection_denom,
             unit_weight_kN_m3=unit_weight_kN_m3, into=into,
-            sheet_base=sheet_base, sheet_total=sheet_total)
+            sheet_base=sheet_base, sheet_total=sheet_total, cover=cover)
     finally:
         _PDF_VIEW = saved
 
@@ -3414,7 +3606,7 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
                      ortho_views=True, groups=None,
                      deflection_denom=PDF_DEFLECTION_DENOM,
                      unit_weight_kN_m3=None, into=None, sheet_base=0,
-                     sheet_total=None):
+                     sheet_total=None, cover=None):
     """Generate the multi-sheet PDF analysis report.
 
     Sheets: 1) the general (axonometric) view with the load case, then the
@@ -3491,7 +3683,8 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
     want = set(PDF_SHEET_GROUPS if groups is None else groups)
     if not ortho_views:
         want.discard('views')
-    plan = plan_sheets(results, checks, n_rigid, want, members=members)
+    plan = plan_sheets(results, checks, n_rigid, want, members=members,
+                       cover=cover is not None)
     views = [(n, v) for n, v in PDF_ORTHO_VIEWS if n in plan]
     group = (meta or {}).get('group')
     subset_of = (meta or {}).get('subset_of')
@@ -3512,12 +3705,20 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
     import contextlib
     with (contextlib.nullcontext(into) if into is not None
           else PdfPages(path)) as pdf:
+        if 'cover' in plan:
+            fig = new_sheet('Cover')
+            _pdf_cover(fig, cover or {}, plan, sheet_base, meta, nodes,
+                       members, u)
+            pdf.savefig(fig)
+            plt.close(fig)
+
         # ── Sheet 1: model, load case, general view ─────────────────────
         fig = new_sheet('General view — model and load case')
         ax = _pdf_view_axes(fig)
         _pdf_members(ax, members, proj_2d, conn_color, linewidth=0.8)
         _pdf_supports(ax, supports, proj_2d)
         n_loaded = _pdf_load_arrows(ax, nodes, loads, proj_2d, az, el, span_m)
+        addon_codes = _pdf_addon_codes(ax, nodes, members, proj_2d)
 
         key = _PdfKey(ax)
         key.caption('References')
@@ -3528,6 +3729,9 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
         if n_loaded:
             key.row(LOAD_COLOR, 'applied load, along its own direction')
             key.note('arrow length ∝ |F|^0.6 of the largest load')
+        if addon_codes:
+            from apps.stereo.stereo_app_constants import ADDON_CODE_COLOR
+            key.row(ADDON_CODE_COLOR, 'add-on: C column, B beam, K crane')
 
         info = ['SELECTED GROUP' if group else 'MODEL']
         if group:
@@ -3547,6 +3751,15 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
             f'  pin / rigid   {len(members) - n_rigid} / {n_rigid}',
             f'supports        {len(supports)}',
             f'loaded nodes    {n_loaded}',
+        ]
+        if addon_codes:
+            from apps.stereo import stereo_addon_codes as sac
+            idx = sac.index(members)
+            info.append('')
+            info.append('ADD-ONS')
+            for code in addon_codes:
+                info.append(f'  {sac.describe(code):<14}{len(idx[code])} bars')
+        info += [
             '',
             f'EXTENTS ({u.lab("length")})',
             f'  X  {u.f("length", ext[0])}   Y  {u.f("length", ext[1])}'
@@ -3592,6 +3805,7 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
             ax = _pdf_view_axes(fig)
             _pdf_members(ax, members, v_proj, conn_color, linewidth=0.8)
             _pdf_supports(ax, supports, v_proj)
+            _pdf_addon_codes(ax, nodes, members, v_proj)
 
             vkey = _PdfKey(ax)
             vkey.caption('References')
@@ -4033,6 +4247,173 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
             pdf.savefig(fig)
             plt.close(fig)
 
+        # ── Crane lift report ───────────────────────────────────────────
+        #
+        # One pair of sheets per crane: the lifted piece coloured by what
+        # the lift does to it (member utilisation), with every sling drawn
+        # and labelled with its tension; then the schedule -- each sling's
+        # length, angle, tension and components, the hook and the mast, and
+        # the cable check against the capacity set when it was lifted.
+        from apps.stereo import stereo_lift as slift
+        crane_meta = (meta or {}).get('crane_lifts') or {}
+        for code in slift.crane_codes(members):
+            if f'crane_{code}' not in plan:
+                continue
+            info = crane_meta.get(code, {})
+            rep = slift.crane_report(nodes, members, results, checks, code,
+                                     lifted_rods=info.get('rods'),
+                                     wll_kN=info.get('wll_kN'))
+            lifted = set(rep['lifted_rods'])
+            cab_ids = {c['rod'] for c in rep['cables']}
+            what = info.get('what', 'the piece under the hook')
+
+            fig = new_sheet(f'Crane {code} — lift of {what}')
+            ax = _pdf_view_axes(fig)
+
+            # This crane in black; any other crane is context, pale like
+            # the rods that stay on the ground -- fifteen black cranes on
+            # one sheet hid the one it is about.
+            mine = {i for i, m in enumerate(members)
+                    if m.get('addon') == code
+                    and m.get('role') in slift.CRANE_ROLES} | cab_ids
+
+            def crane_col(i, _l=lifted, _c=mine):
+                if i in _c:
+                    return '#1f1f1f'
+                if i in _l and have_checks and i < len(checks) and \
+                        checks[i].get('checked'):
+                    return util_color(min(checks[i]['util'], 1.2))
+                return PDF_ROD_CONTEXT_COLOR
+
+            widths = [2.2 if i in mine else (1.1 if i in lifted else 0.4)
+                      for i in range(len(members))]
+            over_ids = {j for _u, j in rep['over']}
+            _pdf_members(ax, members, proj_2d, crane_col, linewidth=widths,
+                         dashed_idx=over_ids)
+            _pdf_supports(ax, supports, proj_2d)
+            for k, c in enumerate(rep['cables'], start=1):
+                a, b = members[c['rod']]['a'], members[c['rod']]['b']
+                (x0, y0), (x1, y1) = proj_2d[a], proj_2d[b]
+                ax.annotate(f'{u.v("force", c["T"]):,.1f}'
+                            + (' slack' if c['slack'] else ''),
+                            ((x0 + x1) / 2.0, (y0 + y1) / 2.0),
+                            fontsize=PDF_KEY_FS, ha='center', va='center',
+                            color='#1f1f1f', zorder=9,
+                            bbox=dict(boxstyle='round,pad=0.15', fc='white',
+                                      ec='#1f1f1f', lw=0.5))
+            if rep['hook'] is not None:
+                hx, hy = proj_2d[rep['hook']]
+                ax.plot([hx], [hy], marker='v', markersize=7,
+                        color='#1f1f1f', zorder=9)
+            _pdf_addon_codes(ax, nodes, members, proj_2d, only={code})
+
+            key = _PdfKey(ax)
+            key.caption(f'Crane {code}: what the lift does to the piece')
+            if have_checks:
+                key.ramp(util_color, 0.0, 1.2,
+                         [(0.0, '0'), (0.5, '0.5'), (1.0, '1.0'),
+                          (1.2, '≥1.2')])
+                key.note('lifted piece by member utilisation; dashed = '
+                         'over capacity')
+            key.row('#1f1f1f', f'sling, labelled with its tension '
+                               f'({u.lab("force")}); ▼ hook')
+            key.row(PDF_ROD_CONTEXT_COLOR, 'pale: the rest of the model, '
+                                           'other cranes included')
+            key.row(SUPPORT_COLOR, 'support / crane anchor', marker='s')
+
+            hxyz = rep['hook_xyz'] or (0.0, 0.0, 0.0)
+            stats = [f'CRANE {code}',
+                     f'lifts           {what}',
+                     f'  rods          {len(lifted)}',
+                     f'slings          {len(rep["cables"])}'
+                     + (f'  ({sum(1 for c in rep["cables"] if c["slack"])}'
+                        f' slack)' if any(c['slack'] for c in rep['cables'])
+                        else ''),
+                     f'hook at         {u.f("length", hxyz[0], 2)}, '
+                     f'{u.f("length", hxyz[1], 2)}, '
+                     f'{u.f("length", hxyz[2], 2)}',
+                     f'Σ sling vertical {u.fl("force", rep["sum_vertical"], 2, comma=True)}']
+            if rep['mast_N'] is not None:
+                stats.append(f'mast N          '
+                             f'{u.fl("force", rep["mast_N"], 2, comma=True)}')
+            if rep['worst'] is not None:
+                stats += ['', f'worst member    bar {rep["worst"][1]}  '
+                              f'util {rep["worst"][0]:.2f}',
+                          f'over capacity   {len(rep["over"])} bar(s)']
+            if rep['flat']:
+                stats.append(f'flat slings     {len(rep["flat"])} under '
+                             f'{slift.SLING_MIN_ANGLE_DEG:g}°')
+            if rep['wll_kN']:
+                stats.append(f'cables over WLL {len(rep["cable_over"])} of '
+                             f'{len(rep["cables"])}')
+            # Framed on the lifted piece and its crane: in a file of many
+            # pieces the one being lifted is otherwise a corner of the sheet.
+            focus = slift.nodes_of(members, lifted | mine)
+            _pdf_finish_view(ax, nodes, proj_2d, az, el, key, stats, u=u,
+                             focus=focus or None)
+            pdf.savefig(fig)
+            plt.close(fig)
+
+            # the schedule
+            fig = new_sheet(f'Crane {code} — slings, hook and mast')
+            rows = []
+            for k, c in enumerate(rep['cables'], start=1):
+                flags = []
+                if c['slack']:
+                    flags.append('slack')
+                if c['angle'] < slift.SLING_MIN_ANGLE_DEG:
+                    flags.append('flat')
+                if c['util'] is not None and c['util'] > 1.0:
+                    flags.append('OVER WLL')
+                rows.append([
+                    str(k), str(c['rod']), str(c['pick']),
+                    u.f('length', c['length'], 3),
+                    f'{c["angle"]:.1f}',
+                    u.f('force', c['T'], 2),
+                    u.f('force', c['Tx'], 2, sign=True),
+                    u.f('force', c['Ty'], 2, sign=True),
+                    u.f('force', c['Tz'], 2, sign=True),
+                    ('—' if c['util'] is None else f'{c["util"]:.2f}'),
+                    ', '.join(flags)])
+            ar = rep['anchor_reaction'] or {}
+            tail = [['Σ', '', '', '', '', '',
+                     '', '', u.f('force', rep['sum_vertical'], 2, sign=True),
+                     '', 'sling vertical = load lifted'],
+                    ['mast', '', '', '', '', '',
+                     '', '', u.f('force', rep['mast_N'] or 0.0, 2, sign=True),
+                     '', 'axial N, compression −'],
+                    ['anchor', '', str(rep['anchor']), '', '', '',
+                     u.f('force', ar.get('Fx', 0.0), 2, sign=True),
+                     u.f('force', ar.get('Fy', 0.0), 2, sign=True),
+                     u.f('force', ar.get('Fz', 0.0), 2, sign=True),
+                     '', 'reaction at the mast top']]
+            worst_txt = ''
+            if rep['over']:
+                worst_txt = (' Over capacity in the lift: ' + ', '.join(
+                    f'bar {j} ({ut:.2f})' for ut, j in rep['over'][:12])
+                    + (f' and {len(rep["over"]) - 12} more' if
+                       len(rep['over']) > 12 else '') + '.')
+            elif rep['worst'] is not None:
+                worst_txt = (f' No member of the lifted piece is over '
+                             f'capacity; the worst is bar {rep["worst"][1]} '
+                             f'at {rep["worst"][0]:.2f}.')
+            _pdf_table_page(
+                fig, f'Crane {code} — lift of {what}',
+                ['#', 'rod', 'pick node', f'L ({u.lab("length")})',
+                 'angle (°)', f'T ({u.lab("force")})',
+                 f'Tx ({u.lab("force")})', f'Ty ({u.lab("force")})',
+                 f'Tz ({u.lab("force")})', 'T / WLL', 'flags'],
+                rows, [0.4, 0.6, 0.9, 0.9, 0.9, 1.0, 1.0, 1.0, 1.0, 0.8, 1.5],
+                note=(f'Angles from the horizontal; a sling flatter than '
+                      f'{slift.SLING_MIN_ANGLE_DEG:g}° is flagged -- its '
+                      f'tension rises as 1/sin(angle), and so does the '
+                      f'horizontal pull it puts into the piece. Cable '
+                      f'capacity: {info.get("cable_spec") or "not set -- tensions only"}.'
+                      + worst_txt),
+                tail_rows=tail)
+            pdf.savefig(fig)
+            plt.close(fig)
+
         if 'reactions' in plan:
             # support reactions
             # ── Sheet 6: reactions and equilibrium ──────────────────────────
@@ -4388,14 +4769,15 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
 # different structure, usually a mechanism (see stereo_groups).
 
 def report_plan(members, results=None, checks=None, groups=None,
-                ortho_views=True):
+                ortho_views=True, cover=False):
     """The sheet keys export_pdf will write for this model -- its own rule,
     so a document that holds several reports can number them in advance."""
     n_rigid = sum(1 for m in members if m.get('conn') == 'rigid')
     want = set(PDF_SHEET_GROUPS if groups is None else groups)
     if not ortho_views:
         want.discard('views')
-    return plan_sheets(results, checks, n_rigid, want, members=members)
+    return plan_sheets(results, checks, n_rigid, want, members=members,
+                       cover=cover)
 
 
 def group_report_order(branch_groups, n_members, gids=None,
@@ -4469,9 +4851,14 @@ def export_groups_pdf(nodes, members, loads, supports, results, path,
                       az_deg=30, el_deg=25, groups=None, ortho_views=False,
                       unit_weight_kN_m3=None,
                       deflection_denom=PDF_DEFLECTION_DENOM,
-                      view_zoom=1.0, view_ratio=None):
+                      view_zoom=1.0, view_ratio=None, plan=None):
     """The grouped model as ONE document: summary, shared joints, and then a
     section per group -- or per group in `gids` -- built by export_pdf.
+
+    `plan` takes over from `gids` when given: a list, in document order, of
+    {'gid': group id (None for Ungrouped), 'title': the section's title,
+    'sheets': the sheet groups that section carries (None: `groups`)} --
+    which groups go in, in what order, under what names, with which sheets.
 
     `groups` picks the sheets each section carries, as for export_pdf;
     `ortho_views` defaults off here because five orthographic sheets per
@@ -4494,18 +4881,38 @@ def export_groups_pdf(nodes, members, loads, supports, results, path,
     unit_weight = (_sm.DEFAULT_STEEL_UNIT_WEIGHT if unit_weight_kN_m3 is None
                    else float(unit_weight_kN_m3))
     member_res = (results or {}).get('member_res') if results else None
-    order = group_report_order(branch_groups, len(members), gids=gids)
+    per_sheets = {}
+    if plan is not None:
+        order = []
+        for k, item in enumerate(plan):
+            gid = item.get('gid')
+            rods = (sgp.rods_of(branch_groups, gid, deep=True)
+                    if gid is not None
+                    else sgp.ungrouped_rods(branch_groups, len(members)))
+            if not rods:
+                continue
+            g = sgp.find(branch_groups, gid) if gid is not None else None
+            title = (item.get('title') or '').strip() or (
+                g['name'] if g else sgp.UNGROUPED_NAME)
+            order.append((gid, title, 0, rods))
+            per_sheets[len(order) - 1] = item.get('sheets')
+        gids = {gid for gid, *_ in order}
+    else:
+        order = group_report_order(branch_groups, len(members), gids=gids)
     if not order:
         raise ValueError('No group with any rods to report.')
 
     # Every section is cut from the model first, so its sheet count is known
     # before the first sheet is drawn and "Sheet n / N" is true throughout.
     sections = []
-    for gid, name, lvl, rods in order:
+    for k, (gid, name, lvl, rods) in enumerate(order):
         sub = submodel(nodes, members, loads, supports, results, checks,
                        member_idx=rods)
-        n = len(report_plan(sub[1], sub[4], sub[5], groups, ortho_views))
-        sections.append((gid, name, lvl, rods, sub, n))
+        own = per_sheets.get(k)
+        sheets_k = groups if own is None else set(own)
+        ortho_k = ortho_views if own is None else ('views' in sheets_k)
+        n = len(report_plan(sub[1], sub[4], sub[5], sheets_k, ortho_k))
+        sections.append((gid, name, lvl, rods, sub, n, sheets_k, ortho_k))
     # The joints table runs over as many sheets as it needs: a joint left
     # off the list is a connection nobody details, which is the failure
     # that sheet exists to prevent. Worked out now, for the numbering.
@@ -4517,12 +4924,13 @@ def export_groups_pdf(nodes, members, loads, supports, results, path,
     joint_pages = _paginate_blocks(_joint_table_rows(shared, u))
     head = 1 + len(joint_pages)   # summary, then the joints
     total = head + sum(s[5] for s in sections)
+    titles = {gid: name for gid, name, *_ in sections}
 
     sheet_meta = _pdf_sheet_meta(nodes, members, meta, u=u)
     contents = [('Groups — summary', 1), ('Joints shared between groups', 2)]
     first_sheet = {}
     at = head + 1
-    for gid, name, lvl, rods, sub, n in sections:
+    for gid, name, lvl, rods, sub, n, _sh, _or in sections:
         contents.append(('%s%s' % ('   ' * lvl, name), at))
         first_sheet[gid] = at
         at += n
@@ -4537,6 +4945,11 @@ def export_groups_pdf(nodes, members, loads, supports, results, path,
         # ── the summary ────────────────────────────────────────────────
         rows_sum = sgp.group_summary(branch_groups, nodes, members, member_res,
                                      checks, unit_weight_kN_m3=unit_weight)
+        if plan is not None:
+            # the summary lists the groups in the document's own order
+            pos = {gid: k for k, (gid, *_r) in enumerate(order)}
+            rows_sum = sorted(rows_sum,
+                              key=lambda r: pos.get(r['id'], len(pos)))
         rows = []
         for r in rows_sum:
             if gids is not None and r['id'] not in wanted:
@@ -4548,7 +4961,7 @@ def export_groups_pdf(nodes, members, loads, supports, results, path,
                            for i in rods if 0 <= i < len(members)})
             first = first_sheet.get(r['id'], '')
             rows.append([
-                ('  ' * r['level'] + r['name'])[:26],
+                ('  ' * r['level'] + titles.get(r['id'], r['name']))[:26],
                 r['n_rods'], r['n_nodes'],
                 u.f('length', r['length_m']),
                 u.f('force', r['weight_kN'], 2),
@@ -4611,15 +5024,22 @@ def export_groups_pdf(nodes, members, loads, supports, results, path,
 
         # ── a section per group ────────────────────────────────────────
         base = head
-        for gid, name, lvl, rods, sub, n in sections:
+        for gid, name, lvl, rods, sub, n, sheets_k, ortho_k in sections:
             s_nodes, s_members, s_loads, s_supports, s_res, s_checks, _ = sub
             g_meta = dict(meta or {})
+            # A section is a submodel with its rods renumbered: the crane
+            # lifts' rod lists are the whole model's, so only what does not
+            # depend on numbering goes through.
+            if g_meta.get('crane_lifts'):
+                g_meta['crane_lifts'] = {
+                    c: {k: v for k, v in d.items() if k != 'rods'}
+                    for c, d in g_meta['crane_lifts'].items()}
             g_meta['group'] = name
             g_meta['subset_of'] = (meta or {}).get('grid_family') or 'model'
             written = export_pdf(
                 s_nodes, s_members, s_loads, s_supports, s_res, None,
                 checks=s_checks, meta=g_meta, az_deg=az_deg, el_deg=el_deg,
-                ortho_views=ortho_views, groups=groups,
+                ortho_views=ortho_k, groups=sheets_k,
                 deflection_denom=deflection_denom,
                 unit_weight_kN_m3=unit_weight_kN_m3,
                 into=pdf, sheet_base=base, sheet_total=total,

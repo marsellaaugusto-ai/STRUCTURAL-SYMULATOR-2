@@ -12,10 +12,11 @@ import os
 import copy
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 
 from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_reports as sr
+from apps.stereo import stereo_pdf_presets as spp
 from apps.stereo.stereo_app_constants import DOF_LABELS, QUICK_SUPPORT_CUSTOM, TENSION_HIGH
 
 
@@ -193,6 +194,10 @@ class StereoReportsMixin:
             return
         self._push_undo('import excel')
         self._model_label = os.path.basename(path)
+        # A file saved before add-ons had codes gets them now, so its
+        # cranes and columns can be named -- and reported -- like new ones.
+        from apps.stereo import stereo_addon_codes as sac
+        sac.backfill(members)
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
         # The old model's groups cannot stay: a group holds member INDICES,
         # and these are different rods. The workbook's own come in instead.
@@ -274,6 +279,10 @@ class StereoReportsMixin:
                 n_before = len(merged['members'])
                 merged, rep = smg.merge_models(merged, part, tol=tol,
                                                label=os.path.basename(path))
+                # a second file's C1 is not the first file's C1
+                from apps.stereo import stereo_addon_codes as sac
+                sac.renumber_copies(merged['members'],
+                                    range(n_before, len(merged['members'])))
                 lines.append(os.path.basename(path))
                 lines += ['  ' + ln for ln in smg.describe(rep, n_before,
                                                             len(members))]
@@ -392,6 +401,9 @@ class StereoReportsMixin:
         ('tables', 'Schedules',
          'reactions and equilibrium, governing members, maximum '
          'solicitation, steel take-off'),
+        ('crane', 'Crane lift report',
+         'for each crane: the lifted piece by utilisation, every sling\'s '
+         'length, angle and tension, the hook and mast, and the cable check'),
     )
 
     def _pdf_view_opts(self):
@@ -410,6 +422,77 @@ class StereoReportsMixin:
     def _pdf_view_kwargs(self):
         v = self._pdf_view_opts()
         return {'view_zoom': v.get('zoom', 1.0), 'view_ratio': v.get('ratio')}
+
+    PROJECT_FIELDS = (('project', 'Project'), ('client', 'Client'),
+                      ('author', 'Prepared by'), ('revision', 'Revision'),
+                      ('notes', 'Notes'))
+
+    def _pdf_cover_info(self):
+        """The project details for the cover, or None for no cover."""
+        if not getattr(self, '_pdf_cover', False):
+            return None
+        return dict(getattr(self, 'project_info', None) or {})
+
+    def _project_details_dialog(self, parent=None):
+        """Project, client, author, revision and notes -- what the cover
+        sheet carries. Kept with the model (and its undo)."""
+        info = dict(getattr(self, 'project_info', None) or {})
+        win = tk.Toplevel(parent or self.root)
+        win.title('Project details')
+        win.transient(parent or self.root)
+        vs = {}
+        for r, (key, lbl) in enumerate(self.PROJECT_FIELDS):
+            tk.Label(win, text=lbl + ':', anchor='e', width=12).grid(
+                row=r, column=0, padx=(12, 4), pady=3, sticky='e')
+            vs[key] = tk.StringVar(master=win, value=info.get(key, ''))
+            tk.Entry(win, textvariable=vs[key], width=40).grid(
+                row=r, column=1, padx=(0, 12), pady=3, sticky='w')
+        out = {'ok': False}
+
+        def ok():
+            self.project_info = {k: v.get().strip() for k, v in vs.items()}
+            out['ok'] = True
+            win.destroy()
+        b = tk.Frame(win)
+        b.grid(row=len(self.PROJECT_FIELDS), column=0, columnspan=2,
+               pady=(8, 10))
+        tk.Button(b, text='OK', width=10, command=ok).pack(side='left',
+                                                           padx=4)
+        tk.Button(b, text='Cancel', width=10, command=win.destroy).pack(
+            side='left', padx=4)
+        win.grab_set()
+        try:
+            self.root.wait_window(win)
+        finally:
+            try:
+                if win.winfo_exists():
+                    win.grab_release()
+                    win.destroy()
+            except tk.TclError:
+                pass
+        return out['ok']
+
+    def _pdf_preset_from(self, sheets, view, cover):
+        """The current report settings as a preset (stereo_pdf_presets)."""
+        names = {g['id']: g['name'] for g in self.groups}
+        names[None] = 'Ungrouped'
+        return spp.make(sheets, view=view, cover=cover,
+                        project=getattr(self, 'project_info', None),
+                        groups_pdf=getattr(self, '_groups_pdf_cfg', None),
+                        group_names=names)
+
+    def _apply_pdf_preset(self, preset):
+        """Make a preset's settings the current ones."""
+        self._pdf_groups = set(preset.get('sheets') or ())
+        self._pdf_view = dict(preset.get('view') or sr.PDF_VIEW_DEFAULT)
+        self._pdf_cover = bool(preset.get('cover'))
+        if preset.get('project'):
+            self.project_info = dict(preset['project'])
+        by_name = {g['name']: g['id'] for g in self.groups}
+        by_name['Ungrouped'] = None
+        gp = spp.groups_pdf_for(preset, by_name)
+        if gp is not None:
+            self._groups_pdf_cfg = gp
 
     def _pdf_sheet_dialog(self, title, results, checks, n_rigid,
                           members=None):
@@ -484,16 +567,85 @@ class StereoReportsMixin:
         tk.Entry(r, width=7, textvariable=ratio_n).pack(side='left',
                                                          padx=(4, 0))
 
+        # ── the cover, and saved settings ─────────────────────────────
+        cover_var = tk.BooleanVar(master=win,
+                                  value=bool(getattr(self, '_pdf_cover',
+                                                     False)))
+        cv = tk.Frame(win)
+        cv.pack(fill='x', padx=20, pady=(8, 0))
+        tk.Checkbutton(cv, text='Cover sheet (project details and contents)',
+                       variable=cover_var).pack(side='left')
+        tk.Button(cv, text='Project details…', font=('Helvetica', 8),
+                  command=lambda: self._project_details_dialog(win)
+                  ).pack(side='left', padx=(6, 0))
+
+        pr = tk.LabelFrame(win, text='Saved settings')
+        pr.pack(fill='x', padx=20, pady=(8, 0))
+        preset_var = tk.StringVar(master=win, value='')
+        preset_box = ttk.Combobox(pr, textvariable=preset_var, width=22,
+                                  state='readonly',
+                                  values=sorted(spp.load()))
+        preset_box.pack(side='left', padx=(6, 4), pady=4)
+
+        def current_view():
+            try:
+                return self._pdf_view_from(mode.get(), zoom_pct.get(),
+                                           ratio_n.get())
+            except (tk.TclError, ValueError):
+                return dict(sr.PDF_VIEW_DEFAULT)
+
+        def apply_preset():
+            pst = spp.load().get(preset_var.get())
+            if not pst:
+                return
+            self._apply_pdf_preset(pst)
+            want = set(pst.get('sheets') or ())
+            for k, v in vars_.items():
+                v.set(k in want)
+            cover_var.set(bool(pst.get('cover')))
+            vw = pst.get('view') or {}
+            mode.set('ratio' if vw.get('ratio') else
+                     'zoom' if abs(float(vw.get('zoom', 1.0)) - 1.0) > 1e-9
+                     else 'fit')
+            zoom_pct.set(round(100.0 * float(vw.get('zoom', 1.0)), 1))
+            if vw.get('ratio'):
+                ratio_n.set(vw['ratio'])
+
+        def save_preset():
+            name = simpledialog.askstring('Save settings',
+                                          'Name for these settings:',
+                                          parent=win)
+            if not name:
+                return
+            spp.put(name.strip(), self._pdf_preset_from(
+                {k for k, v in vars_.items() if v.get()}, current_view(),
+                cover_var.get()))
+            preset_box.configure(values=sorted(spp.load()))
+            preset_var.set(name.strip())
+
+        def delete_preset():
+            if preset_var.get():
+                spp.remove(preset_var.get())
+                preset_box.configure(values=sorted(spp.load()))
+                preset_var.set('')
+
+        tk.Button(pr, text='Apply', font=('Helvetica', 8),
+                  command=apply_preset).pack(side='left')
+        tk.Button(pr, text='Save as…', font=('Helvetica', 8),
+                  command=save_preset).pack(side='left', padx=(3, 0))
+        tk.Button(pr, text='Delete', font=('Helvetica', 8),
+                  command=delete_preset).pack(side='left', padx=(3, 6))
+
         count = tk.Label(win, text='', font=('', 10, 'bold'))
         count.pack(pady=(6, 0))
 
         def recount(*_):
             want = {k for k, v in vars_.items() if v.get()}
             n = len(sr.plan_sheets(results, checks, n_rigid, want,
-                                   members=members))
+                                   members=members, cover=cover_var.get()))
             count.config(text=f'{n} sheet{"s" if n != 1 else ""}')
 
-        for v in vars_.values():
+        for v in list(vars_.values()) + [cover_var]:
             v.trace_add('write', recount)
         recount()
 
@@ -501,6 +653,7 @@ class StereoReportsMixin:
 
         def ok():
             out['groups'] = {k for k, v in vars_.items() if v.get()}
+            self._pdf_cover = bool(cover_var.get())
             try:
                 self._pdf_view = self._pdf_view_from(
                     mode.get(), zoom_pct.get(), ratio_n.get())
@@ -595,6 +748,7 @@ class StereoReportsMixin:
                           az_deg=self.azimuth, el_deg=self.elevation,
                           groups=groups,
                           unit_weight_kN_m3=self._unit_weight(),
+                          cover=self._pdf_cover_info(),
                           **self._pdf_view_kwargs())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
@@ -630,10 +784,12 @@ class StereoReportsMixin:
             sr.export_pdf(self.nodes, self.members, self._all_loads(),
                           self._active_supports(),
                           self.results, path, checks=self.member_checks,
-                          meta={'grid_family': self._model_name()},
+                          meta={'grid_family': self._model_name(),
+                                'crane_lifts': self._crane_meta()},
                           az_deg=self.azimuth, el_deg=self.elevation,
                           groups=groups,
                           unit_weight_kN_m3=self._unit_weight(),
+                          cover=self._pdf_cover_info(),
                           **self._pdf_view_kwargs())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))

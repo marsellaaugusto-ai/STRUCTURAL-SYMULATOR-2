@@ -59,6 +59,7 @@ from apps.stereo.stereo_app_constants import (
     FILL_DENSITY_STIPPLE, FILL_DENSITY_DEFAULT,
     SNAP_NODE_COLOR, SNAP_MIDPOINT_COLOR, SNAP_RING_RADIUS,
     LOCKED_DIM_COLOR, EDIT_BANNER_COLOR, FLAG_ROD_COLOR,
+    ADDON_CODE_COLOR,
 )
 
 
@@ -222,6 +223,39 @@ class StereoRenderMixin:
             if dash:
                 kw['dash'] = dash
             c.create_line(x0, y0, x1, y1, **kw)
+
+    def _draw_addon_codes(self, c, to_screen):
+        """Each add-on's short code -- C1, B1, K1, P1 -- as a tag beside
+        its rods, so the column the inspector and the report call C2 can be
+        found on the model."""
+        from apps.stereo import stereo_addon_codes as sac
+        tags = []
+        for code, ids in sac.index(self.members).items():
+            at = sac.anchor(self.nodes, self.members, ids)
+            if at is not None:
+                tags.append((code, at))
+        for p in getattr(self, 'panels', None) or ():
+            if p.get('addon') and p.get('nodes'):
+                pts = [self.nodes[n] for n in p['nodes'] if n < len(self.nodes)]
+                if pts:
+                    tags.append((p['addon'],
+                                 tuple(sum(q[k] for q in pts) / len(pts)
+                                       for k in range(3))))
+        for code, (x, y, z) in tags:
+            px, py, _ = self._project(x, y, z)
+            sx, sy = to_screen(px, py)
+            c.create_line(sx, sy, sx + 9, sy - 9, fill=ADDON_CODE_COLOR,
+                          tags=('addon_code',))
+            t = c.create_text(sx + 11, sy - 9, text=code, anchor='sw',
+                              font=('Helvetica', 9, 'bold'),
+                              fill=ADDON_CODE_COLOR, tags=('addon_code',))
+            bb = c.bbox(t)
+            if bb:
+                r = c.create_rectangle(bb[0] - 3, bb[1] - 1, bb[2] + 3,
+                                       bb[3] + 1, fill='white',
+                                       outline=ADDON_CODE_COLOR,
+                                       tags=('addon_code',))
+                c.tag_lower(r, t)
 
     def _draw_field_line(self, c, sx0, sy0, sx1, sy1, value_at, color_fn,
                          width, tags, dash=None, segments=None):
@@ -906,6 +940,10 @@ class StereoRenderMixin:
                                                 text=str(i), font=('Helvetica', 7, 'italic'),
                                                 fill='#8a5a00'))
                 declutter_text(c, mlabels)
+
+            if getattr(self, 'show_addon_codes', None) is not None and \
+                    self.show_addon_codes.get():
+                self._draw_addon_codes(c, to_screen)
 
             if self.show_loads.get():
                 self._draw_load_arrows(c, to_screen)

@@ -210,6 +210,7 @@ class StereoReportsMixin:
         # top of the one already in the file.
         self.area_load_on.set(False)
         self.self_weight_on.set(False)
+        self.wind_on.set(False)
         self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
         self.results = None
         self.member_checks = None
@@ -295,6 +296,7 @@ class StereoReportsMixin:
             self._load_nodes = {}
             self.area_load_on.set(False)
             self.self_weight_on.set(False)
+            self.wind_on.set(False)
             self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
         self.results = None
         self.member_checks = None
@@ -333,6 +335,7 @@ class StereoReportsMixin:
         # see _import_excel: the file already carries the full load case
         self.area_load_on.set(False)
         self.self_weight_on.set(False)
+        self.wind_on.set(False)
         self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
         self.results = None
         self.member_checks = None
@@ -727,6 +730,7 @@ class StereoReportsMixin:
         # see _import_excel: the file already carries the full load case
         self.area_load_on.set(False)
         self.self_weight_on.set(False)
+        self.wind_on.set(False)
         self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
         self.results = None
         self.member_checks = None
@@ -915,6 +919,7 @@ class StereoReportsMixin:
             # two lines, as _import_excel.
             self.area_load_on.set(False)
             self.self_weight_on.set(False)
+            self.wind_on.set(False)
             self.selected_nodes = set()
             self.selected_member = None
             self.selected_members = set()

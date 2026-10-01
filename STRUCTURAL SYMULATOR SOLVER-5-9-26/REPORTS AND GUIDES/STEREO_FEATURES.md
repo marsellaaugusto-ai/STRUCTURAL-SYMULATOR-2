@@ -68,6 +68,8 @@ Quick actions apply a preset to every suggested node at once.
 - Nodal point loads: `fx fy fz mx my mz`, any number of nodes at once.
 - Self-weight (`self_weight_loads`) from member volume × unit weight.
 - Area load over the generator's own exact tributary areas.
+- Simplified wind (`stereo_wind.wind_loads`): q × projected area along the
+  wind, over the roof surface or over the rods.
 - `combine_loads` layers any number of load lists.
 
 **Outputs.** Nodal displacements, reactions (forces and moments),
@@ -575,7 +577,7 @@ question:
 | 1 | **Build** | Which of the 14 parametric families, at what dimensions — or which worked example |
 | 2 | **Shape** | What surfaces, what lattice, over what domain and plan shape |
 | 3 | **Support** | Where the structure stands, and on what boundary conditions |
-| 4 | **Load** | What it carries: area load, self-weight, point loads and moments |
+| 4 | **Load** | What it carries: area load, self-weight, simplified wind, point loads and moments |
 | 5 | **Section** | What it is made of: chord and web sections, material, pinned or rigid |
 | 6 | **Add-ons** | Columns, reinforcement beams, and the cable crane |
 | 7 | **Module** | The repeating cell, and edits applied to every congruent copy |
@@ -711,7 +713,7 @@ says so.
 - **Excel import** — reads a model back. Note it clears `load_nodes`: an
   imported model has no known roof surface, so the area load must not keep
   applying the previous mesh's tributary areas — and it switches the area
-  load and self-weight generators off, because the exported `[LOADS]`
+  load, self-weight and wind generators off, because the exported `[LOADS]`
   table is already the complete case.
 - **PDF report** — up to nineteen A4-landscape sheets: the general
   (axonometric) view with the load case; **plan, front, back, right and
@@ -763,7 +765,8 @@ says so.
   caveat.
 
 Every export hands out the load case the solver actually used
-(`_all_loads()`: point loads *plus* the area load *plus* self-weight), not
+(`_all_loads()`: point loads *plus* the area load *plus* self-weight *plus*
+the simplified wind), not
 just the point loads typed into the Loads panel — see
 `TestExportsCarryTheSolvedLoadCase` in `tests/test_stereo_app.py`.
 
@@ -813,6 +816,26 @@ the P you typed, and leaves any moments you had typed alone.
   loading nothing.
 
 **Self-weight** from the members' own volume, at a settable unit weight.
+
+**Wind (simplified).** Roadmap 4.6, option 1 (`stereo_wind`): every node
+takes `q` times the area the wind *sees*, along the wind. The user gives the
+design pressure `q` (kN/m²), the direction the wind blows **towards** (azimuth
+0 = +X, 90 = +Y) and its elevation, and says how the wind meets the structure:
+
+- **Sheeted roof** — the roof's own tributary areas, each turned by how
+  squarely the surface faces the wind at that node (`A |n·d|`, the normal
+  fitted through the node and its roof neighbours). A flat roof under a level
+  wind catches nothing; a vault's flank catches it all. Needs a generated or
+  shaped model, which knows its roof; the panel says so otherwise.
+- **Open rods** — no sheeting: each rod shows the wind its width × length,
+  turned by its angle to the wind (`q L b sinθ`), half to each end. The width
+  is the catalog depth `2c`, or the round-tube estimate for a hand-typed
+  section.
+
+It is **not** CIRSOC 102: no shape or pressure coefficients, no windward /
+leeward split, no suction. Those need the standard's tables (option 2). An
+imported workbook switches the wind off, like the area load and self-weight,
+because its `[LOADS]` already carry it.
 
 ---
 

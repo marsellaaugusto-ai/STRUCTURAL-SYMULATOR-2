@@ -22,6 +22,7 @@ from apps.truss import truss_plates as tp
 from apps.stereo import expr_math as em
 from apps.stereo import stereo_member_loads as mld
 from apps.stereo import stereo_bezier as bz
+from apps.stereo import stereo_wind as sw
 from apps.stereo.stereo_app_constants import (
     DOF_LABELS, FAMILY_KEY, PATTERN_KEY, BRACE_KEY, CHORD_ROLES,
     QUICK_SUPPORT_CUSTOM, QUICK_SUPPORT_PIN, QUICK_SUPPORT_FIXED,
@@ -1060,6 +1061,9 @@ class StereoModelMixin:
         if self.self_weight_on.get():
             loads = sm.combine_loads(loads, sm.self_weight_loads(
                 self.nodes, self.members, self._unit_weight()))
+        wind = self._wind_loads()
+        if wind:
+            loads = sm.combine_loads(loads, wind)
         return loads
 
     def _solve_loads(self):
@@ -1095,7 +1099,46 @@ class StereoModelMixin:
                 self.nodes, self.members, self._unit_weight())
             loads = sm.combine_loads(loads, nodal_sw)
             member_loads.extend(span_sw)
+        wind = self._wind_loads()
+        if wind:
+            loads = sm.combine_loads(loads, wind)
         return loads, member_loads
+
+    def _wind_loads(self):
+        """The simplified wind case (stereo_wind) as nodal loads, or [] when
+        it is off. When it is on and still gives nothing, the panel says why:
+        a wind case that silently came to zero would read as a structure
+        that shrugs the wind off."""
+        if not self.wind_on.get() or not self.nodes:
+            return []
+        try:
+            q = float(self.wind_q.get())
+            az = float(self.wind_az.get())
+            el = float(self.wind_el.get())
+        except (tk.TclError, ValueError):
+            self.wind_status.config(text='Wind: type q, the azimuth and the '
+                                         'elevation as numbers.')
+            return []
+        mode = self.wind_mode.get()
+        if mode == sw.CLAD and not self._load_nodes:
+            self.wind_status.config(
+                text='Wind: a sheeted roof needs the roof surface, which only '
+                     'a generated or shaped model knows. Use "Open rods" for '
+                     'an imported or hand-built one.')
+            return []
+        loads = sw.wind_loads(self.nodes, self.members, self._load_nodes, q,
+                              az, el, mode=mode)
+        fx, fy, fz = sw.total(loads)
+        self.wind_status.config(
+            text='Wind: %s along the wind, over %d node(s).'
+                 % (self.fmt('force', math.sqrt(fx * fx + fy * fy + fz * fz)),
+                    len(loads)))
+        return loads
+
+    def _on_wind_change(self):
+        self.results = None
+        self.member_checks = None
+        self._refresh_all()
 
     def _valid_member_loads(self):
         """The rod loads that still point at a member that exists.

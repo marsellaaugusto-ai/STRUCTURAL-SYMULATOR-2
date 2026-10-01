@@ -23,6 +23,7 @@ from apps.stereo import stereo_examples as sx
 from apps.stereo import stereo_app_analysis as sa
 from apps.stereo import stereo_member_loads as mld
 from apps.stereo import stereo_bezier as bz
+from apps.stereo import stereo_wind as sw
 from apps.stereo.stereo_app_constants import (
     BG, CANVAS_BG, PANEL_W, MODULE_PANEL_W,
     DOF_LABELS, PRESET_NAMES, GRID_PATTERNS, PATTERN_LABEL, GRID_FAMILIES,
@@ -1858,6 +1859,8 @@ class StereoPanelsMixin(_ToolbarModes):
         self._self_weight_check.pack(side='left')
         tk.Entry(row2, textvariable=self.unit_weight_var, width=7).pack(side='left', padx=4)
 
+        self._build_wind_box(box)
+
         # ── distributed load ALONG the rods ─────────────────────────────
         # The area load above lands on NODES by tributary area, which is
         # the right idealisation for a space truss and has one consequence
@@ -1994,6 +1997,52 @@ class StereoPanelsMixin(_ToolbarModes):
         self.load_list.pack(fill='x', padx=4, pady=(0, 4))
 
     # ── Connectivity + sections ──────────────────────────────────────────────
+
+    def _build_wind_box(self, parent):
+        """Simplified wind (roadmap v2 4.6, option 1): q times the area the
+        wind sees, along the wind. stereo_wind holds the method; this is its
+        five inputs and a line saying what it is not."""
+        wind = tk.LabelFrame(parent, text='Wind (simplified)', bg=BG,
+                             font=('Helvetica', 8, 'bold'))
+        wind.pack(fill='x', padx=6, pady=(0, 6))
+        tk.Label(wind, text='Every node takes q × the area the wind sees, '
+                            'along the wind. No CIRSOC 102 shape or pressure '
+                            'coefficients and no suction: q is the design '
+                            'pressure you supply.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_W - 40).pack(anchor='w', padx=4, pady=(2, 2))
+        self.wind_on = tk.BooleanVar(value=False)
+        tk.Checkbutton(wind, text='Apply wind', variable=self.wind_on, bg=BG,
+                       font=('Helvetica', 8),
+                       command=self._on_wind_change).pack(anchor='w', padx=4)
+        self.wind_mode = tk.StringVar(value=sw.CLAD)
+        mrow = tk.Frame(wind, bg=BG)
+        mrow.pack(fill='x', padx=4)
+        for key, text in ((sw.CLAD, 'Sheeted roof'), (sw.OPEN, 'Open rods')):
+            tk.Radiobutton(mrow, text=text, value=key, variable=self.wind_mode,
+                           bg=BG, font=('Helvetica', 8),
+                           command=self._on_wind_change).pack(side='left')
+        self.wind_q = tk.DoubleVar(value=0.5)
+        self.wind_az = tk.DoubleVar(value=0.0)
+        self.wind_el = tk.DoubleVar(value=0.0)
+        for text, var in (('q (kN/m²):', self.wind_q),
+                          ('Towards az (°):', self.wind_az),
+                          ('Elevation (°):', self.wind_el)):
+            row = tk.Frame(wind, bg=BG)
+            row.pack(fill='x', padx=4, pady=(2, 0))
+            tk.Label(row, text=text, bg=BG, width=14, anchor='w',
+                     font=('Helvetica', 8)).pack(side='left')
+            e = tk.Entry(row, textvariable=var, width=7)
+            e.pack(side='left')
+            e.bind('<Return>', lambda _e: self._on_wind_change())
+            e.bind('<FocusOut>', lambda _e: self._on_wind_change())
+        tk.Label(wind, text='az 0 blows towards +X, 90 towards +Y.', bg=BG,
+                 fg=HINT_FG, font=('Helvetica', 8)
+                 ).pack(anchor='w', padx=4)
+        self.wind_status = tk.Label(wind, text='', bg=BG, fg=HINT_FG,
+                                    font=('Helvetica', 8), justify='left',
+                                    wraplength=PANEL_W - 40)
+        self.wind_status.pack(anchor='w', padx=4, pady=(0, 4))
     def _build_connectivity_panel(self, parent):
         box = tk.LabelFrame(parent, text='Connectivity', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=4)

@@ -10259,3 +10259,84 @@ class TestWeakAxisInTheApp:
         app._props_entries['Fy'].set(355.0)
         app._apply_member_properties()
         assert 'Iw' in app.members[0] and app.members[0]['Fy'] == 355.0
+
+
+class TestWindInTheApp:
+    """Roadmap v2 4.6, option 1: the simplified wind case through the app."""
+
+    def _totals(self, loads):
+        return tuple(sum(ld.get(k, 0.0) for ld in loads)
+                     for k in ('fx', 'fy', 'fz'))
+
+    def test_off_by_default_and_off_adds_nothing(self, app):
+        assert app.wind_on.get() is False
+        assert app._wind_loads() == []
+
+    def test_a_level_wind_on_a_flat_sheeted_roof_adds_nothing(self, app):
+        before = self._totals(app._all_loads())
+        app.wind_on.set(True)
+        app.wind_q.set(0.8)
+        app._on_wind_change()
+        assert self._totals(app._all_loads()) == pytest.approx(before, abs=1e-9)
+
+    def test_a_wind_straight_down_on_a_flat_roof_is_q_times_the_roof(self, app):
+        app.area_load_on.set(False)
+        app.wind_on.set(True)
+        app.wind_q.set(0.8)
+        app.wind_el.set(-90.0)
+        fx, fy, fz = self._totals(app._all_loads())
+        roof = sum(app._load_nodes.values())
+        assert fz == pytest.approx(-0.8 * roof)
+        assert fx == pytest.approx(0.0, abs=1e-9)
+        assert 'along the wind' in app.wind_status.cget('text')
+
+    def test_open_rods_load_the_lattice_and_the_reactions_balance_it(self, app):
+        from apps.stereo import stereo_wind as sw
+        app.area_load_on.set(False)
+        app.wind_on.set(True)
+        app.wind_mode.set(sw.OPEN)
+        app.wind_q.set(1.2)
+        app.wind_az.set(30.0)
+        want = sw.total(sw.wind_loads(app.nodes, app.members, {}, 1.2, 30.0,
+                                      mode=sw.OPEN))
+        loads, _span = app._solve_loads()
+        got = self._totals(loads)
+        assert got == pytest.approx(want)
+        assert want[0] > 0 and want[1] > 0
+        app._analyze()
+        assert app.results is not None
+        rx = sum(r.get('Fx', 0.0) for r in app.results['reactions'].values())
+        ry = sum(r.get('Fy', 0.0) for r in app.results['reactions'].values())
+        assert rx == pytest.approx(-got[0], rel=1e-6)
+        assert ry == pytest.approx(-got[1], rel=1e-6)
+
+    def test_changing_the_wind_drops_stale_results(self, app):
+        app._analyze()
+        assert app.results is not None
+        app.wind_on.set(True)
+        app._on_wind_change()
+        assert app.results is None
+
+    def test_a_sheeted_roof_without_a_surface_says_why(self, app):
+        app._load_nodes = {}
+        app.wind_on.set(True)
+        assert app._wind_loads() == []
+        assert 'Open rods' in app.wind_status.cget('text')
+
+    def test_an_imported_workbook_turns_the_wind_off(self, app, tmp_path,
+                                                     monkeypatch):
+        """The workbook's [LOADS] already holds the wind it was exported
+        with; leaving the generator on would apply it twice."""
+        from apps.stereo import stereo_wind as sw
+        app.wind_on.set(True)
+        app.wind_mode.set(sw.OPEN)
+        before = self._totals(app._all_loads())
+        path = str(tmp_path / 'wind.xlsx')
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                            lambda *a, **kw: path)
+        app._export_excel()
+        monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                            lambda *a, **kw: path)
+        app._import_excel()
+        assert app.wind_on.get() is False
+        assert self._totals(app._all_loads()) == pytest.approx(before, rel=1e-9)

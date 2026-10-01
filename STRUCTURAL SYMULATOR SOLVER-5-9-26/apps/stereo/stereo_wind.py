@@ -23,6 +23,8 @@ elevation p above the horizontal.
 """
 import math
 
+CLAD, OPEN = 'clad', 'open'
+
 
 def wind_direction(azimuth_deg, elevation_deg=0.0):
     """The unit vector the wind blows along."""
@@ -123,7 +125,7 @@ def wind_loads(nodes, members, load_nodes, q_kN_m2, azimuth_deg,
                elevation_deg=0.0, mode='clad'):
     """The simplified wind case as nodal loads. `mode` is 'clad' or 'open'."""
     d = wind_direction(azimuth_deg, elevation_deg)
-    if mode == 'open':
+    if mode == OPEN:
         return lattice_wind_loads(nodes, members, q_kN_m2, d)
     return clad_wind_loads(nodes, members, load_nodes or {}, q_kN_m2, d)
 

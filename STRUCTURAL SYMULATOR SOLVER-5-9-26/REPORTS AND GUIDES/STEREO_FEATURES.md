@@ -127,6 +127,18 @@ applied" written next to it — but no utilisation is claimed, and it takes no
 part in the governing rod or the utilisation colours. Giving a timber rod a
 steel catalog section makes it steel again (F-24 unless a steel is named).
 
+**The moment along a rod is one calculation.** The member checks, the
+timber stresses and the PDF read a rod's shear and moment from
+`stereo_math.member_diagram`; the canvas from
+`stereo_member_loads.member_diagram`. The first used to integrate on its
+own with the wrong sign on the end moment in the local-y plane, so it did
+not close on the solver's own far-end moment: a 3 m cantilever with 5 kN at
+its tip read 30 kN·m at the FREE end. Every rigid rod's bending check used
+that number -- on the default grid made rigid, 652 of 800 rods were
+overstated (peak 3.04 kN·m against a true 1.05), and the error can as well
+understate. It now returns the canvas function's values; tests pin it to
+the textbook cantilever and to the solver's end moments on a whole frame.
+
 **Large models: a sparse solve.** Above 600 free DOF the stiffness matrix is
 assembled and solved sparse (SciPy `spsolve`, with the same residual check
 as the dense path); below that the dense solve is kept, since it is faster
@@ -824,8 +836,15 @@ says so.
   the elevations; **axial force** and **member utilisation**, each in both
   the general view and plan, with bar thickness reading axial stress; a
   third utilisation sheet scaled to **this model's own range** rather than
-  the code threshold; nodal moments; **bending and shear along the rods**,
-  as a diagram hung off each rod, wherever the model has rigid joints;
+  the code threshold; nodal moments; **bending and shear along the rods**
+  wherever the model has rigid joints, coloured exactly as the canvas
+  colours them (Results → colour by moment / shear along the rod): each
+  rod orange → white → violet along its own length, white marking where
+  the sign turns, on the same ramp pinned to the same model peak -- one
+  general view, then a plan of each rod layer (top chords, bottom chords,
+  webs; one plan of all rods for a model without chord roles), with the
+  eight rods carrying the most tagged 1-8 at their peak and listed with
+  their values;
   the deformed shape; support reactions with an equilibrium check; the
   governing-member schedule; and the **maximum-solicitation** schedules
   for the rods and (on a rigid model) the nodes, each closing on an

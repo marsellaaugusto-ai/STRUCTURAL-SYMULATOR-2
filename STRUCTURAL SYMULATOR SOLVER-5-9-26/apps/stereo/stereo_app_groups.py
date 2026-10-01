@@ -867,7 +867,8 @@ class StereoGroupsMixin:
             return None
         n_rigid = sum(1 for m in self.members if m.get('conn') == 'rigid')
         sheets = self._pdf_sheet_dialog('Groups PDF', self.results,
-                                        self.member_checks, n_rigid)
+                                        self.member_checks, n_rigid,
+                                        members=self.members)
         if sheets is None:
             return None
         if path is None:

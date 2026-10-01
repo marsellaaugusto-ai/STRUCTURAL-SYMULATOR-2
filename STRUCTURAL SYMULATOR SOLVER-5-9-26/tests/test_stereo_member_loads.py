@@ -333,3 +333,86 @@ def test_a_sagging_pin_rod_and_a_sagging_rigid_rod_agree_in_sign():
     rigid_mid = ml.member_diagram(rigid, 0.5)[3]
     assert pin_mid == pytest.approx(rigid_mid, abs=1e-9)
     assert pin_mid == pytest.approx(W * L * L / 8.0, abs=1e-9)
+
+
+# ── The solver-side diagram (stereo_math.member_diagram) ───────────────────
+#
+# The member checks, the timber stresses and the PDF read their moments from
+# stereo_math.member_diagram, not from the function above. It used to do its
+# own integration with the wrong sign on the Mz end term, so it did not close
+# on the solver's own end moments: a cantilever with a tip load in its local
+# y plane read 2PL at the FREE end. These pin it to the textbook and to the
+# canvas's numbers.
+
+P_TIP = 5.0   # kN
+
+
+def _tip_loaded_cantilever(direction):
+    nodes, members = _beam()
+    load = {'node': 1, 'fx': 0.0, 'fy': P_TIP * direction[1],
+            'fz': P_TIP * direction[2]}
+    res, err = sm.analyze(nodes, members, [load], CANTILEVER)
+    assert err is None, err
+    return res['member_res'][0]
+
+
+@pytest.mark.parametrize('direction', [Y_PLANE, Z_PLANE])
+def test_the_solver_side_diagram_of_a_tip_loaded_cantilever_is_PL_to_zero(
+        direction):
+    d = sm.member_diagram(_tip_loaded_cantilever(direction), 5)
+    assert d['M'][0] == pytest.approx(P_TIP * L, abs=1e-6)
+    assert d['M'][2] == pytest.approx(P_TIP * L / 2.0, abs=1e-6)
+    assert d['M'][-1] == pytest.approx(0.0, abs=1e-6)
+    assert all(v == pytest.approx(P_TIP, abs=1e-6) for v in d['V'])
+
+
+@pytest.mark.parametrize('direction', [Y_PLANE, Z_PLANE])
+@pytest.mark.parametrize('supports', [CANTILEVER, SIMPLY_SUPPORTED])
+def test_the_solver_side_diagram_is_the_canvas_diagram(direction, supports):
+    _res, mres = _run(supports, direction)
+    d = sm.member_diagram(mres, 9)
+    for k in range(9):
+        _n, vy, vz, my, mz = ml.member_diagram(mres, k / 8.0)
+        assert (d['Vy'][k], d['Vz'][k], d['My'][k], d['Mz'][k]) == \
+            pytest.approx((vy, vz, my, mz), abs=1e-9)
+
+
+def test_every_rods_diagram_closes_on_the_solvers_far_end_moments():
+    """Equilibrium, over a whole rigid grid: the diagram integrated from end
+    a has to arrive at the end-b moments the solver itself reported."""
+    # A 3 x 3 bay frame, two storeys of rigid beams on rigid columns, pushed
+    # down and sideways so both bending planes of every rod work.
+    nodes, index = [], {}
+    for k in range(3):
+        for j in range(4):
+            for i in range(4):
+                index[i, j, k] = len(nodes)
+                nodes.append((3.0 * i, 3.0 * j, 3.0 * k))
+    members = []
+    for (i, j, k), a in index.items():
+        for di, dj, dk in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+            b = index.get((i + di, j + dj, k + dk))
+            if b is not None and (dk or k > 0):
+                members.append({'a': a, 'b': b, 'conn': 'rigid', 'E': E,
+                                'A': A, 'I': I, 'J': J})
+    supports = [{'node': index[i, j, 0], 'type': 'fixed'}
+                for i in range(4) for j in range(4)]
+    loads = [{'node': n, 'fx': 2.0, 'fy': -1.0, 'fz': -10.0}
+             for (i, j, k), n in index.items() if k > 0]
+    res, err = sm.analyze(nodes, members, loads, supports)
+    assert err is None, err
+    worst = 0.0
+    for mr in res['member_res']:
+        d = sm.member_diagram(mr, 3)
+        worst = max(worst, abs(abs(d['Mz'][-1]) - abs(mr['Mz_b'])),
+                    abs(abs(d['My'][-1]) - abs(mr['My_b'])))
+    assert worst < 1e-6
+
+
+def test_the_bending_check_reads_PL_for_a_tip_loaded_cantilever():
+    from apps.stereo import stereo_checks as chk
+    mres = _tip_loaded_cantilever(Y_PLANE)
+    member = {'a': 0, 'b': 1, 'conn': 'rigid', 'E': E, 'A': A, 'I': I,
+              'J': J, 'r_gyr': 2.0, 'Fy': 250.0}
+    out = chk.check_member(member, mres.get('N', 0.0), member_res=mres)
+    assert out['M_demand_kNm'] == pytest.approx(P_TIP * L, abs=1e-6)

@@ -1114,6 +1114,14 @@ def member_diagram(mr, n_samples=21):
     the line becomes a parabola, and the sag it adds is exactly the part a
     report that drew only the two end values used to be missing. A pin
     member carries no shear or moment at all, so it samples as zeros.
+
+    The values are stereo_member_loads.member_diagram's -- the ones the
+    canvas colours by -- so the checks, the PDF and the screen cannot
+    disagree. This used to integrate on its own with the wrong sign on the
+    Mz end term (-(Mz_a + Vy_a x) where the frame convention gives
+    Mz_a - Vy_a x), so it did not close on the solver's own Mz_b: a 3 m
+    cantilever with 5 kN at its tip read 30 kN*m at the free end instead
+    of 0, and every rigid rod's bending check used that number.
     """
     L = float(mr.get('length_m', 0.0) or 0.0)
     n = max(2, int(n_samples))
@@ -1124,19 +1132,12 @@ def member_diagram(mr, n_samples=21):
                 'My': list(zeros), 'Mz': list(zeros),
                 'V': list(zeros), 'M': list(zeros)}
 
-    wy = wz = 0.0
-    w_loc = mr.get('w_local')
-    if w_loc:
-        wy, wz = float(w_loc[1]), float(w_loc[2])
-    Vy_a, Vz_a = mr.get('Vy_a', 0.0), mr.get('Vz_a', 0.0)
-    My_a, Mz_a = mr.get('My_a', 0.0), mr.get('Mz_a', 0.0)
+    # Imported here: stereo_member_loads imports from this module.
+    from apps.stereo import stereo_member_loads as mld
 
     out = {'x': xs, 'Vy': [], 'Vz': [], 'My': [], 'Mz': [], 'V': [], 'M': []}
     for x in xs:
-        vy = -(Vy_a + wy * x)
-        vz = -(Vz_a + wz * x)
-        mz = -(Mz_a + Vy_a * x + wy * x * x / 2.0)
-        my = -(My_a + Vz_a * x + wz * x * x / 2.0)
+        _n, vy, vz, my, mz = mld.member_diagram(mr, x / L if L > 0 else 0.0)
         out['Vy'].append(vy)
         out['Vz'].append(vz)
         out['My'].append(my)

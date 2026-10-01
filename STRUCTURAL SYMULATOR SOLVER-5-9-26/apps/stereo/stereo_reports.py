@@ -2445,78 +2445,148 @@ def _pdf_stress_widths(members, member_res, lo=None, hi=None):
     return [lo + (hi - lo) * (sig / peak) for sig in stresses], peak
 
 
-PDF_DIAGRAM_FRAC = 0.048    # peak ordinate, as a fraction of the drawing's
-                            # projected diagonal
 PDF_DIAGRAM_SAMPLES = 13    # per member; enough to read a parabola's sag
+PDF_ROD_FIELD_SAMPLES = 12  # coloured stretches per rod on the sheet
+PDF_ROD_FIELD_WIDTH = 2.0   # pt
+PDF_ROD_CONTEXT_COLOR = '#c4c4c4'
+PDF_ROD_TOP_N = 8           # rods tagged with their value on each sheet
+
+# Which rods sit in which layer of a two-layer structure, read from the
+# role the generator gave them. A plan of a space grid with both chord
+# layers on it shows two offset meshes on top of each other; one layer at a
+# time is what a plan of a moment field needs to be readable.
+ROD_LAYER_ROLES = (
+    ('top', 'top chords', ('top_chord', 'outer_rib')),
+    ('bottom', 'bottom chords', ('bottom_chord', 'inner_rib')),
+)
+ROD_LAYER_TITLES = {'top': 'top chords', 'bottom': 'bottom chords',
+                    'webs': 'webs and other rods', 'all': 'all rods'}
 
 
-def _pdf_along_rod_diagrams(ax, members, proj_2d, curves, peak, color,
-                            frac=PDF_DIAGRAM_FRAC, zorder=6):
-    """One diagram per member, set off perpendicular to the member itself.
+def rod_layers(members, only=None):
+    """[(key, title, [member ids])] for the plan sheets of the along-the-rod
+    views: the top chords, the bottom chords, and everything else ('webs'),
+    each only if it has a rod -- or one 'all' layer when the model has no
+    chord roles at all (a hand-built or imported model). `only` limits the
+    rods considered (the rigid ones, for these sheets)."""
+    ids = range(len(members)) if only is None else sorted(only)
+    by_role = {}
+    for key, _t, roles in ROD_LAYER_ROLES:
+        for r in roles:
+            by_role[r] = key
+    buckets = {'top': [], 'bottom': [], 'webs': []}
+    for i in ids:
+        buckets[by_role.get(members[i].get('role'), 'webs')].append(i)
+    if not buckets['top'] and not buckets['bottom']:
+        return [('all', ROD_LAYER_TITLES['all'], buckets['webs'])] \
+            if buckets['webs'] else []
+    return [(k, ROD_LAYER_TITLES[k], buckets[k])
+            for k in ('top', 'bottom', 'webs') if buckets[k]]
 
-    `curves[i]` is the ordinate sampled from end a to end b of member i, or
-    None where that member has nothing to draw. The value is laid off along
-    the member's own perpendicular IN THE SHEET PLANE, which is what a
-    shear or bending diagram over a projected view means: the rod is the
-    baseline and the distance from it is the magnitude. Every member is
-    scaled by the SAME `peak`, so two rods can be compared by eye -- a
-    per-member scale would make the least-loaded rod look like the worst.
 
-    A rod pointing straight at the reader projects to a point and has no
-    perpendicular on this sheet, so it is skipped rather than drawn in an
-    arbitrary direction. Returns (extra_pts, n_drawn, n_flat): the vertices
-    the diagrams reach, so the caller can fit the window around them
-    instead of clipping them at the model's own edge.
-    """
-    import math
-    from matplotlib.collections import LineCollection, PolyCollection
-    if peak <= 1e-12 or not proj_2d:
-        return [], 0, 0
-    xs = [p[0] for p in proj_2d]
-    ys = [p[1] for p in proj_2d]
-    diag = math.hypot(max(xs) - min(xs), max(ys) - min(ys)) or 1.0
-    unit = frac * diag / peak
+def rod_field_value(mr, t, shear):
+    """The signed shear or moment at station `t` along a rod -- the larger
+    of its two bending components, with its sign. The SAME value the canvas
+    colours by (StereoApp._rod_field_value), so paper and screen agree."""
+    from apps.stereo import stereo_member_loads as mld
+    _N, Vy, Vz, My, Mz = mld.member_diagram(mr, t)
+    return max(((Vy, Vz) if shear else (My, Mz)), key=abs)
 
-    rgb = _hex_to_rgb(color)
-    outlines, fills, extra = [], [], []
-    n_drawn = n_flat = 0
-    for i, m in enumerate(members):
-        vals = curves[i] if i < len(curves) else None
-        if not vals or max(abs(v) for v in vals) <= 1e-12:
+
+def rod_field_anchor(member_res, shear):
+    """(peak, varies): the |value| the colour ramp's ends are pinned to --
+    the model's own peak, as on screen -- and whether any rod's value
+    changes along it at all (it does not without a load ON the rods)."""
+    from apps.stereo import stereo_member_loads as mld
+    peak, varies = 0.0, False
+    for mr in member_res:
+        if mr.get('conn') != 'rigid':
             continue
-        a, b = m['a'], m['b']
+        if mld.varies_along_the_rod(mr):
+            varies = True
+        worst_v, worst_m = mld.diagram_extremes(mr)
+        peak = max(peak, worst_v if shear else worst_m)
+    return peak, varies
+
+
+def _pdf_rod_field(ax, members, proj_2d, member_res, shear, anchor,
+                   idx=None, nodes=None, samples=PDF_ROD_FIELD_SAMPLES,
+                   width=PDF_ROD_FIELD_WIDTH, zorder=4):
+    """Each rod coloured ALONG its length by its own shear or moment, on the
+    orange - white - violet ramp the canvas uses, pinned to `anchor`.
+
+    Sampled per stretch rather than blended end to end: under a load on the
+    rod the moment is a parabola, and a straight blend would hide the bow.
+    With `nodes`, rods are drawn lowest first, so an upper chord is not
+    painted over by the layer under it. A rod that projects to a point
+    (pointing at the reader) has nothing to colour and is counted instead.
+    Returns (n_drawn, n_flat)."""
+    from matplotlib.collections import LineCollection
+    from apps.stereo.stereo_app_colors import moment_color
+    if anchor <= 1e-12 or not proj_2d:
+        return 0, 0
+    ids = [i for i in (range(len(members)) if idx is None else idx)
+           if i < len(member_res) and member_res[i].get('conn') == 'rigid']
+    if nodes is not None:
+        ids.sort(key=lambda i: nodes[members[i]['a']][2]
+                 + nodes[members[i]['b']][2])
+    segs, cols = [], []
+    n_drawn = n_flat = 0
+    n = max(1, int(samples))
+    for i in ids:
+        a, b = members[i]['a'], members[i]['b']
         if a >= len(proj_2d) or b >= len(proj_2d):
             continue
-        (ax0, ay0), (ax1, ay1) = proj_2d[a], proj_2d[b]
-        dx, dy = ax1 - ax0, ay1 - ay0
-        ln = math.hypot(dx, dy)
-        if ln <= 1e-9:
+        (x0, y0), (x1, y1) = proj_2d[a], proj_2d[b]
+        if abs(x1 - x0) + abs(y1 - y0) <= 1e-9:
             n_flat += 1
             continue
-        nx, ny = -dy / ln, dx / ln          # left of a->b, in the sheet
-        n = len(vals)
-        base, curve = [], []
-        for j, v in enumerate(vals):
-            t = j / (n - 1) if n > 1 else 0.0
-            bx, by = ax0 + dx * t, ay0 + dy * t
-            base.append((bx, by))
-            curve.append((bx + nx * v * unit, by + ny * v * unit))
-        outlines.append(curve)
-        # the closing stems at both ends are what makes it read as a
-        # diagram hung off the rod rather than a stray polyline
-        outlines.append([base[0], curve[0]])
-        outlines.append([base[-1], curve[-1]])
-        fills.append(curve + list(reversed(base)))
-        extra.extend(curve)
         n_drawn += 1
+        for k in range(n):
+            t0, t1 = k / n, (k + 1) / n
+            v = rod_field_value(member_res[i], (t0 + t1) / 2.0, shear)
+            segs.append(((x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0),
+                         (x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1)))
+            cols.append(_hex_to_rgb(moment_color(v, anchor)))
+    if segs:
+        ax.add_collection(LineCollection(segs, colors=cols, linewidths=width,
+                                         capstyle='butt', zorder=zorder))
+    return n_drawn, n_flat
 
-    if fills:
-        ax.add_collection(PolyCollection(fills, facecolors=[rgb], alpha=0.22,
-                                         edgecolors='none', zorder=zorder))
-    if outlines:
-        ax.add_collection(LineCollection(outlines, colors=[rgb],
-                                         linewidths=0.7, zorder=zorder + 0.1))
-    return extra, n_drawn, n_flat
+
+def rod_peaks(member_res, idx, shear):
+    """[(peak, i, x_m)] for the rigid rods in `idx`, largest first: the
+    resultant peak along each rod and where it occurs."""
+    from apps.stereo import stereo_math as sm_mod
+    out = []
+    for i in idx:
+        mr = member_res[i]
+        if mr.get('conn') != 'rigid':
+            continue
+        pk = sm_mod.member_peak_actions(mr, PDF_DIAGRAM_SAMPLES)
+        v = pk['V_max'] if shear else pk['M_max']
+        if v > 1e-12:
+            out.append((v, i, pk['x_V'] if shear else pk['x_M']))
+    out.sort(key=lambda r: -r[0])
+    return out
+
+
+def _pdf_tag_rods(ax, members, member_res, proj_2d, ranked, zorder=7):
+    """A numbered tag at the peak of each of the `ranked` rods (1 = the
+    largest), so the values listed beside the drawing can be found on it."""
+    for k, (_v, i, x) in enumerate(ranked, start=1):
+        a, b = members[i]['a'], members[i]['b']
+        L = member_res[i].get('length_m', 0.0) or 0.0
+        t = (x / L) if L > 0 else 0.5
+        (x0, y0), (x1, y1) = proj_2d[a], proj_2d[b]
+        px, py = x0 + (x1 - x0) * t, y0 + (y1 - y0) * t
+        ax.annotate(str(k), (px, py), xytext=(0, 7),
+                    textcoords='offset points', ha='center', va='bottom',
+                    fontsize=6.5, fontweight='bold', color='#1a1a1a',
+                    zorder=zorder,
+                    bbox=dict(boxstyle='round,pad=0.15', fc='white',
+                              ec='#555555', lw=0.5),
+                    arrowprops=dict(arrowstyle='-', lw=0.5, color='#555555'))
 
 
 def _pdf_members(ax, members, proj_2d, color_fn, linewidth=1.0, zorder=3,
@@ -2741,24 +2811,59 @@ def _pdf_fit_window_clear(ax, pts, obstacles, legacy_reserve_top=0.0,
     m = PDF_FIT_MARGIN
     fx = max(1.0 - 2 * m, 0.05)
     fy = max(1.0 - PDF_FIT_FLOOR - 2 * m, 0.05)
-    cxf = 0.5
-    cyf = PDF_FIT_FLOOR + m + fy / 2.0
-
-    def window(s):
-        ww, wh = s * box_w, s * box_h
-        return cx - cxf * ww, cy - cyf * wh, ww, wh
-
+    import numpy as np
+    cxf0 = 0.5
+    cyf0 = PDF_FIT_FLOOR + m + fy / 2.0
+    P = np.asarray(pts, dtype=float)
     rects = [(x0 - PDF_FIT_PAD, y0 - PDF_FIT_PAD, x1 + PDF_FIT_PAD,
               y1 + PDF_FIT_PAD) for x0, y0, x1, y1 in obstacles]
 
+    def window(s, pos=(cxf0, cyf0)):
+        ww, wh = s * box_w, s * box_h
+        return cx - pos[0] * ww, cy - pos[1] * wh, ww, wh
+
+    def hits(s, pos):
+        x0, y0, ww, wh = window(s, pos)
+        u = (P[:, 0] - x0) / ww
+        v = (P[:, 1] - y0) / wh
+        for a0, b0, a1, b1 in rects:
+            if np.any((u >= a0) & (u <= a1) & (v >= b0) & (v <= b1)):
+                return True
+        return False
+
+    def positions(s):
+        """Where the drawing's centre may sit at scale s and stay on the
+        sheet -- the middle first, then outwards. Not only the middle: a
+        wide key along the top-left is beside a tall empty strip, and a
+        drawing that may only shrink about the centre leaves it empty."""
+        half_w = dw / (s * box_w) / 2.0
+        half_h = dh / (s * box_h) / 2.0
+        lo_x, hi_x = m + half_w, 1.0 - m - half_w
+        lo_y, hi_y = PDF_FIT_FLOOR + m + half_h, 1.0 - m - half_h
+        if lo_x > hi_x + 1e-12 or lo_y > hi_y + 1e-12:
+            return []
+        cand = []
+        for i in range(9):
+            for j in range(9):
+                px = lo_x + (hi_x - lo_x) * i / 8.0
+                py = lo_y + (hi_y - lo_y) * j / 8.0
+                cand.append((px, py))
+        cand.append((min(max(cxf0, lo_x), hi_x), min(max(cyf0, lo_y), hi_y)))
+        cand.sort(key=lambda q: (q[0] - cxf0) ** 2 + (q[1] - cyf0) ** 2)
+        return cand
+
+    def clear_at(s):
+        """The position, nearest the middle, at which scale s is clear of
+        every panel -- or None."""
+        if not hits(s, (cxf0, cyf0)):
+            return (cxf0, cyf0)
+        for pos in positions(s):
+            if not hits(s, pos):
+                return pos
+        return None
+
     def clear(s):
-        x0, y0, ww, wh = window(s)
-        for px, py in pts:
-            u, v = (px - x0) / ww, (py - y0) / wh
-            for a0, b0, a1, b1 in rects:
-                if a0 <= u <= a1 and b0 <= v <= b1:
-                    return False
-        return True
+        return clear_at(s) is not None
 
     s_lo = max(dw / (box_w * fx), dh / (box_h * fy))
     fx_old = max(1.0 - 0.04 - 2 * 0.04, 0.05)
@@ -2780,13 +2885,14 @@ def _pdf_fit_window_clear(ax, pts, obstacles, legacy_reserve_top=0.0,
             else:
                 lo = mid
         s = hi
+    pos = clear_at(s) or (cxf0, cyf0)
     if ratio:
         # 1:N on the paper -- N metres of structure per metre of paper;
         # s is metres of structure per inch of axes
         s = float(ratio) * 0.0254
     elif zoom and zoom > 0:
         s = s / float(zoom)
-    x0, y0, ww, wh = window(s)
+    x0, y0, ww, wh = window(s, pos)
     ax.set_xlim(x0, x0 + ww)
     ax.set_ylim(y0, y0 + wh)
     return (x0, y0, x0 + ww, y0 + wh)
@@ -3226,7 +3332,8 @@ PDF_SHEET_GROUPS = ('views', 'force', 'utilization', 'moment',
                     'deformed', 'tables')
 
 
-def plan_sheets(results=None, checks=None, n_rigid=0, groups=None):
+def plan_sheets(results=None, checks=None, n_rigid=0, groups=None,
+                members=None):
     """Which sheets this report will actually contain, in order.
 
     Returned as a list of keys so the title block's "Sheet n / N" is
@@ -3234,6 +3341,8 @@ def plan_sheets(results=None, checks=None, n_rigid=0, groups=None):
     parallel arithmetic expression that has to be kept in step by hand.
 
     `groups` is any subset of PDF_SHEET_GROUPS; None means all of them.
+    `members` sets the plan sheets of the along-the-rod views, one per rod
+    layer (rod_layers); without it there is one plan of all the rods.
     """
     want = set(PDF_SHEET_GROUPS if groups is None else groups)
     have_checks = bool(checks) and any(c.get('checked') for c in (checks or ()))
@@ -3251,7 +3360,15 @@ def plan_sheets(results=None, checks=None, n_rigid=0, groups=None):
         # Bending and shear ALONG a rod exist only where a joint can
         # transfer a moment into it; a pin-jointed truss has neither.
         if n_rigid:
-            plan += ['moment_rods', 'shear_rods']
+            if members is None:
+                layers = ['all']
+            else:
+                rigid = [i for i, m in enumerate(members)
+                         if m.get('conn') == 'rigid']
+                layers = [k for k, _t, _ids in rod_layers(members, rigid)]
+            for kind in ('moment_rods', 'shear_rods'):
+                plan.append(kind)
+                plan += [f'{kind}_plan_{k}' for k in layers]
     if 'deformed' in want:
         plan.append('deformed')
     if 'tables' in want:
@@ -3374,7 +3491,7 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
     want = set(PDF_SHEET_GROUPS if groups is None else groups)
     if not ortho_views:
         want.discard('views')
-    plan = plan_sheets(results, checks, n_rigid, want)
+    plan = plan_sheets(results, checks, n_rigid, want, members=members)
     views = [(n, v) for n, v in PDF_ORTHO_VIEWS if n in plan]
     group = (meta or {}).get('group')
     subset_of = (meta or {}).get('subset_of')
@@ -3734,114 +3851,110 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
 
         # ── Bending and shear ALONG the rods ────────────────────────────
         #
-        # The nodal-moment sheet answers "which joints work"; these two
-        # answer "and what happens between them", which is the part a
-        # report built from end actions alone could not show at all. Both
-        # are drawn as a proper diagram hung off each rod, to one common
-        # scale, over the model itself.
-        def along_rod_sheet(kind):
-            from apps.stereo import stereo_math as sm_mod
+        # The nodal-moment sheet answers "which joints work"; these answer
+        # "and what happens between them". Drawn as the canvas draws them
+        # (Results -> colour by moment / shear along the rod): every rod
+        # coloured along its own length on the orange - white - violet
+        # ramp, so the white band where a rod's colour turns is where its
+        # moment changes sign. One axonometric sheet, then a plan of each
+        # rod layer -- top chords, bottom chords, the rest -- because a
+        # plan with both chord layers on it is two meshes over each other.
+        # The rods carrying the most are tagged 1..N at their peak and
+        # listed with their values.
+        rigid_ids = [i for i, m in enumerate(members)
+                     if m.get('conn') == 'rigid']
+        layer_of = {k: (t, ids) for k, t, ids in rod_layers(members,
+                                                            rigid_ids)}
+        if not layer_of:
+            layer_of = {'all': (ROD_LAYER_TITLES['all'], rigid_ids)}
+
+        def along_rod_sheet(kind, view=None, layer=None):
             is_moment = kind == 'moment'
+            shear = not is_moment
             quantity = 'moment' if is_moment else 'force'
             unit = u.lab(quantity)
-            curves, peaks, res_peaks, flips = [], [], [], 0
-            for i, mr in enumerate(member_res):
-                if mr.get('conn') != 'rigid':
-                    curves.append(None)
-                    peaks.append(0.0)
-                    res_peaks.append(0.0)
-                    continue
-                d = sm_mod.member_diagram(mr, PDF_DIAGRAM_SAMPLES)
-                pair = (d['Mz'], d['My']) if is_moment else (d['Vy'], d['Vz'])
-                # The rod is bent in BOTH local planes; plotting the
-                # resultant magnitude would hide every sign change, and a
-                # diagram that never crosses its baseline cannot show
-                # hogging against sagging. So the ordinate is the signed
-                # component about whichever local axis is working harder,
-                # and the resultant is what the statistics report.
-                ca, cb = pair
-                use = ca if (max(map(abs, ca), default=0.0)
-                             >= max(map(abs, cb), default=0.0)) else cb
-                curves.append(list(use))
-                peaks.append(max(map(abs, use), default=0.0))
-                res_peaks.append(max(d['M' if is_moment else 'V'], default=0.0))
-                if max(use, default=0.0) > 1e-9 and min(use, default=0.0) < -1e-9:
-                    flips += 1
-
-            peak_ord = max(peaks, default=0.0)
-            peak_res = max(res_peaks, default=0.0)
+            letter = 'M' if is_moment else 'V'
+            anchor, varies = rod_field_anchor(member_res, shear)
+            title, idx = (layer_of[layer] if layer in layer_of
+                          else (ROD_LAYER_TITLES['all'], rigid_ids))
             name = ('Bending moment along the rods' if is_moment
                     else 'Shear along the rods')
-            fig = new_sheet(f'{name} — {unit}')
+            where = (f'plan, {title}' if view is not None
+                     else 'general view')
+            fig = new_sheet(f'{name} — {unit}, {where}')
             ax = _pdf_view_axes(fig)
-            hot = MOMENT_POS_HIGH if is_moment else MOMENT_NEG_HIGH
+            pts, v_az, v_el = view_proj(view)
 
-            def rc(i):
-                if peak_res <= 1e-12:
-                    return conn_color(i)
-                v = res_peaks[i] / peak_res
-                return moment_color(v if is_moment else -v, 1.0)
-
-            _pdf_members(ax, members, proj_2d, rc, linewidth=1.1)
-            _pdf_supports(ax, supports, proj_2d)
-            extra, n_drawn, n_flat = _pdf_along_rod_diagrams(
-                ax, members, proj_2d, curves, peak_ord, hot)
+            # every rod as a pale hairline: the context the coloured ones
+            # sit in, and a rod at ~zero (white) still reads as a rod
+            _pdf_members(ax, members, pts, lambda i: PDF_ROD_CONTEXT_COLOR,
+                         linewidth=0.35, zorder=3)
+            n_drawn, n_flat = _pdf_rod_field(ax, members, pts, member_res,
+                                             shear, anchor, idx=idx,
+                                             nodes=nodes)
+            ranked = rod_peaks(member_res, idx, shear)
+            top = ranked[:PDF_ROD_TOP_N]
+            _pdf_tag_rods(ax, members, member_res, pts, top)
+            _pdf_supports(ax, supports, pts)
 
             key = _PdfKey(ax)
-            key.caption(f'Peak |{"M" if is_moment else "V"}| along each rod, {unit}')
-            if peak_res > 1e-12:
-                peak_shown = u.v(quantity, peak_res)
-                key.ramp(lambda v: moment_color(v if is_moment else -v, 1.0),
-                         0.0, 1.0,
-                         [(0.0, '0'), (0.5, f'{peak_shown * 0.5:,.3g}'),
-                          (1.0, f'{peak_shown:,.3g}')])
-                key.row(hot, 'diagram: the value along the rod, to one '
-                             'common scale')
-                key.note('ordinate = the SIGNED component about the rod\'s '
-                         'more heavily worked local axis, so a sign change '
-                         'along the span shows')
-                key.note(f'tallest diagram = '
-                         f'{u.v(quantity, peak_ord):,.3g} {unit}; '
-                         f'the ramp above is the RESULTANT peak per rod')
+            key.caption(f'{"Moment" if is_moment else "Shear"} along each '
+                        f'rod, {unit}')
+            if anchor > 1e-12:
+                shown = u.v(quantity, anchor)
+                key.ramp(lambda v: moment_color(v, anchor), -anchor, anchor,
+                         [(-anchor, f'−{shown:,.3g}'), (0.0, '0'),
+                          (anchor, f'+{shown:,.3g}')])
+                key.row(MOMENT_NEG_HIGH, 'orange = negative'
+                        + (' (hogging)' if is_moment else ''))
+                key.row(MOMENT_POS_HIGH, 'violet = positive'
+                        + (' (sagging)' if is_moment else ''))
+                key.note('coloured along each rod, as on screen')
+                key.note('white = zero: a white band is where it turns')
+                if not varies:
+                    key.note('no load is ON any rod, so shear is constant '
+                             'along each one and moment runs straight '
+                             'end to end')
             else:
                 key.note(f'no rod in this model carries '
                          f'{"bending" if is_moment else "shear"}')
-            key.row(MEMBER_PIN_COLOR, 'bar, pin connection (carries neither)')
+            key.row(PDF_ROD_CONTEXT_COLOR,
+                    'pale: pin bars' + (', and rods of the other layers'
+                                        if view is not None and
+                                        len(idx) < len(rigid_ids) else ''))
+            if top:
+                key.row('#555555', f'1–{len(top)}: the rods carrying the '
+                                   f'most here, at their peak')
             key.row(SUPPORT_COLOR, 'support', marker='s')
             if n_flat:
                 key.note(f'{n_flat} rod(s) point at the reader on this view '
-                         f'and have no diagram here')
+                         f'and have no colour here')
 
-            stats = [f'rods, rigid     {n_rigid} of {len(members)}',
-                     f'with a diagram  {n_drawn}']
-            if peak_res > 1e-12:
-                gi = max(range(len(res_peaks)), key=lambda i: res_peaks[i])
-                gd = sm_mod.member_peak_actions(member_res[gi],
-                                                PDF_DIAGRAM_SAMPLES)
-                at = gd['x_M' if is_moment else 'x_V']
-                L = member_res[gi].get('length_m', 0.0) or 0.0
-                live = [v for v in res_peaks if v > 1e-12]
-                stats += ['',
-                          'governing rod']
-                stats += [f'  {ln.strip()}'
-                          for ln in _pdf_fmt_bar(nodes, members, gi, u)]
-                stats += [f'  peak          '
-                          f'{u.fl(quantity, res_peaks[gi], 3, comma=True)}',
-                          f'  at x          {u.f("length", at, 3)} of '
-                          f'{u.fl("length", L, 3)}',
-                          '',
-                          f'mean peak       '
-                          f'{u.fl(quantity, sum(live) / len(live), 3, comma=True)}',
-                          f'sign reverses   {flips} rod(s) in span']
-            _pdf_finish_view(ax, nodes, proj_2d, az, el, key, stats,
-                             extra_pts=extra, u=u)
+            stats = [f'rods shown      {n_drawn} of {len(members)}']
+            if top:
+                stats += ['', f'largest |{letter}| ({unit}), at x '
+                              f'({u.lab("length")}) from the first node']
+                for k, (v, i, x) in enumerate(top, start=1):
+                    m = members[i]
+                    ends = f'{m["a"]}→{m["b"]}'
+                    stats.append(f'{k:>2}  bar {i:<5} {ends:<11}'
+                                 f'{u.v(quantity, v):>9,.3f}  at '
+                                 f'{u.f("length", x, 2):>6}')
+                if len(ranked) > len(top):
+                    stats.append(f'    … {len(ranked) - len(top)} more '
+                                 f'in the tables')
+            _pdf_finish_view(ax, nodes, pts, v_az, v_el, key, stats,
+                             view=view, u=u)
             pdf.savefig(fig)
             plt.close(fig)
 
-        if 'moment_rods' in plan:
-            along_rod_sheet('moment')
-        if 'shear_rods' in plan:
-            along_rod_sheet('shear')
+        for kind_key, kind in (('moment_rods', 'moment'),
+                               ('shear_rods', 'shear')):
+            if kind_key in plan:
+                along_rod_sheet(kind)
+            for lk in ('top', 'bottom', 'webs', 'all'):
+                if f'{kind_key}_plan_{lk}' in plan:
+                    along_rod_sheet(kind, view=plan_view, layer=lk)
 
         if 'deformed' in plan:
             # deformed shape
@@ -4282,7 +4395,7 @@ def report_plan(members, results=None, checks=None, groups=None,
     want = set(PDF_SHEET_GROUPS if groups is None else groups)
     if not ortho_views:
         want.discard('views')
-    return plan_sheets(results, checks, n_rigid, want)
+    return plan_sheets(results, checks, n_rigid, want, members=members)
 
 
 def group_report_order(branch_groups, n_members, gids=None,

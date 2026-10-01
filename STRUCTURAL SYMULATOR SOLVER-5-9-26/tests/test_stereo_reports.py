@@ -829,7 +829,8 @@ def test_plan_sheets_lists_every_sheet_the_report_will_have():
     for key in ('plan', 'front', 'back', 'right', 'left',
                 'force_iso', 'force_top',
                 'util_iso', 'util_top', 'util_rel',
-                'moment_nodes', 'moment_rods', 'shear_rods',
+                'moment_nodes', 'moment_rods', 'moment_rods_plan_all',
+                'shear_rods', 'shear_rods_plan_all',
                 'deformed', 'reactions', 'governing',
                 'solicitation_rods', 'solicitation_nodes'):
         assert key in plan, key
@@ -865,7 +866,8 @@ def test_export_pdf_writes_exactly_the_planned_sheets():
     nodes, members, loads, supports, res, checks = _rigid_model()
     with tempfile.TemporaryDirectory() as d:
         for groups in (None, {'force', 'tables'}, {'moment'}, set()):
-            plan = sr.plan_sheets(res, checks, len(members), groups)
+            plan = sr.plan_sheets(res, checks, len(members), groups,
+                                  members=members)
             path = os.path.join(d, f'{len(plan)}.pdf')
             sr.export_pdf(nodes, members, loads, supports, res, path,
                           checks=checks, groups=groups)
@@ -909,58 +911,6 @@ def _diagram_axes():
     import matplotlib.pyplot as plt
     fig = plt.figure()
     return fig, fig.add_subplot(111)
-
-
-def test_along_rod_diagrams_hang_off_the_member_perpendicular():
-    """The diagram's baseline IS the rod and its ordinate is measured at
-    right angles to it, so a horizontal bar's diagram must move in y."""
-    fig, ax = _diagram_axes()
-    try:
-        members = [{'a': 0, 'b': 1}]
-        pts = [(0.0, 0.0), (10.0, 0.0)]
-        extra, drawn, flat = sr._pdf_along_rod_diagrams(
-            ax, members, pts, [[0.0, 5.0, 0.0]], peak=5.0, color='#000000')
-        assert drawn == 1 and flat == 0
-        xs = [p[0] for p in extra]
-        ys = [p[1] for p in extra]
-        assert min(xs) == pytest.approx(0.0)
-        assert max(xs) == pytest.approx(10.0)
-        # the peak ordinate is PDF_DIAGRAM_FRAC of the projected diagonal
-        assert max(abs(y) for y in ys) == pytest.approx(
-            sr.PDF_DIAGRAM_FRAC * 10.0)
-    finally:
-        import matplotlib.pyplot as plt
-        plt.close(fig)
-
-
-def test_along_rod_diagrams_skip_a_rod_pointing_at_the_reader():
-    """A rod projecting to a single point has no perpendicular on this
-    sheet; drawing its diagram in an arbitrary direction would be a
-    fabrication, so it is counted and reported instead."""
-    fig, ax = _diagram_axes()
-    try:
-        members = [{'a': 0, 'b': 1}, {'a': 2, 'b': 3}]
-        pts = [(0.0, 0.0), (10.0, 0.0), (4.0, 4.0), (4.0, 4.0)]
-        extra, drawn, flat = sr._pdf_along_rod_diagrams(
-            ax, members, pts, [[1.0, 1.0], [1.0, 1.0]], peak=1.0,
-            color='#000000')
-        assert drawn == 1
-        assert flat == 1
-    finally:
-        import matplotlib.pyplot as plt
-        plt.close(fig)
-
-
-def test_along_rod_diagrams_draw_nothing_without_a_peak():
-    fig, ax = _diagram_axes()
-    try:
-        extra, drawn, flat = sr._pdf_along_rod_diagrams(
-            ax, [{'a': 0, 'b': 1}], [(0.0, 0.0), (1.0, 0.0)],
-            [[0.0, 0.0]], peak=0.0, color='#000000')
-        assert extra == [] and drawn == 0
-    finally:
-        import matplotlib.pyplot as plt
-        plt.close(fig)
 
 
 def test_table_tail_rows_are_drawn_below_the_last_body_row():
@@ -1526,3 +1476,114 @@ def test_export_pdf_takes_the_scale_and_puts_the_default_back(tmp_path):
     sr.export_pdf(nodes, members, loads, supports, res, path, checks=checks,
                   groups={'views'}, view_ratio=100)
     assert sr._PDF_VIEW == sr.PDF_VIEW_DEFAULT
+
+
+# ── Moment and shear along the rods, as the canvas colours them ────────────
+
+def test_rod_layers_split_a_two_layer_grid_by_role():
+    members = [{'a': 0, 'b': 1, 'role': 'top_chord'},
+               {'a': 1, 'b': 2, 'role': 'bottom_chord'},
+               {'a': 2, 'b': 3, 'role': 'web'},
+               {'a': 3, 'b': 4, 'role': 'outer_rib'},
+               {'a': 4, 'b': 5}]
+    layers = sr.rod_layers(members)
+    assert [(k, ids) for k, _t, ids in layers] == [
+        ('top', [0, 3]), ('bottom', [1]), ('webs', [2, 4])]
+    # only the rods asked about
+    assert [k for k, _t, _i in sr.rod_layers(members, [2, 4])] == ['all']
+
+
+def test_rod_layers_fall_back_to_one_layer_without_chord_roles():
+    members = [{'a': 0, 'b': 1}, {'a': 1, 'b': 2, 'role': 'web'}]
+    assert sr.rod_layers(members) == [('all', 'all rods', [0, 1])]
+    assert sr.rod_layers([]) == []
+
+
+def test_plan_sheets_has_a_plan_per_rod_layer_when_given_the_members():
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    roles = ['top_chord', 'bottom_chord', 'web']
+    for i, m in enumerate(members):
+        m['role'] = roles[i % 3]
+    plan = sr.plan_sheets(res, checks, len(members), members=members)
+    i = plan.index('moment_rods')
+    assert plan[i:i + 8] == [
+        'moment_rods', 'moment_rods_plan_top', 'moment_rods_plan_bottom',
+        'moment_rods_plan_webs',
+        'shear_rods', 'shear_rods_plan_top', 'shear_rods_plan_bottom',
+        'shear_rods_plan_webs']
+    # and the document holds exactly the sheets the plan promises
+    assert plan == sr.report_plan(members, res, checks)
+
+
+def test_the_paper_colours_by_the_screens_own_value():
+    """The point of the sheet: it shows what the canvas shows. Same signed
+    value at every station, same ramp, same anchor."""
+    from apps.stereo.stereo_app_render import StereoRenderMixin as RenderMixin
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    for mr in res['member_res'][:20]:
+        for t in (0.0, 0.3, 0.5, 1.0):
+            for shear in (False, True):
+                assert sr.rod_field_value(mr, t, shear) == pytest.approx(
+                    RenderMixin._rod_field_value(mr, t, shear), abs=1e-12)
+
+
+def test_the_rod_field_draws_each_rigid_rod_in_stretches():
+    from apps.stereo.stereo_app_colors import moment_color
+    fig, ax = _diagram_axes()
+    try:
+        members = [{'a': 0, 'b': 1}, {'a': 2, 'b': 3}, {'a': 0, 'b': 2}]
+        pts = [(0.0, 0.0), (10.0, 0.0), (4.0, 4.0), (4.0, 4.0)]
+        mres = [{'conn': 'rigid', 'length_m': 3.0, 'Mz_a': 2.0, 'Vy_a': 1.0},
+                {'conn': 'rigid', 'length_m': 3.0, 'Mz_a': 1.0},
+                {'conn': 'pin', 'length_m': 3.0}]
+        drawn, flat = sr._pdf_rod_field(ax, members, pts, mres, False,
+                                         anchor=2.0, samples=4)
+        assert (drawn, flat) == (1, 1)       # the pin and the point skip
+        lc = ax.collections[-1]
+        assert len(lc.get_segments()) == 4
+        # first stretch: the moment at its middle, t = 1/8
+        want = moment_color(sr.rod_field_value(mres[0], 0.125, False), 2.0)
+        got = lc.get_colors()[0][:3]
+        assert tuple(round(c, 3) for c in got) == tuple(
+            round(c, 3) for c in sr._hex_to_rgb(want))
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+
+def test_the_moment_sheets_tag_the_rods_carrying_the_most(tmp_path):
+    nodes, members, loads, supports, res, checks = _rigid_model()
+    ranked = sr.rod_peaks(res['member_res'], range(len(members)), False)
+    assert ranked == sorted(ranked, key=lambda r: -r[0])
+    assert ranked[0][0] == pytest.approx(max(
+        sm.member_peak_actions(mr, sr.PDF_DIAGRAM_SAMPLES)['M_max']
+        for mr in res['member_res']))
+    path = str(tmp_path / 'm.pdf')
+    sr.export_pdf(nodes, members, loads, supports, res, path, checks=checks,
+                  groups={'moment'})
+    assert _pdf_page_count(path) == len(sr.plan_sheets(
+        res, checks, len(members), {'moment'}, members=members))
+
+
+def test_the_fit_moves_the_drawing_off_centre_to_grow_it():
+    """A wide key across the top-left used to cap a square plan at the
+    size that kept it centred; the drawing may now sit lower and right."""
+    fig, ax = _diagram_axes()
+    try:
+        pts = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+        key = [(0.0, 0.62, 0.55, 1.0)]
+        x0, y0, x1, y1 = sr._pdf_fit_window_clear(ax, pts, key)
+        tall = 10.0 / (y1 - y0)            # share of the axes height
+        # held at the centre, the square could only reach up to the key's
+        # bottom edge: 2 * (0.62 - centre) of the height, under 0.25
+        assert tall > 0.5
+        # it got there by moving right, beside the key
+        assert (5.0 - x0) / (x1 - x0) > 0.55
+        # and it is clear of the key
+        for px, py in pts:
+            u = (px - x0) / (x1 - x0)
+            v = (py - y0) / (y1 - y0)
+            assert not (u <= 0.55 + sr.PDF_FIT_PAD and v >= 0.62 - sr.PDF_FIT_PAD)
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close(fig)

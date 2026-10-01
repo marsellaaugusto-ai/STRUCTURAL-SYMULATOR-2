@@ -411,7 +411,8 @@ class StereoReportsMixin:
         v = self._pdf_view_opts()
         return {'view_zoom': v.get('zoom', 1.0), 'view_ratio': v.get('ratio')}
 
-    def _pdf_sheet_dialog(self, title, results, checks, n_rigid):
+    def _pdf_sheet_dialog(self, title, results, checks, n_rigid,
+                          members=None):
         """Ask which groups of sheets to include; None if cancelled.
 
         Returns a set of PDF_SHEET_GROUPS keys. Tests replace this method
@@ -488,7 +489,8 @@ class StereoReportsMixin:
 
         def recount(*_):
             want = {k for k, v in vars_.items() if v.get()}
-            n = len(sr.plan_sheets(results, checks, n_rigid, want))
+            n = len(sr.plan_sheets(results, checks, n_rigid, want,
+                                   members=members))
             count.config(text=f'{n} sheet{"s" if n != 1 else ""}')
 
         for v in vars_.values():
@@ -569,8 +571,9 @@ class StereoReportsMixin:
         # it cannot fill.
         sub_rigid = sum(1 for i in sorted(member_idx)
                         if self.members[i].get('conn') == 'rigid')
-        groups = self._pdf_sheet_dialog('PDF of Selection', self.results,
-                                        self.member_checks, sub_rigid)
+        groups = self._pdf_sheet_dialog(
+            'PDF of Selection', self.results, self.member_checks, sub_rigid,
+            members=[self.members[i] for i in sorted(member_idx)])
         if groups is None:
             return
         path = filedialog.asksaveasfilename(
@@ -608,7 +611,8 @@ class StereoReportsMixin:
             return
         n_rigid = sum(1 for m in self.members if m.get('conn') == 'rigid')
         groups = self._pdf_sheet_dialog('Export PDF', self.results,
-                                        self.member_checks, n_rigid)
+                                        self.member_checks, n_rigid,
+                                        members=self.members)
         if groups is None:
             return
         path = filedialog.asksaveasfilename(

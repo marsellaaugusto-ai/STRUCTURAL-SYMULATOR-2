@@ -453,3 +453,8 @@ MECH_PERIOD_S = 1.6
 # Play load: the Load % slider run from 0 to 100 % (stereo_app_playload)
 PLAY_LOAD_SECONDS = 4.0
 PLAY_FRAME_MS = 40
+
+# Buckling shapes (stereo_app_buckling): purple, so a buckling mode is never
+# mistaken for the orange mechanism -- one is a structure that cannot stand,
+# the other the way one that can will fail.
+BUCKLE_COLOR = '#6a3d9a'

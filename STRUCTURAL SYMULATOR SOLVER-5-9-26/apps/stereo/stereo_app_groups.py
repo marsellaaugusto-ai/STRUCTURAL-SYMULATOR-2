@@ -220,7 +220,45 @@ class StereoGroupsMixin:
                          command=self._group_shared_nodes)
         menu.add_command(label='Do the totals add up?',
                          command=self._group_reconcile)
+        menu.add_separator()
+        menu.add_command(label='Group the whole model by pieces…',
+                         command=self._group_by_pieces)
         return menu
+
+    def _group_by_pieces(self):
+        """Replace the groups with one per piece of the model -- each truss,
+        module and roof -- holding, as deep as the piece goes, its modules,
+        its trusses, and every truss's top strip, bottom strip and diagonals
+        (stereo_autogroup). For a file that arrives with every rod
+        Ungrouped."""
+        from apps.stereo import stereo_autogroup as ag
+        if not self.members:
+            self._group_note_action('Nothing to group: the model is empty.')
+            return False
+        if self.groups and not messagebox.askyesno(
+                'Group by pieces',
+                'This replaces the %d group(s) the model has now with one '
+                'group per piece. Undo brings them back. Go ahead?'
+                % len(self.groups)):
+            return False
+        groups = ag.auto_groups(self.nodes, self.members)
+        self._push_undo('group by pieces')
+        self._drop_groups()
+        self.groups = groups
+        self._refresh_group_list()
+        plural = {'Truss': 'trusses', 'Module': 'modules', 'Roof': 'roofs'}
+        kinds = {}
+        for g in groups:
+            if g['parent'] is None:
+                kind = g['name'].split()[0]
+                kinds[kind] = kinds.get(kind, 0) + 1
+        self._group_note_action(
+            'Grouped by pieces: %s -- %d groups in all.' % (
+                ', '.join('%d %s' % (n, k.lower() if n == 1 else
+                                     plural.get(k, k.lower() + 's'))
+                          for k, n in kinds.items()), len(groups)))
+        self._draw()
+        return True
 
     # ── the list ───────────────────────────────────────────────────────────
 

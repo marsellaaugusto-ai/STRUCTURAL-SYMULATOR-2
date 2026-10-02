@@ -12433,3 +12433,177 @@ class TestExampleLessons:
                 for r in app.results['reactions'].values())
         assert h > 0.5 * sum(r.get('Fz', 0.0)
                              for r in app.results['reactions'].values())
+
+
+class TestEveryDrawingIsToScale:
+    """A drawing that stretches one direction more than another makes a
+    truss look deeper or flatter than it is. Every view of the structure --
+    the canvas, and every PDF sheet that draws it -- scales x and y alike.
+    (The deflected shape and "Thickness = stress" exaggerate on purpose,
+    and say so in their legends.)"""
+
+    def test_the_canvas_draws_a_square_square(self, app):
+        app.nodes = [(0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (4.0, 4.0, 0.0),
+                     (0.0, 4.0, 0.0)]
+        app.members = [dict(a=k, b=(k + 1) % 4, conn='pin', E=200.0, A=10.0,
+                            I=100.0, J=100.0) for k in range(4)]
+        app.supports, app.loads, app.results = [], [], None
+        # straight down, a square is a square
+        app.azimuth, app.elevation = 0.0, 89.9
+        app._draw()
+        p = app._screen_positions()
+        side = [math.dist(p[k], p[(k + 1) % 4]) for k in range(4)]
+        assert max(side) == pytest.approx(min(side), rel=1e-4)
+        # at any angle, in the parallel projection, its opposite sides stay
+        # equal: one scale for the whole drawing, nothing stretched
+        for az, el in ((30.0, 25.0), (-60.0, 40.0), (0.0, 5.0)):
+            app.azimuth, app.elevation = az, el
+            app._draw()
+            p = app._screen_positions()
+            side = [math.dist(p[k], p[(k + 1) % 4]) for k in range(4)]
+            assert side[0] == pytest.approx(side[2], rel=1e-6)
+            assert side[1] == pytest.approx(side[3], rel=1e-6)
+
+    def test_every_pdf_drawing_scales_x_and_y_alike(self, app, tmp_path,
+                                                    monkeypatch):
+        from matplotlib.backends import backend_pdf
+        from apps.stereo import stereo_reports as sr
+        ratios = []
+        real = backend_pdf.PdfPages.savefig
+
+        def spy(self_, figure=None, **kw):
+            fw, fh = figure.get_size_inches()
+            for ax in figure.axes:
+                if not (ax.lines or ax.collections):
+                    continue
+                (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
+                if (x0, x1, y0, y1) == (0.0, 1.0, 0.0, 1.0):
+                    continue                    # a table's frame, not a view
+                b = ax.get_position()
+                sx = abs(x1 - x0) / (b.width * fw)
+                sy = abs(y1 - y0) / (b.height * fh)
+                ratios.append(sx / sy)
+            return real(self_, figure, **kw)
+        monkeypatch.setattr(backend_pdf.PdfPages, 'savefig', spy)
+        app._analyze()
+        sr.export_pdf(app.nodes, app.members, app._all_loads(), app.supports,
+                      app.results, str(tmp_path / 'r.pdf'),
+                      checks=app.member_checks)
+        assert len(ratios) >= 10
+        assert all(r == pytest.approx(1.0, rel=1e-3) for r in ratios), ratios
+
+
+class TestGroupByPieces:
+    """Groups → Actions → Group the whole model by pieces."""
+
+    def test_the_default_grid_becomes_a_roof_of_three_layers(self, app,
+                                                              dialogs):
+        assert app._group_by_pieces()
+        tops = [g for g in app.groups if g['parent'] is None]
+        assert [g['name'] for g in tops] == ['Roof 1']
+        kids = {g['name']: g for g in app.groups if g['parent'] == tops[0]['id']}
+        assert set(kids) == {'Roof 1 top chords', 'Roof 1 bottom chords',
+                             'Roof 1 diagonals'}
+        want = {'top chords': 'top_chord', 'bottom chords': 'bottom_chord',
+                'diagonals': 'web'}
+        for name, g in kids.items():
+            role = want[name.split(' ', 2)[2]]
+            assert {app.members[j]['role'] for j in g['members']} == {role}
+        assert 'Grouped by pieces: 1 roof' in app.group_note.cget('text')
+
+    def test_it_asks_before_replacing_groups_and_undo_brings_them_back(
+            self, app, monkeypatch):
+        from apps.stereo import stereo_groups as sgp
+        app.groups = []
+        sgp.new_group(app.groups, 'Mine', members=[0, 1, 2])
+        asked = []
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.messagebox.askyesno',
+                            lambda *a, **k: asked.append(a) or False)
+        assert app._group_by_pieces() is False
+        assert [g['name'] for g in app.groups] == ['Mine'] and asked
+        monkeypatch.setattr('apps.stereo.stereo_app_groups.messagebox.askyesno',
+                            lambda *a, **k: True)
+        assert app._group_by_pieces()
+        app._undo()
+        assert [g['name'] for g in app.groups] == ['Mine']
+
+    def test_the_actions_menu_has_it(self, app):
+        menu = app._group_actions_menu(app.root)
+        labels = [menu.entrycget(k, 'label') for k in range(menu.index('end') + 1)
+                  if menu.type(k) == 'command']
+        assert 'Group the whole model by pieces…' in labels
+
+
+class TestBucklingDemonstrations:
+    """Analyse → Buckling: the shapes, drawn moving in purple, and the
+    second-order load-deflection curve. The checks stay first-order."""
+
+    def test_the_shapes_cycle_and_then_stop(self, app):
+        app._analyze()
+        utils = [c.get('util') for c in app.member_checks]
+        assert app._show_buckling()
+        mode = app._mech
+        assert mode['kind'] == 'buckling' and mode['which'] == 0
+        assert 'buckles at' in app.status_var.get()
+        app._mech_tick()
+        assert app.canvas.find_withtag('mechanism')
+        for k in range(1, mode['count']):
+            assert app._show_buckling() and app._mech['which'] == k
+        assert app._show_buckling() is False and app._mech is None
+        # a demonstration: not one utilisation moved
+        assert [c.get('util') for c in app.member_checks] == utils
+
+    def test_an_edit_stops_the_shape(self, app):
+        app._analyze()
+        app._show_buckling()
+        app.results = None
+        app._mech_tick()
+        assert app._mech is None
+
+    def test_the_analysis_is_cached_for_one_solve(self, app, monkeypatch):
+        from apps.stereo import stereo_buckling as sb
+        app._analyze()
+        calls = []
+        real = sb.buckling
+        monkeypatch.setattr(sb, 'buckling',
+                            lambda *a, **k: calls.append(1) or real(*a, **k))
+        app._show_buckling()
+        app._show_buckling()
+        assert len(calls) == 1
+        app._stop_mechanism()
+
+    def test_the_load_deflection_window(self, app):
+        app._analyze()
+        win = app._show_load_deflection()
+        try:
+            data = win._data
+            assert data['lambda_cr'] == pytest.approx(
+                app._buckling_result()['factors'][0], rel=1e-6)
+            for key in ('bow_mm', 'node_mm', 'first_mm'):
+                assert win._canvas.find_withtag('curve_' + key)
+            assert win.title() == 'Second-order load–deflection'
+        finally:
+            win.destroy()
+
+    def test_nothing_in_compression_says_so(self, app):
+        app.nodes = [(0.0, 0.0, 3.0), (0.0, 0.0, 0.0)]
+        app.members = [dict(app.members[0], a=0, b=1, conn='pin')]
+        app.supports = [{'node': 0, 'type': 'pin'},
+                        {'node': 1, 'dofs': {'ux': True, 'uy': True}}]
+        app.loads = [{'node': 1, 'fz': -10.0}]       # it hangs
+        app.area_load_on.set(False)
+        app.self_weight_on.set(False)
+        app.wind_on.set(False)
+        app.member_loads = []
+        app._analyze()
+        assert app._show_buckling() is False
+        assert 'compression' in app.status_var.get()
+
+    def test_the_panel_has_both_buttons(self, app):
+        def walk(w):
+            for c in w.winfo_children():
+                yield c
+                yield from walk(c)
+        texts = {w.cget('text') for w in walk(app._mode_frames['analyse'])
+                 if isinstance(w, tk.Button)}
+        assert {'Buckling shapes', 'Load–deflection…'} <= texts

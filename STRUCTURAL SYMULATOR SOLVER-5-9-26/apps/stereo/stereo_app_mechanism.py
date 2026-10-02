@@ -71,6 +71,8 @@ class StereoMechanismMixin:
         mode = getattr(self, '_mech', None)
         if mode is None:
             return ''
+        if mode.get('caption'):
+            return mode['caption']
         if mode['kind'] == 'rigid':
             if not self._active_supports():
                 return ('It stands on nothing, so it falls (orange): give it '
@@ -102,7 +104,11 @@ class StereoMechanismMixin:
         # The node count every frame (a crane lift adds nodes, and the next
         # frame must not draw the old shape onto them); the full signature,
         # which costs more, every tenth.
-        if self.results is not None or len(mode['shape']) != len(self.nodes) \
+        # A buckling mode is OF a solve, so it is the opposite: it goes
+        # when the solve does.
+        stale = (self.results is None if mode['kind'] == 'buckling'
+                 else self.results is not None)
+        if stale or len(mode['shape']) != len(self.nodes) \
                 or (mode['frame'] % 10 == 0
                     and mode['sig'] != self._mech_signature()):
             self._stop_mechanism()
@@ -135,22 +141,41 @@ class StereoMechanismMixin:
             px, py, _ = self._project(x + a * dx, y + a * dy, z + a * dz)
             pts.append(self.zc.w2s((px - cx) * self.PX_PER_M,
                                    (py - cy) * self.PX_PER_M))
+        colour = mode.get('color', MECH_COLOR)
         moving = [dx * dx + dy * dy + dz * dz > 0.05 ** 2
                   for dx, dy, dz in shape]
-        for m in self.members:
-            if moving[m['a']] or moving[m['b']]:
-                (x0, y0), (x1, y1) = pts[m['a']], pts[m['b']]
-                c.create_line(x0, y0, x1, y1, fill=MECH_COLOR, width=2,
+        # A buckling shape also moves each rod's MIDDLE: a rod that bows
+        # between two joints that stay put is drawn bent through it.
+        mids = mode.get('mids') or {}
+        for i, m in enumerate(self.members):
+            mid = mids.get(i)
+            bows = mid is not None and (mid[0] ** 2 + mid[1] ** 2
+                                        + mid[2] ** 2) > 0.05 ** 2
+            if not (moving[m['a']] or moving[m['b']] or bows):
+                continue
+            (x0, y0), (x1, y1) = pts[m['a']], pts[m['b']]
+            if mid is not None:
+                pa, pb = self.nodes[m['a']], self.nodes[m['b']]
+                mx, my, mz = ((pa[k] + pb[k]) / 2.0 + a * mid[k]
+                              for k in range(3))
+                px, py, _ = self._project(mx, my, mz)
+                xm, ym = self.zc.w2s((px - cx) * self.PX_PER_M,
+                                     (py - cy) * self.PX_PER_M)
+                c.create_line(x0, y0, xm, ym, x1, y1, fill=colour,
+                              width=3 if bows else 2, smooth=True,
+                              tags='mechanism')
+            else:
+                c.create_line(x0, y0, x1, y1, fill=colour, width=2,
                               tags='mechanism')
         for k, mv in enumerate(moving):
             if mv:
                 x, y = pts[k]
-                c.create_oval(x - 3, y - 3, x + 3, y + 3, fill=MECH_COLOR,
+                c.create_oval(x - 3, y - 3, x + 3, y + 3, fill=colour,
                               outline='', tags='mechanism')
         # bottom centre: the legend and the view cube hold the top corners
         c.create_text(c.winfo_width() / 2.0, c.winfo_height() - 26,
                       anchor='s', justify='center',
-                      text=self._mech_caption(), fill=MECH_COLOR,
+                      text=self._mech_caption(), fill=colour,
                       font=('Helvetica', 9, 'bold'), tags='mechanism',
                       width=max(300, c.winfo_width() - 640))
 

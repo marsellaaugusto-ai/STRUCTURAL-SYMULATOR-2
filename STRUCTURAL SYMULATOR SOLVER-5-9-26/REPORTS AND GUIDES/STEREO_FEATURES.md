@@ -869,6 +869,50 @@ covers all of it: the groups are part of every undo step.
 
 ---
 
+
+### Group a whole model by its pieces
+
+*Groups → Actions ▾ → Group the whole model by pieces* groups a file that
+arrives with every rod Ungrouped — from SketchUp, another program, a hand-made
+workbook — by what it is made of, read off the geometry alone
+(stereo_autogroup):
+
+- **Pieces.** Each connected part is a group. A part whose nodes all lie in one
+  plane is a **Truss**; a 3D part is a **Module**, or a **Roof** when it is the
+  size of the largest in the file.
+- **Trusses inside a module or roof.** A 3D part built of planar trusses joined
+  at their strips is taken apart into those trusses: every triangle of rods
+  has a plane, and triangles that share a rod and a plane grow into one
+  truss. A roof is then read as modules when the file has a module to read it
+  by — same number of trusses, cut at the module's width along the roof — so
+  the tree goes Roof → Module → Truss.
+- **Every truss's top strip, bottom strip and diagonals.** The strips are not
+  conventional parallel chords: they are the two continuous runs round the
+  truss's outline that meet at a node. They are found by walking the outline
+  in the truss's own plane and splitting it at its two ends; the upper half
+  is the top strip. Everything else — diagonals, verticals, an end post — is
+  a diagonal.
+- **Shared strips.** A strip two neighbouring trusses share belongs to one
+  group only (a rod in two groups would be counted twice in every tonnage), so
+  it goes to the first truss, and its name says so: *R1 M1 Truss 1 top strip
+  (shared with R1 M1 Truss 2)*.
+- **Double-layer grids.** A grid that is not built of trusses gets top chords,
+  bottom chords and diagonals instead, from the angle each rod makes with the
+  local surface. On every generated grid this reproduces the generator's own
+  roles exactly.
+
+On the three-roof file (18 pieces, 4,054 rods) it finds 12 trusses, 3 modules
+of 4 trusses and 3 roofs of 7 modules × 4 trusses — 369 groups, every rod in
+exactly one. It asks before replacing existing groups; Undo brings them back.
+
+**Every drawing is to scale.** The canvas, the Module Editor, the base-module
+card and every PDF sheet that draws the structure use one scale for x, y and
+z, so a truss is never drawn deeper or flatter than it is. Tests hold the PDF
+to it, sheet by sheet: metres per inch are measured horizontally and
+vertically on every drawing and must agree. Two views exaggerate on purpose
+and say so in their legends: the deflected shape (×50 by default) and
+*Thickness = stress*.
+
 ## 8. The window: nine modes, one canvas
 
 Rebuilt 2026-09-19. The old layout spent 196 px on five rows of toolbar and
@@ -1016,6 +1060,39 @@ nothing under a symmetric load; the barrel vault pushes outward on its
 supports. Every control a lesson names exists. The card stays on screen in
 every mode, closes with its ×, comes back from *Example library → Show the
 lesson again*, and goes when a new model is generated.
+
+**Buckling, as a demonstration.** Analyse → *Buckling (demonstration)*
+teaches what MASTAN2 and Arcade teach, on the model in the tab
+(stereo_buckling). The code checks stay first-order; nothing here changes a
+utilisation or a pass/fail.
+
+- *Buckling shapes* runs the linear (bifurcation) buckling analysis: under
+  the loads as they stand each rod carries N, a compressed rod gets less
+  stiff sideways by its geometric stiffness K_G(N), and the structure buckles
+  at the load factor λ where K + λ·K_G stops being positive definite. The
+  status line reads *it buckles at 3.70 × this load*, and the shape is drawn
+  bowing in purple — purple so it is never mistaken for the orange of a
+  structure that cannot stand at all — with the view brought to the place
+  that buckles first. Pressed again it shows the next of three shapes.
+- *Load–deflection…* opens MASTAN2's signature plot: load factor against
+  deflection, by (K + λ·K_G)·u = λ·F stepped up to 95 % of the buckling
+  factor. The rod that buckles first is given an initial bow of L/1000 in
+  its buckling shape — the out-of-straightness steel codes assume — and the
+  bow grows as (λ/λcr)/(1 − λ/λcr), running away at λcr; beside it the node
+  that moves most, second-order against its first-order straight line, and
+  the dashed λcr and λ = 1 lines.
+
+To find a rod bowing between its joints, and not just the structure
+buckling as a whole, every rod is cut in two at mid-length for this analysis
+(only): a rigid rod's halves join the end nodes' rotations as in the solve; a
+pin rod's halves end in hinges of their own, so it is still pinned. Two
+elements put a column within 1 % of Euler: tested on pinned columns (pin and
+rigid, 0.75 % high) and a cantilever (π²EI/(2L)²), and on a grid whose first
+shape is its most compressed rod buckling at that rod's own Euler load.
+The default 800-rod grid takes about 2 s for the shapes and 9 s for the
+curve. It is the ELASTIC buckling of the IDEAL structure — no residual
+stress, inelasticity or local buckling of the section — so λ is an upper
+bound, the structure's counterpart of CIRSOC 301 E3's Fe for one rod.
 
 **The toolbar** (46 px) keeps only what is not a mode: Generate, ▶ Analyze,
 undo/redo, the Display popover, Export, and the Load % slider.

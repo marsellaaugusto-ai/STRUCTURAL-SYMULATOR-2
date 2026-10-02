@@ -469,6 +469,24 @@ class StereoPanelsMixin(_ToolbarModes):
                        bg=BG, font=('Helvetica', 8), anchor='w',
                        command=self._draw).pack(fill='x', padx=6, pady=(0, 4))
 
+        # Buckling, as a demonstration (stereo_app_buckling)
+        box = tk.LabelFrame(parent, text='Buckling (demonstration)', bg=BG,
+                            font=('Helvetica', 10, 'bold'))
+        box.pack(fill='x', padx=6, pady=4)
+        tk.Label(box, text='How and when this structure buckles under this '
+                           'load: elastic, ideal structure. The checks stay '
+                           'first-order.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), anchor='w',
+                 justify='left', wraplength=PANEL_TEXT_W
+                 ).pack(fill='x', padx=6, pady=(2, 2))
+        row = tk.Frame(box, bg=BG)
+        row.pack(fill='x', padx=6, pady=(0, 6))
+        tk.Button(row, text='Buckling shapes', font=('Helvetica', 9),
+                  command=self._show_buckling).pack(side='left')
+        tk.Button(row, text='Load–deflection…', font=('Helvetica', 9),
+                  command=self._show_load_deflection).pack(side='left',
+                                                           padx=(6, 0))
+
         box = tk.LabelFrame(parent, text='Analysis', bg=BG,
                             font=('Helvetica', 10, 'bold'))
         box.pack(fill='both', expand=True, padx=6, pady=4)

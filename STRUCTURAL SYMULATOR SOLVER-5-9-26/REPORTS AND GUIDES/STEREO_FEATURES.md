@@ -729,6 +729,15 @@ card is a reference, not a second editor.
 - **Undo / redo**, 60 deep, covering every model-changing command.
 - **Support sandbox** — click a support to disable it and re-analyze without
   editing the model, to build intuition for redundancy.
+- **The per-node support editor** loads the support of the node you click,
+  so it can be copied to others -- but only a support you set. A crane's own
+  restraints (its fixed mast top, a tag line holding one direction) are not
+  loaded: clicking a tag-line node used to put "X only" in the editor without
+  a word, and the next *Apply* on a box over a roof held all 45 of its
+  supports in X alone, mast tops included. *Apply* now leaves a crane's mast
+  tops and tag lines alone, and a support that leaves X, Y or Z free, put
+  under more than one node at once, is asked about first: *"This support
+  holds 45 node(s) in X only: they stay free to move along Y and Z…"*.
 
 ### Groups are layers
 

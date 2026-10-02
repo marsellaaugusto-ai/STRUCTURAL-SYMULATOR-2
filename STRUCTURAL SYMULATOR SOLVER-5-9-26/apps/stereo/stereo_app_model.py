@@ -784,12 +784,44 @@ class StereoModelMixin:
         if bad:
             messagebox.showerror('Boundary condition', f'Node {bad[0]} does not exist.')
             return
-        self._push_undo('apply support')
-        self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
         dofs = {d: v.get() for d, v in self.dof_vars.items()}
         preset = self.sup_preset_var.get()
+        # A crane's mast top keeps its fixed support: a box drawn over a
+        # roof and its cranes used to overwrite the anchors too, leaving
+        # the masts hanging from whatever the editor held.
+        tops = self._crane_mast_nodes()
+        kept = [n for n in nodes if n in tops]
+        nodes = [n for n in nodes if n not in tops]
+        if not nodes:
+            messagebox.showerror(
+                'Boundary condition',
+                'Those are crane mast tops: their fixed support belongs to '
+                'the crane. Clear the crane to change them.')
+            return
+        # A support that leaves a translation free, put under many nodes
+        # at once, is asked about -- it is what a stray editor state looks
+        # like, and a roof on "X only" supports cannot stand.
+        free = [ax for d, ax in (('ux', 'X'), ('uy', 'Y'), ('uz', 'Z'))
+                if not sm.support_restraints(
+                    {'type': None if preset == 'custom' else preset,
+                     'dofs': dofs})[d]]
+        if free and len(nodes) > 1 and not messagebox.askyesno(
+                'Boundary condition',
+                'This support holds %d node(s) in %s only: they stay free '
+                'to move along %s, so whatever stands on them can slide or '
+                'drop. Apply it anyway?\n\n(For an ordinary support, pick '
+                'the preset "pin".)'
+                % (len(nodes),
+                   ', '.join(ax for ax in 'XYZ' if ax not in free) or
+                   'no direction', ' and '.join(free))):
+            return
+        self._push_undo('apply support')
+        self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
         target = set(nodes)
-        self.supports = [s for s in self.supports if s['node'] not in target]
+        # the crane's tag lines on these nodes stay with the crane
+        own = self._crane_support_ids()
+        self.supports = [s for s in self.supports
+                         if s['node'] not in target or id(s) in own]
         for node in nodes:
             entry = {'node': node, 'dofs': dict(dofs)}
             if preset != 'custom':
@@ -798,6 +830,22 @@ class StereoModelMixin:
         self.results = None
         self.member_checks = None
         self._refresh_all()
+        if kept:
+            self._set_status('%d crane mast top(s) in the selection kept '
+                             'their fixed support.' % len(kept), 'ok')
+
+    def _crane_mast_nodes(self):
+        """The top node of every crane mast -- where the crane's fixed
+        support sits."""
+        tops = set()
+        for m in self.members:
+            if m.get('role') == 'crane_mast':
+                tops.update((m['a'], m['b']))
+        hooks = set()
+        for m in self.members:
+            if m.get('role') == 'crane_cable':
+                hooks.update((m['a'], m['b']))
+        return tops - hooks
 
     def _remove_support(self):
         nodes = self._target_nodes(self.sup_node_var)

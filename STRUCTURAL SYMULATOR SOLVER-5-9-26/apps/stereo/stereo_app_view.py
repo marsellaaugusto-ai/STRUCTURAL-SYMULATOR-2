@@ -961,10 +961,23 @@ class StereoViewMixin:
             '\nPart of %s (locked): dragging it moves the whole group.'
             % ', '.join(self._group_display_name(g) for g in where)
             if where else ''))
-        existing = next((s for s in self.supports if s['node'] == best), None)
-        if existing is not None:
-            r = sm.support_restraints(existing)
-            self.sup_preset_var.set(existing.get('type') or 'custom')
+        # The per-node editor takes the clicked node's support, so it can be
+        # changed or copied -- but only a support the USER set. A crane's
+        # own restraints (a mast top, a tag line holding one direction) are
+        # not: clicking a tag-line node used to load "X only" into the
+        # editor without a word, and the next Apply put "X only" under a
+        # whole roof. Several supports on one node load as their union.
+        own = (self._crane_support_ids()
+               if hasattr(self, '_crane_support_ids') else set())
+        mine = [s for s in self.supports
+                if s['node'] == best and id(s) not in own]
+        if mine:
+            r = dict.fromkeys(sm.DOF_NAMES, False)
+            for sp in mine:
+                for d, on in sm.support_restraints(sp).items():
+                    r[d] = r[d] or on
+            self.sup_preset_var.set((mine[0].get('type') or 'custom')
+                                    if len(mine) == 1 else 'custom')
             for d, _ in DOF_LABELS:
                 self.dof_vars[d].set(r[d])
         self._update_properties_panel()

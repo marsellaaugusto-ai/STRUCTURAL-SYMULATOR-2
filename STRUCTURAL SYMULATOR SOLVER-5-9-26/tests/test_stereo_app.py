@@ -11143,6 +11143,82 @@ class TestCraneHangsOverTheCentreOfGravity:
         assert 'one plane' in note, note
 
 
+class TestSupportEditorLeavesCraneSupportsAlone:
+    """Found in a user's roof file: 45 roof supports and 8 crane mast tops
+    all held in X only. Clicking a node with a crane tag line (a support
+    holding one direction) loaded "X only" into the per-node editor without
+    a word, and Apply on a box over the roof put it under every node --
+    the mast tops included."""
+
+    def _lifted(self, app):
+        top = max(p[2] for p in app.nodes)
+        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
+        xs = [app.nodes[i][0] for i in tops]
+        ys = [app.nodes[i][1] for i in tops]
+        app.selected_nodes = {min(tops, key=lambda i: (app.nodes[i][0] - tx)
+                                  ** 2 + (app.nodes[i][1] - ty) ** 2)
+                              for tx in (min(xs), max(xs))
+                              for ty in (min(ys), max(ys))}
+        app._add_cable_crane()
+        return app._crane_lifts[-1]['anchor']
+
+    def test_clicking_a_tag_line_node_does_not_load_it_into_the_editor(
+            self, app):
+        self._lifted(app)
+        app.sup_preset_var.set('pin')
+        app._preset_to_checkboxes()
+        tag = app._crane_tag[0]['node']
+        app.selected_nodes = {tag}
+        app._sync_selection_fields()
+        assert app.sup_preset_var.get() == 'pin'
+        assert all(app.dof_vars[d].get() for d in ('ux', 'uy', 'uz'))
+
+    def test_a_users_own_support_still_loads_into_the_editor(self, app):
+        app.supports = [{'node': 3, 'dofs': {'ux': True, 'uz': True}}]
+        app.selected_nodes = {3}
+        app._sync_selection_fields()
+        assert app.sup_preset_var.get() == 'custom'
+        assert app.dof_vars['ux'].get() and app.dof_vars['uz'].get()
+        assert not app.dof_vars['uy'].get()
+
+    def test_apply_over_a_mast_top_keeps_the_crane_anchor_fixed(self, app):
+        anchor = self._lifted(app)
+        tags = [(t['node'], t['dof']) for t in app._crane_tag]
+        app.sup_preset_var.set('pin')
+        app._preset_to_checkboxes()
+        app.selected_nodes = {0, 1, anchor} | {n for n, _d in tags}
+        app._apply_support()
+        at_anchor = [sp for sp in app.supports if sp['node'] == anchor]
+        assert at_anchor == [{'node': anchor, 'type': 'fixed'}]
+        for n, d in tags:            # the tag lines are still the crane's
+            assert {'node': n, 'dofs': {d: True}} in app.supports
+        assert any(sp['node'] == 0 and sp.get('type') == 'pin'
+                   for sp in app.supports)
+        assert 'mast top' in app.status_var.get()
+
+    def test_a_partial_support_under_many_nodes_is_asked_about(
+            self, app, dialogs, monkeypatch):
+        before = [dict(sp) for sp in app.supports]
+        app.sup_preset_var.set('custom')
+        for d in app.dof_vars:
+            app.dof_vars[d].set(d == 'ux')
+        monkeypatch.setattr('apps.stereo.stereo_app.messagebox.askyesno',
+                            lambda *a, **k: (dialogs.append(('ask',) + a),
+                                             False)[1])
+        app.selected_nodes = {0, 1, 2}
+        app._apply_support()
+        assert app.supports == before          # "No" changes nothing
+        ask = [d for d in dialogs if d[0] == 'ask']
+        assert ask and 'X only' in ask[0][2] and 'Y and Z' in ask[0][2]
+        # one node on a roller is ordinary, and not asked about
+        app.selected_nodes = {0}
+        app._apply_support()
+        assert len([d for d in dialogs if d[0] == 'ask']) == 1
+        assert {'node': 0, 'dofs': {'ux': True, 'uy': False, 'uz': False,
+                                    'rx': False, 'ry': False,
+                                    'rz': False}} in app.supports
+
+
 class TestCraneReport:
     """Round 2, item 5: the crane lift report in the PDF, with the cable
     check against a capacity set when the crane goes on."""

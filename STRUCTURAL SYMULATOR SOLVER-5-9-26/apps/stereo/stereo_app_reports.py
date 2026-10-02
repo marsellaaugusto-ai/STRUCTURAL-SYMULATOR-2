@@ -18,6 +18,7 @@ from apps.stereo import stereo_math as sm
 from apps.stereo import stereo_reports as sr
 from apps.stereo import stereo_pdf_presets as spp
 from apps.stereo.stereo_app_constants import DOF_LABELS, QUICK_SUPPORT_CUSTOM, TENSION_HIGH
+from apps.stereo.stereo_app_shell import HINT_FG, STATUS_OK, STATUS_WARN
 
 
 class StereoReportsMixin:
@@ -95,6 +96,36 @@ class StereoReportsMixin:
         self.results_text.delete('1.0', tk.END)
         text = sr.summary_text(self.nodes, self.members, self.results, self.member_checks)
         self.results_text.insert('1.0', text)
+        self._refresh_score()
+
+    def _refresh_score(self):
+        """The Results panel's score line, and the session's lightest
+        passing design for the same plan and load (stereo_score)."""
+        from apps.stereo import stereo_score as ss
+        if not hasattr(self, 'score_label'):
+            return
+        if not self.nodes:
+            self._score = None
+            self.score_label.config(text='')
+            self.score_note.config(text='')
+            return
+        sc = ss.score(self.nodes, self.members, self.results,
+                      self.member_checks, self._unit_weight(),
+                      bool(self.self_weight_on.get()))
+        key = ss.brief_key(self.nodes, sc['carried_kN'])
+        best = getattr(self, '_score_best', None)
+        if best is None:
+            best = self._score_best = {}
+        if sc['passes'] and key is not None and (
+                key not in best or sc['mass_kg'] < best[key]):
+            best[key] = sc['mass_kg']
+        self._score = sc
+        first, second = ss.describe(sc, best.get(key) if sc['passes']
+                                    else None)
+        self.score_label.config(text=first)
+        self.score_note.config(text=second, fg=(
+            STATUS_OK if sc['passes'] else
+            STATUS_WARN if sc['passes'] is False else HINT_FG))
 
     # ── Member Report ────────────────────────────────────────────────────────
     def _show_member_report(self):

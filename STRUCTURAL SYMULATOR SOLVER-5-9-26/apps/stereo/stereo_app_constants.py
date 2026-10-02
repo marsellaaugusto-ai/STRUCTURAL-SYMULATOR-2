@@ -214,6 +214,9 @@ LABEL_DISABLE_NODES = 2000
 # one on screen, "Hide # when crowded" leaves them off until you zoom in.
 LABEL_MIN_SPACING_PX = 20
 LABEL_CROWDED_FRAC = 0.35
+# ...though the selection keeps its own numbers, while it is a handful: a
+# selection of a hundred nodes is the same pile again.
+LABEL_SELECTION_MAX = 20
 LOAD_PATH_DISABLE_MEMBERS = 2000
 DRAW_THROTTLE_MS = 33
 LOAD_PATH_NEAR_ZERO_FRAC = 0.02   # members below this fraction of the largest |N| stay still
@@ -438,3 +441,15 @@ BALANCED_PANEL_COLOR = '#b39ddb'
 
 # Add-on short codes (C1, B1, K1, P1) on the canvas and the PDF
 ADDON_CODE_COLOR = '#0b5c6e'
+
+# The mechanism animation: a model that cannot stand, drawn moving the way
+# it can (stereo_app_mechanism). The swing is a fraction of the model's
+# size, so it reads on a 3 m frame and a 60 m roof alike.
+MECH_COLOR = '#e8590c'
+MECH_AMPLITUDE_FRAC = 0.08
+MECH_FRAME_MS = 40
+MECH_PERIOD_S = 1.6
+
+# Play load: the Load % slider run from 0 to 100 % (stereo_app_playload)
+PLAY_LOAD_SECONDS = 4.0
+PLAY_FRAME_MS = 40

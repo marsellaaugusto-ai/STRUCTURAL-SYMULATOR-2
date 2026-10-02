@@ -254,6 +254,7 @@ class StereoModelMixin:
         # through, so a stale example title cannot follow a regenerated grid
         # into its report.
         self._model_label = None
+        self._lesson = None             # an example's, set after this
         self.nodes = mesh['nodes']
         self.members = mesh['members']
         self._support_candidates = mesh['support_candidates']
@@ -626,6 +627,7 @@ class StereoModelMixin:
             return
         self._load_mesh(mesh, push_undo=True, undo_label=f'load example: {label}')
         self._model_label = label   # after _load_mesh, which clears it
+        self._show_lesson(builder, label)
 
     def _unit_weight(self):
         """The material unit weight in kN/m³, whatever the box displays.
@@ -1265,11 +1267,16 @@ class StereoModelMixin:
             self.results = None
             self.member_checks = None
             self.panel_checks = []
+            # draw it moving the way it can: started before the dialog,
+            # whose own event loop keeps it running behind the box
+            moving = self._show_mechanism(which=0, quiet=True)
             if not quiet:
                 free = self._mechanism_selection(err)
                 messagebox.showerror('Analysis', err + (
                     '\n\nThose nodes are selected on the drawing.'
-                    if free else ''))
+                    if free else '') + (
+                    '\n\nThe orange drawing shows how it moves.'
+                    if moving else ''))
         else:
             self.results = res
             self.member_checks = sc.check_all_members(
@@ -1286,6 +1293,8 @@ class StereoModelMixin:
         if err and quiet:
             self._set_status('Live: ' + err.split('.')[0] + '. ▶ Analyze '
                              'shows where.', 'error')
+        elif err and getattr(self, '_mech', None) is not None:
+            self._set_status(self._mech_caption(), 'error')
         elif warning:
             self._set_status(warning.split('.')[0] + '.', 'error')
             if not quiet:

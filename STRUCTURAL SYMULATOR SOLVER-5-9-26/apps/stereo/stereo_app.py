@@ -86,6 +86,8 @@ from apps.stereo.stereo_app_inspector import StereoInspectorMixin
 from apps.stereo.stereo_app_groups import StereoGroupsMixin
 from apps.stereo.stereo_app_transform import StereoTransformMixin
 from apps.stereo.stereo_app_clipboard import StereoClipboardMixin
+from apps.stereo.stereo_app_mechanism import StereoMechanismMixin
+from apps.stereo.stereo_app_playload import StereoPlayLoadMixin
 from apps.stereo.stereo_reports import STORAGE_UNITS as sr_storage_units
 
 
@@ -93,7 +95,8 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
                 StereoRenderMixin, StereoModuleEditorMixin,
                 StereoWizardMixin, StereoAddonsMixin, StereoReportsMixin,
                 StereoInspectorMixin, StereoGroupsMixin, StereoTransformMixin,
-                StereoClipboardMixin, UnitsMixin):
+                StereoClipboardMixin, StereoMechanismMixin,
+                StereoPlayLoadMixin, UnitsMixin):
     """The Stereo tab.
 
     Holds the model (nodes, members, supports, loads), every Tk variable

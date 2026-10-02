@@ -434,6 +434,80 @@ def mechanism(nodes, members, supports, panels=None):
     return _mechanism_nodes(Kf, free, dof_of)
 
 
+def mechanism_mode(nodes, members, supports, panels=None, which=0):
+    """HOW the model moves with no stiffness, for drawing it moving.
+
+    Returns None when it stands (or is too big to look at here), else
+    {'shape': [(dx, dy, dz) per node], 'count': n, 'which': k, 'kind':
+    'rigid' | 'mechanism', 'axis': 'x'|'y'|'z'|None}. The shape is scaled
+    so the node that moves most moves 1; `which` picks among the `count`
+    independent ways it can move (taken modulo `count`).
+
+    'rigid' is the whole model sliding as one -- nothing restrains it
+    along `axis` anywhere (check_boundary_setup's case), or it stands on
+    no support at all, when it drops. 'mechanism' is the lowest
+    zero-stiffness modes of the supported stiffness matrix, the same ones
+    `mechanism` names the nodes of; only their translations are drawn."""
+    n = len(nodes)
+    if n == 0:
+        return None
+    err = check_boundary_setup(nodes, members, supports)
+    if err:
+        restrained = set()
+        for sp in supports:
+            try:
+                r = support_restraints(sp)
+            except ValueError:
+                return None
+            restrained |= {d for d in ('ux', 'uy', 'uz') if r[d]}
+        if not (0 <= min((sp['node'] for sp in supports), default=0)
+                and max((sp['node'] for sp in supports), default=0) < n):
+            return None
+        free_axes = [a for a in ('uz', 'ux', 'uy') if a not in restrained]
+        if not free_axes:
+            return None
+        k = which % len(free_axes)
+        axis = free_axes[k][-1]
+        vec = {'x': (1.0, 0.0, 0.0), 'y': (0.0, 1.0, 0.0),
+               'z': (0.0, 0.0, -1.0)}[axis]
+        return {'shape': [vec] * n, 'count': len(free_axes), 'which': k,
+                'kind': 'rigid', 'axis': axis}
+    got = stiffness_probe(nodes, members, supports, panels)
+    if not isinstance(got, tuple) or len(got) != 3:
+        return None
+    Kf, free, dof_of = got
+    nf = Kf.shape[0]
+    if nf == 0 or nf > MECHANISM_MAX_DOF:
+        return None
+    modes = _lowest_modes(Kf)
+    if modes is None:
+        return None
+    w, v, scale = modes
+    owner = {}
+    for node, idx in enumerate(dof_of):
+        for comp, g in enumerate(idx[:3]):
+            if g is not None:
+                owner[g] = (node, comp)
+    shapes = []
+    for k in range(len(w)):
+        if w[k] > MECHANISM_REL_EIG * scale:
+            break
+        disp = [[0.0, 0.0, 0.0] for _ in range(n)]
+        for li, g in enumerate(free):
+            hit = owner.get(g)
+            if hit is not None:
+                disp[hit[0]][hit[1]] = float(v[li, k])
+        peak = max(math.sqrt(a * a + b * b + c * c) for a, b, c in disp)
+        if peak < 1e-9:
+            continue            # a rotation only: nothing to see moving
+        shapes.append([(a / peak, b / peak, c / peak) for a, b, c in disp])
+    if not shapes:
+        return None
+    k = which % len(shapes)
+    return {'shape': shapes[k], 'count': len(shapes), 'which': k,
+            'kind': 'mechanism', 'axis': None}
+
+
 def _analyze_once(nodes, members, loads, supports, panels=None,
                   member_loads=None, slack=frozenset(), _probe=False):
     """Solve the space structure. Returns (result, error). On failure,

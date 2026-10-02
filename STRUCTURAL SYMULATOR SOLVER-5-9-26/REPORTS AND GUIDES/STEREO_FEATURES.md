@@ -960,6 +960,63 @@ fold, are on screen when the mode opens. Coloured notes (warnings, blocked
 choices) are never folded, and a note whose text changes with a choice is
 measured again each time.
 
+**A model that cannot stand is drawn moving.** "Singular stiffness matrix"
+says *that* a structure is a mechanism, not *how*. The solver already finds
+the motion that meets no stiffness; when ▶ Analyze (or Live) finds one, the
+loose part is drawn swinging in orange over the model at rest — a grid left
+on two supports hinges about the line through them, a model with nothing
+holding it along x slides along x, and one standing on nothing falls — and
+the caption says what to do about it (brace it with a rod, or hold it with a
+support). Support → *Show how it can move* draws it on demand; pressed again
+it shows the next independent way the model can move, and after the last
+one it stops. The animation stops by itself the moment the model is edited
+or a solve succeeds. (The selection keeps its numbers on a crowded drawing
+only while it is a handful — up to 20 — so the 128 loose nodes of that grid
+do not bring the pile of numbers back.)
+
+**Play load — the load test.** *▶ Play load*, beside the Load % slider, runs
+the load from 0 to 100 % over four seconds, the way Bridge Designer's truck
+crosses its bridge: the deflected shape sags as the load rises, its rods
+coloured red and blue by their force and deepening as it grows. The solve is
+linear, so nothing is re-solved — each frame is the solved answer times the
+Load % — and an unanalysed model is analysed first. When the most used rod
+would pass its capacity before 100 %, the status line says so at that moment
+(*At 30 % of the load rod 355 reaches its capacity*), and at the end it gives
+the verdict: *Load test passed: at 100 % the most used rod, 354, is at 0.75 of
+its capacity*, or *Load test failed: rod 355 reaches its capacity at 30 % of
+the load, and 196 rods are over at 100 %*. Pressed again it stops at full
+load. The display settings it switches on for the show (the deflected shape,
+coloured by force) are put back as they were when it ends.
+
+**The score to beat.** The top of Results reads the design the way Bridge
+Designer scores a bridge: *Weight 35.85 t · carries 1,800 kN, 5.1× its own
+weight*, and under it whether it passes — *Passes: the most used rod is at
+0.75* — or *FAILS: rod 355 at 3.33, 196 over — a design scores only when it
+passes*. The weight is every rod's A·L at its own unit weight, the same
+figure as the PDF's take-off sheet; the load carried is the vertical
+reactions at full load, less the structure's own weight when self-weight is
+one of the loads. The panel also remembers the lightest passing design of
+the session *for the same brief* — the same plan size and the same load — so
+a class working on one roof can compete on kilograms (*Lightest so far:
+31.20 t*). The weight is on the status bar too, at the end of the line.
+
+**Every example is a lesson.** Opening anything from *Generate ▾ → Example
+library* puts a lesson card in the canvas's right-hand column, under the
+view cube: the one idea the example is good for, and two or three things to
+try whose answers are on the screen — *▶ Play load: at what percentage of the
+load does the first rod reach its capacity?*, *Support → sandbox: free the
+supports along one springing line. What happens?*, *Change sections until it
+passes and watch the weight: who has the lightest bridge that passes?* The
+questions lean on what the examples really do, and the tests hold them to it:
+the truss bridge as shipped fails (2.83) and its pinned bearings push
+sideways, so its bottom chord is not all tension; the single-column grid
+fails and its capital ring is in tension; no hoop of the Schwedler dome is in
+tension, because the pinned base takes the thrust; the cone's diagonals carry
+nothing under a symmetric load; the barrel vault pushes outward on its
+supports. Every control a lesson names exists. The card stays on screen in
+every mode, closes with its ×, comes back from *Example library → Show the
+lesson again*, and goes when a new model is generated.
+
 **The toolbar** (46 px) keeps only what is not a mode: Generate, ▶ Analyze,
 undo/redo, the Display popover, Export, and the Load % slider.
 

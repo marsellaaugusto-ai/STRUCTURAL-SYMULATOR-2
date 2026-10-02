@@ -855,3 +855,59 @@ def test_the_sparse_mode_search_finds_the_zero_mode_the_dense_one_does():
     assert abs(abs(v[0, 0]) - 1.0) < 1e-6           # the mode is dof 0
     wd, _vd, _s = sm._lowest_modes(np.diag(d[:50]), k=4)
     assert abs(wd[0]) < 1e-12
+
+
+# ── how a mechanism moves (drawn moving by the app) ───────────────────────
+
+def _square(diagonal=False):
+    nodes = [(0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)]
+    mem = [{'a': i, 'b': (i + 1) % 4, 'conn': 'pin', 'E': 200.0, 'A': 10.0,
+            'I': 100.0, 'J': 100.0} for i in range(4)]
+    if diagonal:
+        mem.append({'a': 0, 'b': 2, 'conn': 'pin', 'E': 200.0, 'A': 10.0,
+                    'I': 100.0, 'J': 100.0})
+    pinned = {'ux': True, 'uy': True, 'uz': True}
+    return nodes, mem, [{'node': 0, 'dofs': dict(pinned)},
+                        {'node': 1, 'dofs': dict(pinned)}]
+
+
+def test_an_unbraced_square_sways_on_its_supports():
+    nodes, mem, sup = _square()
+    m = sm.mechanism_mode(nodes, mem, sup)
+    assert m['kind'] == 'mechanism' and m['count'] >= 1
+    # the supported nodes stay put; the top moves, the largest by exactly 1
+    assert m['shape'][0] == (0.0, 0.0, 0.0) and m['shape'][1] == (0.0, 0.0, 0.0)
+    peak = max(math.sqrt(sum(c * c for c in d)) for d in m['shape'])
+    assert peak == pytest.approx(1.0)
+    assert set(sm.mechanism(nodes, mem, sup)) <= {2, 3}
+
+
+def test_each_way_it_can_move_is_one_mode_and_they_wrap_round():
+    nodes, mem, sup = _square()
+    first = sm.mechanism_mode(nodes, mem, sup, which=0)
+    again = sm.mechanism_mode(nodes, mem, sup, which=first['count'])
+    assert again['which'] == 0 and again['shape'] == first['shape']
+
+
+def test_with_nothing_under_it_it_falls():
+    nodes, mem, _sup = _square()
+    m = sm.mechanism_mode(nodes, mem, [])
+    assert m['kind'] == 'rigid' and m['axis'] == 'z'
+    assert m['shape'] == [(0.0, 0.0, -1.0)] * 4
+
+
+def test_with_nothing_holding_x_it_slides_along_x():
+    nodes, mem, _sup = _square()
+    sup = [{'node': 0, 'dofs': {'uz': True, 'uy': True}},
+           {'node': 1, 'dofs': {'uz': True}}]
+    m = sm.mechanism_mode(nodes, mem, sup)
+    assert m['kind'] == 'rigid' and m['axis'] == 'x' and m['count'] == 1
+    assert m['shape'] == [(1.0, 0.0, 0.0)] * 4
+
+
+def test_a_braced_and_held_square_does_not_move():
+    nodes, mem, sup = _square(diagonal=True)
+    sup += [{'node': 2, 'dofs': {'uy': True}},
+            {'node': 3, 'dofs': {'uy': True}}]
+    assert sm.mechanism_mode(nodes, mem, sup) is None
+    assert sm.mechanism_mode([], [], []) is None

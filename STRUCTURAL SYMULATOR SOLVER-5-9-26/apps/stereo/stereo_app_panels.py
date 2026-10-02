@@ -1778,6 +1778,10 @@ class StereoPanelsMixin(_ToolbarModes):
                 justify='left').pack(anchor='w', padx=4, pady=(2, 4))
         tk.Button(sandbox, text='Reset sandbox (re-enable all)',
                  command=self._reset_support_sandbox).pack(anchor='w', padx=4, pady=(0, 4))
+        # the mechanism, drawn moving: what a missing support or rod lets go
+        tk.Button(sandbox, text='Show how it can move',
+                  command=self._show_mechanism).pack(anchor='w', padx=4,
+                                                     pady=(0, 4))
 
     def _reset_support_sandbox(self):
         if not self._disabled_supports:
@@ -3042,6 +3046,16 @@ class StereoPanelsMixin(_ToolbarModes):
     def _build_results_panel(self, parent):
         box = tk.LabelFrame(parent, text='Results', bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='both', padx=6, pady=(4, 8))
+        # The design's score (stereo_score): what it weighs, what it
+        # carries, and whether it passes -- the number to beat.
+        self.score_label = tk.Label(box, text='', bg=BG, fg='#1d2328',
+                                    font=('Helvetica', 10, 'bold'), anchor='w',
+                                    wraplength=PANEL_TEXT_W, justify='left')
+        self.score_label.pack(fill='x', padx=6, pady=(6, 0), anchor='w')
+        self.score_note = tk.Label(box, text='', bg=BG, font=('Helvetica', 9),
+                                   anchor='w', wraplength=PANEL_TEXT_W,
+                                   justify='left')
+        self.score_note.pack(fill='x', padx=6, pady=(0, 2), anchor='w')
         # A property of the STRUCTURE (geometry/connectivity/supports)
         # alone, not of any solved load case -- shown even before Analyze
         # has ever run, and kept live as supports/members change.

@@ -210,6 +210,11 @@ class StereoShellMixin:
                  ).pack(side='right', padx=(2, 8))
         tk.Label(tb, text='Load %', bg=TOOLBAR_BG, fg=HINT_FG,
                  font=('Helvetica', 9)).pack(side='right', padx=(8, 2))
+        # the load test: the slider run from 0 to 100 % (stereo_app_playload)
+        self.play_btn = tk.Button(tb, text='▶ Play load', font=('Helvetica', 9),
+                                  relief='raised', bd=1, padx=8, pady=3,
+                                  command=self._play_load)
+        self.play_btn.pack(side='right', padx=(8, 0))
 
     def _build_generate_menu(self):
         """Family choice, the surface wizard and the example library all hang
@@ -230,6 +235,9 @@ class StereoShellMixin:
         for label, builder in sx.EXAMPLES:
             ex.add_command(label=label,
                            command=lambda b=builder, l=label: self._load_example(b, l))
+        ex.add_separator()
+        ex.add_command(label='Show the lesson again',
+                       command=self._reopen_lesson)
         menu.add_cascade(label='Example library', menu=ex)
         self.grid_family_btn['menu'] = menu
 
@@ -660,6 +668,9 @@ class StereoShellMixin:
             bits.append(self.fmt('deflection', max(disp), digits=1))
         rz = sum(r.get('Fz', 0.0) for r in self.results['reactions'].values())
         bits.append('ΣRz ' + self.fmt('force', rz * frac, digits=0))
+        from apps.stereo import stereo_score as ss
+        bits.append(ss.mass_text(ss.model_mass_kg(self.nodes, self.members,
+                                                  self._unit_weight())))
         self._set_status('Analyzed · ' + '  ·  '.join(bits), 'ok')
 
 
@@ -728,6 +739,91 @@ class StereoShellMixin:
         else:
             c.create_window(16, y, window=self.selection_card, anchor='nw',
                             tags='selection_card')
+
+    # ── the lesson card: an example's goal and questions ────────────────────
+    LESSON_CARD_W = 270
+
+    def _build_lesson_card(self):
+        card = tk.Frame(self.canvas, bg=LEGEND_CARD_BG,
+                        highlightbackground=LEGEND_CARD_EDGE,
+                        highlightthickness=1)
+        head = tk.Frame(card, bg=LEGEND_CARD_BG)
+        head.pack(fill='x', padx=8, pady=(4, 0))
+        tk.Label(head, text='LESSON', bg=LEGEND_CARD_BG, fg=HINT_FG,
+                 font=('Helvetica', 7, 'bold')).pack(side='left')
+        tk.Button(head, text='×', command=self._hide_lesson, relief='flat',
+                  bd=0, bg=LEGEND_CARD_BG, activebackground=LEGEND_CARD_BG,
+                  font=('Helvetica', 10), padx=2, pady=0, cursor='hand2',
+                  highlightthickness=0).pack(side='right')
+        wrap = self.LESSON_CARD_W - 20
+        self.lesson_title = tk.Label(card, text='', bg=LEGEND_CARD_BG,
+                                     fg='#1d2328', font=('Helvetica', 9, 'bold'),
+                                     justify='left', anchor='w', wraplength=wrap)
+        self.lesson_title.pack(fill='x', padx=8)
+        self.lesson_goal = tk.Label(card, text='', bg=LEGEND_CARD_BG,
+                                    fg='#1d2328', font=('Helvetica', 9),
+                                    justify='left', anchor='w', wraplength=wrap)
+        self.lesson_goal.pack(fill='x', padx=8, pady=(2, 4))
+        self.lesson_questions = tk.Label(card, text='', bg=LEGEND_CARD_BG,
+                                         fg='#33414d', font=('Helvetica', 8),
+                                         justify='left', anchor='w',
+                                         wraplength=wrap)
+        self.lesson_questions.pack(fill='x', padx=8, pady=(0, 6))
+        self.lesson_card = card
+
+    def _show_lesson(self, builder, label):
+        """Open the lesson of the example just loaded (stereo_lessons)."""
+        from apps.stereo import stereo_lessons as sl
+        self._lesson = sl.lesson_for(builder)
+        self._lesson_label = label
+        self._lesson_open = self._lesson is not None
+        if self._lesson is None:
+            return
+        if getattr(self, 'lesson_card', None) is None:
+            self._build_lesson_card()
+        self.lesson_title.config(text=label)
+        self.lesson_goal.config(text=self._lesson['goal'])
+        self.lesson_questions.config(text='\n\n'.join(
+            f'{k}. {q}' for k, q in enumerate(self._lesson['questions'], 1)))
+        self._draw()
+
+    def _hide_lesson(self):
+        self._lesson_open = False
+        self.canvas.delete('lesson_card')
+        self._set_status('Lesson hidden -- Generate ▾ → Example library → '
+                         'Show the lesson again.', 'idle')
+
+    def _reopen_lesson(self):
+        if not getattr(self, '_lesson', None) or not self.nodes:
+            self._set_status('No lesson to show: open an example from '
+                             'Generate ▾ → Example library first.', 'idle')
+            return False
+        self._lesson_open = True
+        self._draw()
+        return True
+
+    def _place_lesson_card(self):
+        """Right-hand column, under the view cube and the base module card:
+        the lesson stays on screen in every mode while you work on it."""
+        c = self.canvas
+        want = (getattr(self, '_lesson', None) is not None
+                and getattr(self, '_lesson_open', False) and self.nodes
+                and getattr(self, 'lesson_card', None) is not None)
+        if not want:
+            c.delete('lesson_card')
+            return
+        y = 16 + (self.view_cube.winfo_reqheight()
+                  if getattr(self, 'view_cube', None) else 0) + 10
+        module = c.bbox('module_card')
+        if module:
+            y = module[3] + 10
+        x = c.winfo_width() - 16
+        existing = c.find_withtag('lesson_card')
+        if existing:
+            c.coords(existing[0], x, y)
+        else:
+            c.create_window(x, y, window=self.lesson_card, anchor='ne',
+                            width=self.LESSON_CARD_W, tags='lesson_card')
 
     def _place_view_cube(self):
         """Keep the cube in its corner as the window resizes. Called from

@@ -12017,6 +12017,14 @@ class TestNumbersHideWhenCrowded:
         assert self._labels(app, 'labels_hidden_note')[0].startswith(
             'Node and rod numbers')
 
+    def test_a_big_selection_does_not_bring_the_pile_back(self, app):
+        """A mechanism selects every loose node -- 128 on the default grid
+        hinged on two supports -- and a hundred numbers is the pile."""
+        app._reset_view()
+        app.selected_nodes = set(range(60))
+        app._draw()
+        assert self._labels(app, 'node_label') == []
+
     def test_the_override_draws_every_number(self, app):
         app._reset_view()
         app.labels_auto_hide.set(False)
@@ -12092,3 +12100,336 @@ class TestLongExplanationsFoldBehindAQuestionMark:
         warn = [lbl for lbl in app._hint_labels
                 if str(lbl.cget('fg')) not in app.HINT_COLOURS]
         assert warn == []
+
+
+class TestTheMechanismIsDrawnMoving:
+    """A model that cannot stand is drawn moving the way it can, in orange,
+    until it is edited or a solve succeeds."""
+
+    def _swing(self, app):
+        app.supports = app.supports[:2]        # it hinges about two nodes
+
+    def test_a_singular_analyze_draws_it_moving(self, app, dialogs):
+        self._swing(app)
+        app._analyze()
+        assert app.results is None
+        assert app._mech is not None and app._mech['kind'] == 'mechanism'
+        assert any('orange drawing shows how it moves' in str(d)
+                   for d in dialogs)
+        app._mech_tick()
+        assert app.canvas.find_withtag('mechanism')
+        assert app.status_var.get().startswith('Orange: how it moves')
+        app._stop_mechanism()
+
+    def test_the_frames_move_the_drawing(self, app):
+        self._swing(app)
+        app._show_mechanism(which=0, quiet=True)
+        coords = []
+        for a in (0.0, 0.5):
+            app._draw_mechanism(a)
+            line = [i for i in app.canvas.find_withtag('mechanism')
+                    if app.canvas.type(i) == 'line']
+            coords.append([tuple(app.canvas.coords(i)) for i in line])
+        assert coords[0] and coords[0] != coords[1]
+        app._stop_mechanism()
+        assert not app.canvas.find_withtag('mechanism')
+
+    def test_pressing_again_shows_the_next_way_then_stops(self, app):
+        self._swing(app)
+        assert app._show_mechanism()
+        count = app._mech['count']
+        for k in range(1, count):
+            assert app._show_mechanism() and app._mech['which'] == k
+        assert app._show_mechanism() is False
+        assert app._mech is None
+        assert 'every way it can move' in app.status_var.get()
+
+    def test_a_successful_solve_stops_it(self, app):
+        full = list(app.supports)
+        self._swing(app)
+        app._analyze()
+        assert app._mech is not None
+        app.supports = full
+        app._analyze()
+        app._mech_tick()
+        assert app._mech is None
+        assert not app.canvas.find_withtag('mechanism')
+
+    def test_an_edit_stops_it(self, app):
+        self._swing(app)
+        app._show_mechanism(which=0, quiet=True)
+        app.supports = app.supports[:1]
+        app._mech['frame'] = 9                 # the next frame checks
+        app._mech_tick()
+        assert app._mech is None
+
+    def test_a_model_that_grows_mid_swing_stops_it_cleanly(self, app):
+        """Found by pressing every control: a crane lift added nodes while
+        it swung, and the next frame drew the old shape onto them."""
+        self._swing(app)
+        app._show_mechanism(which=0, quiet=True)
+        app.nodes = app.nodes + [(0.0, 0.0, 9.0), (1.0, 0.0, 9.0)]
+        app.members = app.members + [dict(app.members[0], a=len(app.nodes) - 2,
+                                          b=len(app.nodes) - 1)]
+        app._draw_mechanism(0.3)               # draws nothing, raises nothing
+        assert not app.canvas.find_withtag('mechanism')
+        app._mech_tick()                       # not the 10th frame: still stops
+        assert app._mech is None
+
+    def test_with_no_supports_it_falls(self, app):
+        app.supports = []
+        app._analyze()
+        assert app._mech['kind'] == 'rigid' and app._mech['axis'] == 'z'
+        assert 'stands on nothing' in app.status_var.get()
+        app._stop_mechanism()
+
+    def test_a_model_that_stands_says_it_cannot_move(self, app):
+        assert app._show_mechanism() is False
+        assert app._mech is None
+        assert app.status_var.get().startswith('It cannot move')
+
+    def test_live_draws_it_moving_without_a_dialog(self, app, dialogs):
+        app.live_on.set(True)
+        self._swing(app)
+        app.results = None
+        app._live_analyze()
+        assert app._mech is not None and not dialogs
+        app._stop_mechanism()
+
+    def test_the_support_panel_has_the_button(self, app):
+        def walk(w):
+            for c in w.winfo_children():
+                yield c
+                yield from walk(c)
+        assert any(isinstance(w, tk.Button)
+                   and w.cget('text') == 'Show how it can move'
+                   for w in walk(app._mode_frames['support']))
+
+
+class TestPlayLoad:
+    """Toolbar → ▶ Play load: the Load % slider run from 0 to 100 %, the
+    sagging shape coloured by force, and a pass/fail verdict at the end."""
+
+    def _jump(self, app, frac):
+        from apps.stereo.stereo_app_constants import PLAY_LOAD_SECONDS
+        app._play['t0'] -= frac * PLAY_LOAD_SECONDS
+        app._play_tick()
+
+    def test_it_analyzes_first_and_starts_from_nothing(self, app):
+        app.results = None
+        assert app._play_load()
+        try:
+            assert app.results is not None
+            assert app.load_fraction.get() == 0
+            assert app.show_deformed.get() is True
+            assert app.play_btn.cget('text') == '■ Stop'
+        finally:
+            app._stop_play_load(finished=False)
+
+    def test_halfway_is_half_the_load(self, app):
+        app._analyze()
+        app._play_load()
+        self._jump(app, 0.5)
+        assert 45 <= app.load_fraction.get() <= 60
+        app._stop_play_load(finished=False)
+
+    def test_a_passing_model_passes_and_the_display_comes_back(self, app):
+        app._analyze()
+        before = (app.show_deformed.get(), app.deform_color_mode.get(),
+                  app.colour_mode.get())
+        app._play_load()
+        self._jump(app, 1.1)
+        assert app._play is None and app.load_fraction.get() == 100
+        i, u = app._governing_rod()
+        assert u <= 1.0
+        assert app.status_var.get().startswith('Load test passed')
+        assert f'rod, {i}, is at {u:.2f}' in app.status_var.get()
+        assert (app.show_deformed.get(), app.deform_color_mode.get(),
+                app.colour_mode.get()) == before
+        assert app.play_btn.cget('text') == '▶ Play load'
+
+    def test_a_failing_model_names_when_the_first_rod_gives(self, app):
+        app._analyze()
+        app.member_checks[7] = dict(app.member_checks[7], util=2.0,
+                                    checked=True)
+        app._play_load()
+        self._jump(app, 0.25)
+        assert 'reaches its capacity' not in app.status_var.get()
+        self._jump(app, 0.3)
+        assert app.status_var.get() == ('At 50 % of the load rod 7 reaches '
+                                        'its capacity.')
+        self._jump(app, 1.0)
+        assert app.status_var.get().startswith(
+            'Load test failed: rod 7 reaches its capacity at 50 %')
+        assert app.status_kind.get() == 'error'
+
+    def test_pressing_again_stops_it_at_full_load(self, app):
+        app._analyze()
+        app._play_load()
+        self._jump(app, 0.3)
+        assert app._play_load() is False
+        assert app._play is None and app.load_fraction.get() == 100
+        assert 'stopped' in app.status_var.get()
+
+    def test_an_edit_while_it_plays_stops_it(self, app):
+        app._analyze()
+        app._play_load()
+        app.results = None
+        app._play_tick()
+        assert app._play is None
+
+    def test_with_nothing_built_it_says_so(self, blank_app):
+        assert blank_app._play_load() is False
+        assert 'Nothing to load-test' in blank_app.status_var.get()
+
+
+class TestTheDesignScore:
+    """Results → the score: what the design weighs, what it carries and
+    whether it passes; the lightest passing design for the same brief."""
+
+    def test_before_a_solve_it_shows_the_weight(self, app):
+        app.results = None
+        app._refresh_score()
+        assert app.score_label.cget('text').startswith('Weight ')
+        assert app.score_label.cget('text').endswith('▶ Analyze to score it')
+
+    def test_a_solved_grid_is_weighed_and_passes(self, app):
+        from apps.stereo import stereo_score as ss
+        app._analyze()
+        sc = app._score
+        assert sc['mass_kg'] == pytest.approx(ss.model_mass_kg(
+            app.nodes, app.members, app._unit_weight()))
+        assert sc['carried_kN'] == pytest.approx(1800.0, rel=1e-3)
+        assert sc['passes'] is True
+        assert 'carries 1,800 kN' in app.score_label.cget('text')
+        assert app.score_note.cget('text').startswith('Passes')
+        assert ss.mass_text(sc['mass_kg']) in app.status_var.get()
+
+    def test_the_lightest_passing_design_is_remembered(self, app):
+        app._analyze()
+        first = app._score['mass_kg']
+        assert 'Lightest passing design so far' in app.score_note.cget('text')
+        for m in app.members:                  # the same brief, heavier
+            m['A'] = m['A'] * 1.5
+        app._analyze()
+        assert app._score['mass_kg'] > first
+        assert 'Lightest so far' in app.score_note.cget('text')
+
+    def test_a_failing_design_says_it_does_not_score(self, app):
+        app.area_load_var.set(9.0)
+        app._analyze()
+        assert app._score['passes'] is False
+        assert app.score_note.cget('text').startswith('FAILS')
+
+
+class TestExampleLessons:
+    """Every example in the library opens with a goal and questions; the
+    questions name controls that exist, and the facts they lean on are
+    true of the examples as shipped."""
+
+    @staticmethod
+    def _example(name):
+        from apps.stereo import stereo_examples as sx
+        return next((label, b) for label, b in sx.EXAMPLES
+                    if b.__name__ == name)
+
+    def test_every_example_has_a_lesson_and_only_those(self):
+        from apps.stereo import stereo_examples as sx
+        from apps.stereo import stereo_lessons as sl
+        assert set(sl.LESSONS) == {b.__name__ for _l, b in sx.EXAMPLES}
+        for name, lesson in sl.LESSONS.items():
+            assert lesson['goal'].strip(), name
+            assert 2 <= len(lesson['questions']) <= 3, name
+
+    def test_the_controls_the_lessons_name_exist(self, app):
+        from apps.stereo import stereo_lessons as sl
+        text = ' '.join(lesson['goal'] + ' ' + ' '.join(lesson['questions'])
+                        for lesson in sl.LESSONS.values())
+        app._toggle_display_popover()
+        try:
+            labels = set()
+
+            def walk(w):
+                for c in w.winfo_children():
+                    try:
+                        labels.add(str(c.cget('text')))
+                    except tk.TclError:
+                        pass
+                    if c.winfo_class() == 'Menu':
+                        end = c.index('end')
+                        for k in range(0, (end if end is not None else -1) + 1):
+                            try:
+                                labels.add(str(c.entrycget(k, 'label')))
+                            except tk.TclError:
+                                pass
+                    walk(c)
+            walk(app.root)
+        finally:
+            app._toggle_display_popover()
+        everything = ' | '.join(labels)
+        for control in ('Show me the governing rod', 'Explain this rod',
+                        'Play load', 'Clear every beam', 'Clear rod loads',
+                        'Smooth gradient', 'Moment along rod', 'Reactions',
+                        'Live', 'Axial force', 'Utilization',
+                        'Example library'):
+            if control in text:
+                assert control in everything, control
+
+    def test_opening_an_example_opens_its_lesson(self, app):
+        label, b = self._example('truss_bridge_example')
+        app._load_example(b, label)
+        assert app._lesson_open and app.canvas.find_withtag('lesson_card')
+        assert app.lesson_title.cget('text') == label
+        assert app.lesson_questions.cget('text').startswith('1. ')
+        app._hide_lesson()
+        assert not app.canvas.find_withtag('lesson_card')
+        app._draw()
+        assert not app.canvas.find_withtag('lesson_card')
+        assert app._reopen_lesson()
+        assert app.canvas.find_withtag('lesson_card')
+
+    def test_a_new_model_closes_the_lesson(self, app):
+        label, b = self._example('dome_example')
+        app._load_example(b, label)
+        app._generate()
+        assert app._lesson is None
+        assert not app.canvas.find_withtag('lesson_card')
+        assert app._reopen_lesson() is False
+
+    # ── the premises the questions lean on ─────────────────────────────
+    def _solve(self, app, name):
+        label, b = self._example(name)
+        app._load_example(b, label)
+        app._analyze()
+        assert app.results is not None
+        return [(m.get('role'), r['N']) for m, r in
+                zip(app.members, app.results['member_res'])]
+
+    def test_the_bridge_fails_and_its_bearings_push_sideways(self, app):
+        forces = self._solve(app, 'truss_bridge_example')
+        assert app._governing_rod()[1] > 1.0
+        assert max(n for r, n in forces if r == 'top_chord') < 0.0
+        assert min(n for r, n in forces if r == 'bottom_chord') < 0.0
+        assert sum(abs(r.get('Fx', 0.0)) for r in
+                   app.results['reactions'].values()) > 1.0
+
+    def test_the_single_column_grid_fails_with_its_capital_ring_in_tension(
+            self, app):
+        forces = self._solve(app, 'planar_grid_with_columns_2')
+        assert app._governing_rod()[1] > 1.0
+        assert min(n for r, n in forces if r == 'capital_ring') > 0.0
+
+    def test_no_hoop_of_the_dome_is_in_tension(self, app):
+        forces = self._solve(app, 'dome_example')
+        assert max(n for r, n in forces if r == 'hoop') <= 1e-6
+
+    def test_the_cones_diagonals_carry_nothing(self, app):
+        forces = self._solve(app, 'cone_roof_example')
+        assert max(abs(n) for r, n in forces if r == 'diagonal') < 1e-3
+
+    def test_the_vault_pushes_outward_on_its_supports(self, app):
+        self._solve(app, 'barrel_vault_example')
+        h = sum(abs(r.get('Fx', 0.0)) + abs(r.get('Fy', 0.0))
+                for r in app.results['reactions'].values())
+        assert h > 0.5 * sum(r.get('Fz', 0.0)
+                             for r in app.results['reactions'].values())

@@ -50,7 +50,7 @@ from apps.stereo.stereo_app_constants import (
     LEGEND_CARD_BG, LEGEND_CARD_EDGE,
     GRADIENT_SEGMENTS, GRADIENT_SEGMENTS_DENSE, GRADIENT_DENSE_MEMBERS,
     GRADIENT_DISABLE_MEMBERS, LABEL_DISABLE_NODES, LOAD_PATH_DISABLE_MEMBERS,
-    LABEL_MIN_SPACING_PX, LABEL_CROWDED_FRAC,
+    LABEL_MIN_SPACING_PX, LABEL_CROWDED_FRAC, LABEL_SELECTION_MAX,
     ROD_FIELD_SEGMENTS,
     SURFACE_PREVIEW_STEPS, SURFACE_PREVIEW_STIPPLE, SURFACE_PREVIEW_LINE,
     BZ_HANDLE_COLOR, BZ_HANDLE_KNOT_COLOR, BZ_POLYGON_COLOR,
@@ -975,6 +975,7 @@ class StereoRenderMixin:
             self._place_module_card()
             self._place_view_cube()
             self._place_selection_card()
+            self._place_lesson_card()
 
             n_nodes = len(self.nodes)
             hidden = []
@@ -984,7 +985,9 @@ class StereoRenderMixin:
                 if self._labels_crowded(pts):
                     # the selection keeps its numbers: that is what you
                     # are asking about
-                    which = sorted(self.selected_nodes)
+                    which = (sorted(self.selected_nodes)
+                             if len(self.selected_nodes) <= LABEL_SELECTION_MAX
+                             else [])
                     hidden.append('node')
                 labels = []
                 for i in which:
@@ -1007,6 +1010,8 @@ class StereoRenderMixin:
                     which = sorted(set(self.selected_members) | (
                         {self.selected_member}
                         if self.selected_member is not None else set()))
+                    if len(which) > LABEL_SELECTION_MAX:
+                        which = []
                     hidden.append('rod')
                 mlabels = []
                 for i in which:

@@ -4,7 +4,7 @@
 (hypars) and other surfaces in reinforced concrete — with uniform and
 non-uniform vertical loads and horizontal (wind) loads; compute the forces and
 everything else needed to design the shell; type the surface as a function,
-with an interface like GeoGebra's; choose the shell thickness, find out where
+through a list of definitions; choose the shell thickness, find out where
 it has to be thicker, and make it thicker in the design.
 
 **Method:** no code was changed for this report. Both project trees were
@@ -76,7 +76,7 @@ over a member. So the new pieces are:
 | edge-beam / column element in 3-D (to frame the shell) | **no** — Stereo has a 3-D *bar* (axial only); an edge beam must also bend |
 | typing a surface z = f(x, y) | **yes, but only in `solver/`** — see §3.1 |
 | a 3-D view that can orbit, zoom, pan | **yes, but only in `solver/`** (Stereo's wireframe); a surface also needs **shading and colour maps** — new |
-| sliders and live redraw (the GeoGebra feel) | **no** — new |
+| sliders and live redraw | **no** — new |
 | loads that vary over the surface: vertical, normal pressure, horizontal | **no** — new |
 | wind velocity pressure | the formula is standard (CIRSOC 102-2005, same form as ASCE 7); the guide `guia viento torre cirsoc2005.pdf` is on disk in `Downloads` |
 | reinforced-concrete design of a surface (steel per metre each way, top and bottom) | **no** — new |
@@ -166,8 +166,8 @@ over the whole roof). Presets are labelled **approximate** in the report.
 Separately, any load can be entered as a horizontal load in x or y, also as a
 function of position, which covers what "horizontal loads" literally means.
 
-**GeoGebra-like interface.** GeoGebra works by a list of definitions on the
-left (the "algebra view") — numbers, which automatically get sliders, and
+**A definitions interface.** A list of definitions on the
+left — numbers, which automatically get sliders, and
 functions that use them — and a graph that redraws the moment anything
 changes. The shell tab can work the same way: a list such as
 

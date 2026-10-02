@@ -315,8 +315,8 @@ the panel rather than in raw metres. `apply_domain_mask`:
   on the cut edge keeps the area it had when it was interior. That
   over-estimates its load, which is the safe direction to be wrong in.
 
-**Maths keypad** modelled on GeoGebra's, in three tabs (`123`, `f(x)`,
-`f(x,y)`). Keys *show* real notation — √, π, x², |x|, ×, ÷, sin⁻¹, log₁₀, ⌊x⌋ —
+**Maths keypad** in three tabs, grouped by what the keys do (*Numbers*,
+*Functions*, *Two inputs*). Keys *show* real notation — √, π, x², |x|, ×, ÷, sin⁻¹, log₁₀, ⌊x⌋ —
 and *insert* the ASCII the parser reads, plus a backspace key. It types into the
 field you last clicked, or into the panel's first field if you have not clicked
 one.
@@ -975,8 +975,7 @@ the clipboard.
 **Live re-analysis.** The toolbar's *Live* box, beside ▶ Analyze, re-solves
 the model after every edit — a support switched off, a load added, a rod
 deleted, a node dragged — a quarter of a second after the drawing settles, so
-the colours move with the model the way they do in Bridge Designer or Truss
-Me. It is off until you tick it, and it only runs on a model that solves
+the colours move with the model. It is off until you tick it, and it only runs on a model that solves
 quickly (up to 2,500 rods, and under half a second for the last solve,
 checks included; the default 800-rod grid takes about 0.07 s); anything
 larger is analysed by hand as before, and ticking the box says so. A live
@@ -1019,8 +1018,7 @@ only while it is a handful — up to 20 — so the 128 loose nodes of that grid
 do not bring the pile of numbers back.)
 
 **Play load — the load test.** *▶ Play load*, beside the Load % slider, runs
-the load from 0 to 100 % over four seconds, the way Bridge Designer's truck
-crosses its bridge: the deflected shape sags as the load rises, its rods
+the load from 0 to 100 % over four seconds, like a load test: the deflected shape sags as the load rises, its rods
 coloured red and blue by their force and deepening as it grows. The solve is
 linear, so nothing is re-solved — each frame is the solved answer times the
 Load % — and an unanalysed model is analysed first. When the most used rod
@@ -1032,8 +1030,8 @@ the load, and 196 rods are over at 100 %*. Pressed again it stops at full
 load. The display settings it switches on for the show (the deflected shape,
 coloured by force) are put back as they were when it ends.
 
-**The score to beat.** The top of Results reads the design the way Bridge
-Designer scores a bridge: *Weight 35.85 t · carries 1,800 kN, 5.1× its own
+**The score to beat.** The top of Results scores the design in one
+line: *Weight 35.85 t · carries 1,800 kN, 5.1× its own
 weight*, and under it whether it passes — *Passes: the most used rod is at
 0.75* — or *FAILS: rod 355 at 3.33, 196 over — a design scores only when it
 passes*. The weight is every rod's A·L at its own unit weight, the same
@@ -1062,7 +1060,7 @@ every mode, closes with its ×, comes back from *Example library → Show the
 lesson again*, and goes when a new model is generated.
 
 **Buckling, as a demonstration.** Analyse → *Buckling (demonstration)*
-teaches what MASTAN2 and Arcade teach, on the model in the tab
+shows two classic results of stability theory on the model in the tab
 (stereo_buckling). The code checks stay first-order; nothing here changes a
 utilisation or a pass/fail.
 
@@ -1074,7 +1072,7 @@ utilisation or a pass/fail.
   bowing in purple — purple so it is never mistaken for the orange of a
   structure that cannot stand at all — with the view brought to the place
   that buckles first. Pressed again it shows the next of three shapes.
-- *Load–deflection…* opens MASTAN2's signature plot: load factor against
+- *Load–deflection…* opens the classic stability plot: load factor against
   deflection, by (K + λ·K_G)·u = λ·F stepped up to 95 % of the buckling
   factor. The rod that buckles first is given an initial bow of L/1000 in
   its buckling shape — the out-of-straightness steel codes assume — and the

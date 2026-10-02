@@ -7,7 +7,7 @@ headed for two copies of the same compiler, which is exactly how two tabs end
 up disagreeing about what "2x" means (MANIFESTO s3j). This module is the one
 copy. It imports no tab and no Tkinter.
 
-WHAT THE LANGUAGE ACCEPTS -- written to feel like GeoGebra's input bar:
+WHAT THE LANGUAGE ACCEPTS -- written the way formulas are written on paper:
 
     ^ for power              x^2          (also ², ³)
     implicit multiplication  2x, 2(x+1), (a)(b), x y, c(x+1) when c is a number
@@ -32,8 +32,7 @@ Boolean logic is rewritten to its element-wise numpy form (`and` ->
 logical_and, `a < x < b` -> two comparisons joined, `if/else` -> where), since
 Python's own `and` cannot be applied to an array.
 
-THE WORKSPACE (the "algebra view"). A list of definitions, one per line,
-exactly as GeoGebra keeps them:
+THE WORKSPACE. A list of named definitions, one per line:
 
     a = 10                         a number (gets a slider)
     c = a/5                        a number computed from others (no slider)
@@ -464,7 +463,7 @@ def nice_step(span):
 
 
 def default_slider(value):
-    """GeoGebra-style automatic slider range for a number: 0..2v for a
+    """Automatic slider range for a number: 0..2v for a
     positive value, 2v..0 for a negative one, -5..5 for zero."""
     v = float(value)
     if v > 0:
@@ -505,7 +504,7 @@ class Workspace:
 
     def add_line(self, text):
         """Add a definition; if one with the same name exists it is REPLACED,
-        as typing 'a = 5' into GeoGebra's input bar redefines a."""
+        so typing 'a = 5' again simply changes a."""
         d = Definition(text)
         m = _DEF_RE.match(text)
         if m:
@@ -636,7 +635,7 @@ class Workspace:
 
         # Which param-less definitions are really functions of (x, y)? One
         # that uses x or y bare, or uses bare another function of (x, y) --
-        # 'q = 25 t' with 't = 0.06 + 0.02x' -- is one, as in GeoGebra.
+        # 'q = 25 t' with 't = 0.06 + 0.02x' -- is one.
         # Found by a fixed point, since that can chain.
         xy_funcs = {n for n, d in by_name.items() if d.params == COORDS}
         changed = True

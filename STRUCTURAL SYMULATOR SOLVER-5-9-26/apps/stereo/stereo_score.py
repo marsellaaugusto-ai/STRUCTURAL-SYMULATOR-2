@@ -1,9 +1,8 @@
 """How good a design is, in one line: what it weighs, what it carries, and
 whether it passes.
 
-Bridge Designer's lasting idea is the score to beat -- the cheapest bridge
-that passes. A space frame's equivalent is its weight against the load it
-carries: two designs of the same roof under the same load compare on
+The score to beat is the lightest design that passes. For a space frame
+that is its weight against the load it carries: two designs of the same roof under the same load compare on
 kilograms, and a design that fails does not score at all. Kept free of Tk.
 """
 import math

@@ -1,4 +1,4 @@
-"""A restricted math-expression compiler for the Stereo tab's GeoGebra-style
+"""A restricted math-expression compiler for the Stereo tab's formula
 surface input (a height field z = f(x, y), or a parametric surface's three
 component functions x(u, v)/y(u, v)/z(u, v)).
 
@@ -176,7 +176,7 @@ def compile_expression(expr, var_names):
     text = (expr or '').strip()
     if not text:
         raise ExpressionError('expression is empty')
-    # '^' reads as "power" to anyone coming from GeoGebra/calculator
+    # '^' reads as "power" to anyone coming from paper or calculator
     # notation; Python's own '^' is bitwise XOR, which has no sensible
     # meaning on floats and nobody typing a surface formula means anyway.
     text = text.replace('^', '**')

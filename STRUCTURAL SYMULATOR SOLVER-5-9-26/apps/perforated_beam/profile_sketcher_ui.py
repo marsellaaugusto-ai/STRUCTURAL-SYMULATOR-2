@@ -451,7 +451,7 @@ class ProfileSketcher(tk.Toplevel):
         text = self.entry_var.get()
         self.entry_var.set('')
         tool = self.tool.get()
-        # Enter on an empty box is the AutoCAD-style "done, close the
+        # Enter on an empty box is the CAD convention for "done, close the
         # loop now" gesture for Line/Polyline/Polygon -- handle it
         # directly instead of letting it fall through to parse_typed_entry
         # (which would just raise "empty entry").

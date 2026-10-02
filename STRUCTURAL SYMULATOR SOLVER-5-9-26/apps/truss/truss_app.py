@@ -3160,7 +3160,7 @@ class TrussApp(UnitsMixin):
     #  Drawing — truss canvas  (everything in WORLD coords → w2s before draw)
     # ══════════════════════════════════════════════════════════════════════════
     def _draw_adaptive_grid(self, c, w2s, z, W, H):
-        """Adaptive / level-of-detail grid, AutoCAD-style:
+        """Adaptive / level-of-detail grid:
           - MAJOR lines at a "nice" (1-2-5-10-20-50-...) world spacing,
             re-chosen every redraw so their on-screen spacing stays close to
             a fixed target regardless of zoom (no clutter when zoomed out,
@@ -3168,8 +3168,7 @@ class TrussApp(UnitsMixin):
           - Below that, one or two recursively finer levels of grid POINTS
             (not full lines, to avoid visual clutter) fade in once their
             on-screen spacing would actually be legible -- so as you zoom
-            in, smaller subdivisions of the grid unit progressively appear,
-            exactly like AutoCAD's adaptive grid.
+            in, smaller subdivisions of the grid unit progressively appear.
         """
         base_px = SNAP   # 1 world metre, in px at zoom=1
         sx0, sy0 = w2s(0, 0)
@@ -3230,7 +3229,7 @@ class TrussApp(UnitsMixin):
 
         # adaptive / level-of-detail grid: "nice" (1-2-5) major spacing that
         # re-normalizes to stay legible at any zoom, plus recursively finer
-        # grid-point subdivisions that fade in as you zoom in (AutoCAD-style)
+        # grid-point subdivisions that fade in as you zoom in
         self._draw_adaptive_grid(c, w2s, z, W, H)
 
         # Guides first of all: they are references, and must never sit on

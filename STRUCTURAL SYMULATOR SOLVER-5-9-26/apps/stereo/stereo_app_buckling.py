@@ -155,7 +155,8 @@ class StereoBucklingMixin:
 
 
 def draw_load_deflection(c, w, h, data):
-    """Load factor (up) against deflection (across), MASTAN2's way round."""
+    """Load factor (up) against deflection (across), the usual way round for
+    a stability curve."""
     left, right, top, bottom = 64, w - 24, 34, h - 52
     lam_cr = data['lambda_cr']
     ymax = lam_cr * 1.08

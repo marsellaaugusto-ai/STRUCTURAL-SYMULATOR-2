@@ -1,6 +1,7 @@
 """Buckling, as a demonstration: when does this structure buckle, and how?
 
-Two of the things MASTAN2 and Arcade teach with, on the model in the tab:
+Two classic results of stability theory, on the model in the tab (see
+McGuire, Gallagher and Ziemian, Matrix Structural Analysis, 2nd ed.):
 
   * BUCKLING MODES -- the linear (bifurcation) buckling analysis. Under the
     loads as they stand every rod carries an axial force N; a compressed rod

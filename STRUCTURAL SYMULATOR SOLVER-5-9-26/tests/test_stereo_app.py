@@ -2389,7 +2389,7 @@ def test_the_keypad_backspace_deletes_rather_than_inserting(app):
     assert z_entry.get() == 'sin(x'
 
 
-def test_the_keypad_is_tabbed_like_geogebras_own(app):
+def test_the_keypad_is_tabbed_by_what_the_keys_do(app):
     from tkinter import ttk
     from apps.stereo import stereo_app_wizard_keypad as keypad
     win = _open_wizard(app)

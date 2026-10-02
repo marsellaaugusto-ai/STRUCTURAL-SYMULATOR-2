@@ -313,7 +313,7 @@ def nearest_candidate(point, candidates, tol):
 # ─────────────────────────────────────────────────────────────────────────
 
 def parse_typed_entry(text, ref_point=None):
-    """Parses AutoCAD-style coordinate entry.
+    """Parses typed CAD coordinate entry (absolute x,y and relative @dx,dy).
 
       "120,45"        -> absolute point (120, 45)
       "@30,-10"       -> ref_point + (30, -10)

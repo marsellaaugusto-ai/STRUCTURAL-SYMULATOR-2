@@ -41,7 +41,7 @@ numbers are *shown*, never what is stored.
 ```
 main.py            builds the window and the 8 tabs
 units.py           unit conventions, UnitsMixin (entry boxes that convert)
-formula.py         shared GeoGebra-like formula language (Shell + Stereo)
+formula.py         shared formula language (Shell + Stereo)
 view3d.py          shared 3-D camera (orbit/zoom/views) and colour scales
 common.py          shared widgets (ZoomCanvas, ScrollPanel, ...)
 cirsoc_301.py      steel code (CIRSOC 301) used by several tabs
@@ -78,7 +78,7 @@ real Tk widget and calling the controller's own methods (see
 
 Goal from the owner: design reinforced-concrete shells (hyperbolic paraboloids
 first) under uniform and non-uniform vertical and horizontal (wind) loads, with a
-GeoGebra-like formula input, a chosen thickness, and a map of where the shell
+formula input, a chosen thickness, and a map of where the shell
 must be thicker — **shown first, thickened automatically only when a toggle is
 switched on**. Code: **CIRSOC 201** now (2024 draft is default, 2005 selectable);
 **ACI 318-19 and Eurocode 2 later**.

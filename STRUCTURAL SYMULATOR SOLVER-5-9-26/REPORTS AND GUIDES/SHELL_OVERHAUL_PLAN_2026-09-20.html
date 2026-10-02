@@ -220,7 +220,7 @@
     <tr><td>Verification</td><td>Simply-supported plate against the series solution,
       <b>Scordelis–Lo</b> (the standard shell test, ratio 0.989), and the hypar against membrane
       theory with progressively stiffer edge beams (1.036 → 1.005).</td></tr>
-    <tr><td>Geometry</td><td>A GeoGebra-style definitions list: <code>a = 12</code>,
+    <tr><td>Geometry</td><td>A definitions list: <code>a = 12</code>,
       <code>z(x,y) = 2 f x y/(a b)</code>, <code>t = 0.10</code>, every number with a
       <b>slider that redraws the surface live</b>. Plan limits and thickness may themselves be
       formulas.</td></tr>
@@ -3094,8 +3094,8 @@
   <h2><span class="num">9</span>The solver: what it is, and the one thing to add</h2>
   <p>This section was three pages long when I thought the solver had to be written. It does not.
   <b>MITC4 is what the tab uses and what I would have chosen</b> — it does not lock in shear as the
-  shell gets thin, and it is the element OpenSees ships as <code>ShellMITC4</code>, so an
-  independent second opinion is a <code>pip install</code> away rather than an argument. It is
+  shell gets thin, and it is published in full (Dvorkin and Bathe, 1984), so an
+  independent second opinion can be built from the paper rather than argued. It is
   verified against the series solution for a plate, against Scordelis–Lo, and against membrane
   theory for a hypar.</p>
   <h4>The one thing I would add to its verification set</h4>
@@ -3532,8 +3532,8 @@
     buckle if there is not sufficient double curvature”, and past an L/t of a few hundred buckling
     is the governing question. A linear solve never sees it. What this tab can honestly do is
     <i>warn</i>: print L/t, map the Gaussian curvature, and flag when peak deflection passes a
-    fraction of the thickness. What it cannot do is tell you the buckling load. OpenSees is the
-    route to that, and it is already on your reading list.</li>
+    fraction of the thickness. What it cannot do is tell you the buckling load. A geometrically nonlinear analysis is the
+    route to that.</li>
     <li><b>No form-finding.</b> The shape is yours to specify; the app will not find the funicular
     surface for a load case. It is a good project and a separate one.</li>
     <li><b>No cracked-section or long-term behaviour</b> — no creep, no shrinkage, no crack widths.

@@ -217,7 +217,7 @@ Each item names the file to look at. All are done and tested.
 **Custom Surface Wizard.** Height-field `z = f(x,y)` or fully parametric
 `x,y,z of (u,v)`; Cartesian or polar domain; square / diagonal / isometric
 patterns; single layer, offset double layer, or two independent surfaces.
-GeoGebra-style keypad (`stereo_app_wizard_keypad.py`) whose keys *show* real
+A maths keypad (`stereo_app_wizard_keypad.py`) whose keys *show* real
 notation (√, π, x², |x|, ×) and *insert* the ASCII the parser reads.
 
 **Add-ons.** Columns: `COLUMN_PLAIN` (no capital, one post per selected node),

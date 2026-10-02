@@ -1,9 +1,9 @@
 """shell_app.py -- Tkinter controller for the Shell tab. 2026-09-14.
 
-A reinforced-concrete shell designer with a GeoGebra-like "algebra view":
+A reinforced-concrete shell designer driven by a list of definitions:
 
   * Definitions (left, first page): numbers with sliders and functions of
-    (x, y), typed the way GeoGebra takes them. The surface is whatever
+    (x, y), typed the way they are written on paper. The surface is whatever
     function is picked as the surface (z by default), the thickness likewise
     (t). Moving a slider redraws the surface at once; the analysis runs when
     asked for.
@@ -2157,7 +2157,7 @@ class ShellApp(UnitsMixin, tk.Frame):
     def _build_definitions(self, p):
         tk.Label(p, text='Definitions', bg=BG, font=('Helvetica', 11, 'bold'),
                  anchor='w').pack(fill='x', pady=(6, 0))
-        tk.Label(p, text='Type as in GeoGebra:  a = 10   ·   z(x, y) = c x y/(a b)   ·   '
+        tk.Label(p, text='Type a definition:  a = 10   ·   z(x, y) = c x y/(a b)   ·   '
                          't = 0.08 + 0.02 (x/a)^2.  Numbers get a slider. Names used: '
                          'the surface and the thickness below; loads may use any name, '
                          'plus x0 x1 y0 y1, qz and G.',

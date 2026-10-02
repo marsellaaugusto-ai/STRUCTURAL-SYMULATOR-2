@@ -155,7 +155,7 @@ FILL_DENSITY_DEFAULT = 'Light'
 # needs enough pieces to read as a curve rather than as a two-tone rod --
 # more than the linear joint-to-joint blend does, and a floor rather than a
 # fixed count so a dense model's coarser gradient never flattens it away.
-# The GeoGebra-style preview of the surface the lattice is cut from. Its
+# The continuous preview of the surface the lattice is cut from. Its
 # own fixed density, deliberately NOT the mesh subdivision: the point is to
 # see the surface BEFORE choosing a subdivision, and a preview that went
 # coarse with the mesh would go flat exactly when you most need it.

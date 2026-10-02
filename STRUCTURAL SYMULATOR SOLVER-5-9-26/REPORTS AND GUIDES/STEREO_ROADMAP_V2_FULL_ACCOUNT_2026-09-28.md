@@ -1532,7 +1532,7 @@ c67efed | 2026-09-12 | Stereo: fix column/reinforcement-beam orientation, load-a
 da5853e | 2026-09-12 | Stereo: reaction arrows, click-to-inspect rods, load-percentage animation, utilization heat-map
 88298d4 | 2026-09-12 | Fix barrel/parabolic/elliptic vault supports: base is the springing lines, not the end arches
 8a300f7 | 2026-09-12 | Stereo tab: select nodes and delete them (Delete/Backspace + button)
-8601c99 | 2026-09-12 | Stereo tab: GeoGebra-style expression surfaces + domain/module wizard
+8601c99 | 2026-09-12 | Stereo tab: expression surfaces + domain/module wizard
 d3f7c9a | 2026-09-12 | Stereo tab: Module Editor -- a display of the grid's own repeating cell, editable
 20c2164 | 2026-09-12 | Add session report: vault fix, node delete, custom surface wizard, module editor
 f1223f3 | 2026-09-12 | Stereo tab: 6 ready-made examples + orange/violet moment colouring for rigid supports
@@ -1558,7 +1558,7 @@ bebeeee | 2026-09-13 | Replace the screen-space Voronoi with a true 3D one; reor
 a6cab25 | 2026-09-13 | Fix three crashes in the new Voronoi controls found by adversarial probing
 68c0a72 | 2026-09-14 | Stipple the Voronoi skin so the structure reads through the fill
 6796a86 | 2026-09-14 | Tessellate the structure's surface, not a hull around it
-806cf36 | 2026-09-14 | Axes as full lines, a GeoGebra keypad, and examples that fill the wizard in
+806cf36 | 2026-09-14 | Axes as full lines, a maths keypad, and examples that fill the wizard in
 8006c33 | 2026-09-14 | Cover lone struts in the fill; four column styles, three beam profiles
 1cb49a9 | 2026-09-14 | Tripod column; grid-strip and Vierendeel beams; a parabolic depth law
 dfec233 | 2026-09-14 | Loads with a direction, a frozen base module, and a plain column
@@ -1731,7 +1731,7 @@ by an earlier step).
 48 Fix the fill rendering: depth sort, panel colour rule, percentile scale
 49 Colour the load-path arrows by their member's axial force
 50 Draw the axes as full lines, not short segments
-51 Rebuild the wizard keypad with GeoGebra symbols and tabs
+51 Rebuild the wizard keypad with maths symbols and tabs
 52 Show each example's surfaces and node configuration in the wizard
 53 Full UI exercise across every family and example
 54 Make the fill stipple lighter and controllable

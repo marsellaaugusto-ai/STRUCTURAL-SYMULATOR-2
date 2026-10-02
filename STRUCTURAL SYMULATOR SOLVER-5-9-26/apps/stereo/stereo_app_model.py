@@ -1306,7 +1306,7 @@ class StereoModelMixin:
 
     # ── live re-analysis ────────────────────────────────────────────────
     # What makes a structure learnable is seeing the answer move as the
-    # model does (Bridge Designer, Truss Me): with "Live" on, any edit that
+    # model does: with "Live" on, any edit that
     # drops the solve gets a new one as soon as the drawing settles. Only
     # while a solve is quick -- a model that takes longer is analysed by
     # hand, as before, so editing it never stalls.
@@ -1415,9 +1415,8 @@ class StereoModelMixin:
 
     def _auto_deform_scale(self):
         """Set the deformation scale so the max visual displacement is about
-        10% of the model's bounding-box diagonal — the same convention
-        SAP2000 / ETABS / Robot use to keep the deformed shape readable at
-        first glance, regardless of the model's real stiffness."""
+        10% of the model's bounding-box diagonal, so the deformed shape is
+        readable at first glance, regardless of the model's real stiffness."""
         if not self.results or not self.nodes:
             return
         import math

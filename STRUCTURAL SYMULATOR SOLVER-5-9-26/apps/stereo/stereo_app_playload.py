@@ -1,7 +1,6 @@
 """The Stereo tab's load test: "Play load".
 
-Bridge Designer's best-remembered moment is the truck crossing the bridge.
-A space frame has no truck, but it has the same story to tell: the load
+A load test tells the story of a structure: the load
 rising from nothing, the rods' colours deepening, the shape sagging, and
 the moment -- if there is one -- the first rod reaches its capacity. The
 solve is linear, so every frame is the solved answer times the Load %

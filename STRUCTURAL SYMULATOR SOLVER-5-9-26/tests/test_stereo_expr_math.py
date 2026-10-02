@@ -1,5 +1,5 @@
 """Tests for the restricted math-expression compiler (apps/stereo/expr_math.py)
-backing the Stereo tab's GeoGebra-style surface input."""
+backing the Stereo tab's formula surface input."""
 import math
 
 import pytest

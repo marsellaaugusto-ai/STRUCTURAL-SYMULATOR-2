@@ -1211,8 +1211,8 @@ class StereoRenderMixin:
                           outline='#ffffff', width=1, tags='bezier')
 
     def _draw_surface_preview(self, c, to_screen):
-        """The CONTINUOUS surface behind the lattice, the way GeoGebra 3D
-        draws one: shaded quads plus iso-lines.
+        """The CONTINUOUS surface behind the lattice, drawn as shaded quads
+        plus iso-lines.
 
         Sampled at its own fixed density, deliberately NOT at the
         subdivision the mesh uses. The whole reason to draw it is to see

@@ -17,7 +17,7 @@ import formula as F
     ('2x', 3, 0, 6),
     ('2 x', 3, 0, 6),
     ('x y', 2, 5, 10),
-    ('3x^2y', 2, 5, 60),          # GeoGebra reads this as 3*x^2*y
+    ('3x^2y', 2, 5, 60),          # read as 3*x^2*y, as on paper
     ('2(x+1)', 2, 0, 6),
     ('4 (x+1)', 2, 0, 12),
     ('(x)(y)', 2, 5, 10),

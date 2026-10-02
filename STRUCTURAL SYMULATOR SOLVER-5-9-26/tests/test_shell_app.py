@@ -90,7 +90,7 @@ def test_a_bad_definition_is_marked_and_analysis_refused_politely(app):
     assert 'nope' in app.error
 
 
-def test_the_input_bar_redefines_like_geogebra(app):
+def test_the_input_bar_redefines_an_existing_name(app):
     n = len(app.model.ws.defs)
     app.add_definition('f = 4')
     assert len(app.model.ws.defs) == n

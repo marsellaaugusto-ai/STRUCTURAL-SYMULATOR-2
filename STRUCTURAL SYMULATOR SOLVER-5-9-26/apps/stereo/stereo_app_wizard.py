@@ -23,7 +23,7 @@ class StereoWizardMixin:
 
     def _open_custom_surface_wizard(self):
         """A Toplevel dialog for defining a surface by typed expression
-        (a GeoGebra-style calculator palette inserts operators/functions
+        (a calculator-style palette inserts operators/functions
         into whichever expression field last had focus) and sampling it
         into a mesh: a domain coordinate system (Cartesian or Polar), a
         module pattern (square/diagonal/isometric), and either a single
@@ -90,7 +90,7 @@ class StereoWizardMixin:
 
         def backspace():
             """Delete the character before the caret, like the ⌫ key on
-            GeoGebra's own keyboard. Without it the palette can only ever
+            any calculator. Without it the palette can only ever
             add, and a mistyped function has to be fixed with the physical
             keyboard -- which is the workflow the palette exists to avoid."""
             w = active_entry['widget']
@@ -123,13 +123,13 @@ class StereoWizardMixin:
             return entry
 
         def make_palette(parent):
-            """GeoGebra's own keyboard, tab for tab.
+            """The maths keypad: three tabs, grouped by what the keys do.
 
             The keys carry real notation -- √, π, x², |x|, × -- and insert the
             ASCII expr_math compiles, so the expression reads like the
             mathematics while staying inside the parser's whitelist. See
-            stereo_app_wizard_keypad for the layout and for why GeoGebra's
-            Greek and logic tabs are not reproduced.
+            stereo_app_wizard_keypad for the layout and for why it offers
+            no Greek letters or logic symbols.
             """
             box = tk.LabelFrame(parent, text='Insert (into the last-focused field above)',
                                 bg=BG, font=('Helvetica', 8, 'bold'))

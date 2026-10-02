@@ -3,7 +3,7 @@
 Covers every change made to the Stereo (3D space-structure) tab across this
 entire conversation, in the order it happened: two rounds of didactic display
 features, a user-reported structural bug in the vault generators (and a real
-mechanism that fix exposed), a node-delete feature, a GeoGebra-style
+mechanism that fix exposed), a node-delete feature, a formula-based
 expression/domain wizard for defining custom surfaces, and a Module Editor for
 directly reshaping a grid's own repeating cell. Every item below was verified
 against a real, running Tk widget (per this project's own testing standard —

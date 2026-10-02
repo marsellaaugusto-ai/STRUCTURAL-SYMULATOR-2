@@ -209,6 +209,11 @@ GRADIENT_SEGMENTS_DENSE = 4
 GRADIENT_DENSE_MEMBERS = 900
 GRADIENT_DISABLE_MEMBERS = 3000
 LABEL_DISABLE_NODES = 2000
+# Numbers are only worth drawing where they can be read: when more than
+# LABEL_CROWDED_FRAC of them would sit within LABEL_MIN_SPACING_PX of another
+# one on screen, "Hide # when crowded" leaves them off until you zoom in.
+LABEL_MIN_SPACING_PX = 20
+LABEL_CROWDED_FRAC = 0.35
 LOAD_PATH_DISABLE_MEMBERS = 2000
 DRAW_THROTTLE_MS = 33
 LOAD_PATH_NEAR_ZERO_FRAC = 0.02   # members below this fraction of the largest |N| stay still

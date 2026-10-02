@@ -88,6 +88,7 @@ class StereoPanelsMixin(_ToolbarModes):
                  fg='#7a869a', anchor='w').pack(fill='x')
         row = tk.Frame(wrap, bg=BG)
         row.pack(fill='x')
+        self._pop_rows = getattr(self, '_pop_rows', []) + [row]
         return row
 
     def _init_display_vars(self):
@@ -144,6 +145,8 @@ class StereoPanelsMixin(_ToolbarModes):
         self.show_nodes = tk.BooleanVar(value=True)
         self.show_node_labels = tk.BooleanVar(value=True)
         self.show_member_labels = tk.BooleanVar(value=False)
+        # leave the numbers off while they would pile up on screen
+        self.labels_auto_hide = tk.BooleanVar(value=True)
         self.show_addon_codes = tk.BooleanVar(value=True)
         self.show_loads = tk.BooleanVar(value=True)
         self.show_reactions = tk.BooleanVar(value=False)
@@ -306,6 +309,9 @@ class StereoPanelsMixin(_ToolbarModes):
                        command=self._draw).pack(side='left', padx=(4, 0))
         tk.Checkbutton(g, text='Rod #', variable=self.show_member_labels, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
+        tk.Checkbutton(g, text='Hide # when crowded',
+                       variable=self.labels_auto_hide, bg=BG,
+                       command=self._draw).pack(side='left', padx=(4, 0))
         tk.Checkbutton(g, text='Add-on codes', variable=self.show_addon_codes,
                        bg=BG, command=self._draw).pack(side='left', padx=(4, 0))
         tk.Checkbutton(g, text='Loads', variable=self.show_loads, bg=BG,
@@ -455,6 +461,10 @@ class StereoPanelsMixin(_ToolbarModes):
             tk.Checkbutton(grid, text=text, variable=var, bg=BG,
                            font=('Helvetica', 8), anchor='w', command=cmd
                            ).grid(row=k // 2, column=k % 2, sticky='w')
+        tk.Checkbutton(box, text='Hide # when crowded (zoom in to read)',
+                       variable=self.labels_auto_hide, bg=BG,
+                       font=('Helvetica', 8), anchor='w',
+                       command=self._draw).pack(fill='x', padx=6)
         tk.Checkbutton(box, text='Base module card', variable=self.show_module_card,
                        bg=BG, font=('Helvetica', 8), anchor='w',
                        command=self._draw).pack(fill='x', padx=6, pady=(0, 4))
@@ -917,6 +927,8 @@ class StereoPanelsMixin(_ToolbarModes):
             if wanted:
                 frame.pack(fill='x', pady=(0, 1))
         self._col_hint.config(text=self.COLUMN_STYLE_HINTS.get(style, ''))
+        if hasattr(self, '_hint_labels'):
+            self._refit_hint(self._col_hint)
 
     def _set_plan_rule(self, rule):
         """Drop a ready-made plan rule into the field, centred on the domain
@@ -979,6 +991,8 @@ class StereoPanelsMixin(_ToolbarModes):
             (self.frame_bz_patch if source == SOURCE_PATCH
              else self.frame_bz_profile).pack(fill='x')
         self.shape_source_note.config(text=self.SHAPE_SOURCE_NOTES.get(source, ''))
+        if hasattr(self, '_hint_labels'):
+            self._refit_hint(self.shape_source_note)
 
         two = bool(self.shape_two.get()) and not bezier
         single = self.shape_lattice.get() == sg.LATTICE_SINGLE
@@ -2725,6 +2739,10 @@ class StereoPanelsMixin(_ToolbarModes):
         self.sel_label.pack(anchor='w', padx=6, pady=4)
         tk.Button(box, text='Delete selected node(s)', command=self._on_delete_nodes
                  ).pack(anchor='w', padx=6, pady=(0, 4))
+        # the selected rod's check as a worked hand calculation
+        tk.Button(box, text='Explain this rod…',
+                  command=self._explain_selected_rod
+                  ).pack(anchor='w', padx=6, pady=(0, 4))
 
         prof_sel_fr = tk.Frame(box, bg=BG)
         prof_sel_fr.pack(fill='x', padx=6, pady=(0, 4))

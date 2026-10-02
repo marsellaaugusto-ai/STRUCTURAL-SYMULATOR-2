@@ -1169,6 +1169,78 @@ class StereoViewMixin:
         i, u = gov
         return self._show_rod(i, 'governing rod %d -- utilisation %.2f' % (i, u))
 
+    def _rod_to_explain(self):
+        """The one rod the selection names, or None."""
+        if self.selected_member is not None:
+            return self.selected_member
+        if len(self.selected_members) == 1:
+            return next(iter(self.selected_members))
+        return None
+
+    def _explain_selected_rod(self):
+        """The Results panel's "Explain this rod": the selected rod's code
+        check written out as a hand calculation -- formula, numbers, result
+        and article, step by step (stereo_explain) -- so a utilisation can
+        be followed back to the clause it came from. Returns the window."""
+        i = self._rod_to_explain()
+        if i is None or not (0 <= i < len(self.members)):
+            self._set_status('Click one rod on the drawing first, then '
+                             'Explain this rod.', 'error')
+            return None
+        if (self.results is None or not self.member_checks
+                or i >= len(self.member_checks)):
+            self._set_status('Run ▶ Analyze first -- the explanation is of '
+                             'the solved forces.', 'error')
+            return None
+        from apps.stereo import stereo_explain as sx
+        m = self.members[i]
+        mr = self.results['member_res'][i]
+        L = sm.member_vector(self.nodes, m)[3]
+        expl = sx.explain(dict(m, _length_m=L), mr.get('N', 0.0),
+                          self.member_checks[i], mr, L,
+                          self._timber_settings())
+        text = sx.as_text(expl, title=f'Rod {i}: nodes {m["a"]}–{m["b"]}')
+        text += ('\n\nUnits are the code\'s own (N, mm, MPa, kN·m), '
+                 'whatever the unit selector shows.')
+        frac = self._load_frac()
+        if abs(frac - 1.0) > 1e-9:
+            text += (f'\nThese are the full-load numbers: the Load % slider '
+                     f'(now {frac * 100:.0f} %) scales the panel readouts, '
+                     'not this page.')
+        old = getattr(self, '_explain_win', None)
+        try:
+            if old is not None and old.winfo_exists():
+                old.destroy()
+        except tk.TclError:
+            pass
+        win = tk.Toplevel(self.root)
+        win.title(f'Explain rod {i}')
+        win.geometry('660x560')
+        self._explain_win = win
+        bar = tk.Frame(win)
+        bar.pack(side='bottom', fill='x', padx=6, pady=6)
+        body = tk.Frame(win)
+        body.pack(fill='both', expand=True, padx=6, pady=(6, 0))
+        txt = tk.Text(body, wrap='word', font='TkFixedFont', relief='flat',
+                      padx=8, pady=6)
+        vsb = tk.Scrollbar(body, orient='vertical', command=txt.yview)
+        txt.configure(yscrollcommand=vsb.set)
+        vsb.pack(side='right', fill='y')
+        txt.pack(side='left', fill='both', expand=True)
+        txt.insert('1.0', text)
+        txt.configure(state='disabled')
+        win._text = txt
+
+        def copy():
+            win.clipboard_clear()
+            win.clipboard_append(text)
+            self._set_status(f'Rod {i}\'s hand calculation copied.', 'ok')
+
+        tk.Button(bar, text='Close', command=win.destroy).pack(side='right')
+        tk.Button(bar, text='Copy', command=copy).pack(side='right', padx=4)
+        self._set_status(f'Rod {i}: {expl["verdict"]}.', 'ok')
+        return win
+
     # ── keyboard axis extend ────────────────────────────────────────────────
     _AXIS_KEYS = {
         'Left':  (-1, 0, 0, '-X'),

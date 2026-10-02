@@ -50,6 +50,7 @@ from apps.stereo.stereo_app_constants import (
     LEGEND_CARD_BG, LEGEND_CARD_EDGE,
     GRADIENT_SEGMENTS, GRADIENT_SEGMENTS_DENSE, GRADIENT_DENSE_MEMBERS,
     GRADIENT_DISABLE_MEMBERS, LABEL_DISABLE_NODES, LOAD_PATH_DISABLE_MEMBERS,
+    LABEL_MIN_SPACING_PX, LABEL_CROWDED_FRAC,
     ROD_FIELD_SEGMENTS,
     SURFACE_PREVIEW_STEPS, SURFACE_PREVIEW_STIPPLE, SURFACE_PREVIEW_LINE,
     BZ_HANDLE_COLOR, BZ_HANDLE_KNOT_COLOR, BZ_POLYGON_COLOR,
@@ -481,6 +482,36 @@ class StereoRenderMixin:
                       font=('Helvetica', 10), justify='left',
                       tags=('empty_state',))
 
+    def _labels_crowded(self, pts):
+        """Whether numbers drawn at screen points `pts` would pile up:
+        more than LABEL_CROWDED_FRAC of them within LABEL_MIN_SPACING_PX of
+        another. A bucket grid, so it costs one pass, not all pairs. Always
+        False with "Hide # when crowded" off -- the override."""
+        if not self.labels_auto_hide.get() or len(pts) < 2:
+            return False
+        cell = float(LABEL_MIN_SPACING_PX)
+        lim2 = cell * cell
+        buckets = {}
+        for k, (x, y) in enumerate(pts):
+            buckets.setdefault((int(x // cell), int(y // cell)), []).append(k)
+        crowded = 0
+        for k, (x, y) in enumerate(pts):
+            cx, cy = int(x // cell), int(y // cell)
+            near = False
+            for gx in (cx - 1, cx, cx + 1):
+                for gy in (cy - 1, cy, cy + 1):
+                    for j in buckets.get((gx, gy), ()):
+                        if j != k and (pts[j][0] - x) ** 2 + \
+                                (pts[j][1] - y) ** 2 < lim2:
+                            near = True
+                            break
+                    if near:
+                        break
+                if near:
+                    break
+            crowded += near
+        return crowded > LABEL_CROWDED_FRAC * len(pts)
+
     def _draw(self):
         c = self.canvas
         c.delete('all')
@@ -489,6 +520,8 @@ class StereoRenderMixin:
         if not self.nodes:
             self._draw_empty_state()
             return
+        if self.results is None:
+            self._maybe_live_analyze()
         # Always the REST structure -- "Show deformed" draws an ADDITIONAL
         # green overlay in parallel (see _draw_deformed_overlay), it never
         # replaces this, so the real structure stays exactly where clicks,
@@ -944,25 +977,51 @@ class StereoRenderMixin:
             self._place_selection_card()
 
             n_nodes = len(self.nodes)
+            hidden = []
             if self.show_node_labels.get() and n_nodes <= LABEL_DISABLE_NODES:
+                pts = [to_screen(px, py) for px, py, _ in proj]
+                which = range(n_nodes)
+                if self._labels_crowded(pts):
+                    # the selection keeps its numbers: that is what you
+                    # are asking about
+                    which = sorted(self.selected_nodes)
+                    hidden.append('node')
                 labels = []
-                for i, (px, py, _) in enumerate(proj):
-                    sx, sy = to_screen(px, py)
+                for i in which:
+                    sx, sy = pts[i]
                     labels.append(c.create_text(sx + 8, sy - 8, text=str(i), anchor='w',
-                                               font=('Helvetica', 7), fill='#555'))
+                                               font=('Helvetica', 7), fill='#555',
+                                               tags='node_label'))
                 declutter_text(c, labels)
 
             if self.show_member_labels.get() and n_members <= LABEL_DISABLE_NODES:
-                mlabels = []
-                for i, m in enumerate(self.members):
+                mids = []
+                for m in self.members:
                     ax, ay, _ = proj[m['a']]
                     bx, by, _ = proj[m['b']]
                     sx0, sy0 = to_screen(ax, ay)
                     sx1, sy1 = to_screen(bx, by)
-                    mlabels.append(c.create_text((sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0,
+                    mids.append(((sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0))
+                which = range(n_members)
+                if self._labels_crowded(mids):
+                    which = sorted(set(self.selected_members) | (
+                        {self.selected_member}
+                        if self.selected_member is not None else set()))
+                    hidden.append('rod')
+                mlabels = []
+                for i in which:
+                    mlabels.append(c.create_text(mids[i][0], mids[i][1],
                                                 text=str(i), font=('Helvetica', 7, 'italic'),
-                                                fill='#8a5a00'))
+                                                fill='#8a5a00', tags='rod_label'))
                 declutter_text(c, mlabels)
+            if hidden:
+                c.create_text(
+                    c.winfo_width() - 10, c.winfo_height() - 8, anchor='se',
+                    text='%s numbers hidden while crowded -- zoom in, or '
+                         'untick Display ▾ → Hide # when crowded'
+                         % ' and '.join(hidden).capitalize(),
+                    font=('Helvetica', 8), fill='#7a828a',
+                    tags='labels_hidden_note')
 
             if getattr(self, 'show_addon_codes', None) is not None and \
                     self.show_addon_codes.get():

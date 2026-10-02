@@ -141,6 +141,13 @@ class StereoShellMixin:
         tk.Button(tb, text='▶  Analyze', font=('Helvetica', 9, 'bold'), bg='#e8f4ec',
                   fg=STATUS_OK, relief='raised', bd=1, padx=10, pady=3,
                   command=self._analyze).pack(side='left', padx=(6, 2))
+        # re-solve after every edit, on a model quick enough to
+        self.live_on = tk.BooleanVar(value=False)
+        self.live_check = tk.Checkbutton(
+            tb, text='Live', variable=self.live_on, bg=TOOLBAR_BG,
+            activebackground=TOOLBAR_BG, highlightthickness=0,
+            font=('Helvetica', 9), command=self._on_live_toggle)
+        self.live_check.pack(side='left', padx=(0, 2))
 
         # Clear sits with Undo, not with Generate: it is the same KIND of
         # verb (it changes the model and is undoable), and putting it beside
@@ -430,8 +437,133 @@ class StereoShellMixin:
         self._on_connectivity_change()   # hide I/J unless Rigid is selected
         self._on_col_style_change()      # hide the fields this style ignores
         self._unify_combobox_fonts(self.panel_host)
+        self._collapse_long_hints(self.panel_host)
 
     COMBO_FONT = ('Helvetica', 9)
+
+    # ── long explanations: two lines and a "?" ─────────────────────────────
+    # A grey paragraph of six or ten lines pushed the controls it explains
+    # off the panel. Past HINT_MAX_LINES it now shows its first
+    # HINT_SHOWN_LINES and a "?" badge: hovering the badge shows the whole
+    # paragraph, a click on it (or on the text) opens it in place and a
+    # second click folds it again. The label's text is untouched -- only how
+    # much of it is on screen changes.
+    HINT_MAX_LINES = 3
+    HINT_SHOWN_LINES = 2
+    HINT_COLOURS = (HINT_FG, '#666', '#666666')
+    HINT_BADGE_BG = '#1f5a8a'
+
+    def _collapse_long_hints(self, widget):
+        """Fold every long grey explanation under `widget` (see above)."""
+        widget.update_idletasks()
+        found = []
+
+        def walk(w):
+            for c in w.winfo_children():
+                if c.winfo_class() == 'Label':
+                    found.append(c)
+                walk(c)
+        walk(widget)
+        self._hint_labels = []
+        for lbl in found:
+            try:
+                if str(lbl.cget('textvariable')) or \
+                        str(lbl.cget('fg')) not in self.HINT_COLOURS or \
+                        not int(float(str(lbl.cget('wraplength')) or 0)) or \
+                        lbl.winfo_manager() != 'pack':
+                    continue
+            except (tk.TclError, ValueError):
+                continue
+            self._refit_hint(lbl)
+
+    def _hint_lines(self, lbl):
+        """How many lines `lbl`'s text wraps to at its own width."""
+        from tkinter import font as tkfont
+        line = tkfont.Font(font=lbl.cget('font')).metrics('linespace')
+        pad = 2 * (int(float(str(lbl.cget('pady')))) +
+                   int(float(str(lbl.cget('bd')))))
+        return (lbl.winfo_reqheight() - pad) / max(line, 1)
+
+    def _refit_hint(self, lbl):
+        """Fold `lbl` if its text runs past HINT_MAX_LINES, unfold it if it
+        no longer does. Called again by the panels whose note changes with
+        a choice (the surface source, the column type)."""
+        open_ = getattr(lbl, '_hint_open', False)
+        try:
+            lbl.configure(height=0)
+            long_ = self._hint_lines(lbl) > self.HINT_MAX_LINES + 0.5
+        except (tk.TclError, ValueError):
+            return
+        badge = getattr(lbl, '_hint_badge', None)
+        if not long_:
+            if badge is not None:
+                badge.place_forget()
+                lbl.configure(cursor='')
+            lbl._hint_folded = False
+            return
+        if badge is None:
+            self._fold_hint(lbl)
+        lbl._hint_folded = True
+        lbl._hint_show(open_)
+        if lbl not in getattr(self, '_hint_labels', []):
+            self._hint_labels = getattr(self, '_hint_labels', []) + [lbl]
+
+    def _fold_hint(self, lbl):
+        lbl.configure(anchor='nw', pady=0, bd=0)
+        badge = tk.Label(lbl.master, text='?', bg=self.HINT_BADGE_BG,
+                         fg='#ffffff', font=('Helvetica', 7, 'bold'),
+                         padx=3, pady=0, cursor='hand2')
+        lbl._hint_badge = badge
+        lbl._hint_open = False
+        self._hint_labels.append(lbl)
+
+        def show(open_):
+            lbl._hint_open = open_
+            lbl.configure(height=0 if open_ else self.HINT_SHOWN_LINES,
+                          cursor='hand2')
+            if open_:
+                badge.place_forget()
+            else:
+                badge.place(in_=lbl, relx=1.0, rely=1.0, anchor='se')
+
+        def toggle(_e=None):
+            if not getattr(lbl, '_hint_folded', False):
+                return None
+            self._hide_hint_tip()
+            show(not lbl._hint_open)
+            return 'break'
+
+        lbl._hint_show = show
+        lbl._hint_toggle = toggle
+        for w in (lbl, badge):
+            w.bind('<Button-1>', toggle, add='+')
+        badge.bind('<Enter>', lambda e: self._show_hint_tip(lbl), add='+')
+        badge.bind('<Leave>', lambda e: self._hide_hint_tip(), add='+')
+
+    def _show_hint_tip(self, lbl):
+        self._hide_hint_tip()
+        try:
+            tip = tk.Toplevel(lbl)
+            tip.overrideredirect(True)
+            tk.Label(tip, text=lbl.cget('text') + '\n\n(click to keep it open)',
+                     bg='#fffbe6', fg='#222', font=('Helvetica', 9),
+                     justify='left', wraplength=380, padx=8, pady=6,
+                     relief='solid', bd=1).pack()
+            tip.geometry('+%d+%d' % (lbl.winfo_rootx() + 12,
+                                     lbl.winfo_rooty() + lbl.winfo_height()
+                                     + 4))
+            self._hint_tip = tip
+        except tk.TclError:
+            self._hint_tip = None
+
+    def _hide_hint_tip(self):
+        tip = getattr(self, '_hint_tip', None)
+        self._hint_tip = None
+        if tip is not None:
+            try:
+                tip.destroy()
+            except tk.TclError:
+                pass
 
     def _unify_combobox_fonts(self, widget):
         """Every drop-down in the panels in the panel's own small face. A
@@ -493,11 +625,7 @@ class StereoShellMixin:
             return 'Next: Generate ▾ → a grid family, or the Example library'
         if not self.supports:
             return 'Next: Support — the model stands on nothing yet'
-        loaded = bool(self.loads) or (
-            self.area_load_on.get() and getattr(self, '_load_nodes', None)) \
-            or self.self_weight_on.get() or self.wind_on.get() \
-            or bool(getattr(self, 'member_loads', None))
-        if not loaded:
+        if not self._has_loads():
             return 'Next: Load — nothing is applied yet'
         if self.results is None:
             return 'Next: ▶ Analyze'
@@ -634,6 +762,41 @@ class StereoShellMixin:
             b.configure(relief='raised', fg='#1d2328', font=('Helvetica', 8))
 
     # ── display popover ─────────────────────────────────────────────────────
+    # A row of the Display popover wider than this flows onto a second line,
+    # the way words wrap: at its natural width the "Colour by" row alone
+    # was 1,385 px and ran off the right of a 1,440 px window.
+    POP_MAX_W = 620
+
+    def _wrap_pop_row(self, row, max_w):
+        kids = row.pack_slaves()
+        if row.winfo_reqwidth() <= max_w or not kids or any(
+                str(k.pack_info().get('side')) != 'left' for k in kids):
+            return
+        infos = [(k, k.pack_info()) for k in kids]
+        for k, _info in infos:
+            k.pack_forget()
+        def pads(v):
+            if isinstance(v, (tuple, list)):
+                vals = [int(float(x)) for x in v]
+            else:
+                vals = [int(float(x)) for x in str(v).split()] or [0]
+            return vals if len(vals) == 2 else vals * 2
+
+        line, used = None, 0
+        for k, info in infos:
+            left, right = pads(info.get('padx', 0))
+            w = k.winfo_reqwidth() + left + right
+            if line is None or used + w > max_w:
+                line = tk.Frame(row, bg=BG)
+                line.pack(fill='x', anchor='w')
+                used = 0
+                left = 0               # a line starts at the row's own edge
+            k.pack(in_=line, side='left', padx=(left, right),
+                   pady=info.get('pady', 0))
+            # the line frame is younger, so it would stack over the widget
+            k.lift(line)
+            used += w
+
     def _toggle_display_popover(self):
         """Display state is not a mode and does not deserve permanent chrome:
         four toolbar rows of it now live behind this one button."""
@@ -652,7 +815,11 @@ class StereoShellMixin:
         self._display_pop = pop
         body = tk.Frame(pop, bg=BG)
         body.pack(padx=1, pady=1)
+        self._pop_rows = []
         self._fill_display_popover(body)
+        pop.update_idletasks()
+        for row in self._pop_rows:
+            self._wrap_pop_row(row, self.POP_MAX_W)
         pop.update_idletasks()
         x = self.display_btn.winfo_rootx()
         y = self.display_btn.winfo_rooty() + self.display_btn.winfo_height() + 2

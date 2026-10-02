@@ -914,6 +914,52 @@ control — 1,126 buttons, check boxes and drop-down values in all nine modes,
 the menus and the dialogs — raises no error, and a button with nothing to do
 says so.
 
+**Explain this rod.** Results → *Explain this rod…* writes the selected
+rod's code check out as a worked hand calculation, the way a textbook example
+or a student's own sheet would: each step's formula, the numbers put into it,
+the result, and the article it comes from. For steel (CIRSOC 301): σ = N/A
+against φFy (H.3.4) for a tie; K·L/r, Fe (E3-4), which buckling branch, Fcr
+(E3-2 or E3-3) and Pd = φc·Fcr·A (E3-1) for a strut; and for a rigid rod, Mc =
+φb·Fy·S (F.1) and the H1-1a or H1-1b interaction. For timber (CIRSOC 601):
+every adjustment factor in the order Tabla 4.3-1 applies them (CD, CM, Ct, CF
+or CV, Cr), FcE, α, CP (3.3.1-1), CL (3.2.1-4) and the art. 3.5 combinations.
+The page always ends on the same utilisation the panel shows, and the timber
+pages reproduce the Manual de Aplicación's examples M.4.E.2 (CP 0.50, F'c
+4.46 < fc 5.0) and M.4.E.3 (0.74) number for number. *Copy* puts the page on
+the clipboard.
+
+**Live re-analysis.** The toolbar's *Live* box, beside ▶ Analyze, re-solves
+the model after every edit — a support switched off, a load added, a rod
+deleted, a node dragged — a quarter of a second after the drawing settles, so
+the colours move with the model the way they do in Bridge Designer or Truss
+Me. It is off until you tick it, and it only runs on a model that solves
+quickly (up to 2,500 rods, and under half a second for the last solve,
+checks included; the default 800-rod grid takes about 0.07 s); anything
+larger is analysed by hand as before, and ticking the box says so. A live
+solve never opens a dialog or changes the selection: a model that cannot
+stand says *Live: …* on the status line once, and ▶ Analyze then selects the
+loose nodes as it always has.
+
+**Numbers only where they can be read.** Node and rod numbers are left off
+while they would pile on top of each other — more than a third of them within
+20 px of another on screen, which is the default 221-node grid at full view —
+and come back as you zoom in (the same grid reads clearly at 1.5×). The
+nodes and rods you have selected keep their numbers whatever the zoom, since
+those are the ones you are asking about, and a line at the bottom right says
+the rest are hidden and why. *Display ▾ → Hide # when crowded* (also in
+Analyse → Show) turns this off and draws every number again.
+
+**Long explanations fold behind a "?".** Every grey explanation longer than
+three lines — 26 of them, from the line-select and groups notes in Build to
+each surface family's paragraph on how it carries load — shows its first two
+lines and a small blue **?**. Hovering the **?** shows the whole paragraph;
+a click on it, or on the text, opens it in place and a second click folds it
+again. Nothing was cut: the text is the same, only how much of it takes up
+the panel changed — enough that Build's Geometry fields, which sat below the
+fold, are on screen when the mode opens. Coloured notes (warnings, blocked
+choices) are never folded, and a note whose text changes with a choice is
+measured again each time.
+
 **The toolbar** (46 px) keeps only what is not a mode: Generate, ▶ Analyze,
 undo/redo, the Display popover, Export, and the Load % slider.
 

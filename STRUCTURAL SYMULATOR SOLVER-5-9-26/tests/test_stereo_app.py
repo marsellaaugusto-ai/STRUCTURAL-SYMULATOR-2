@@ -816,6 +816,8 @@ def test_supported_nodes_are_drawn_with_a_small_box_glyph(app):
 
 
 def test_node_label_toggle_shows_and_hides_node_text(app):
+    # the toggle itself; hiding while crowded is TestNumbersHideWhenCrowded
+    app.labels_auto_hide.set(False)
     app.show_node_labels.set(True)
     app._draw()
     with_labels = len(app.canvas.find_withtag('all'))
@@ -827,6 +829,7 @@ def test_node_label_toggle_shows_and_hides_node_text(app):
 
 def test_member_label_toggle_is_off_by_default_and_can_be_turned_on(app):
     assert app.show_member_labels.get() is False
+    app.labels_auto_hide.set(False)
     app._draw()
     before = len(app.canvas.find_withtag('all'))
     app.show_member_labels.set(True)
@@ -4555,6 +4558,37 @@ def test_the_display_popover_opens_and_closes_on_the_same_button(app):
     assert app._display_pop is not None and app._display_pop.winfo_exists()
     app._toggle_display_popover()
     assert app._display_pop is None
+
+
+def test_every_control_in_the_display_popover_is_inside_it(app, tk_root):
+    """Its rows flow onto a second line past POP_MAX_W: at natural width
+    the Colour-by row alone was 1,385 px, off the right of the window, and
+    "Resultant", "Auto-range", "Surface" and "Load-path arrows" with it."""
+    app._toggle_display_popover()
+    pop = app._display_pop
+    try:
+        tk_root.update()
+        assert pop.winfo_width() <= app.POP_MAX_W + 20
+        right = pop.winfo_rootx() + pop.winfo_width()
+        bottom = pop.winfo_rooty() + pop.winfo_height()
+
+        def walk(w):
+            for c in w.winfo_children():
+                yield c
+                yield from walk(c)
+        controls = [w for w in walk(pop) if w.winfo_class() in (
+            'Checkbutton', 'Radiobutton', 'TCombobox', 'Scale')]
+        assert len(controls) > 20
+        for w in controls:
+            assert w.winfo_ismapped(), w
+            assert w.winfo_rootx() + w.winfo_width() <= right + 1, w
+            assert w.winfo_rooty() + w.winfo_height() <= bottom + 1, w
+        texts = [w.cget('text') for w in controls
+                 if w.winfo_class() in ('Checkbutton', 'Radiobutton')]
+        for want in ('Surface', 'Load-path arrows', 'Hide # when crowded'):
+            assert any(want in t for t in texts), want
+    finally:
+        app._toggle_display_popover()
 
 
 def test_the_legend_sits_on_its_own_card_in_the_corner(app):
@@ -11812,3 +11846,249 @@ class TestAddonsLeaveTheModelsOwnRodsAlone:
         app._clear_cable_cranes()
         assert [(m['conn'], m['profile'], m['A'])
                 for m in app.members] == before
+
+
+class TestExplainThisRod:
+    """The Results panel's "Explain this rod": the selected rod's check as
+    a worked hand calculation, in a window of its own."""
+
+    def test_with_nothing_selected_it_says_what_to_do(self, app):
+        app._analyze()
+        app.selected_member = None
+        app.selected_members = set()
+        assert app._explain_selected_rod() is None
+        assert 'Click one rod' in app.status_var.get()
+
+    def test_before_a_solve_it_asks_for_one(self, app):
+        app.results = None
+        app.member_checks = None
+        app.selected_member = 3
+        assert app._explain_selected_rod() is None
+        assert 'Analyze first' in app.status_var.get()
+
+    def test_the_governing_rod_explained_ends_on_its_utilisation(self, app):
+        app._analyze()
+        i, u = app._governing_rod()
+        app._show_governing_rod()
+        win = app._explain_selected_rod()
+        try:
+            assert win.title() == f'Explain rod {i}'
+            page = win._text.get('1.0', 'end')
+            assert page.startswith(f'Rod {i}: nodes ')
+            assert f'utilisation {u:.3f}' in page
+            assert str(win._text.cget('state')) == 'disabled'
+        finally:
+            win.destroy()
+
+    def test_a_second_explanation_replaces_the_first(self, app):
+        app._analyze()
+        app.selected_member = 0
+        first = app._explain_selected_rod()
+        app.selected_member = 1
+        second = app._explain_selected_rod()
+        try:
+            assert not first.winfo_exists() and second.winfo_exists()
+            assert second.title() == 'Explain rod 1'
+        finally:
+            second.destroy()
+
+    def test_the_button_is_in_the_selection_box(self, app):
+        def walk(w):
+            for c in w.winfo_children():
+                yield c
+                yield from walk(c)
+        buttons = [w for w in walk(app._mode_frames['results'])
+                   if isinstance(w, tk.Button)
+                   and w.cget('text').startswith('Explain this rod')]
+        assert len(buttons) == 1
+
+
+class TestLiveReanalysis:
+    """Toolbar → Live: an edit that drops the solve gets a new one once the
+    drawing settles, on a model quick enough to solve on every edit."""
+
+    def _settle(self, app, tk_root, secs=None):
+        end = time.time() + (secs or (app.LIVE_DELAY_MS / 1000.0 + 0.4))
+        while time.time() < end:
+            tk_root.update()
+            time.sleep(0.02)
+
+    def test_off_by_default_so_analyze_stays_a_choice(self, app, tk_root):
+        assert app.live_on.get() is False
+        app._analyze()
+        app.results = None
+        app._draw()
+        self._settle(app, tk_root)
+        assert app.results is None
+
+    def test_an_edit_is_re_solved_once_the_drawing_settles(self, app,
+                                                          tk_root, dialogs):
+        app._analyze()
+        app.live_on.set(True)
+        app._on_live_toggle()
+        app.loads.append({'node': 5, 'fz': -50.0})
+        app.results = None
+        app.member_checks = None
+        app._draw()
+        assert app._live_after is not None
+        self._settle(app, tk_root)
+        assert app.results is not None and app.member_checks
+        assert not dialogs
+
+    def test_a_failing_model_says_so_once_without_a_dialog(self, app,
+                                                         monkeypatch,
+                                                         dialogs):
+        app.live_on.set(True)
+        app.supports = app.supports[:1]
+        app.results = None
+        calls = []
+        real = app._analyze
+        monkeypatch.setattr(app, '_analyze',
+                            lambda quiet=False: (calls.append(quiet),
+                                                 real(quiet=quiet)))
+        app._live_analyze()
+        assert app.results is None and calls == [True]
+        assert app.status_var.get().startswith('Live: ')
+        assert not dialogs
+        assert app.selected_nodes == set()      # the selection is the user's
+        app._live_analyze()                     # the same model again
+        assert calls == [True]
+        app.supports = app.supports[:0]
+        app._live_analyze()                     # no supports: not attempted
+        assert calls == [True]
+
+    def test_a_model_too_slow_to_solve_live_is_left_to_analyze(self, app):
+        app.LIVE_MAX_RODS = 10
+        app.live_on.set(True)
+        app._on_live_toggle()
+        assert 'by hand' in app.status_var.get()
+        app.results = None
+        app._draw()
+        assert getattr(app, '_live_after', None) is None
+
+    def test_turning_it_off_cancels_a_pending_solve(self, app, tk_root):
+        app.live_on.set(True)
+        app.results = None
+        app._draw()
+        assert app._live_after is not None
+        app.live_on.set(False)
+        app._on_live_toggle()
+        assert app._live_after is None
+        self._settle(app, tk_root)
+        assert app.results is None
+
+    def test_the_toolbar_has_the_switch(self, app):
+        assert app.live_check.cget('text') == 'Live'
+        assert str(app.live_check.cget('variable')) == str(app.live_on)
+
+
+class TestNumbersHideWhenCrowded:
+    """Node and rod numbers are left off while they would pile up on the
+    screen -- zooming in brings them back, the selection keeps its own, and
+    "Hide # when crowded" off draws every one regardless."""
+
+    def _labels(self, app, tag):
+        return [app.canvas.itemcget(t, 'text')
+                for t in app.canvas.find_withtag(tag)]
+
+    def test_the_default_grid_at_full_view_shows_no_pile_of_numbers(self, app):
+        app._reset_view()
+        app.selected_nodes = set()
+        app._draw()
+        assert self._labels(app, 'node_label') == []
+        note = self._labels(app, 'labels_hidden_note')
+        assert note and 'zoom in' in note[0]
+
+    def test_zooming_in_brings_them_back(self, app):
+        app._reset_view()
+        app.zc.zoom *= 3.0
+        app._draw()
+        assert len(self._labels(app, 'node_label')) == len(app.nodes)
+        assert not app.canvas.find_withtag('labels_hidden_note')
+
+    def test_the_selection_keeps_its_numbers(self, app):
+        app._reset_view()
+        app.selected_nodes = {17, 40}
+        app.show_member_labels.set(True)
+        app.selected_member = 5
+        app._draw()
+        assert sorted(self._labels(app, 'node_label')) == ['17', '40']
+        assert self._labels(app, 'rod_label') == ['5']
+        assert self._labels(app, 'labels_hidden_note')[0].startswith(
+            'Node and rod numbers')
+
+    def test_the_override_draws_every_number(self, app):
+        app._reset_view()
+        app.labels_auto_hide.set(False)
+        app.show_member_labels.set(True)
+        app._draw()
+        assert len(self._labels(app, 'node_label')) == len(app.nodes)
+        assert len(self._labels(app, 'rod_label')) == len(app.members)
+        assert not app.canvas.find_withtag('labels_hidden_note')
+
+    def test_what_counts_as_crowded(self, app):
+        apart = [(k * 50.0, 0.0) for k in range(20)]
+        packed = [(k * 5.0, 0.0) for k in range(20)]
+        assert app._labels_crowded(apart) is False
+        assert app._labels_crowded(packed) is True
+        app.labels_auto_hide.set(False)
+        assert app._labels_crowded(packed) is False
+
+    def test_both_panels_carry_the_override(self, app):
+        def walk(w):
+            for c in w.winfo_children():
+                yield c
+                yield from walk(c)
+        boxes = [w for w in walk(app.root) if isinstance(w, tk.Checkbutton)
+                 and str(w.cget('variable')) == str(app.labels_auto_hide)]
+        assert len(boxes) >= 1
+
+
+class TestLongExplanationsFoldBehindAQuestionMark:
+    """A grey paragraph past three lines shows two and a "?" badge: hover
+    for the whole of it, click to open it in place. Its text is kept."""
+
+    def test_the_long_paragraphs_fold_and_keep_their_text(self, app):
+        assert len(app._hint_labels) >= 20
+        for lbl in app._hint_labels:
+            assert int(str(lbl.cget('height'))) == app.HINT_SHOWN_LINES
+            assert len(lbl.cget('text')) > 100
+            assert lbl._hint_badge.winfo_manager() == 'place'
+
+    def test_a_click_opens_it_and_another_folds_it(self, app):
+        lbl = app._hint_labels[0]
+        lbl._hint_toggle()
+        assert lbl._hint_open is True
+        assert int(str(lbl.cget('height'))) == 0
+        assert lbl._hint_badge.winfo_manager() == ''
+        lbl._hint_toggle()
+        assert lbl._hint_open is False
+        assert int(str(lbl.cget('height'))) == app.HINT_SHOWN_LINES
+
+    def test_hovering_the_badge_shows_the_whole_paragraph(self, app, tk_root):
+        lbl = app._hint_labels[0]
+        app._show_hint_tip(lbl)
+        tip = app._hint_tip
+        texts = [c.cget('text') for c in tip.winfo_children()]
+        assert texts and texts[0].startswith(lbl.cget('text'))
+        app._hide_hint_tip()
+        assert app._hint_tip is None and not tip.winfo_exists()
+
+    def test_a_note_that_changes_is_measured_again(self, app):
+        note = app.shape_source_note
+        note.config(text='word ' * 120)
+        app._refit_hint(note)
+        assert note._hint_folded and note in app._hint_labels
+        assert note._hint_badge.winfo_manager() == 'place'
+        note.config(text='short')
+        app._refit_hint(note)
+        assert note._hint_folded is False
+        assert int(str(note.cget('height'))) == 0
+        assert note._hint_badge.winfo_manager() == ''
+        note._hint_toggle()                    # a click does nothing now
+        assert int(str(note.cget('height'))) == 0
+
+    def test_warnings_are_never_folded(self, app):
+        warn = [lbl for lbl in app._hint_labels
+                if str(lbl.cget('fg')) not in app.HINT_COLOURS]
+        assert warn == []

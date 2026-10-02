@@ -12,6 +12,7 @@ DOFs, and the quick presets are only a shortcut that writes the same
 per-DOF flags -- no node is ever ineligible for any support.
 """
 import math
+import time
 import tkinter as tk
 from tkinter import messagebox
 
@@ -1229,7 +1230,12 @@ class StereoModelMixin:
         return [ld for ld in getattr(self, 'member_loads', []) if 0 <= ld['member'] < n]
 
     # ── analysis ─────────────────────────────────────────────────────────────
-    def _analyze(self):
+    def _analyze(self, quiet=False):
+        """Solve the model and check every rod.
+
+        `quiet` is the live re-analysis (see _live_analyze): no dialog and
+        no change to the selection -- what went wrong goes on the status
+        line, because a box popping up on every edit is worse than none."""
         if not self.nodes:
             # Without this the boundary-condition check answers first and
             # says the structure is free to move as a rigid body, which is
@@ -1237,10 +1243,13 @@ class StereoModelMixin:
             self.results = None
             self.member_checks = None
             self.err = 'Nothing is built yet.'
-            messagebox.showinfo('Analyze', 'There is nothing to analyze yet. '
-                                           'Build a grid from Generate, or a '
-                                           'surface from Shape.')
+            if not quiet:
+                messagebox.showinfo('Analyze', 'There is nothing to analyze '
+                                               'yet. Build a grid from '
+                                               'Generate, or a surface from '
+                                               'Shape.')
             return
+        t0 = time.perf_counter()
         loads, member_loads = self._solve_loads()
         res, err = sm.analyze(self.nodes, self.members, loads,
                               self._active_supports(), panels=self.panels,
@@ -1256,9 +1265,11 @@ class StereoModelMixin:
             self.results = None
             self.member_checks = None
             self.panel_checks = []
-            free = self._mechanism_selection(err)
-            messagebox.showerror('Analysis', err + (
-                '\n\nThose nodes are selected on the drawing.' if free else ''))
+            if not quiet:
+                free = self._mechanism_selection(err)
+                messagebox.showerror('Analysis', err + (
+                    '\n\nThose nodes are selected on the drawing.'
+                    if free else ''))
         else:
             self.results = res
             self.member_checks = sc.check_all_members(
@@ -1270,14 +1281,104 @@ class StereoModelMixin:
             # shear buckling. A tau on its own is not a verdict.
             self.panel_checks = [tp.panel_checks(pl, pr) for pl, pr
                                  in zip(self.panels, res.get('panel_res', []))]
+        self._last_solve_s = time.perf_counter() - t0
         self._refresh_all()
-        if warning:
+        if err and quiet:
+            self._set_status('Live: ' + err.split('.')[0] + '. ▶ Analyze '
+                             'shows where.', 'error')
+        elif warning:
             self._set_status(warning.split('.')[0] + '.', 'error')
-            messagebox.showwarning('Analysis', warning)
+            if not quiet:
+                messagebox.showwarning('Analysis', warning)
         elif self.results is not None:
             big = self._displacement_caution()
             if big:
                 self._set_status(big, 'error')
+
+    # ── live re-analysis ────────────────────────────────────────────────
+    # What makes a structure learnable is seeing the answer move as the
+    # model does (Bridge Designer, Truss Me): with "Live" on, any edit that
+    # drops the solve gets a new one as soon as the drawing settles. Only
+    # while a solve is quick -- a model that takes longer is analysed by
+    # hand, as before, so editing it never stalls.
+    LIVE_MAX_RODS = 2500
+    LIVE_MAX_SECONDS = 0.5      # the last solve, checks included
+    LIVE_DELAY_MS = 250         # after the last redraw: the edit has settled
+
+    def _has_loads(self):
+        return bool(self.loads) or bool(
+            self.area_load_on.get() and getattr(self, '_load_nodes', None)) \
+            or self.self_weight_on.get() or self.wind_on.get() \
+            or bool(getattr(self, 'member_loads', None))
+
+    def _live_ok(self):
+        """Whether this model is quick enough to re-solve on every edit."""
+        return (len(self.members) <= self.LIVE_MAX_RODS
+                and getattr(self, '_last_solve_s', 0.0)
+                <= self.LIVE_MAX_SECONDS)
+
+    def _live_signature(self):
+        """The model as the solver sees it, to tell a model that has
+        already failed from one that has changed since."""
+        return hash(repr((self.nodes, self.members, self._active_supports(),
+                          self.loads, getattr(self, 'member_loads', None))))
+
+    def _maybe_live_analyze(self):
+        """Called by every redraw while there is no solve: (re)arm the
+        live solve, so it runs once the edits stop."""
+        live = getattr(self, 'live_on', None)
+        if live is None or not live.get() or not self.nodes \
+                or not self.members or not self.supports \
+                or not self._live_ok():
+            return
+        pending = getattr(self, '_live_after', None)
+        if pending is not None:
+            try:
+                self.canvas.after_cancel(pending)
+            except tk.TclError:
+                pass
+        self._live_after = self.canvas.after(self.LIVE_DELAY_MS,
+                                             self._live_analyze)
+
+    def _live_analyze(self):
+        self._live_after = None
+        try:
+            if not self.canvas.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        if self.results is not None or not self.live_on.get() \
+                or not self.nodes or not self.members or not self.supports \
+                or not self._has_loads():
+            return
+        sig = self._live_signature()
+        if sig == getattr(self, '_live_failed_sig', None):
+            return              # the same model failed last time: say it once
+        self._analyze(quiet=True)
+        self._live_failed_sig = sig if self.results is None else None
+
+    def _on_live_toggle(self):
+        if not self.live_on.get():
+            pending = getattr(self, '_live_after', None)
+            if pending is not None:
+                try:
+                    self.canvas.after_cancel(pending)
+                except tk.TclError:
+                    pass
+                self._live_after = None
+            self._set_status('Live off: ▶ Analyze after editing.', 'idle')
+            return
+        self._live_failed_sig = None
+        if len(self.members) > self.LIVE_MAX_RODS or not self._live_ok():
+            self._set_status(
+                'Live re-analysis is for models that solve in under '
+                f'{self.LIVE_MAX_SECONDS:g} s (up to {self.LIVE_MAX_RODS} '
+                'rods) -- this one: ▶ Analyze by hand.', 'error')
+            return
+        self._set_status('Live on: the model re-solves after every edit.',
+                         'ok')
+        if self.results is None:
+            self._draw()
 
     LARGE_DISPLACEMENT_FRAC = 0.05      # of the model's own size
 

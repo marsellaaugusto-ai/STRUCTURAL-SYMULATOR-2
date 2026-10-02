@@ -100,6 +100,12 @@ def truss_app():
     host = tk.Frame(root)
     host.pack(fill='both', expand=True)
     app = TrussApp(host)
+    # Measure EVERY control: the tab opens in Simple mode, which hides the
+    # power-user sections on purpose (tests/test_truss_learn.py covers that).
+    # Here the question is whether the layout can lose a control, so all of
+    # them must be on show.
+    app.advanced.set(True)
+    app._apply_mode()
     app._load_example()
     app._run_analysis()
     # Both context editors are only packed by the Load / Support tool's click

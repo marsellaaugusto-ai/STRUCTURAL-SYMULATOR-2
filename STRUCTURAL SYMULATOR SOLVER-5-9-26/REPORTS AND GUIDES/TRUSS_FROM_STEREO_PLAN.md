@@ -124,10 +124,11 @@ Every phase follows the rules the Stereo work followed:
 
    It is remembered per session. Test: every control reachable in Advanced; the
    Simple set is listed in the test.
-2. **Indeterminacy readout** under ▶ Analyze. `truss_math.indeterminacy(nodes,
-   rods, supports)` returns (m, r, j, degree, verdict), with the rank check
+2. **Indeterminacy readout** under ▶ Analyze. `truss_stability.check(nodes,
+   rods, supports)` returns the counts, the degree and the verdict, with the rank check
    that catches a "determinate by count" mechanism. Tests: Warren = 0, the
-   same truss with both supports fixed = +2, a missing diagonal = −1.
+   same truss on two pins = +1 (a fixed support on pinned rods acts as a pin),
+   a missing diagonal = a mechanism, and a fixed-fixed rigid portal frame = 3.
 3. **Zero-force rods**: drawn dashed grey, with "hide 0-force rods" in the view
    options. The status bar names how many there are.
 4. **Crowded labels**: rod and node numbers hide when they would overlap,
@@ -139,7 +140,7 @@ Every phase follows the rules the Stereo work followed:
 7. **Live re-analysis** (a checkbox; on by default below 300 rods).
 
 ### Phase 2 — "Why it fell" (M)
-8. **Mechanism animation.** `truss_math.mechanism_mode(nodes, rods, supports)`
+8. **Mechanism animation.** `truss_stability.mechanism_mode(nodes, rods, supports)`
    is the 2D port of `stereo_math.mechanism_mode`: the smallest singular
    vector of K, with rigid-body motion separated from internal mechanisms.
    The canvas animates the moving nodes and highlights the panel without a

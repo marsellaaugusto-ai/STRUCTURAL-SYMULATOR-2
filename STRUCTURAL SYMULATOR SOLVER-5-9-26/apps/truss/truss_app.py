@@ -79,8 +79,9 @@ from .truss_math import (analyze, compute_diagrams, find_zero_crossings, plate_n
                           compute_fiber_stress, compute_node_design_actions)
 from .truss_reports import export_excel, import_excel_model
 from . import truss_plates, truss_guides
+from .truss_app_learn import TrussLearnMixin
 
-class TrussApp(UnitsMixin):
+class TrussApp(TrussLearnMixin, UnitsMixin):
     # This tab does NOT store stress the way the others do. Plate yield and
     # electrode strength have always been typed in MPa here, while the Beam
     # tab holds allowable stresses in kN/cm2. Declaring the difference is
@@ -242,6 +243,9 @@ class TrussApp(UnitsMixin):
                   font=('Helvetica',11), fg='#1a6bbd',
                   command=self._show_rod_calculations_report)
 
+        self.toolbar_flow.separator()
+        self._build_learn_toolbar()
+
         # ── main paned area ───────────────────────────────────────────────────
         main = tk.Frame(root, bg='#f5f5f3')
         main.pack(fill='both', expand=True, padx=6, pady=(6,0))
@@ -343,6 +347,7 @@ class TrussApp(UnitsMixin):
         # Same FlowBar treatment as the toolbar: at 900 px this row used to
         # lose Pick ref and both Place node buttons off the right edge.
         cad = tk.Frame(root, bg='#dde3ec', bd=1, relief='solid')
+        self.cad_bar = cad
         cad.pack(fill='x', padx=6, pady=(2,0))
         self.cad_flow = FlowBar(cad, item_pad=1)
 
@@ -450,6 +455,7 @@ class TrussApp(UnitsMixin):
         root.after_idle(lambda: self._on_root_configure(None))
 
         self._refresh_tool_buttons()
+        self._init_learn(self.panel_outer.interior)
 
     def _on_root_configure(self, _event=None):
         """Resize the right panel to match the window. Content that no longer
@@ -2959,20 +2965,34 @@ class TrussApp(UnitsMixin):
     # ══════════════════════════════════════════════════════════════════════════
     #  Analysis
     # ══════════════════════════════════════════════════════════════════════════
-    def _run_analysis(self):
+    def _run_analysis(self, quiet=False):
+        """Solve and show the results. `quiet` is the Live / sandbox path:
+        no dialog boxes and no animation, only the status line."""
+        warn = (lambda *a: None) if quiet else messagebox.showwarning
         if len(self.nodes)<2:
-            messagebox.showwarning('Truss','Need ≥ 2 nodes.'); return
+            warn('Truss','Need ≥ 2 nodes.'); return
         if len(self.rods)<1:
-            messagebox.showwarning('Truss','Need ≥ 1 rod.'); return
-        if len(self.supports)<1:
-            messagebox.showwarning('Truss','Need ≥ 1 support.'); return
+            warn('Truss','Need ≥ 1 rod.'); return
+        supports = self._active_supports()
+        if len(supports)<1:
+            warn('Truss', 'Need ≥ 1 support.' if not self.supports else
+                 'Every support is switched off -- right-click one to bring '
+                 'it back.')
+            return
 
-        res, err = analyze(self.nodes, self.rods, self.loads, self.supports,
+        self._stop_mechanism()
+        res, err = analyze(self.nodes, self.rods, self.loads, supports,
                             self.plates)
         if err:
-            messagebox.showerror('Analysis failed', err)
+            why = None
+            if err.startswith('Singular'):
+                # Say WHERE it is a mechanism, and draw it moving.
+                why = self._show_mechanism(quiet=quiet)
+            if not quiet:
+                messagebox.showerror('Analysis failed',
+                                     err + ('\n\n' + why if why else ''))
             self.res_var.set(f'Failed: {err}')
-            self.status_var.set(f'Analysis failed — {err}')
+            self.status_var.set('Analysis failed — ' + (why or err))
             return
 
         self.results  = res
@@ -2989,6 +3009,7 @@ class TrussApp(UnitsMixin):
         rr = res['rod_res']
         n_t=sum(1 for r in rr if r['force']>0.01)
         n_c=sum(1 for r in rr if r['force']<-0.01)
+        n_z=len(rr)-n_t-n_c
         loaded = bool(self.loads) or any(
             r.get('udl') or r.get('point_loads') for r in self.rods)
         if not loaded:
@@ -2996,8 +3017,12 @@ class TrussApp(UnitsMixin):
                 'Done — but no loads are applied, so every rod force is zero. '
                 'Add one with the Load tool, then ▶ Analyze again.')
         else:
+            zero = (f', {n_z} carry no force (dashed)' if n_z else '')
+            off = (f' {len(self.disabled_supports)} support(s) switched off.'
+                   if self.disabled_supports else '')
             self.status_var.set(
-                f'Done — {n_t} tension, {n_c} compression. '
+                f'{"Live: " if quiet else "Done — "}{n_t} tension, '
+                f'{n_c} compression{zero}.{off} '
                 f'Reactions and diagrams shown. Scroll/zoom both canvases freely.')
         if self.selected_nodes or self.selected_rods: self._show_sel()
 
@@ -3226,6 +3251,9 @@ class TrussApp(UnitsMixin):
         c.delete('all')
         W  = c.winfo_width()  or INIT_CW
         H  = c.winfo_height() or INIT_CH
+        # (priority, x, y, text, colour, tag): placed last, so no two
+        # numbers are ever drawn over one another (see _place_labels).
+        label_queue = []
 
         # adaptive / level-of-detail grid: "nice" (1-2-5) major spacing that
         # re-normalizes to stay legible at any zoom, plus recursively finer
@@ -3300,12 +3328,19 @@ class TrussApp(UnitsMixin):
             na,nb = self.nodes[rod['a']],self.nodes[rod['b']]
             res   = self.results['rod_res'][i] if self.results else None
             color = CZ; lw = 2.5
+            zero = False
             if res:
                 f=res['force']
                 if   f> 0.01: color=CT; lw=2+min(5,abs(f)/8)
                 elif f<-0.01: color=CC; lw=2+min(5,abs(f)/8)
+                else: zero = True
+            if zero and self.hide_zero.get():
+                continue
             sx0,sy0=w2s(na[0],na[1]); sx1,sy1=w2s(nb[0],nb[1])
-            c.create_line(sx0,sy0,sx1,sy1,fill=color,width=lw)
+            # A rod that carries nothing is dashed, so the load path reads
+            # at a glance -- grey alone looked like "not analysed yet".
+            c.create_line(sx0,sy0,sx1,sy1,fill=color,width=lw,
+                          dash=(6, 4) if zero else ())
 
             if rod.get('conn') == 'rigid':
                 ddx0=sx1-sx0; ddy0=sy1-sy0
@@ -3369,16 +3404,16 @@ class TrussApp(UnitsMixin):
             lbl = str(i)
             if res:
                 lbl = '%d: %+.1f' % (i, self.show('force', res['force']))
-            c.create_text(mx+px*off,my+py*off,text=lbl,fill='white',
-                           font=('Helvetica',9,'bold'), tags=('rod_label',))
-            c.create_text(mx+px*off,my+py*off,text=lbl,
-                           fill=color if color!=CZ else '#555',
-                           font=('Helvetica',8,'bold'), tags=('rod_label',))
+            label_queue.append((1.0 + (abs(res['force']) if res else 0.0),
+                                mx+px*off, my+py*off, lbl,
+                                color if color!=CZ else '#555', 'rod_label'))
 
         # supports
         for s in self.supports:
             n=self.nodes[s['node']]; sx,sy=w2s(n[0],n[1])
             self._draw_support(c,sx,sy,s['type'],z)
+            if s['node'] in self.disabled_supports:
+                self._draw_disabled_support(c, sx, sy)
 
         # Load and reaction arrows are sized RELATIVE to the largest of their
         # own kind on the model -- see common.LoadScale. Both were a flat 44 px
@@ -3415,8 +3450,7 @@ class TrussApp(UnitsMixin):
             r    = 9 if (is_sel or is_start) else 6      # constant on-screen size
             fill = CS if (is_sel or is_start) else CN
             c.create_oval(sx-r,sy-r,sx+r,sy+r,fill=fill,outline='#aaa',width=1)
-            c.create_text(sx,sy-r-4,text=str(i),fill='#555',
-                           font=('Helvetica',9))
+            label_queue.append((1e12, sx, sy-r-4, str(i), '#555', 'node_label'))
             if is_pload:
                 c.create_oval(sx-13,sy-13,sx+13,sy+13,outline=CL,width=2,dash=(3,2))
             if is_psup:
@@ -3579,6 +3613,8 @@ class TrussApp(UnitsMixin):
                            text=f'{wmm:.2f} × {hmm:.2f} m',
                            fill=CS, font=('Helvetica', 8, 'bold'))
 
+        self._place_labels(c, label_queue, W, H)
+
         if self.results is not None:
             self._draw_force_key(c, H)
 
@@ -3586,6 +3622,10 @@ class TrussApp(UnitsMixin):
         c.create_text(6,6,anchor='nw',
                        text=f'zoom {self.zc.zoom:.2f}×  |  scroll=zoom  mid-drag=pan',
                        fill='#aaa',font=('Helvetica',8))
+
+        if getattr(self, '_mech', None) is not None:
+            self._draw_mechanism()      # the redraw above wiped the overlay
+        self._refresh_learn()
 
     def _draw_force_key(self, c, H):
         """Bottom-left key for a solved model, so the colours and the

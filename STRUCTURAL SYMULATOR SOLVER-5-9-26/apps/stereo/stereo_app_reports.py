@@ -169,12 +169,21 @@ class StereoReportsMixin:
             sr.export_excel(self.nodes, self.members, self._all_loads(),
                             self.supports,
                             self.results, path, checks=self.member_checks,
-                            meta={'grid_family': self._model_name()},
+                            meta=self._excel_meta(),
                             profiles=self.profiles, groups=self.groups)
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return
         messagebox.showinfo('Export', f'Saved to {path}')
+
+    def _excel_meta(self):
+        """The [META] block of an exported workbook: the model's name and,
+        with timber in it, the timber check's settings."""
+        meta = {'grid_family': self._model_name()}
+        if any(m.get('timber') for m in self.members):
+            from apps.stereo import stereo_timber as stt
+            meta.update(stt.settings_to_meta(self._timber_settings()))
+        return meta
 
     def _import_excel(self):
         path = filedialog.askopenfilename(filetypes=[('Excel workbook', '*.xlsx')])
@@ -198,6 +207,14 @@ class StereoReportsMixin:
         # cranes and columns can be named -- and reported -- like new ones.
         from apps.stereo import stereo_addon_codes as sac
         sac.backfill(members)
+        # the timber check's settings travel in the workbook's [META]
+        try:
+            from apps.stereo import stereo_timber as stt
+            ts = stt.settings_from_meta(sr.read_excel_meta(path))
+        except Exception:
+            ts = None
+        if ts and hasattr(self, 'timber_duration'):
+            self._set_timber_settings(ts)
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
         # The old model's groups cannot stay: a group holds member INDICES,
         # and these are different rods. The workbook's own come in instead.
@@ -905,9 +922,8 @@ class StereoReportsMixin:
                 if not path:
                     return
                 try:
-                    meta = {'grid_family': self._model_name(),
-                            'node_radius_m': n_r,
-                            'rod_radius_m': r_r}
+                    meta = dict(self._excel_meta(),
+                                node_radius_m=n_r, rod_radius_m=r_r)
                     sr.export_excel(self.nodes, self.members, self._all_loads(),
                                    self.supports, self.results, path,
                                    checks=self.member_checks, meta=meta,

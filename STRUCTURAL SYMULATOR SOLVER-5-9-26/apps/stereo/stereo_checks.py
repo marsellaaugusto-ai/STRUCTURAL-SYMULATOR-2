@@ -87,7 +87,7 @@ def flexural_capacity_kNm(member, code=cirsoc.CIRSOC_301):
 
 
 def check_member(member, axial_force_kN, code=cirsoc.CIRSOC_301,
-                 member_res=None):
+                 member_res=None, timber=None):
     """Check one member's axial force against its CIRSOC/AISC capacity.
 
     `axial_force_kN` is signed: positive = tension, negative = compression
@@ -100,10 +100,11 @@ def check_member(member, axial_force_kN, code=cirsoc.CIRSOC_301,
     sized yet while the geometry is still being explored.
     """
     if member.get('timber'):
-        # CIRSOC 601, not 301: see stereo_timber for what is and is not
-        # checked there, and why.
+        # CIRSOC 601, not 301 -- an allowable-stress check whose factors
+        # (load duration, service condition, temperature, load sharing)
+        # are `timber`, the app's timber settings; see stereo_timber.
         from apps.stereo import stereo_timber as stt
-        return stt.member_check(member, axial_force_kN, member_res)
+        return stt.member_check(member, axial_force_kN, member_res, timber)
 
     A_mm2 = member.get('A', 0.0) * 100.0        # cm^2 -> mm^2
     Fy = member.get('Fy')
@@ -204,7 +205,8 @@ def _add_bending_interaction(out, member, member_res, Pr_N, Pc_N, code):
     return out
 
 
-def check_all_members(nodes, members, member_res, code=cirsoc.CIRSOC_301):
+def check_all_members(nodes, members, member_res, code=cirsoc.CIRSOC_301,
+                      timber=None):
     """Run `check_member` on every member. Returns a list parallel to
     `members`/`member_res`. Attaches each member's own length so the caller
     never has to recompute it (and cannot disagree with what the solver
@@ -215,7 +217,7 @@ def check_all_members(nodes, members, member_res, code=cirsoc.CIRSOC_301):
         _, _, _, L = sm.member_vector(nodes, m)
         m_with_len = dict(m, _length_m=L)
         out.append(check_member(m_with_len, res.get('N', 0.0), code,
-                                member_res=res))
+                                member_res=res, timber=timber))
     return out
 
 

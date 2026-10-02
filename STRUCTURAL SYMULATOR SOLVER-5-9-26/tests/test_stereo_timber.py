@@ -111,16 +111,18 @@ def test_a_steel_catalog_section_makes_a_timber_rod_steel():
     assert m['Fy'] == sp.STEEL_F24.Fy and m['E'] == pytest.approx(200.0)
 
 
-def test_a_timber_rod_is_not_checked_to_cirsoc_301():
+def test_a_timber_rod_is_checked_to_cirsoc_601_not_301():
     m = _rod()
     sp.write_section(m, stt.profile('Eucalipto grandis C1', 50, 150))
     m['_length_m'] = 3.0
     chk = sc.check_member(m, 15.0)            # 15 kN tension on 7500 mm²
-    assert chk['checked'] is False and chk['util'] is None
+    assert chk['checked'] is True and chk['code'] == stt.REGLAMENTO
     assert chk['stresses_MPa']['ft'] == pytest.approx(2.0)
-    assert chk['ratios']['ft'] == pytest.approx(2.0 / 5.6)
-    assert 'NOT a CIRSOC 601 verification' in chk['note']
-    assert 'S.1.1.2-1' in chk['note']
+    # F't = Ft CD CM Ct CF, CF = (150/150)^0.2 = 1
+    assert chk['design_MPa']['Ft'] == pytest.approx(5.6)
+    assert chk['util'] == pytest.approx(2.0 / 5.6)
+    assert chk['governing'] == 'tension ∥ (3.4.1)'
+    assert 'service' in chk['note']
 
 
 def test_compression_reports_slenderness_over_the_least_dimension():
@@ -130,11 +132,195 @@ def test_compression_reports_slenderness_over_the_least_dimension():
     chk = sc.check_member(m, -15.0)
     assert chk['mode'] == 'compression'
     assert chk['slenderness'] == pytest.approx(2000 / 50)
-    assert 'buckling not applied' in chk['note']
+    assert 0 < chk['factors']['CP'] < 1
     pole = _rod()
     sp.write_section(pole, stt.profile('Poste eucalipto (verde)', 200))
     pole['_length_m'] = 4.0
-    assert sc.check_member(pole, -10.0)['slenderness'] == pytest.approx(20.0)
+    # art. 3.3.1: a round member buckles as the square of equal area
+    side = math.sqrt(math.pi * 200 ** 2 / 4)
+    assert sc.check_member(pole, -10.0)['slenderness'] == pytest.approx(
+        4000 / side)
+
+
+# ── the Manual de Aplicación's worked examples ────────────────────────────
+#
+# Each figure the Manual prints is checked, to the Manual's own rounding.
+
+def _beam(grade, b, h, L, nseg):
+    nodes = [(L * k / nseg, 0.0, 0.0) for k in range(nseg + 1)]
+    members = []
+    for k in range(nseg):
+        m = {'a': k, 'b': k + 1, 'conn': 'rigid'}
+        sp.write_section(m, stt.profile(grade, b, h))
+        members.append(m)
+    sup = [{'node': 0, 'dofs': {'ux': True, 'uy': True, 'uz': True,
+                                'rx': True}},
+           {'node': nseg, 'dofs': {'uy': True, 'uz': True, 'rx': True}}]
+    return nodes, members, sup
+
+
+def test_manual_M4E1_a_floor_beam_in_bending():
+    """Eucalipto grandis C2, 50 × 150, l = 2.6 m, D + L = 1.7 kN/m, braced
+    at its ends and middle, load sharing (Cr = 1.1): fb 7.7 ≤ F'b 8.1,
+    RB 12.4, FbE 35.9, CL 0.98; fv 0.4 ≤ F'v 0.8."""
+    n, m, s = _beam('Eucalipto grandis C2', 50, 150, 2.6, 2)
+    res, err = sm.analyze(n, m, [], s, member_loads=[
+        {'member': i, 'w': 1.7, 'dir': (0, 0, -1)} for i in range(2)])
+    assert err is None
+    chk = stt.member_check(dict(m[0], _length_m=1.3), res['member_res'][0]['N'],
+                           res['member_res'][0], {'load_sharing': True})
+    assert chk['mode'] == 'bending'
+    assert chk['stresses_MPa']['fb1'] == pytest.approx(7.7, abs=0.05)
+    assert chk['design_MPa']['Fb*1'] == pytest.approx(7.5 * 1.1)  # "8,3"
+    assert chk['factors']['CL1'] == pytest.approx(0.98, abs=0.01)
+    assert chk['design_MPa']['Fb1'] == pytest.approx(8.1, abs=0.05)
+    assert chk['stresses_MPa']['fv'] == pytest.approx(0.4, abs=0.05)
+    assert chk['design_MPa']['Fv'] == pytest.approx(0.8)
+    assert chk['ok']
+    RB = math.sqrt(stt.lateral_buckling_length(1300, 150) * 150 / 50 ** 2)
+    assert RB == pytest.approx(12.4, abs=0.05)
+    assert 1.2 * 4600 / RB ** 2 == pytest.approx(35.9, abs=0.15)
+
+
+def test_manual_M4E2_a_truss_diagonal_board():
+    """Pino taeda tablas C1, 25 × 100, l = 0.65 m. D + W = −12.5 kN with
+    CD = 1.6: FcE 5.4, Fc* 9.0, CP 0.5, F'c 4.5 < fc 5.0 -- it FAILS, as
+    the Manual says. D + L = 4.8 kN: CF 1.08, F't 3.7 ≥ ft 1.9."""
+    m = _rod()
+    sp.write_section(m, stt.profile('Pino taeda tablas C1', 25, 100))
+    m['_length_m'] = 0.65
+    c = sc.check_member(m, -12.5, timber={'duration': '10min'})
+    assert c['stresses_MPa']['fc'] == pytest.approx(5.0)
+    assert c['design_MPa']['FcE'] == pytest.approx(5.4, abs=0.05)
+    assert c['design_MPa']['Fc*'] == pytest.approx(9.0, abs=0.05)
+    assert c['factors']['CP'] == pytest.approx(0.5, abs=0.01)
+    assert c['design_MPa']['Fc'] == pytest.approx(4.5, abs=0.05)
+    assert c['ok'] is False and c['slenderness'] == pytest.approx(26.0)
+    t = sc.check_member(m, 4.8)
+    assert t['factors']['CF_t'] == pytest.approx(1.08, abs=0.005)
+    assert t['design_MPa']['Ft'] == pytest.approx(3.7, abs=0.05)
+    assert t['stresses_MPa']['ft'] == pytest.approx(1.9, abs=0.05)
+    assert t['ok']
+
+
+def test_manual_M4E3_a_chord_in_bending_and_tension():
+    """Pino paraná aserrada C1, 50 × 125, l = 1.2 m, T 35.6 kN, P 1.5 kN
+    at mid-span, CD = 1.6: ft 5.7, fb 3.5, F't 10.5, F*b 17.6,
+    ft/F't + fb/F*b = 0.74 (3.5.1-1); (fb − ft)/F'b < 0 (3.5.1-2)."""
+    n, m, s = _beam('Pino paraná aserrada C1', 50, 125, 1.2, 2)
+    res, err = sm.analyze(n, m, [{'node': 1, 'fz': -1.5},
+                                 {'node': 2, 'fx': 35.6}], s)
+    assert err is None
+    chk = stt.member_check(dict(m[0], _length_m=0.6),
+                           res['member_res'][0]['N'], res['member_res'][0],
+                           {'duration': '10min'})
+    assert chk['stresses_MPa']['ft'] == pytest.approx(5.7, abs=0.05)
+    assert chk['stresses_MPa']['fb1'] == pytest.approx(3.5, abs=0.05)
+    assert chk['design_MPa']['Ft'] == pytest.approx(10.5, abs=0.05)
+    assert chk['design_MPa']['Fb*1'] == pytest.approx(17.6, abs=0.05)
+    assert chk['ratios']['bending + tension (3.5.1-1)'] == pytest.approx(
+        0.74, abs=0.005)
+    assert chk['ratios']['bending − tension (3.5.1-2)'] == 0.0
+    assert chk['governing'] == 'bending + tension (3.5.1-1)'
+    # the Manual's CL, with its own le = 1.11 lu, lu = 0.6 m: 0.995
+    RB = math.sqrt(670 * 125 / 50 ** 2)          # the Manual: le = 0.67 m
+    FbE = 1.2 * 5700 / RB ** 2
+    assert RB == pytest.approx(5.8, abs=0.05) and FbE == pytest.approx(
+        203, abs=2)
+    assert stt.beam_stability_factor(17.6, FbE) == pytest.approx(0.995,
+                                                                 abs=0.001)
+
+
+def test_manual_M5E1_glulam_column_and_volume_factors():
+    """Laminada pino paraná G1, 280 × 800, le/d = 26, CD = 1.15: FcE 6.9,
+    CP 0.67 (c = 0.9), F'c 5.8; CV = 0.94."""
+    FcE = 0.822 * 5700 / 26 ** 2
+    assert FcE == pytest.approx(6.9, abs=0.05)
+    CP = stt.column_stability_factor(7.5 * 1.15, FcE, stt.C_COLUMN['glulam'])
+    assert CP == pytest.approx(0.67, abs=0.005)
+    assert 7.5 * 1.15 * CP == pytest.approx(5.8, abs=0.05)
+    assert stt.volume_factor(800, 280) == pytest.approx(0.94, abs=0.005)
+
+
+# ── the factors, one by one ───────────────────────────────────────────────
+
+def test_load_duration_factors_are_table_4_3_2():
+    assert [cd for _k, _l, cd in stt.LOAD_DURATIONS] == [
+        0.9, 1.0, 1.15, 1.25, 1.6, 2.0]
+    assert stt.load_duration_factor() == 1.0
+    assert stt.load_duration_factor({'duration': '10min'}) == 1.6
+
+
+def test_wet_service_factors_are_tables_4_3_3_and_5_3_2():
+    sawn = stt.GRADES['Pino paraná aserrada C1']       # Fb 10.6, Fc 7.5
+    assert [stt.wet_service_factor(sawn, p) for p in
+            ('Fb', 'Ft', 'Fv', 'Fc_perp', 'Fc', 'E', 'Emin')] == [
+        0.85, 1.0, 0.97, 0.67, 0.8, 0.9, 0.9]
+    weak = stt.GRADES['Pino ponderosa C2']            # Fb 2.8, Fc 1.7
+    assert stt.wet_service_factor(weak, 'Fb') == 1.0  # note (1)
+    assert stt.wet_service_factor(weak, 'Fc') == 1.0  # note (2)
+    glulam = stt.GRADES['Laminada eucalipto G1']
+    assert [stt.wet_service_factor(glulam, p) for p in
+            ('Fb', 'Ft', 'Fv', 'Fc_perp', 'Fc', 'E')] == [
+        0.80, 0.80, 0.87, 0.53, 0.73, 0.83]
+    pole = stt.GRADES['Poste eucalipto (verde)']
+    assert stt.wet_service_factor(pole, 'Fb') == 1.0  # Tabla 6.3-1: no CM
+
+
+def test_temperature_factors_are_table_4_3_4():
+    assert [stt.temperature_factor('Ft', False, t) for t in
+            ('le40', '40to52', '52to65')] == [1.0, 0.9, 0.9]
+    assert [stt.temperature_factor('Fb', False, t) for t in
+            ('le40', '40to52', '52to65')] == [1.0, 0.8, 0.7]
+    assert [stt.temperature_factor('Fc', True, t) for t in
+            ('le40', '40to52', '52to65')] == [1.0, 0.7, 0.5]
+
+
+def test_size_factor_caps_at_1_3():
+    assert stt.size_factor(150) == pytest.approx(1.0)
+    assert stt.size_factor(10) == pytest.approx(1.3)
+    assert stt.size_factor(300) == pytest.approx((150 / 300) ** 0.2)
+
+
+def test_lateral_buckling_length_is_the_general_case():
+    assert stt.lateral_buckling_length(600, 100) == pytest.approx(2.06 * 600)
+    assert stt.lateral_buckling_length(1000, 100) == pytest.approx(
+        1.63 * 1000 + 300)
+    assert stt.lateral_buckling_length(2000, 100) == pytest.approx(
+        1.84 * 2000)
+
+
+def test_a_wet_hot_short_load_case_moves_the_design_value():
+    m = _rod()
+    sp.write_section(m, stt.profile('Pino paraná aserrada C1', 50, 150))
+    m['_length_m'] = 1.0
+    base = stt.member_check(m, 10.0)['design_MPa']['Ft']
+    wind = stt.member_check(m, 10.0, None, {'duration': '10min'})
+    assert wind['design_MPa']['Ft'] == pytest.approx(base * 1.6)
+    hot = stt.member_check(m, 10.0, None, {'temperature': '52to65'})
+    assert hot['design_MPa']['Ft'] == pytest.approx(base * 0.9)
+    assert 'CD 1.6' in wind['note']
+
+
+def test_a_board_bent_edgewise_is_flagged_outside_its_grade():
+    """Supplement 1 gives boards an Fb for flatwise bending only."""
+    n, m, s = _beam('Pino taeda tablas C1', 25, 100, 1.0, 1)
+    res, err = sm.analyze(n, m, [], s, member_loads=[
+        {'member': 0, 'w': 0.5, 'dir': (0, 0, -1)}])
+    assert err is None
+    chk = stt.member_check(dict(m[0], _length_m=1.0),
+                           res['member_res'][0]['N'], res['member_res'][0])
+    assert chk['checked'] and chk['partial']
+    assert 'flatwise' in chk['partial'][0]
+
+
+def test_a_slender_strut_past_50_fails_on_slenderness():
+    m = _rod()
+    sp.write_section(m, stt.profile('Eucalipto grandis C1', 50, 150))
+    m['_length_m'] = 3.0                              # le/d = 60
+    chk = stt.member_check(m, -0.1)
+    assert chk['ratios']['le/d ≤ 50 (3.3.1)'] == pytest.approx(60 / 50)
+    assert chk['ok'] is False
 
 
 def test_a_timber_rod_weighs_its_own_density():

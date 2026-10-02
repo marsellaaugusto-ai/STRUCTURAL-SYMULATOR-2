@@ -1005,6 +1005,10 @@ class StereoViewMixin:
                     lines.append(f'utilization = {util:.2f} ({status})')
                     if chk.get('governing'):
                         lines.append(f'governs: {chk["governing"]}')
+                    if chk.get('material') == 'timber':
+                        from apps.stereo import stereo_timber as stt
+                        lines.append(stt.summary(chk))
+                        lines.extend(chk.get('partial') or ())
                 elif chk.get('note'):
                     lines.append(chk['note'])
         else:

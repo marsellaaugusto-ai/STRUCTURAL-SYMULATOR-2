@@ -10376,17 +10376,80 @@ class TestTimberInTheApp:
                    for m in chords)
         assert not any(m.get('timber') for m in webs)
 
-    def test_timber_rods_are_reported_not_verified(self, app):
+    def test_timber_rods_are_verified_to_cirsoc_601(self, app):
+        from apps.stereo import stereo_timber as stt
         app._make_timber_profile('chord', self.GRADE, 75, 200)
         app._apply_sections()
         app._analyze()
         assert app.results is not None
         for m, chk in zip(app.members, app.member_checks):
+            assert chk['checked'] is True
             if m.get('timber'):
-                assert chk['checked'] is False and chk['util'] is None
-                assert 'NOT a CIRSOC 601 verification' in chk['note']
-            else:
-                assert chk['checked'] is True
+                assert chk['code'] == stt.REGLAMENTO
+                assert chk['util'] is not None and chk['factors']['CD'] == 1.0
+
+    def test_the_timber_settings_recheck_without_a_new_solve(self, app):
+        app._make_timber_profile('chord', self.GRADE, 75, 200)
+        app._apply_sections()
+        app._analyze()
+        res = app.results
+        i = next(k for k, m in enumerate(app.members) if m.get('timber')
+                 and abs(app.results['member_res'][k]['N']) > 1e-3)
+        before = app.member_checks[i]['util']
+        app.timber_duration.set('10 minutos (viento, sismo)')
+        assert app.results is res                 # the forces stay
+        after = app.member_checks[i]
+        assert after['factors']['CD'] == 1.6
+        assert after['util'] < before
+        app.timber_wet.set(True)
+        assert app._timber_settings()['wet'] is True
+        assert app.member_checks[i]['settings']['wet'] is True
+
+    def test_the_timber_settings_travel_in_the_workbook(
+            self, app, tmp_path, monkeypatch):
+        from tkinter import filedialog
+        from apps.stereo import stereo_reports as sr
+        app._make_timber_profile('chord', self.GRADE, 75, 200)
+        app._apply_sections()
+        app.timber_duration.set('7 días (constructiva)')
+        app.timber_sharing.set(True)
+        app._analyze()
+        path = str(tmp_path / 'timber.xlsx')
+        monkeypatch.setattr(filedialog, 'asksaveasfilename',
+                            lambda *a, **k: path)
+        app._export_excel()
+        meta = sr.read_excel_meta(path)
+        assert meta['timber_duration'] == '7days'
+        app.timber_duration.set('10 años (sobrecarga de uso)')
+        app.timber_sharing.set(False)
+        monkeypatch.setattr(filedialog, 'askopenfilename',
+                            lambda *a, **k: path)
+        app._import_excel()
+        got = app._timber_settings()
+        assert got['duration'] == '7days' and got['load_sharing'] is True
+
+    def test_the_pdf_states_the_timber_settings(self, app, tmp_path):
+        import subprocess
+        from apps.stereo import stereo_reports as sr
+        app._make_timber_profile('chord', self.GRADE, 75, 200)
+        app._apply_sections()
+        app.timber_wet.set(True)
+        app._analyze()
+        p = str(tmp_path / 't.pdf')
+        sr.export_pdf(app.nodes, app.members, app._all_loads(),
+                      app.supports, app.results, p,
+                      checks=app.member_checks, groups={'force'})
+        text = subprocess.run(['pdftotext', p, '-'], capture_output=True,
+                              text=True).stdout
+        assert 'TIMBER CHECK (CIRSOC 601)' in text and 'wet' in text
+
+    def test_clicking_a_timber_rod_shows_its_design_values(self, app):
+        app._make_timber_profile('chord', self.GRADE, 75, 200)
+        app._apply_sections()
+        app._analyze()
+        i = next(k for k, m in enumerate(app.members) if m.get('timber'))
+        app._show_member_info(i)
+        assert 'CIRSOC 601:' in app.sel_var.get()
 
     def test_self_weight_takes_each_rods_own_density(self, app):
         from apps.stereo import stereo_math as sm

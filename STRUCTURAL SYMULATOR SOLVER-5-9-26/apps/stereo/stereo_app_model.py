@@ -1258,7 +1258,9 @@ class StereoModelMixin:
                 '\n\nThose nodes are selected on the drawing.' if free else ''))
         else:
             self.results = res
-            self.member_checks = sc.check_all_members(self.nodes, self.members, res['member_res'])
+            self.member_checks = sc.check_all_members(
+                self.nodes, self.members, res['member_res'],
+                timber=self._timber_settings())
             self._auto_deform_scale()
             # The Truss tab's own panel checks, reused rather than rewritten:
             # yield, weld and -- the one that actually governs a thin plate --

@@ -2076,6 +2076,96 @@ class StereoPanelsMixin(_ToolbarModes):
                        bg=BG, font=('Helvetica', 9), command=self._on_connectivity_change
                       ).pack(side='left')
 
+    # ── timber check settings (Reglamento CIRSOC 601) ───────────────────
+    def _build_timber_check_panel(self, parent):
+        """What the timber check needs to know that the model does not say:
+        how long the load case lasts (CD), whether the wood is wet (CM), how
+        hot it runs (Ct), load sharing (Cr) and whether a beam's compression
+        edge is braced along its length (CL = 1). A change re-checks the
+        timber rods at once -- no re-solve, the forces do not depend on it."""
+        from apps.stereo import stereo_timber as stt
+        box = tk.LabelFrame(parent, text='Timber check (CIRSOC 601)', bg=BG,
+                            font=('Helvetica', 10, 'bold'))
+        box.pack(fill='x', padx=6, pady=4)
+        self.timber_duration = tk.StringVar(value=stt.LOAD_DURATIONS[1][1])
+        self.timber_temperature = tk.StringVar(value=stt.TEMPERATURES[0][1])
+        self.timber_wet = tk.BooleanVar(value=False)
+        self.timber_sharing = tk.BooleanVar(value=False)
+        self.timber_braced = tk.BooleanVar(value=False)
+        row = tk.Frame(box, bg=BG)
+        row.pack(fill='x', padx=6, pady=(4, 2))
+        tk.Label(row, text='Load lasts:', bg=BG,
+                 font=('Helvetica', 8)).pack(side='left')
+        ttk.Combobox(row, textvariable=self.timber_duration, state='readonly',
+                     width=21, values=[lab for _k, lab, _cd
+                                       in stt.LOAD_DURATIONS]
+                     ).pack(side='left', padx=(4, 0))
+        row = tk.Frame(box, bg=BG)
+        row.pack(fill='x', padx=6, pady=2)
+        tk.Label(row, text='Temperature:', bg=BG,
+                 font=('Helvetica', 8)).pack(side='left')
+        ttk.Combobox(row, textvariable=self.timber_temperature,
+                     state='readonly', width=18,
+                     values=[lab for _k, lab in stt.TEMPERATURES]
+                     ).pack(side='left', padx=(4, 0))
+        for var, text in (
+                (self.timber_wet, 'Wet service (CM, Tabla 4.3-3 / 5.3-2)'),
+                (self.timber_sharing, 'Load sharing between members '
+                                      '(Cr = 1.10)'),
+                (self.timber_braced, 'Beams braced along their compression '
+                                     'edge (CL = 1)')):
+            tk.Checkbutton(box, text=text, variable=var, bg=BG,
+                           font=('Helvetica', 8), wraplength=PANEL_TEXT_W,
+                           justify='left').pack(anchor='w', padx=6)
+        tk.Label(box, text='An allowable-stress check (art. 1.4): the loads '
+                           'are read as SERVICE loads, unfactored. The case '
+                           'takes the CD of its shortest load (Tabla 4.3-2).',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(2, 4))
+        for var in (self.timber_duration, self.timber_temperature,
+                    self.timber_wet, self.timber_sharing, self.timber_braced):
+            var.trace_add('write', lambda *_a: self._recheck_timber())
+
+    def _timber_settings(self):
+        """The timber check's settings, as stereo_timber takes them."""
+        from apps.stereo import stereo_timber as stt
+        if not hasattr(self, 'timber_duration'):
+            return stt.settings_of()
+        dur = self.timber_duration.get()
+        temp = self.timber_temperature.get()
+        return stt.settings_of({
+            'duration': next((k for k, lab, _cd in stt.LOAD_DURATIONS
+                              if lab == dur), 'normal'),
+            'temperature': next((k for k, lab in stt.TEMPERATURES
+                                 if lab == temp), 'le40'),
+            'wet': bool(self.timber_wet.get()),
+            'load_sharing': bool(self.timber_sharing.get()),
+            'braced_edge': bool(self.timber_braced.get())})
+
+    def _set_timber_settings(self, settings):
+        from apps.stereo import stereo_timber as stt
+        s = stt.settings_of(settings)
+        self.timber_duration.set(next(lab for k, lab, _cd
+                                      in stt.LOAD_DURATIONS
+                                      if k == s['duration']))
+        self.timber_temperature.set(next(lab for k, lab in stt.TEMPERATURES
+                                         if k == s['temperature']))
+        self.timber_wet.set(s['wet'])
+        self.timber_sharing.set(s['load_sharing'])
+        self.timber_braced.set(s['braced_edge'])
+
+    def _recheck_timber(self):
+        """Re-run the member checks with the new timber settings, if there
+        is an analysis to check -- the forces stay, only the verdict moves."""
+        if not getattr(self, 'results', None) or not any(
+                m.get('timber') for m in self.members):
+            return
+        from apps.stereo import stereo_checks as sc
+        self.member_checks = sc.check_all_members(
+            self.nodes, self.members, self.results['member_res'],
+            timber=self._timber_settings())
+        self._refresh_all()
+
     def _build_section_panel(self, parent, prefix, title):
         box = tk.LabelFrame(parent, text=title, bg=BG, font=('Helvetica', 10, 'bold'))
         box.pack(fill='x', padx=6, pady=4)

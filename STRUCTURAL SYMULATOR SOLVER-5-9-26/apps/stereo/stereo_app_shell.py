@@ -405,6 +405,7 @@ class StereoShellMixin:
                                   'Chord section (top/bottom)')
         self._build_section_panel(self._mode_frames['section'], 'web',
                                   'Web section (diagonals)')
+        self._build_timber_check_panel(self._mode_frames['section'])
         self._build_addons_panel(self._mode_frames['addons'])
         self._build_module_editor_panel(self._mode_frames['module'])
         self._build_analysis_panel(self._mode_frames['analyse'])

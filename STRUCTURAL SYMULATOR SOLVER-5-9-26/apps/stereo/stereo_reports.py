@@ -1062,6 +1062,26 @@ def _read_timber(row, target):
     target.pop('Fu', None)
 
 
+def read_excel_meta(path):
+    """The free key/value pairs of a Model sheet's [META] block -- {} for
+    a workbook without one."""
+    import openpyxl
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    if 'Model' not in wb.sheetnames:
+        return {}
+    out, inside = {}, False
+    for r in wb['Model'].iter_rows(values_only=True):
+        first = r[0] if r else None
+        if first == '[META]':
+            inside = True
+            continue
+        if inside:
+            if first is None or str(first).startswith('['):
+                break
+            out[str(first)] = r[1] if len(r) > 1 else None
+    return out
+
+
 def import_excel_model(path):
     """Reads a 'Model' sheet written by `_write_model_sheet` and rebuilds
     (nodes, members, loads, supports). Raises ValueError with a
@@ -3759,6 +3779,22 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
             info.append('ADD-ONS')
             for code in addon_codes:
                 info.append(f'  {sac.describe(code):<14}{len(idx[code])} bars')
+        timber_chk = next((c for c in (checks or ())
+                           if c and c.get('material') == 'timber'
+                           and c.get('checked')), None)
+        if timber_chk:
+            from apps.stereo import stereo_timber as stt
+            st = timber_chk['settings']
+            info += ['', 'TIMBER CHECK (CIRSOC 601)',
+                     f'  CD {stt.load_duration_factor(st):g}, '
+                     + ('wet' if st['wet'] else 'dry') + ', '
+                     + dict(stt.TEMPERATURES)[st['temperature']],
+                     '  allowable stress: service loads']
+            if st['load_sharing'] or st['braced_edge']:
+                info.append('  ' + ', '.join(
+                    t for t, on in (('Cr 1.10', st['load_sharing']),
+                                    ('CL = 1 (braced)', st['braced_edge']))
+                    if on))
         info += [
             '',
             f'EXTENTS ({u.lab("length")})',

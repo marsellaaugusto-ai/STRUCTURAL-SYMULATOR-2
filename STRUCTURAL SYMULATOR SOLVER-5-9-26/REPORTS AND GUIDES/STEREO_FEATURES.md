@@ -99,7 +99,7 @@ per-member axial force `N`, and for rigid members the local end actions
 and rupture, compression buckling with KL/r, reporting `util` (demand ÷
 capacity), the governing `mode`, and a slenderness flag at KL/r > 200.
 
-**Timber rods (CIRSOC 601 Supplements).** `stereo_timber.py` carries the
+**Timber rods (CIRSOC 601).** `stereo_timber.py` carries the
 reference design values of every grade in the *Suplementos del Reglamento
 CIRSOC 601-2016, Edición 2020-1*: sawn pino paraná, eucalipto grandis, pino
 taeda / elliotti, álamo and pino ponderosa (Supplement 1), glulam of the four
@@ -122,16 +122,62 @@ Excel. A timber rod then:
   becomes a *Material take-off*;
 - has no Fy/Fu, and is **not** checked to CIRSOC 301.
 
-What it does **not** get is a CIRSOC 601 verification. The Supplements give
-values, not the method — they say so themselves (*"para ser utilizados con
-los métodos de cálculo que se indican en los Capítulos correspondientes"*).
-The adjustment factors (load duration, moisture, temperature, size) and the
-column and beam stability rules are in the Reglamento's chapters, which were
-not available. So a timber rod is reported `checked=False`: its stresses
-(ft or fc, fb about each axis, fv) sit beside the reference values with their
-ratios, and for a strut KL/d over the least dimension — with "buckling not
-applied" written next to it — but no utilisation is claimed, and it takes no
-part in the governing rod or the utilisation colours. Giving a timber rod a
+**Every timber rod is verified to the Reglamento CIRSOC 601-2016**
+(`stereo_timber.member_check`), the method the Supplements point to. It is an
+**allowable-stress** code (art. 1.4): the stresses of the *service* loads,
+unfactored, against the reference values times every adjustment factor that
+applies (Tabla 4.3-1 sawn and boards, 5.3-1 glulam, 6.3-1 round):
+
+| | rule | article |
+|---|---|---|
+| tension ∥ | ft ≤ F′t | 3.4.1 |
+| compression ∥ | fc ≤ F′c = Fc* · CP, le/d ≤ 50 | 3.3.1 |
+| bending, each axis | fb ≤ F′b = Fb* · CL, RB ≤ 50 | 3.2.1 |
+| shear ∥ | fv = 3V/2A (4V/3A round) ≤ F′v | 3.2.2 |
+| bending + tension | ft/F′t + fb/F*b ≤ 1, (fb − ft)/F′b ≤ 1 | 3.5.1 |
+| bending + compression | (fc/F′c)² + fb1/[F′b1(1 − fc/FcE1)] + fb2/[F′b2(1 − fc/FcE2 − (fb1/FbE)²)] ≤ 1 | 3.5.2 |
+
+with CD (Tabla 4.3-2), CM (4.3-3, 5.3-2; none for round), Ct (4.3-4), CF
+(4.3-1, sawn), CV (5.3-1, glulam), Cr, CP (3.3.1-1, c = 0.8 sawn, 0.9 glulam,
+0.85 round) and CL (3.2.1-4). How it reads a space structure:
+
+- **le = K · L** about both axes — art. 9.2: in a triangulated lattice the
+  buckling length is the distance between nodes. A round member buckles as
+  the square of equal area (art. 3.3.1).
+- **Lateral buckling of a beam** uses the rod's own length as lu and the
+  general case of Tabla 3.2.1-1 (its note 1) — a rod of a space structure
+  carries none of the table's single load patterns. d ≤ 2b takes CL = 1, as
+  art. 3.2.1 allows with the ends held, which the nodes do.
+- **Which axis a grade's Fb is for.** Supplement 1 grades boards for flatwise
+  bending and thick sawn pieces for edgewise bending. A rod bent the other
+  way is still checked with that Fb, but the result says so (`partial`):
+  it is outside the grade's stated use.
+- Gross section (no holes in the model); the peak moments of both axes are
+  taken together, which is conservative where they peak at different points.
+
+**Settings** (Section mode, *Timber check (CIRSOC 601)*): how long the load
+case lasts — it takes the CD of its shortest load —, wet or dry service,
+temperature, load sharing (Cr = 1.10) and whether beams are braced along
+their compression edge (CL = 1). A change re-checks at once, without a new
+solve. They are saved in the workbook's [META] and read back on import, and
+the PDF's general sheet states them.
+
+A timber rod now counts like any other: utilisation colours, the governing
+rod, the tables. Clicking one shows its stresses against the adjusted design
+values and the factors that moved them (*CIRSOC 601: fc 3.56 / F′c 2.22 MPa
+(CD 1.60, CP 0.24)*).
+
+**Checked against the Manual de Aplicación CIRSOC 601** — each example
+solved in the app and compared figure by figure (`tests/test_stereo_timber.py`):
+
+| example | Manual | app |
+|---|---|---|
+| M.4.E.1 floor beam: fb, F′b, CL, fv | 7.7, 8.1, 0.98, 0.4 | 7.66, 8.13, 0.986, 0.44 |
+| M.4.E.2 truss board: FcE, CP, F′c (fails), F′t | 5.4, 0.5, 4.5, 3.7 | 5.35, 0.498, 4.46, 3.69 |
+| M.4.E.3 chord, bending + tension (3.5.1-1) | 0.74 | 0.741 |
+| M.5.E.1 glulam: FcE, CP, CV | 6.9, 0.67, 0.94 | 6.93, 0.669, 0.942 |
+
+Giving a timber rod a
 steel catalog section makes it steel again (F-24 unless a steel is named).
 
 **The moment along a rod is one calculation.** The member checks, the
@@ -1179,6 +1225,9 @@ Stated plainly so nobody assumes otherwise:
   grid made a 19.7 MB workbook with 2,400 images in it; at 40 it is 1.7 MB. The
   sheet says so, and *Member Forces* and *Member Checks* still cover every rod.
 - No dynamic, thermal or staged-construction analysis.
-- Timber rods are not verified to CIRSOC 601 — see §1, *Timber rods*: the
-  Supplements' reference values are in, the Reglamento's method is not.
-  Aluminium is not in at all.
+- Timber: members are verified to CIRSOC 601 (§1), but not the joints
+  (Cap. 8: nails, bolts, lag screws), not compression perpendicular to the
+  grain at bearings (3.6), not deflection with creep (3.2.3, Kcr) or
+  vibration, and not built-up members (3.3.2–3.3.4). One load case at a
+  time, so the critical combination with its CD is the user's to pick.
+  Aluminium (CIRSOC 701) is not in at all.

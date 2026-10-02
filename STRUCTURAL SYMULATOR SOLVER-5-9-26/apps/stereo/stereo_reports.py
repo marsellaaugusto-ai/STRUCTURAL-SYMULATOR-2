@@ -414,8 +414,8 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     for every member, and expect the file size to show it.
     """
     if not _ensure_openpyxl():
-        raise RuntimeError('openpyxl is required for Excel export and could not '
-                            'be installed automatically.')
+        raise RuntimeError('openpyxl is required for Excel export and is not '
+                            'installed (pip install openpyxl).')
     import math
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side

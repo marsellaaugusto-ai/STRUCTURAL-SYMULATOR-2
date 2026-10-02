@@ -226,11 +226,13 @@ def test_the_customer_archive_ships_the_app_and_nothing_internal(tmp_path):
     with zipfile.ZipFile(dest) as z:
         rels = {n.split('/', 1)[1] for n in z.namelist() if '/' in n}
     for must in ('main.py', 'common.py', 'apps/stereo/stereo_app.py',
-                 'apps/truss/truss_app.py', br.RBZ_NAME, 'requirements.txt'):
+                 'apps/truss/truss_app.py', br.RBZ_NAME, 'requirements.txt',
+                 'USER_GUIDE.html', 'tools/doctor.py'):
         assert must in rels, must
-    tops = {r.split('/', 1)[0] for r in rels}
-    for gone in br.CUSTOMER_SKIP_DIRS:
-        assert gone not in tops, gone
+    for r in rels:
+        top = r.split('/', 1)[0]
+        assert top not in br.CUSTOMER_SKIP_DIRS or r in br.CUSTOMER_KEEP, r
+    assert 'tools/build_release.py' not in rels
 
 
 def test_the_customer_archive_carries_generated_third_party_notices(tmp_path):

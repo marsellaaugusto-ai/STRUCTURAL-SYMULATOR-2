@@ -10,6 +10,29 @@ the forces travel. Every feature below was judged against two questions:
 A Stereo feature that is only about the third dimension, or one that is
 powerful but adds controls, was left out or postponed. Section 4 lists those.
 
+## Status (2026-10-02): all six phases built
+
+| Phase | Where it lives | Tests |
+|---|---|---|
+| 1 Read the result | `truss_stability.py`, `truss_app_learn.py` | `test_truss_stability.py`, `test_truss_learn.py` |
+| 2 Why it fell | `truss_stability.mechanism_mode`, `truss_app_learn.py` | same |
+| 3 Is it strong enough | `truss_design.py`, `truss_app_design.py` | `test_truss_design.py` |
+| 4 Play and compare | `truss_examples.py`, `truss_score.py`, `truss_app_play.py` | `test_truss_play.py` |
+| 5 Stability | `truss_buckling.py`, `truss_app_buckling.py` | `test_truss_buckling.py` |
+| 6 Hand it in | `truss_pdf.py`, Export PDF in `truss_app_design.py` | `test_truss_pdf.py` |
+
+Where the build differs from the plan below:
+- **Phase 4**: Play load re-solves at each step instead of scaling one
+  answer, so the combined axial + bending check (not proportional to the
+  load) stays exact. The library has nine examples, each shipped with
+  steel sections so utilisation works at once; the Warren truss fails as
+  shipped on purpose. Every lesson question is held to the solver by a test.
+- **Phase 5**: pin rods use the same beam-column geometric stiffness as
+  rigid rods (hinged at both ends) rather than P/L, so a pinned rod can bow
+  between its joints. Pinned column: Euler within 0.8 %; cantilever: 0.05 %.
+- **Phase 6**: the report reuses the Stereo title block; every drawing is
+  checked to be 1:1 in x and y by `test_every_drawing_is_to_scale`.
+
 ---
 
 ## 1. Where the Truss tab stands today

@@ -9,14 +9,12 @@
 #             including this project's own built-in examples (measured
 #             2026-09-04; see REPORTS AND GUIDES/CABLE_WEB_DIAGNOSIS_2026-09-04.md).
 #
-# openpyxl is required only for Excel import/export, and common.py's
-# _ensure_openpyxl() will pip-install it on first use if it is absent --
-# but installing it up front avoids that first-use delay.
+# openpyxl (Excel import/export) and matplotlib + pillow (the PDF reports
+# and the equation images in the guides) are needed by those features only.
+# The app never installs anything itself: without one of them, the feature
+# that needs it says what to install, and the rest of the app works.
 numpy>=1.24
 scipy>=1.10
 openpyxl>=3.1
-
-# Optional. common.py's _ensure_matplotlib() auto-installs these on demand
-# for the LaTeX-style equation images in the Truss/Beam/Arch guides.
-# matplotlib>=3.7
-# pillow>=10.0
+matplotlib>=3.7
+pillow>=10.0

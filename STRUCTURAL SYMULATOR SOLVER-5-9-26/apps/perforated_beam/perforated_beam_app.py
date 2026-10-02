@@ -2420,7 +2420,7 @@ class PerforatedBeamApp(UnitsMixin, tk.Frame):
         if not _ensure_openpyxl():
             messagebox.showerror(
                 'Excel export',
-                'Could not install openpyxl automatically.\n\n'
+                'Excel import and export need the openpyxl library, which is not installed.\n\n'
                 'Install it and try again:\n\n'
                 '    pip install openpyxl\n')
             return
@@ -2459,7 +2459,7 @@ class PerforatedBeamApp(UnitsMixin, tk.Frame):
         if not _ensure_openpyxl():
             messagebox.showerror(
                 'Excel import',
-                'Could not install openpyxl automatically.\n\n'
+                'Excel import and export need the openpyxl library, which is not installed.\n\n'
                 'Install it and try again:\n\n'
                 '    pip install openpyxl\n')
             return

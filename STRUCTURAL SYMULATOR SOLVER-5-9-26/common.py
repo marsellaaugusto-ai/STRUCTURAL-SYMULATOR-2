@@ -13,7 +13,7 @@ Nothing in this file depends on truss_app / beam_app / arch_app / cable_app
 """
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-import math, os, sys, subprocess, time
+import math, os, sys, time
 
 import units
 
@@ -69,22 +69,28 @@ def _require_numpy(note=''):
 _np = None
 
 
-def _ensure_openpyxl():
+# ── optional libraries: present or not, never installed behind the user ─────
+# These helpers used to run "pip install" from inside the app the first time
+# a library was missing. A shipped product must not: it reaches the network
+# and changes the customer's Python without asking, it can hang the window
+# for minutes, and it fails silently behind a firewall. Now they only say
+# whether the library is importable, and every caller already tells the user
+# what to install when it is not (requirements.txt lists them all).
+def _importable(*modules):
+    import importlib
     try:
-        import openpyxl
-        return True
-    except ImportError:
-        pass
-    try:
-        subprocess.check_call(
-            [sys.executable, '-m', 'pip', 'install', 'openpyxl', '--quiet'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        import openpyxl
+        for m in modules:
+            importlib.import_module(m)
         return True
     except Exception:
         return False
 
-# ── auto-install scipy if missing (cable-web network solver) ──────────────────
+
+def _ensure_openpyxl():
+    """Excel import and export."""
+    return _importable('openpyxl')
+
+
 def _ensure_scipy():
     """SciPy is NOT optional for Cable Web, despite the name of the code path
     that uses it.
@@ -99,35 +105,12 @@ def _ensure_scipy():
     presents as an intermittent physics failure rather than as a missing
     dependency. See REPORTS AND GUIDES/CABLE_WEB_DIAGNOSIS_2026-09-04.md.
     """
-    try:
-        import scipy.optimize
-        return True
-    except ImportError:
-        pass
-    try:
-        subprocess.check_call(
-            [sys.executable, '-m', 'pip', 'install', 'scipy', '--quiet'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        import scipy.optimize
-        return True
-    except Exception:
-        return False
+    return _importable('scipy.optimize')
 
-# ── auto-install matplotlib+Pillow if missing (LaTeX-style equation images) ──
+
 def _ensure_matplotlib():
-    try:
-        import matplotlib, PIL
-        return True
-    except ImportError:
-        pass
-    try:
-        subprocess.check_call(
-            [sys.executable, '-m', 'pip', 'install', 'matplotlib', 'pillow', '--quiet'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        import matplotlib, PIL
-        return True
-    except Exception:
-        return False
+    """PDF reports and the equation images in the guides."""
+    return _importable('matplotlib', 'PIL')
 
 def render_math(tex, fontsize=13, color='#1a1a1a', dpi=200):
     """

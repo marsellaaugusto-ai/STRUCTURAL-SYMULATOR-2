@@ -32,6 +32,16 @@ tkinter, numpy and scipy.
 import os
 import sys
 
+# One thread for numpy's linear algebra, set BEFORE numpy is first imported
+# (common.py imports it). Its default -- a thread per core, busy-waiting
+# between calls -- buys nothing on the small matrices these solvers build,
+# and next to any other busy program it collapses: measured 2026-10-02, the
+# Cable Web at-rest preview took over five minutes with the default pool
+# beside one other CPU-bound process, and 11.6 s with one thread. A user
+# who wants more threads sets these variables; they are only defaults.
+for _var in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
+    os.environ.setdefault(_var, '1')
+
 MIN_PYTHON = (3, 9)
 
 # (module, pip name or None if it is not on PyPI, what it is needed for,

@@ -44,7 +44,7 @@ PLUGIN_NAME = 'coordinate_coordinator_truss_app_amac'
 # filename anywhere else. The series continues the repo's own history: the
 # last numbered archive was structural_simulator_v21_moment_arrows.zip, so
 # the first dated build is v22. Bump this when you hand out a new one.
-APP_VERSION = 29
+APP_VERSION = 30
 
 
 def build_stamp():
@@ -101,8 +101,8 @@ ZIP_INCLUDE_FILES = ('main.py', 'common.py', 'cirsoc_301.py', 'units.py',
                      # importing at all, and the whole app fails to start
                      # from an archive that looked complete.
                      'formula.py', 'view3d.py',
-                     # the About box and its licence notices
-                     'about.py', 'notices.py',
+                     # the About box, its licence notices and the guide
+                     'about.py', 'notices.py', 'USER_GUIDE.html',
                      'requirements.txt', RBZ_NAME,
                      # a real model to open straight after unpacking
                      'wave_like_structure_1.xlsx')
@@ -116,6 +116,9 @@ CUSTOMER_ZIP_BASE = 'structural_simulator_customer'
 CUSTOMER_SKIP_DIRS = ('tests', 'tools', 'REPORTS AND GUIDES',
                       'sketchup_plugin', '.vscode')
 CUSTOMER_EXTRA_FILES = ('LICENSE.txt',)
+# Files a customer gets from folders that are otherwise only ours: the
+# environment check the user guide tells them to run.
+CUSTOMER_KEEP = ('tools/doctor.py',)
 NOTICES_NAME = 'THIRD_PARTY_NOTICES.txt'
 
 
@@ -292,7 +295,8 @@ def customer_files():
     """app_files() less everything that is only ours, plus the licence
     when it exists. (The notices are generated, not copied: build_zip.)"""
     out = [(rel, disk) for rel, disk in app_files()
-           if rel.split('/', 1)[0] not in CUSTOMER_SKIP_DIRS
+           if (rel.split('/', 1)[0] not in CUSTOMER_SKIP_DIRS
+               or rel in CUSTOMER_KEEP)
            and rel != NOTICES_NAME]
     for fn in CUSTOMER_EXTRA_FILES:
         disk = os.path.join(APP, fn)

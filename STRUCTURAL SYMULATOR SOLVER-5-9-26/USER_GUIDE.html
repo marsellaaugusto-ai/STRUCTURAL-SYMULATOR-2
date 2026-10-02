@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Structural Simulator — User Guide</title>
+<style>
+  :root {
+    --ink: #22272b; --muted: #5d656c; --rule: #d7dbdf; --accent: #1a6bbd;
+    --tint: #f3f6f9; --warn: #9a3412; --bg: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #e4e7ea; --muted: #a3abb3; --rule: #3a4148; --accent: #6aa8e8;
+            --tint: #1d2329; --warn: #f0a37c; --bg: #14181c; }
+  }
+  html { background: var(--bg); }
+  body { margin: 0; padding: 32px 16px 64px; color: var(--ink); background: var(--bg);
+         font: 16px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  .sub { color: var(--muted); margin: 0 0 2rem; }
+  h2 { font-size: 1.35rem; margin: 2.6rem 0 .6rem; padding-top: .8rem;
+       border-top: 1px solid var(--rule); }
+  h3 { font-size: 1.05rem; margin: 1.6rem 0 .4rem; }
+  code, pre { font-family: "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace; font-size: .9em; }
+  pre { background: var(--tint); padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
+  code { background: var(--tint); padding: 1px 5px; border-radius: 4px; }
+  pre code { background: none; padding: 0; }
+  a { color: var(--accent); }
+  nav ol { columns: 2; column-gap: 32px; padding-left: 1.2rem; }
+  nav li { break-inside: avoid; }
+  table { border-collapse: collapse; width: 100%; margin: .6rem 0; font-size: .95rem; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .note { border-left: 3px solid var(--accent); background: var(--tint); padding: 10px 14px; margin: 1rem 0; }
+  .warn { border-left: 3px solid var(--warn); background: var(--tint); padding: 10px 14px; margin: 1rem 0; }
+  kbd { border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: .85em; }
+  @media (max-width: 560px) { nav ol { columns: 1; } }
+  @media print { body { padding: 0; } h2 { break-after: avoid; } }
+</style>
+</head>
+<body>
+<main>
+<h1>Structural Simulator</h1>
+<p class="sub">User guide — a desktop calculator for trusses, beams, arches, cables, space structures and concrete shells.</p>
+
+<nav>
+<ol>
+  <li><a href="#start">Installing and starting</a></li>
+  <li><a href="#window">The window</a></li>
+  <li><a href="#tabs">The eight tabs</a></li>
+  <li><a href="#truss">The Truss tab, step by step</a></li>
+  <li><a href="#stereo">The Stereo tab in brief</a></li>
+  <li><a href="#files">Excel, PDF and SketchUp</a></li>
+  <li><a href="#codes">Design codes</a></li>
+  <li><a href="#limits">What the results are, and are not</a></li>
+  <li><a href="#trouble">When something goes wrong</a></li>
+  <li><a href="#licence">Licence and open-source notices</a></li>
+</ol>
+</nav>
+
+<h2 id="start">1. Installing and starting</h2>
+<p>The app runs on Python 3.9 or newer, on Windows, macOS and Linux.</p>
+<ol>
+  <li>Install Python from <a href="https://www.python.org/downloads/">python.org</a>. On Windows, tick <em>Add python.exe to PATH</em> during the installation.</li>
+  <li>Unpack the archive anywhere you like. Keep its folder together: the app's files import each other.</li>
+  <li>Open a terminal in the unpacked folder (the one that holds <code>main.py</code>) and install the libraries the app uses:
+<pre><code>python -m pip install -r requirements.txt</code></pre></li>
+  <li>Start the app:
+<pre><code>python main.py</code></pre></li>
+</ol>
+<div class="note">The app never installs anything by itself. If a library is missing, the feature that needs it tells you what to install, and the rest of the app keeps working.</div>
+<p>On Linux, <code>tkinter</code> (the window toolkit) is a system package: <code>sudo apt install python3-tk</code> on Debian and Ubuntu, <code>sudo dnf install python3-tkinter</code> on Fedora.</p>
+
+<h2 id="window">2. The window</h2>
+<p><strong>Units</strong>, at the top left, apply to every tab at once. They change how numbers are written and typed. Every calculation is done in SI underneath, so switching units never changes a result. Pick the convention before you type values in, so that the numbers you type mean what you expect.</p>
+<p><strong>About…</strong>, at the top right, shows the licence, the open-source licences of the libraries the app runs on, and this guide.</p>
+<p>Each tab has its own drawing area, a toolbar above it and a side panel. Most drawing areas zoom with the mouse wheel and pan with the middle button. Hover over a control to see a short explanation. A grey hint that ends in <em>more…</em> opens when clicked.</p>
+
+<h2 id="tabs">3. The eight tabs</h2>
+<table>
+  <tr><th>Tab</th><th>What it is for</th></tr>
+  <tr><td>Truss</td><td>Plane trusses and frames: draw, load, solve; axial forces, reactions, deflections; steel rod checks; teaching aids. See <a href="#truss">section 4</a>.</td></tr>
+  <tr><td>Beam</td><td>Continuous beams: supports, point and distributed loads; shear, moment and deflection diagrams.</td></tr>
+  <tr><td>Arch</td><td>Arches of any shape <code>y = f(x)</code>, fixed, two- or three-hinged; axial force, shear, moment and fibre stresses.</td></tr>
+  <tr><td>Cable</td><td>A single cable under its own weight and point loads: the hanging shape, tension and thrust.</td></tr>
+  <tr><td>Cable Web</td><td>Networks of cables with junctions: draw the web, load it, and find the shape it hangs in.</td></tr>
+  <tr><td>Perforated Beam</td><td>Cellular and castellated steel beams: net sections, Vierendeel bending, web posts.</td></tr>
+  <tr><td>Stereo</td><td>Three-dimensional space structures: grids, vaults, domes, bridges; full 3D analysis and member checks in steel, timber or aluminium. See <a href="#stereo">section 5</a>.</td></tr>
+  <tr><td>Shell (RC)</td><td>Reinforced-concrete shells defined by formulas: supports, edge beams, loads, wind; stresses and design of the shell.</td></tr>
+</table>
+
+<h2 id="truss">4. The Truss tab, step by step</h2>
+<h3>Start from an example</h3>
+<p><strong>Examples…</strong> opens a library of nine trusses: Warren, Pratt, Howe, king-post, Fink, a wall bracket, a Vierendeel girder, and two that make a point (a missing diagonal, and idle rods). Each comes with steel sections already chosen and a short lesson: what to look at and what to try. The lesson card sits over the drawing; close it with ×.</p>
+<h3>Or draw your own</h3>
+<ol>
+  <li><strong>Node</strong>: click to place joints on the grid (one square is one metre).</li>
+  <li><strong>Rod</strong>: click two joints to join them.</li>
+  <li><strong>Support</strong>: pick joints, then a pin, a roller or a fixed support.</li>
+  <li><strong>Load</strong>: pick joints and give the force in kN.</li>
+  <li><strong>▶ Analyze structure</strong>.</li>
+</ol>
+<p>The line under Analyze says whether the truss can stand, before you solve it: how many ways it could move, and how many rods or supports it has to spare. If it cannot stand, the analysis shows the motion as an animation, so you can see which bay folds.</p>
+<h3>Reading the result</h3>
+<ul>
+  <li>Red rods are pulled (tension), blue rods are pushed (compression). Dashed rods carry nothing; <em>Hide zero-force rods</em> removes them to show the path the load takes.</li>
+  <li><strong>Live</strong> re-solves a moment after every edit on small models.</li>
+  <li>Right-click a support to switch it off and see what happens without it.</li>
+  <li><strong>Simple / Advanced</strong> (the <em>Advanced tools</em> box) shows or hides the drafting tools, plates and span loads.</li>
+</ul>
+<h3>Is it strong enough?</h3>
+<ol>
+  <li>Give every rod family a steel section: in the <em>Rod family / profile</em> box (Advanced), <em>Manage profiles… → Steel section…</em>. The library examples already have them.</li>
+  <li>Tick <strong>Colour by utilisation</strong>: green is lightly used, red is at capacity. The results list the most used rod and the deflection against span/300.</li>
+  <li><strong>Explain rod…</strong> shows the CIRSOC 301 check of the selected rod (or the most used one), step by step, with its own numbers.</li>
+  <li><strong>Self-weight</strong> adds the rods' own weight to the loads.</li>
+</ol>
+<h3>Play, compare, buckle, hand in</h3>
+<ul>
+  <li><strong>Load %</strong> and <strong>▶ Play load</strong> raise the load from nothing to full and name the first rod to reach its capacity, and at what share of the load.</li>
+  <li>The <strong>Score</strong> line gives the weight, the load carried and whether the design passes. For an example, the lightest passing design is remembered.</li>
+  <li><strong>Keep variant</strong> stores up to three solved designs; <strong>Compare…</strong> shows them side by side at one scale.</li>
+  <li><strong>Buckling…</strong> finds the load factor at which the truss buckles in its own plane, the shapes it buckles into, and the second-order load–deflection curve.</li>
+  <li><strong>Export PDF</strong> writes the report: cover, geometry with dimensions, forces, deformed shape, reactions, the rod table and the step-by-step check of the most used rods. Every drawing is to scale.</li>
+</ul>
+
+<h2 id="stereo">5. The Stereo tab in brief</h2>
+<p>The mode rail on the left takes you through the work in order: <em>Build</em> (grid family, dimensions, examples), <em>Shape</em>, <em>Support</em>, <em>Load</em>, <em>Section</em> (what the rods are made of), <em>Add-ons</em> (columns, beams, the crane), <em>Module</em>, <em>Analyse</em> and <em>Results</em>. A structure comes from a generator (flat grids, vaults, domes, bridges, surfaces defined by a formula or by control points) or from an Excel file, and can be edited rod by rod.</p>
+<p>Rods can be steel (from the catalogue), timber (CIRSOC 601) or aluminium (CIRSOC 701: tubes, rectangular tubes and solid bars in thirteen alloys). The analysis is a full 3D stiffness solution; the results colour the structure by force, utilisation or moment, and every rod can be explained step by step. The PDF report has plan, elevations and axonometric views, all to scale, with a sheet chooser.</p>
+
+<h2 id="files">6. Excel, PDF and SketchUp</h2>
+<ul>
+  <li><strong>Excel</strong>: most tabs export their model and results to a workbook and read a model back from one. Excel needs the <code>openpyxl</code> library (installed by <code>requirements.txt</code>).</li>
+  <li><strong>PDF reports</strong> (Truss and Stereo) need <code>matplotlib</code> (also in <code>requirements.txt</code>). They are A4 landscape with a title block on every sheet, in the units selected at the top of the window.</li>
+  <li><strong>SketchUp</strong>: the <code>.rbz</code> file in the app folder is a SketchUp extension. Install it from SketchUp's <em>Extension Manager → Install Extension</em>. It works both ways: it exports points and members from a SketchUp drawing to an Excel file the Stereo tab imports, and it builds SketchUp geometry from a model the Stereo tab exported.</li>
+</ul>
+
+<h2 id="codes">7. Design codes</h2>
+<table>
+  <tr><th>Code</th><th>Used for</th></tr>
+  <tr><td>CIRSOC 301 (steel)</td><td>rod checks in the Truss and Stereo tabs; the Perforated Beam tab</td></tr>
+  <tr><td>CIRSOC 601 (timber)</td><td>timber rods in the Stereo tab</td></tr>
+  <tr><td>CIRSOC 701 (aluminium)</td><td>aluminium rods in the Stereo tab</td></tr>
+  <tr><td>CIRSOC 201 (concrete)</td><td>the Shell (RC) tab</td></tr>
+  <tr><td>CIRSOC 102 (wind)</td><td>the wind calculator of the Shell tab, and a simplified wind case in Stereo</td></tr>
+</table>
+<p>The app implements the formulas and cites the clauses and editions it follows. It does not contain the documents themselves; have the current editions at hand.</p>
+
+<h2 id="limits">8. What the results are, and are not</h2>
+<div class="warn">The results are an aid to a qualified professional, who must check them. The app does not replace the design codes it cites, nor the designer's responsibility for the design.</div>
+<ul>
+  <li>Analyses are linear and first-order unless a tab says otherwise (the Cable and Cable Web tabs solve the large-displacement shape; the buckling windows are demonstrations of elastic buckling).</li>
+  <li>Member checks are as implemented, against the cited editions. Where a check is not made, the app says so (for example shear and second-order effects for aluminium rods).</li>
+  <li>Joints and connections are checked only where a tab offers it explicitly (plates in the Truss and Stereo tabs).</li>
+</ul>
+
+<h2 id="trouble">9. When something goes wrong</h2>
+<p><strong>It does not start.</strong> Run the environment check from the app folder and read its verdict:</p>
+<pre><code>python tools/doctor.py</code></pre>
+<p>It names the Python it runs on, every library with its version or the error it raised, and what to install. The most common cause is having installed the libraries into one Python and starting the app with another.</p>
+<p><strong>"Analysis failed".</strong> Usually the structure can move: a missing support, a missing rod, or a joint that only one rod reaches. The tab says where, and the Truss and Stereo tabs show the motion.</p>
+<p><strong>A feature says a library is missing.</strong> Install what it names, for example <code>python -m pip install openpyxl</code>, with the same Python that runs the app, and start the app again.</p>
+
+<h2 id="licence">10. Licence and open-source notices</h2>
+<p>The licence for this product is in <code>LICENSE.txt</code> and under <em>About… → Licence…</em>. The app runs on open-source software (Python, Tcl/Tk, NumPy, SciPy, openpyxl, matplotlib, Pillow and the libraries they use), each under its own licence; their notices are in <code>THIRD_PARTY_NOTICES.txt</code> and under <em>About… → Open-source licences…</em>.</p>
+</main>
+</body>
+</html>

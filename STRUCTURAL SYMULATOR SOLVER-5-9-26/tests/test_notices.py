@@ -138,3 +138,38 @@ def test_open_source_licences_prefer_the_shipped_file(root, tmp_path,
 def test_the_main_window_has_an_about_button():
     src = open(os.path.join(APP, 'main.py'), encoding='utf-8').read()
     assert 'about.show_about(root)' in src
+
+
+def test_the_user_guide_ships_and_opens(root):
+    import about
+    assert about.guide_path() is not None
+    opened = []
+    assert about.open_guide(opener=opened.append) == about.guide_path()
+    assert opened and opened[0].startswith('file:')
+    win = about.show_about(root)
+    assert str(win.guide_button['state']) == 'normal'
+    win.destroy()
+
+
+def test_the_user_guide_names_only_real_controls():
+    """Every control the guide tells the reader to press exists in the
+    app's source, so the guide cannot drift from the buttons."""
+    import re
+    guide = open(os.path.join(APP, 'USER_GUIDE.html'), encoding='utf-8').read()
+    src = ''
+    for dirpath, _d, files in os.walk(os.path.join(APP, 'apps')):
+        for f in files:
+            if f.endswith('.py'):
+                src += open(os.path.join(dirpath, f), encoding='utf-8').read()
+    src += open(os.path.join(APP, 'about.py'), encoding='utf-8').read()
+    src += open(os.path.join(APP, 'main.py'), encoding='utf-8').read()
+    named = set(re.findall(r'<strong>([^<]{3,40})</strong>', guide))
+    named |= set(re.findall(r'<em>([A-Z][^<]{2,40}…)</em>', guide))
+    parts = {p.strip() for n in named for p in n.split('→')}
+    controls = {n for n in parts if n.endswith('…') or n.startswith('▶')
+                or n in ('Live', 'Self-weight', 'Keep variant', 'Load %',
+                         'Export PDF', 'Colour by utilisation', 'Units',
+                         'Node', 'Rod', 'Support', 'Load')}
+    flat = re.sub(r'\s+', ' ', src)            # '▶  Analyze' == '▶ Analyze'
+    missing = [c for c in sorted(controls) if c not in flat]
+    assert not missing, missing

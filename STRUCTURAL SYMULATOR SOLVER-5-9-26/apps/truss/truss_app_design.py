@@ -2,8 +2,9 @@
 steel sections for the rod families, CIRSOC 301 rod checks, utilisation
 colours, the governing rod, Explain this rod, self-weight and the
 deflection limit."""
+import os
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 from . import truss_design as td
 
@@ -39,6 +40,7 @@ class TrussDesignMixin:
         row.pack(fill='x', padx=8, after=self._learn_row)
         row2 = tk.Frame(panel, bg=BG)
         row2.pack(fill='x', padx=8, after=row)
+        self._design_rows = (row, row2)
         sw = tk.Checkbutton(row, text='Self-weight', variable=self.self_weight,
                             bg=BG, font=('Helvetica', 9),
                             command=self._on_design_option)
@@ -55,6 +57,13 @@ class TrussDesignMixin:
             'family has no steel section stay grey.')
         tk.Button(row, text='Explain rod…', font=('Helvetica', 8),
                   command=self._explain_rod).pack(side='left', padx=(6, 0))
+        bk = tk.Button(row2, text='Buckling…', font=('Helvetica', 8),
+                       command=self._open_buckling)
+        bk.pack(side='left', padx=(6, 0))
+        self._bind_widget_tooltip(bk,
+            'At what multiple of this load does the truss buckle in its own '
+            'plane, and into what shape? With the second-order '
+            'load-deflection curve.')
 
     def _on_design_option(self):
         if self.results is not None:
@@ -64,9 +73,12 @@ class TrussDesignMixin:
 
     # ── analysis hooks ────────────────────────────────────────────────────
     def _design_loads(self):
+        """The nodal loads to solve for: the model's, plus the self-weight
+        when ticked, all times the Load % (TrussPlayMixin)."""
+        loads = self.loads
         if self.self_weight.get():
-            return td.with_self_weight(self.loads, self.nodes, self.rods)
-        return self.loads
+            loads = td.with_self_weight(loads, self.nodes, self.rods)
+        return self._scaled_loads(loads)
 
     def _compute_design(self, res):
         try:
@@ -145,6 +157,53 @@ class TrussDesignMixin:
         t.insert('1.0', text)
         t.configure(state='disabled')
         return text
+
+    # ── the PDF report ────────────────────────────────────────────────────
+    def _report_title(self):
+        key = getattr(self, '_example_key', None)
+        if key:
+            from . import truss_examples as tx
+            return next(t for k, t, _b in tx.EXAMPLES if k == key)
+        return 'Truss'
+
+    def _export_pdf_report(self, path=None):
+        """The report always describes the full load: a part-load solve
+        from the Load % slider is put back to 100 % first."""
+        from common import _ensure_matplotlib
+        if not _ensure_matplotlib():
+            messagebox.showerror('Export PDF', 'The PDF report needs '
+                                 'matplotlib, which could not be installed. '
+                                 'Run: pip install matplotlib')
+            return None
+        if getattr(self, 'load_pct', None) is not None and \
+                self.load_pct.get() != 100:
+            self.load_pct.set(100)
+            self.results = None
+        if self.results is None and self.rods:
+            self._run_analysis(quiet=True)
+        if self.results is None:
+            messagebox.showinfo('Export PDF', 'Analyze the truss first: the '
+                                'report is of a solved truss.')
+            return None
+        if path is None:
+            path = filedialog.asksaveasfilename(
+                defaultextension='.pdf', filetypes=[('PDF', '*.pdf')],
+                title='Export the truss report')
+        if not path:
+            return None
+        from . import truss_pdf
+        try:
+            out = truss_pdf.export_pdf(
+                path, self.nodes, self.rods, self._active_supports(),
+                self._design_loads(), self.results, self.rod_checks,
+                self.profiles, title=self._report_title())
+        except Exception as exc:                # noqa: BLE001
+            messagebox.showerror('Export PDF', 'The report could not be '
+                                 'written:\n%s' % exc)
+            return None
+        self.status_var.set('Wrote a %d-sheet report to %s.'
+                            % (out['sheets'], os.path.basename(path)))
+        return out
 
     # ── steel sections for the families ───────────────────────────────────
     def _pick_steel_section(self, family, on_done=None):

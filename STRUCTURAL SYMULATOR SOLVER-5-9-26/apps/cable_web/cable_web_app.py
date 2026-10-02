@@ -3524,8 +3524,8 @@ class CableWebApp(UnitsMixin, tk.Frame):
                 'Analysis failed',
                 MissingSolverDependency(
                     'Cable Web needs SciPy to solve a network with junctions, '
-                    'and it could not be installed automatically.\n\n'
-                    'Install it yourself with:\n'
+                    'and it is not installed.\n\n'
+                    'Install it with:\n'
                     '    python -m pip install scipy'))
             return
         # This solve can legitimately take several seconds for a network

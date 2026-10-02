@@ -13,6 +13,7 @@ import tkinter as tk
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LICENSE_FILE = 'LICENSE.txt'
 NOTICES_FILE = 'THIRD_PARTY_NOTICES.txt'
+GUIDE_FILE = 'USER_GUIDE.html'
 
 TITLE = 'Structural Simulator'
 DISCLAIMER = ('Results are an aid to a qualified professional, who must check '
@@ -47,6 +48,26 @@ def notices_text():
         return shipped
     import notices
     return notices.render()
+
+
+def guide_path():
+    """The user guide's full path, or None when this copy has none."""
+    p = os.path.join(APP_DIR, GUIDE_FILE)
+    return p if os.path.isfile(p) else None
+
+
+def open_guide(opener=None):
+    """Open the user guide in the default browser. Returns its path, or
+    None when there is no guide."""
+    p = guide_path()
+    if p is None:
+        return None
+    if opener is None:
+        import webbrowser
+        opener = webbrowser.open
+    import pathlib
+    opener(pathlib.Path(p).as_uri())
+    return p
 
 
 def show_text(parent, title, text):
@@ -92,6 +113,11 @@ def show_about(parent):
                     command=lambda: show_text(win, 'Open-source licences',
                                               notices_text()))
     oss.pack(side='left', padx=4)
+    guide = tk.Button(row, text='User guide',
+                      state='normal' if guide_path() else 'disabled',
+                      command=open_guide)
+    guide.pack(side='left', padx=4)
     tk.Button(row, text='Close', command=win.destroy).pack(side='left', padx=4)
     win.licence_button, win.notices_button = lic, oss
+    win.guide_button = guide
     return win

@@ -91,8 +91,8 @@ cannot install into the wrong one.
 | `tkinter` | yes | nothing starts; it is part of Python, not a pip package |
 | `numpy` | yes | nothing starts; `common.py` imports it at module scope |
 | `scipy` | yes | the cable-web solver converges on no network with a junction |
-| `openpyxl` | yes in practice | no Excel import or export (auto-installed on first use) |
-| `matplotlib` | optional | no PDF report, no guide equation images (auto-installed on first use) |
+| `openpyxl` | yes in practice | no Excel import or export (the app says what to install) |
+| `matplotlib` | yes in practice | no PDF report, no guide equation images (the app says what to install) |
 | `Pillow` | optional | no free-body-diagram images inside the Excel export |
 
 `tkinter` is the one that catches people out, because it is not on PyPI:

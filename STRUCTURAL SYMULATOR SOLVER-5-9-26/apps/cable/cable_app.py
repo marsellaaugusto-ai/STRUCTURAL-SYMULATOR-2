@@ -1541,7 +1541,7 @@ class CableApp(UnitsMixin, tk.Frame):
         if not _ensure_openpyxl():
             messagebox.showerror(
                 'Missing library',
-                'Could not install openpyxl automatically.\n\n'
+                'Excel import and export need the openpyxl library, which is not installed.\n\n'
                 'Please open a terminal and run:\n'
                 '    pip install openpyxl\n'
                 'then try again.')
@@ -1569,7 +1569,7 @@ class CableApp(UnitsMixin, tk.Frame):
         if not _ensure_openpyxl():
             messagebox.showerror(
                 'Missing library',
-                'Could not install openpyxl automatically.\n\n'
+                'Excel import and export need the openpyxl library, which is not installed.\n\n'
                 'Please open a terminal and run:\n'
                 '    pip install openpyxl\n'
                 'then try again.')

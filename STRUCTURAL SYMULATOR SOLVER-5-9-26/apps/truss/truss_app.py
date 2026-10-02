@@ -81,8 +81,11 @@ from .truss_reports import export_excel, import_excel_model
 from . import truss_plates, truss_guides
 from .truss_app_learn import TrussLearnMixin
 from .truss_app_design import TrussDesignMixin
+from .truss_app_play import TrussPlayMixin
+from .truss_app_buckling import TrussBucklingMixin
 
-class TrussApp(TrussLearnMixin, TrussDesignMixin, UnitsMixin):
+class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
+               TrussBucklingMixin, UnitsMixin):
     # This tab does NOT store stress the way the others do. Plate yield and
     # electrode strength have always been typed in MPa here, while the Beam
     # tab holds allowable stresses in kN/cm2. Declaring the difference is
@@ -187,9 +190,11 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, UnitsMixin):
         tk.Button(model_g, text='Example', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica',11),
                   command=self._load_example)
-        tk.Button(model_g, text='Example: Vierendeel', relief='flat', bd=0, padx=8, pady=4,
+        # The library holds nine trusses with a lesson each (the Vierendeel
+        # girder among them); "Example" stays as the one-click Warren truss.
+        tk.Button(model_g, text='Examples…', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica',11),
-                  command=self._load_example_vierendeel)
+                  command=self._open_examples)
         tk.Button(model_g, text='Clear', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica',11),
                   command=self._clear_all)
@@ -237,6 +242,9 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, UnitsMixin):
         tk.Button(io_g, text='Import Excel', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica',11), fg='#1a6bbd',
                   command=self._import_excel)
+        tk.Button(io_g, text='Export PDF', relief='flat', bd=0, padx=8, pady=4,
+                  font=('Helvetica',11), fg='#1a6bbd',
+                  command=self._export_pdf_report)
         tk.Button(io_g, text='Node Force Vectors', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica',11), fg='#1a6bbd',
                   command=self._show_node_vectors_report)
@@ -458,6 +466,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, UnitsMixin):
         self._refresh_tool_buttons()
         self._init_learn(self.panel_outer.interior)
         self._init_design(self.panel_outer.interior)
+        self._init_play(self.panel_outer.interior, after=self._design_rows[-1])
 
     def _on_root_configure(self, _event=None):
         """Resize the right panel to match the window. Content that no longer
@@ -3004,8 +3013,9 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, UnitsMixin):
             return
 
         self._stop_mechanism()
-        loads = self._design_loads()          # + self-weight when ticked
-        res, err = analyze(self.nodes, self.rods, loads, supports,
+        loads = self._design_loads()          # + self-weight, x Load %
+        rods = self._design_rods()            # span loads x Load %
+        res, err = analyze(self.nodes, rods, loads, supports,
                             self.plates)
         if err:
             why = None
@@ -3020,13 +3030,14 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, UnitsMixin):
             return
 
         self.results  = res
-        self.diagrams = compute_diagrams(self.nodes, self.rods, loads, res)
+        self.diagrams = compute_diagrams(self.nodes, rods, loads, res)
         self._compute_design(res)
         self.plate_checks = truss_plates.check_all(self.nodes, self.rods,
                                                     self.plates, res)
 
         self._show_analysis_text()
         design_note = self._design_summary()
+        self._score_summary()
         self._show_plate_checks()
 
         self.show_deform.set(True)
@@ -3048,7 +3059,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, UnitsMixin):
                    if self.disabled_supports else '')
             self.status_var.set(
                 f'{"Live: " if quiet else "Done — "}{n_t} tension, '
-                f'{n_c} compression{zero}.{off}{design_note} '
+                f'{n_c} compression{zero}{self._load_note()}.{off}{design_note} '
                 f'Reactions and diagrams shown. Scroll/zoom both canvases freely.')
         if self.selected_nodes or self.selected_rods: self._show_sel()
 
@@ -4882,11 +4893,11 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, UnitsMixin):
         if not self.results:
             messagebox.showwarning('Export',
                 'Run the analysis first before exporting.'); return
-        # install openpyxl automatically if it is missing
+        # openpyxl is needed here, and is never installed behind the user
         if not _ensure_openpyxl():
             messagebox.showerror(
                 'Missing library',
-                'Could not install openpyxl automatically.\n\n'
+                'Excel import and export need the openpyxl library, which is not installed.\n\n'
                 'Please open a terminal and run:\n'
                 '    pip install openpyxl\n'
                 'then try again.')
@@ -4916,7 +4927,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, UnitsMixin):
         if not _ensure_openpyxl():
             messagebox.showerror(
                 'Missing library',
-                'Could not install openpyxl automatically.\n\n'
+                'Excel import and export need the openpyxl library, which is not installed.\n\n'
                 'Please open a terminal and run:\n'
                 '    pip install openpyxl\n'
                 'then try again.')
@@ -5024,4 +5035,6 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, UnitsMixin):
         self.diag_zc.canvas.delete('all')
         if hasattr(self, '_refresh_profile_combo'): self._refresh_profile_combo()
         self._show_sel();self._draw()
+        if hasattr(self, '_forget_example'):
+            self._forget_example()
         self.status_var.set('Cleared. Start with the Node tool.')

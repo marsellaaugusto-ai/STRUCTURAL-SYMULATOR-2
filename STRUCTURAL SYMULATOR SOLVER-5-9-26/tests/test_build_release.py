@@ -231,3 +231,36 @@ def test_the_customer_archive_ships_the_app_and_nothing_internal(tmp_path):
     tops = {r.split('/', 1)[0] for r in rels}
     for gone in br.CUSTOMER_SKIP_DIRS:
         assert gone not in tops, gone
+
+
+def test_the_customer_archive_carries_generated_third_party_notices(tmp_path):
+    """Generated from this environment at build time, so the archive can
+    never ship notices for library versions it does not run on."""
+    import importlib.metadata as md
+    dest = str(tmp_path / 'customer.zip')
+    br.build_zip(dest=dest, customer=True)
+    with zipfile.ZipFile(dest) as z:
+        names = {n.split('/', 1)[1]: n for n in z.namelist() if '/' in n}
+        assert br.NOTICES_NAME in names
+        text = z.read(names[br.NOTICES_NAME]).decode('utf-8')
+    for dist in ('numpy', 'scipy'):
+        assert '%s %s' % (dist, md.version(dist)) in text, dist
+    assert 'about.py' in names and 'notices.py' in names
+
+
+def test_the_customer_build_stops_when_a_licence_text_is_missing(
+        tmp_path, monkeypatch):
+    sys.path.insert(0, APP)
+    import notices
+    sys.path.remove(APP)
+    real = notices.components
+
+    def without_numpy_text():
+        comps = real()
+        for c in comps:
+            if c['name'] == 'numpy':
+                c['texts'] = []
+        return comps
+    monkeypatch.setattr(notices, 'components', without_numpy_text)
+    with pytest.raises(SystemExit, match='numpy'):
+        br.build_zip(dest=str(tmp_path / 'c.zip'), customer=True)

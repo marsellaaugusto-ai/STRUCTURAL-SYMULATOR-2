@@ -121,6 +121,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import units
+import about
 
 from apps.truss.truss_app import TrussApp
 from apps.beam.beam_app import BeamApp
@@ -164,6 +165,11 @@ class App:
         self.units_note = tk.Label(self.units_bar, text=units.current().note,
                                     bg='#ebebea', fg='#666', font=('Helvetica', 8))
         self.units_note.pack(side='left', padx=10)
+        self.about_btn = tk.Button(self.units_bar, text='About…',
+                                   font=('Helvetica', 8), relief='flat',
+                                   bg='#ebebea',
+                                   command=lambda: about.show_about(root))
+        self.about_btn.pack(side='right', padx=8, pady=2)
 
         def _on_units_change(_event=None):
             name = self.units_var.get()

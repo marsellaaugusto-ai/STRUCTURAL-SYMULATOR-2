@@ -18,8 +18,10 @@ the loader requires.
 
 The customer archive is the app without what is only ours: no tests, no
 build tools, no internal reports, no plugin sources (the built .rbz is in),
-no editor settings. A LICENSE.txt and THIRD_PARTY_NOTICES.txt at the app
-root ship in it when they exist.
+no editor settings. A LICENSE.txt at the app root ships in it when it
+exists, and THIRD_PARTY_NOTICES.txt is generated into it from the
+environment doing the build (notices.py) -- the build stops if any library
+the app uses has no licence text to pass on.
 
 An .rbz IS a zip; SketchUp's Extension Manager just wants that extension.
 Its layout is fixed: the loader .rb sits at the archive root beside a
@@ -99,6 +101,8 @@ ZIP_INCLUDE_FILES = ('main.py', 'common.py', 'cirsoc_301.py', 'units.py',
                      # importing at all, and the whole app fails to start
                      # from an archive that looked complete.
                      'formula.py', 'view3d.py',
+                     # the About box and its licence notices
+                     'about.py', 'notices.py',
                      'requirements.txt', RBZ_NAME,
                      # a real model to open straight after unpacking
                      'wave_like_structure_1.xlsx')
@@ -111,7 +115,23 @@ ZIP_SKIP_SUFFIX = ('.pyc', '.pyo', '.pyd', '.so', '.orig', '.rej', '.swp')
 CUSTOMER_ZIP_BASE = 'structural_simulator_customer'
 CUSTOMER_SKIP_DIRS = ('tests', 'tools', 'REPORTS AND GUIDES',
                       'sketchup_plugin', '.vscode')
-CUSTOMER_EXTRA_FILES = ('LICENSE.txt', 'THIRD_PARTY_NOTICES.txt')
+CUSTOMER_EXTRA_FILES = ('LICENSE.txt',)
+NOTICES_NAME = 'THIRD_PARTY_NOTICES.txt'
+
+
+def third_party_notices():
+    """The notices text for the environment running this build; stops
+    the build if any component has no licence text."""
+    sys.path.insert(0, APP)
+    try:
+        import notices
+    finally:
+        sys.path.remove(APP)
+    comps = notices.components()
+    gone = notices.missing(comps)
+    if gone:
+        raise SystemExit('no licence text found for: ' + ', '.join(gone))
+    return notices.render(comps)
 
 
 def prune_older(base, ext, keep):
@@ -270,9 +290,10 @@ def app_files():
 
 def customer_files():
     """app_files() less everything that is only ours, plus the licence
-    and the third-party notices when they exist."""
+    when it exists. (The notices are generated, not copied: build_zip.)"""
     out = [(rel, disk) for rel, disk in app_files()
-           if rel.split('/', 1)[0] not in CUSTOMER_SKIP_DIRS]
+           if rel.split('/', 1)[0] not in CUSTOMER_SKIP_DIRS
+           and rel != NOTICES_NAME]
     for fn in CUSTOMER_EXTRA_FILES:
         disk = os.path.join(APP, fn)
         if os.path.isfile(disk):
@@ -289,7 +310,7 @@ def build_zip(dest=None, check_only=False, customer=False):
     # ZIP_INCLUDE_FILES when the Shell tab was merged in, and the archive
     # would have unpacked cleanly and then refused to start.
     for must in ('main.py', 'common.py', 'units.py', 'cirsoc_301.py',
-                 'formula.py', 'view3d.py',
+                 'formula.py', 'view3d.py', 'about.py', 'notices.py',
                  'apps/stereo/stereo_app.py', 'apps/stereo/stereo_reports.py',
                  'apps/stereo/stereo_app_inspector.py',
                  'apps/shell/shell_app.py', 'apps/shell/shell_model.py',
@@ -300,6 +321,7 @@ def build_zip(dest=None, check_only=False, customer=False):
     into_app = dest is None
     base = CUSTOMER_ZIP_BASE if customer else ZIP_BASE
     dest = dest or os.path.join(APP, stamped(base, '.zip'))
+    notices_text = third_party_notices() if customer else None
     if check_only:
         print(f'zip would hold {len(files)} file(s) -> '
               f'{os.path.basename(dest)}')
@@ -309,6 +331,8 @@ def build_zip(dest=None, check_only=False, customer=False):
     with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as z:
         for rel, disk in files:
             z.write(disk, f'{root}/{rel}')
+        if notices_text is not None:
+            z.writestr(f'{root}/{NOTICES_NAME}', notices_text)
     with zipfile.ZipFile(dest) as z:
         bad = z.testzip()
         if bad is not None:

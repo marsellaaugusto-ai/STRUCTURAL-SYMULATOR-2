@@ -936,7 +936,7 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
                                 'J_cm4', 'Fy_MPa', 'Fu_MPa', 'K', 'r_gyr_cm', 'role',
                                 'profile', 'c_cm', 'Iw_cm4', 'cw_cm',
                                 'timber', 'gamma_kN_m3', 'tension_only',
-                                'addon'], 1):
+                                'addon', 'aluminium', 'al_section'], 1):
         ws.cell(row=row, column=col, value=lbl)
     row += 1
     for i, m in enumerate(members):
@@ -946,7 +946,8 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
                 m.get('c_cm'), m.get('Iw'), m.get('cw_cm'),
                 m.get('timber'), m.get('gamma_kN_m3'),
                 1 if m.get('tension_only') else None,
-                m.get('addon') or None]
+                m.get('addon') or None,
+                m.get('aluminium') or None, m.get('al_section') or None]
         for col, v in enumerate(vals, 1):
             ws.cell(row=row, column=col, value=v)
         row += 1
@@ -987,7 +988,8 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
         ws.cell(row=row, column=1, value='[PROFILES]'); row += 1
         prof_hdrs = ['name', 'E_GPa', 'A_cm2', 'I_cm4', 'J_cm4',
                      'Fy_MPa', 'Fu_MPa', 'r_gyr_cm', 'K', 'catalog', 'material',
-                     'c_cm', 'Iw_cm4', 'cw_cm', 'timber', 'gamma_kN_m3']
+                     'c_cm', 'Iw_cm4', 'cw_cm', 'timber', 'gamma_kN_m3',
+                     'aluminium', 'al_section']
         for col, lbl in enumerate(prof_hdrs, 1):
             ws.cell(row=row, column=col, value=lbl)
         row += 1
@@ -999,7 +1001,8 @@ def _write_model_sheet(wb, nodes, members, loads, supports, meta=None,
                     pdata.get('catalog', ''), pdata.get('material', ''),
                     pdata.get('c_cm', ''), pdata.get('Iw', ''),
                     pdata.get('cw_cm', ''), pdata.get('timber', ''),
-                    pdata.get('gamma_kN_m3', '')]
+                    pdata.get('gamma_kN_m3', ''),
+                    pdata.get('aluminium', ''), pdata.get('al_section', '')]
             for col, v in enumerate(vals, 1):
                 ws.cell(row=row, column=col, value=v)
             row += 1
@@ -1048,6 +1051,21 @@ def _read_timber(row, target):
     workbook written before they existed -- the rod is then steel, as it
     was). A timber rod has no steel strengths, so the import's Fy/Fu
     defaults come off it again."""
+    alloy, sec = row.get('aluminium'), row.get('al_section')
+    if alloy and str(alloy).strip() and sec and str(sec).strip():
+        # CIRSOC 701 aluminium (stereo_aluminium): the alloy and the section
+        # code; like timber, no steel strengths.
+        target['aluminium'] = str(alloy).strip()
+        target['al_section'] = str(sec).strip()
+        try:
+            g = float(row.get('gamma_kN_m3') or 0.0)
+        except (TypeError, ValueError):
+            g = 0.0
+        if g > 0.0:
+            target['gamma_kN_m3'] = g
+        target.pop('Fy', None)
+        target.pop('Fu', None)
+        return
     grade = row.get('timber')
     if not (grade and str(grade).strip()):
         return

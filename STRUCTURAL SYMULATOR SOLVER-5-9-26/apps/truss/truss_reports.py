@@ -629,12 +629,22 @@ def _write_model_sheet(wb, nodes, rods, loads, supports, profiles, plates=None,
 
     ws.cell(row=row, column=1, value='[PROFILES]'); row += 1
     ws.cell(row=row, column=1, value='name'); ws.cell(row=row, column=2, value='E_GPa')
-    ws.cell(row=row, column=3, value='A_cm2'); ws.cell(row=row, column=4, value='I_cm4'); row += 1
+    ws.cell(row=row, column=3, value='A_cm2'); ws.cell(row=row, column=4, value='I_cm4')
+    # The steel section a family was given (truss_design): appended, and
+    # read back by column NAME, so older workbooks still load.
+    sec_cols = ('Fy_MPa', 'Fu_MPa', 'r_gyr_cm', 'c_cm', 'catalog', 'material')
+    sec_keys = ('Fy', 'Fu', 'r_gyr', 'c_cm', 'catalog', 'material')
+    for j, lbl in enumerate(sec_cols, 5):
+        ws.cell(row=row, column=j, value=lbl)
+    row += 1
     for name, p in profiles.items():
         ws.cell(row=row, column=1, value=name)
         ws.cell(row=row, column=2, value=p['E'])
         ws.cell(row=row, column=3, value=p['A'])
         ws.cell(row=row, column=4, value=p.get('I', 8000.0))
+        for j, k in enumerate(sec_keys, 5):
+            if p.get(k) is not None:
+                ws.cell(row=row, column=j, value=p[k])
         row += 1
     row += 1
 
@@ -832,8 +842,19 @@ def import_excel_model(path):
     pi = find_section('[PROFILES]')
     if pi >= 0:
         for r in read_table(pi):
-            profiles[str(r['name'])] = {'E': float(r['E_GPa']), 'A': float(r['A_cm2']),
-                                        'I': float(r.get('I_cm4') or 8000.0)}
+            prof = {'E': float(r['E_GPa']), 'A': float(r['A_cm2']),
+                    'I': float(r.get('I_cm4') or 8000.0)}
+            for col, key in (('Fy_MPa', 'Fy'), ('Fu_MPa', 'Fu'),
+                             ('r_gyr_cm', 'r_gyr'), ('c_cm', 'c_cm')):
+                try:
+                    if r.get(col) not in (None, ''):
+                        prof[key] = float(r[col])
+                except (TypeError, ValueError):
+                    pass
+            for col in ('catalog', 'material'):
+                if r.get(col):
+                    prof[col] = str(r[col])
+            profiles[str(r['name'])] = prof
     if not profiles:
         profiles = {'Default': {'E': 200.0, 'A': 10.0, 'I': 8000.0}}
 

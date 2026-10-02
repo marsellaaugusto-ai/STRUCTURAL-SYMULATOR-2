@@ -10587,6 +10587,35 @@ class TestTimberInTheApp:
             w.destroy()
 
 
+class TestAluminiumRods:
+    """Section → Aluminium…: a CIRSOC 701 alloy and a closed section become
+    a named profile; rods given it are checked as aluminium."""
+    ALLOY = '6061-T6 extrusions (all)'
+
+    def test_the_profile_lands_on_the_rods_and_is_checked(self, app):
+        name = app._make_aluminium_profile('web', self.ALLOY, 'tube',
+                                           {'D': 60, 't': 3})
+        app.active_profile.set(name)
+        app.selected_members = {0, 1}
+        app._assign_profile_to_selection()
+        m = app.members[0]
+        assert m['aluminium'] == self.ALLOY and m['al_section'] == 'tube 60x3'
+        assert 'Fy' not in m
+        app._analyze()
+        assert app.member_checks[0]['material'] == 'aluminium'
+        app._undo()
+        assert 'aluminium' not in app.members[0]
+
+    def test_the_dialog_opens_on_6061_t6(self, app, tk_root):
+        app._open_aluminium_picker('chord')
+        tops = [w for w in app.root.winfo_children()
+                if isinstance(w, tk.Toplevel)
+                and w.title().startswith('Aluminium')]
+        assert tops
+        for w in tops:
+            w.destroy()
+
+
 class TestLinearSelection:
     """Line select picks the rods along the line as well as its nodes."""
 

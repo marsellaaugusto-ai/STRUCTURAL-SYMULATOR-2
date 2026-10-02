@@ -215,3 +215,19 @@ def test_building_to_an_explicit_dest_leaves_the_app_folder_alone(tmp_path):
     for n in after:
         assert os.stat(os.path.join(APP, n)).st_mtime_ns == stamps[n], (
             f'{n} was rewritten by a build aimed somewhere else')
+
+
+def test_the_customer_archive_ships_the_app_and_nothing_internal(tmp_path):
+    """No tests, build tools, internal reports, plugin sources or editor
+    settings -- only what a customer runs."""
+    import zipfile
+    dest = str(tmp_path / 'customer.zip')
+    br.build_zip(dest=dest, customer=True)
+    with zipfile.ZipFile(dest) as z:
+        rels = {n.split('/', 1)[1] for n in z.namelist() if '/' in n}
+    for must in ('main.py', 'common.py', 'apps/stereo/stereo_app.py',
+                 'apps/truss/truss_app.py', br.RBZ_NAME, 'requirements.txt'):
+        assert must in rels, must
+    tops = {r.split('/', 1)[0] for r in rels}
+    for gone in br.CUSTOMER_SKIP_DIRS:
+        assert gone not in tops, gone

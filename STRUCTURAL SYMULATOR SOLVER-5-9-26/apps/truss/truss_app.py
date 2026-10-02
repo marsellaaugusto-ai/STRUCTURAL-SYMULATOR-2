@@ -80,8 +80,9 @@ from .truss_math import (analyze, compute_diagrams, find_zero_crossings, plate_n
 from .truss_reports import export_excel, import_excel_model
 from . import truss_plates, truss_guides
 from .truss_app_learn import TrussLearnMixin
+from .truss_app_design import TrussDesignMixin
 
-class TrussApp(TrussLearnMixin, UnitsMixin):
+class TrussApp(TrussLearnMixin, TrussDesignMixin, UnitsMixin):
     # This tab does NOT store stress the way the others do. Plate yield and
     # electrode strength have always been typed in MPa here, while the Beam
     # tab holds allowable stresses in kN/cm2. Declaring the difference is
@@ -456,6 +457,7 @@ class TrussApp(TrussLearnMixin, UnitsMixin):
 
         self._refresh_tool_buttons()
         self._init_learn(self.panel_outer.interior)
+        self._init_design(self.panel_outer.interior)
 
     def _on_root_configure(self, _event=None):
         """Resize the right panel to match the window. Content that no longer
@@ -2864,8 +2866,9 @@ class TrussApp(TrussLearnMixin, UnitsMixin):
             for name in sorted(self.profiles.keys()):
                 p = self.profiles[name]
                 n_members = sum(1 for r in self.rods if r.get('profile','Default')==name)
+                sec = (f'{p["catalog"]}, ' if p.get('catalog') else '')
                 lb.insert('end',
-                          f'{name}   (E={self.fmt("modulus", p["E"])}, '
+                          f'{name}   ({sec}E={self.fmt("modulus", p["E"])}, '
                           f'A={self.fmt("area", p["A"])}, '
                           f'I={self.fmt("inertia", p.get("I", 8000.0))}, '
                           f'{n_members} rod(s))')
@@ -2902,7 +2905,22 @@ class TrussApp(TrussLearnMixin, UnitsMixin):
             name = name_var.get().strip()
             if not name:
                 messagebox.showwarning('Rod family', 'Name cannot be empty.'); return
-            self.profiles[name] = {'E': e_var.get(), 'A': a_var.get(), 'I': i_var.get()}
+            old = self.profiles.get(name) or {}
+            new = {'E': e_var.get(), 'A': a_var.get(), 'I': i_var.get()}
+            # The steel grade is the material, kept whatever the size; the
+            # catalogue section (r, depth, name) only while A and I are still
+            # its own -- a radius of gyration left beside a new A would make
+            # the buckling check unsafe.
+            for k in ('Fy', 'Fu', 'material'):
+                if k in old:
+                    new[k] = old[k]
+            same = (abs(old.get('A', -1) - new['A']) < 1e-9 and
+                    abs(old.get('I', -1) - new['I']) < 1e-9)
+            if same:
+                for k in ('r_gyr', 'c_cm', 'catalog'):
+                    if k in old:
+                        new[k] = old[k]
+            self.profiles[name] = new
             for r in self.rods:
                 if r.get('profile','Default') == name:
                     r['E'] = e_var.get(); r['A'] = a_var.get(); r['I'] = i_var.get()
@@ -2933,6 +2951,11 @@ class TrussApp(TrussLearnMixin, UnitsMixin):
         tk.Button(btnfr, text='New / Save profile', bg='#1a6bbd', fg='white',
                   font=('Helvetica',9,'bold'), relief='flat',
                   command=save_profile).pack(side='left', padx=2)
+        tk.Button(btnfr, text='Steel section…', relief='flat',
+                  font=('Helvetica',9),
+                  command=lambda: self._pick_steel_section(
+                      name_var.get().strip() or 'Default',
+                      on_done=refresh_list)).pack(side='left', padx=2)
         tk.Button(btnfr, text='Delete profile', relief='flat',
                   font=('Helvetica',9), command=delete_profile).pack(side='left', padx=2)
         tk.Button(win, text='Close', relief='flat', bg='#1a6bbd', fg='white',
@@ -2981,7 +3004,8 @@ class TrussApp(TrussLearnMixin, UnitsMixin):
             return
 
         self._stop_mechanism()
-        res, err = analyze(self.nodes, self.rods, self.loads, supports,
+        loads = self._design_loads()          # + self-weight when ticked
+        res, err = analyze(self.nodes, self.rods, loads, supports,
                             self.plates)
         if err:
             why = None
@@ -2996,11 +3020,13 @@ class TrussApp(TrussLearnMixin, UnitsMixin):
             return
 
         self.results  = res
-        self.diagrams = compute_diagrams(self.nodes, self.rods, self.loads, res)
+        self.diagrams = compute_diagrams(self.nodes, self.rods, loads, res)
+        self._compute_design(res)
         self.plate_checks = truss_plates.check_all(self.nodes, self.rods,
                                                     self.plates, res)
 
         self._show_analysis_text()
+        design_note = self._design_summary()
         self._show_plate_checks()
 
         self.show_deform.set(True)
@@ -3010,7 +3036,7 @@ class TrussApp(TrussLearnMixin, UnitsMixin):
         n_t=sum(1 for r in rr if r['force']>0.01)
         n_c=sum(1 for r in rr if r['force']<-0.01)
         n_z=len(rr)-n_t-n_c
-        loaded = bool(self.loads) or any(
+        loaded = bool(self.loads) or self.self_weight.get() or any(
             r.get('udl') or r.get('point_loads') for r in self.rods)
         if not loaded:
             self.status_var.set(
@@ -3022,7 +3048,7 @@ class TrussApp(TrussLearnMixin, UnitsMixin):
                    if self.disabled_supports else '')
             self.status_var.set(
                 f'{"Live: " if quiet else "Done — "}{n_t} tension, '
-                f'{n_c} compression{zero}.{off} '
+                f'{n_c} compression{zero}.{off}{design_note} '
                 f'Reactions and diagrams shown. Scroll/zoom both canvases freely.')
         if self.selected_nodes or self.selected_rods: self._show_sel()
 
@@ -3058,10 +3084,12 @@ class TrussApp(TrussLearnMixin, UnitsMixin):
             if r.get('conn') == 'rigid':
                 self.rod_res_text.insert('end',
                     f'Rod {i:2d} [rigid]: N={f_(f):+7.2f} [{k}]  V={f_(r["V"]):+7.2f}  '
-                    f'Ma={m_(r["Ma"]):+7.2f}  Mb={m_(r["Mb"]):+7.2f} {MOM}\n')
+                    f'Ma={m_(r["Ma"]):+7.2f}  Mb={m_(r["Mb"]):+7.2f} {MOM}'
+                    f'{self._util_tag(i)}\n')
             else:
                 self.rod_res_text.insert('end',
-                                          f'Rod {i:2d}: {f_(f):+8.2f} {F} [{k}]\n')
+                                          f'Rod {i:2d}: {f_(f):+8.2f} {F} [{k}]'
+                                          f'{self._util_tag(i)}\n')
         self.rod_res_text.configure(state='disabled')
         self.rod_res_frame.pack(fill='x', padx=8, pady=4)
 
@@ -3336,6 +3364,7 @@ class TrussApp(TrussLearnMixin, UnitsMixin):
                 else: zero = True
             if zero and self.hide_zero.get():
                 continue
+            color = self._rod_draw_color(i, color)
             sx0,sy0=w2s(na[0],na[1]); sx1,sy1=w2s(nb[0],nb[1])
             # A rod that carries nothing is dashed, so the load path reads
             # at a glance -- grey alone looked like "not analysed yet".

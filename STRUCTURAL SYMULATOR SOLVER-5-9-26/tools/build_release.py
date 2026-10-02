@@ -14,6 +14,12 @@ the loader requires.
     python3 tools/build_release.py --rbz      # just the extension
     python3 tools/build_release.py --zip      # just the app archive
     python3 tools/build_release.py --check    # verify, write nothing
+    python3 tools/build_release.py --customer # the archive a customer gets
+
+The customer archive is the app without what is only ours: no tests, no
+build tools, no internal reports, no plugin sources (the built .rbz is in),
+no editor settings. A LICENSE.txt and THIRD_PARTY_NOTICES.txt at the app
+root ship in it when they exist.
 
 An .rbz IS a zip; SketchUp's Extension Manager just wants that extension.
 Its layout is fixed: the loader .rb sits at the archive root beside a
@@ -100,6 +106,12 @@ ZIP_SKIP_DIRS = {'__pycache__', '.pytest_cache', '.git', '.idea',
                  'node_modules', '.mypy_cache', '.ruff_cache'}
 ZIP_SKIP_SUFFIX = ('.pyc', '.pyo', '.pyd', '.so', '.orig', '.rej', '.swp')
 
+
+
+CUSTOMER_ZIP_BASE = 'structural_simulator_customer'
+CUSTOMER_SKIP_DIRS = ('tests', 'tools', 'REPORTS AND GUIDES',
+                      'sketchup_plugin', '.vscode')
+CUSTOMER_EXTRA_FILES = ('LICENSE.txt', 'THIRD_PARTY_NOTICES.txt')
 
 
 def prune_older(base, ext, keep):
@@ -256,8 +268,20 @@ def app_files():
     return sorted(uniq)
 
 
-def build_zip(dest=None, check_only=False):
-    files = app_files()
+def customer_files():
+    """app_files() less everything that is only ours, plus the licence
+    and the third-party notices when they exist."""
+    out = [(rel, disk) for rel, disk in app_files()
+           if rel.split('/', 1)[0] not in CUSTOMER_SKIP_DIRS]
+    for fn in CUSTOMER_EXTRA_FILES:
+        disk = os.path.join(APP, fn)
+        if os.path.isfile(disk):
+            out.append((fn, disk))
+    return sorted(set(out))
+
+
+def build_zip(dest=None, check_only=False, customer=False):
+    files = customer_files() if customer else app_files()
     names = {n for n, _ in files}
     # Every module main.py imports transitively at startup, so a missing
     # one fails the BUILD rather than the user's first launch. This list is
@@ -274,7 +298,8 @@ def build_zip(dest=None, check_only=False):
             raise SystemExit(f'app archive would be missing {must}')
 
     into_app = dest is None
-    dest = dest or os.path.join(APP, stamped(ZIP_BASE, '.zip'))
+    base = CUSTOMER_ZIP_BASE if customer else ZIP_BASE
+    dest = dest or os.path.join(APP, stamped(base, '.zip'))
     if check_only:
         print(f'zip would hold {len(files)} file(s) -> '
               f'{os.path.basename(dest)}')
@@ -289,7 +314,7 @@ def build_zip(dest=None, check_only=False):
         if bad is not None:
             raise SystemExit(f'{dest}: corrupt entry {bad}')
     if into_app:
-        prune_older(ZIP_BASE, '.zip', dest)
+        prune_older(base, '.zip', dest)
     print(f'{os.path.basename(dest)}: {len(files)} file(s), '
           f'{os.path.getsize(dest):,} bytes -> {dest}')
     return dest, files
@@ -301,7 +326,14 @@ def main(argv=None):
     ap.add_argument('--zip', action='store_true', help='build only the .zip')
     ap.add_argument('--check', action='store_true',
                     help='list what would be built, write nothing')
+    ap.add_argument('--customer', action='store_true',
+                    help='build only the customer archive (no tests, tools '
+                         'or internal reports)')
     args = ap.parse_args(argv)
+    if args.customer:
+        build_rbz(check_only=args.check)
+        build_zip(check_only=args.check, customer=True)
+        return 0
 
     do_rbz = args.rbz or not args.zip
     do_zip = args.zip or not args.rbz

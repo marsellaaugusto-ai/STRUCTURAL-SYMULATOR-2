@@ -1009,6 +1009,10 @@ class StereoViewMixin:
                         from apps.stereo import stereo_timber as stt
                         lines.append(stt.summary(chk))
                         lines.extend(chk.get('partial') or ())
+                    elif chk.get('material') == 'aluminium':
+                        lines.append('aluminium %s, CIRSOC 701'
+                                     % chk.get('alloy'))
+                        lines.extend(chk.get('partial') or ())
                 elif chk.get('note'):
                     lines.append(chk['note'])
         else:

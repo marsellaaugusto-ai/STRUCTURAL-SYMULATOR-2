@@ -180,6 +180,38 @@ solved in the app and compared figure by figure (`tests/test_stereo_timber.py`):
 Giving a timber rod a
 steel catalog section makes it steel again (F-24 unless a steel is named).
 
+**Aluminium rods (CIRSOC 701).** `stereo_aluminium.py` verifies rods to
+the Reglamento CIRSOC 701 (July 2010) by LRFD, like steel -- read the loads
+as factored. **Aluminium…** beside **Timber…** in Section mode picks an alloy
+from Table A.2-1 (6005-T5, 6061-T6, 6063-T5/T52/T6, 6105-T5, 6351-T5/T6,
+6463-T6, 7005-T53, by product and thickness) and a closed section: a round
+tube (D × t), a rectangular or square tube (B × H × t) or a solid round bar.
+The rod gets the alloy's E less 700 MPa (the table's note for deformations)
+and a unit weight of 27 kN/m³.
+
+- **Tension** (C.3): the lesser of yield on the gross area (φ = 0.95) and
+  rupture on the net area (φ = 0.85, Kt from Table C.1-2); no holes are
+  modelled, so net = gross. kL/r over 300 is flagged.
+- **Compression** (C.4): global flexural buckling with λc, φcc, S1*, S2* and
+  Dc* (C.4.1), from the buckling constants of Table C.2-1 or C.2-2 by temper;
+  local buckling of every wall -- flat walls supported on both edges (C.4.6),
+  round tube walls (C.4.9, S2 found where its two curves meet: 141 for
+  6061-T6, as tabulated) -- combined by area (C.4-2 to C.4-4). kL/r ≤ 200.
+- **Bending** (C.5): tension-fibre yield (C.5.1), the compressed wall
+  (C.5.3.1 tubes, C.5.3.3 flat walls), the webs (C.5.4.1) and, for
+  rectangular tubes only, lateral buckling (C.5.2.5; C.5.2 exempts round and
+  square tubes and solid round bars).
+- **Combined** (D.1): D.1.1 for tension with bending, D.1.2-1 for
+  compression with bending.
+- **Said, not checked**: shear (C.6), second-order amplification of the
+  moments (D.3), welded zones (Table A.2-2) and open sections. Every result
+  that would need one of them lists it.
+
+The alloy and the section code (`tube 50x3`, `rhs 60x100x3`, `bar 20`) travel
+with the rod through Excel, undo and the profile manager exactly as a timber
+grade does; a steel catalog section written over the rod makes it steel again.
+*Explain this rod* shows the clause chain from the check's own numbers.
+
 **The moment along a rod is one calculation.** The member checks, the
 timber stresses and the PDF read a rod's shear and moment from
 `stereo_math.member_diagram`; the canvas from

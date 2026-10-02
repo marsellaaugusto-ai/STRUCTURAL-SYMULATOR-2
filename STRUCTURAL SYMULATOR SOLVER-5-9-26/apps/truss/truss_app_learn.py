@@ -64,6 +64,7 @@ class TrussLearnMixin:
                                   after=self.analyze_btn)
         row = tk.Frame(panel, bg=BG)
         row.pack(fill='x', padx=8, after=self.stability_label)
+        self._learn_row = row
         live = tk.Checkbutton(row, text='Live', variable=self.live_var,
                               bg=BG, font=('Helvetica', 9),
                               command=self._on_live_toggle)

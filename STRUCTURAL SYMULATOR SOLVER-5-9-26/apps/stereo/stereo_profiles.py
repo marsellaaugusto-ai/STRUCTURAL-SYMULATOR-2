@@ -684,6 +684,12 @@ CATALOG_EXTRAS = ('c_cm', 'Iw', 'cw_cm')
 # of wood.
 TIMBER_KEYS = ('timber', 'gamma_kN_m3')
 
+# What makes a rod aluminium (stereo_aluminium): its CIRSOC 701 alloy and its
+# section code ('tube 50x3', ...), whose wall slenderness the checks need.
+# Same carried-or-removed rule as timber; an aluminium rod has no Fy / Fu.
+ALUMINIUM_KEYS = ('aluminium', 'al_section')
+MATERIAL_KEYS = TIMBER_KEYS + ALUMINIUM_KEYS
+
 
 def write_section(target, values):
     """Copy a section onto a member or profile dict, and keep c_cm honest.
@@ -705,12 +711,12 @@ def write_section(target, values):
     # c_cm and the weak axis (Iw, cw_cm) by the same rule: carried when the
     # values have them, REMOVED when they do not. A weak-axis I left beside
     # a hand-typed strong one belongs to some other section entirely.
-    for k in CATALOG_EXTRAS + TIMBER_KEYS:
+    for k in CATALOG_EXTRAS + MATERIAL_KEYS:
         if values.get(k):
             target[k] = values[k]
         else:
             target.pop(k, None)
-    if values.get('timber'):
+    if values.get('timber') or values.get('aluminium'):
         target.pop('Fy', None)
         target.pop('Fu', None)
     return target
@@ -721,8 +727,8 @@ def put_steel_section(member, section, material=None):
     rod unless a material is given -- re-sizing is not a change of steel --
     but a TIMBER rod given a steel section becomes steel: its grade and
     unit weight go, and it takes the default steel when none is named."""
-    if member.get('timber'):
-        for k in TIMBER_KEYS:
+    if member.get('timber') or member.get('aluminium'):
+        for k in MATERIAL_KEYS:
             member.pop(k, None)
         if material is None:
             material = STEEL_F24
@@ -734,10 +740,10 @@ def keep_timber(values, source):
     """Carry `source`'s timber grade and unit weight onto `values` (a
     section being rebuilt from typed fields), and take the steel strengths
     off it if it is timber. `source` may be None or a non-timber dict."""
-    for k in TIMBER_KEYS:
+    for k in MATERIAL_KEYS:
         if source and source.get(k):
             values[k] = source[k]
-    if values.get('timber'):
+    if values.get('timber') or values.get('aluminium'):
         values.pop('Fy', None)
         values.pop('Fu', None)
     return values

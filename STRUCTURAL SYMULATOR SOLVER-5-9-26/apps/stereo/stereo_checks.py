@@ -105,6 +105,11 @@ def check_member(member, axial_force_kN, code=cirsoc.CIRSOC_301,
         # are `timber`, the app's timber settings; see stereo_timber.
         from apps.stereo import stereo_timber as stt
         return stt.member_check(member, axial_force_kN, member_res, timber)
+    if member.get('aluminium'):
+        # CIRSOC 701 (LRFD, like 301) -- its own alloys, buckling
+        # constants and wall slenderness; see stereo_aluminium.
+        from apps.stereo import stereo_aluminium as sal
+        return sal.member_check(member, axial_force_kN, member_res)
 
     A_mm2 = member.get('A', 0.0) * 100.0        # cm^2 -> mm^2
     Fy = member.get('Fy')

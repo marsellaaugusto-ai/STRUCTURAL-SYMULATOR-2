@@ -46,6 +46,8 @@ def explain(member, axial_force_kN, check, member_res=None, length_m=None,
     if check.get('material') == 'timber':
         out = _explain_timber(member, axial_force_kN, check, L,
                               timber_settings)
+    elif check.get('material') == 'aluminium':
+        out = _explain_aluminium(member, axial_force_kN, check, L)
     else:
         out = _explain_steel(member, axial_force_kN, check, member_res, L,
                              code)
@@ -246,6 +248,54 @@ def _explain_timber(member, N_kN, chk, L, settings):
             steps.append(_step('Combined', k, '', f'{v:.3f}', ''))
     steps.append(_step('Governs', 'the largest ratio', chk.get('governing')
                        or '', f'{chk["util"]:.3f}'))
+    return {'heading': heading, 'steps': steps}
+
+
+def _explain_aluminium(member, N_kN, chk, L):
+    """CIRSOC 701: the alloy, the slenderness, the design strength that
+    governs and the ratio -- read from the check, never recomputed, so the
+    page and the colour on the rod cannot disagree."""
+    from apps.stereo import stereo_aluminium as sal
+    al = sal.ALLOYS.get(chk.get('alloy'), {})
+    steps = [_step('Alloy and section', 'Table A.2-1',
+                   'Fut %s, Fyt %s, Fyc %s, E %s MPa' % (
+                       _f(al.get('Fut', 0), 0), _f(al.get('Fyt', 0), 0),
+                       _f(al.get('Fyc', 0), 0), _f(al.get('E', 0), 0)),
+                   '%s, %s' % (chk.get('alloy'), member.get('al_section')),
+                   'A.2.2')]
+    if chk.get('kL/r') is not None:
+        steps.append(_step('Slenderness', 'kL/r', 'L = %s m' % _f(L),
+                           _f(chk['kL/r'], 1), 'C.4.1'))
+    if N_kN < 0 and 'phiFng' in chk:
+        steps.append(_step('Global flexural buckling',
+                           'λc = (kL/r)(1/π)√(Fyc/E); φcc; φFng',
+                           'λc = %s, φcc = %s' % (_f(chk['lambda_c'], 3),
+                                                  _f(chk['phi_cc'], 3)),
+                           'φFng = %s MPa' % _f(chk['phiFng'], 1),
+                           chk.get('global_eq', 'C.4.1')))
+        for e in chk.get('local', []):
+            steps.append(_step('Local buckling of the %s' % e['element'],
+                               'b/t or Rb/t', _f(e['slenderness'], 1),
+                               'φFnL = %s MPa' % _f(e['phiFnL'], 1), e['eq']))
+        steps.append(_step('Design compressive stress', 'C.4-3 / C.4-4',
+                           'walls weighted by area', 'φFnp = %s MPa'
+                           % _f(chk['phiFnp'], 1), 'C.4'))
+    if 'Pd_kN' in chk:
+        steps.append(_step('Design axial strength', 'φPn',
+                           'N = %s kN' % _f(N_kN), '%s kN' % _f(chk['Pd_kN']),
+                           'C.3' if N_kN >= 0 else 'C.4-2'))
+    if 'phiMn_strong_kNm' in chk:
+        steps.append(_step('Design bending strength', 'φMn (strong, weak)',
+                           'M = %s kN·m' % _f(chk.get('M_demand_kNm', 0.0)),
+                           '%s, %s kN·m' % (_f(chk['phiMn_strong_kNm']),
+                                           _f(chk['phiMn_weak_kNm'])), 'C.5'))
+    for name, r in sorted((chk.get('ratios') or {}).items(),
+                          key=lambda kv: -kv[1]):
+        steps.append(_step('Ratio: ' + name, '', '', _f(r, 3), ''))
+    heading = 'Aluminium rod, %s: %s governs' % (sal.REGLAMENTO,
+                                                chk.get('governing'))
+    if chk.get('partial'):
+        heading += ' (not verified: %s)' % '; '.join(chk['partial'])
     return {'heading': heading, 'steps': steps}
 
 

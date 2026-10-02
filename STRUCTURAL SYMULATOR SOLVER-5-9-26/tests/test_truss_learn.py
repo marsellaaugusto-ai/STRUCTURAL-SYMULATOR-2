@@ -202,3 +202,40 @@ def test_long_grey_hints_fold_and_unfold(app):
     assert lbl.cget('text').endswith('more…')
     lbl.event_generate('<Button-1>')
     assert lbl.cget('text').startswith(lbl._hint_full)
+
+
+def test_a_family_with_a_steel_section_gets_checked_and_coloured(app):
+    app._load_example()
+    app._set_family_section('Default', 'CHS 60.3x3.6', 'F24 (CIRSOC) / A36')
+    app._run_analysis()
+    # the example's diagonals are their own family, not given a section yet
+    diag = [i for i, r in enumerate(app.rods) if r['profile'] == 'Diagonal']
+    assert diag and all(not app.rod_checks[i]['checked'] for i in diag)
+    assert 'Steel section' in app.rod_checks[diag[0]]['note']
+    app._set_family_section('Diagonal', 'CHS 48.3x3.2', 'F24 (CIRSOC) / A36')
+    app._run_analysis()
+    assert app.rod_checks and all(c['checked'] for c in app.rod_checks)
+    assert 'Most used rod' in app.res_var.get()
+    assert 'Max deflection' in app.res_var.get()
+    text = app.rod_res_text.get('1.0', 'end')
+    assert 'u=' in text
+    app.color_util.set(True)
+    app._draw()
+    text = app._explain_rod()
+    assert 'CIRSOC' in text or 'utilisation' in text
+    app._undo()                     # the diagonals' section came off...
+    app._undo()                     # ...and then the chords'
+    assert 'Fy' not in app.profiles['Default']
+
+
+def test_self_weight_adds_the_rods_weight_to_the_reactions(app):
+    app._load_example()
+    app._run_analysis()
+    before = sum(r.get('ry', 0.0) for r in app.results['reactions'].values())
+    app.self_weight.set(True)
+    app._on_design_option()
+    after = sum(r.get('ry', 0.0) for r in app.results['reactions'].values())
+    from apps.truss import truss_design as td
+    w = sum(td.self_weight_loads(app.nodes, app.rods).values())
+    assert abs(abs(after - before) - w) < 1e-6 * max(1.0, w)
+    assert not any(ld.get('fy', 0) != ld.get('fy', 0) for ld in app.loads)

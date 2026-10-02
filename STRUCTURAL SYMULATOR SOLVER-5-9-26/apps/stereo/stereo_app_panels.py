@@ -2224,13 +2224,18 @@ class StereoPanelsMixin(_ToolbarModes):
                              font=('Helvetica', 8), state='readonly')
         combo.pack(side='left', fill='x', expand=True)
         setattr(self, f'_{prefix}_profile_combo', combo)
+        # Three source buttons only fit the 300 px panel from the box's own
+        # left edge; indented under the combobox they ran 17 px past it.
         pick_row = tk.Frame(box, bg=BG)
-        pick_row.pack(anchor='w', padx=(56, 6), pady=(1, 2))
+        pick_row.pack(anchor='w', padx=6, pady=(1, 2))
         tk.Button(pick_row, text='Catalog…', font=('Helvetica', 8),
                   command=lambda p=prefix: self._open_catalog_picker(p)
                  ).pack(side='left')
         tk.Button(pick_row, text='Timber…', font=('Helvetica', 8),
                   command=lambda p=prefix: self._open_timber_picker(p)
+                 ).pack(side='left', padx=(4, 0))
+        tk.Button(pick_row, text='Aluminium…', font=('Helvetica', 8),
+                  command=lambda p=prefix: self._open_aluminium_picker(p)
                  ).pack(side='left', padx=(4, 0))
         self._refresh_section_profile_combo(prefix)
         combo.bind('<<ComboboxSelected>>',
@@ -2316,7 +2321,7 @@ class StereoPanelsMixin(_ToolbarModes):
         timber = getattr(self, '_panel_timber', None)
         if timber is None:
             timber = self._panel_timber = {}
-        timber[prefix] = {k: prof[k] for k in _sp.TIMBER_KEYS if prof.get(k)}
+        timber[prefix] = {k: prof[k] for k in _sp.MATERIAL_KEYS if prof.get(k)}
 
     def _panel_section(self, prefix):
         """The Section panel's `prefix` values as a member section dict.
@@ -2471,6 +2476,117 @@ class StereoPanelsMixin(_ToolbarModes):
         self._refresh_profile_combo()
         self._on_section_profile_selected(prefix)
         return name
+
+    def _make_aluminium_profile(self, prefix, alloy, shape, dims):
+        """Make the named profile for an aluminium section and put it in
+        the `prefix` panel, as a catalog pick does. Returns its name.
+        Raises ValueError on an impossible section."""
+        from apps.stereo import stereo_aluminium as sal
+        prof = sal.profile(alloy, shape, dims)
+        name = sal.profile_name(alloy, shape, dims)
+        self.profiles[name] = prof
+        getattr(self, f'{prefix}_profile_var').set(name)
+        self._refresh_section_profile_combo('chord')
+        self._refresh_section_profile_combo('web')
+        self._refresh_profile_combo()
+        self._on_section_profile_selected(prefix)
+        return name
+
+    def _open_aluminium_picker(self, prefix):
+        from apps.stereo import stereo_aluminium as sal
+        from tkinter import messagebox
+
+        BGW = '#f5f5f3'
+        win = tk.Toplevel(self.root)
+        win.title('Aluminium — CIRSOC 701')
+        win.configure(bg=BGW)
+        tk.Label(win, text='Aluminium: Reglamento CIRSOC 701, Table A.2-1',
+                 bg=BGW, font=('Helvetica', 12, 'bold'),
+                 fg='#1a6bbd').pack(pady=(10, 2), padx=10)
+        listfr = tk.Frame(win, bg=BGW)
+        listfr.pack(fill='both', expand=True, padx=10, pady=4)
+        lb = tk.Listbox(listfr, font=('Helvetica', 9), height=10, width=52,
+                        exportselection=False)
+        lb.pack(side='left', fill='both', expand=True)
+        names = sal.alloy_names()
+        for n in names:
+            lb.insert('end', n)
+        info = tk.Label(win, text='', bg=BGW, fg='#333', font=('Helvetica', 9),
+                        justify='left')
+        info.pack(padx=10, pady=2, anchor='w')
+
+        shape_var = tk.StringVar(master=win, value='tube')
+        shapes = tk.Frame(win, bg=BGW)
+        shapes.pack(padx=10, anchor='w')
+        dims = tk.Frame(win, bg=BGW)
+        dims.pack(padx=10, pady=4, anchor='w')
+        fields = {'tube': (('D', 'outside Ø D (mm)', 50.0),
+                           ('t', 'wall t (mm)', 3.0)),
+                  'rhs': (('B', 'width B (mm)', 60.0),
+                          ('H', 'depth H (mm)', 100.0),
+                          ('t', 'wall t (mm)', 3.0)),
+                  'bar': (('D', 'diameter D (mm)', 20.0),)}
+        vars_ = {}
+
+        def build_dims():
+            for w in dims.winfo_children():
+                w.destroy()
+            vars_.clear()
+            for i, (k, text, val) in enumerate(fields[shape_var.get()]):
+                tk.Label(dims, text=text, bg=BGW, font=('Helvetica', 9)
+                         ).grid(row=i, column=0, sticky='w')
+                v = tk.DoubleVar(master=win, value=val)
+                tk.Entry(dims, textvariable=v, width=8).grid(row=i, column=1,
+                                                             padx=4)
+                vars_[k] = v
+        for val, text in (('tube', 'Round tube'), ('rhs', 'Rectangular tube'),
+                          ('bar', 'Solid round bar')):
+            tk.Radiobutton(shapes, text=text, value=val, variable=shape_var,
+                           bg=BGW, font=('Helvetica', 9),
+                           command=build_dims).pack(side='left')
+        build_dims()
+        tk.Label(win, text='Aluminium rods get the alloy\'s E (less 700 MPa, '
+                           'the table\'s note for deformations) and their own '
+                           'weight, and are verified to CIRSOC 701 by LRFD: '
+                           'tension, compression with global and local '
+                           'buckling, bending and both combined. Read the '
+                           'loads as FACTORED loads. Not checked: shear, '
+                           'welded zones, second-order moments.',
+                 bg=BGW, fg='#1f5a8a', font=('Helvetica', 8), wraplength=460,
+                 justify='left').pack(padx=10, pady=(2, 0), anchor='w')
+
+        def chosen():
+            sel = lb.curselection()
+            return names[sel[0]] if sel else None
+
+        def on_select(_e=None):
+            k = chosen()
+            if k is None:
+                return
+            a = sal.ALLOYS[k]
+            info.config(text='Fut %(Fut)g · Fyt %(Fyt)g · Fyc %(Fyc)g MPa · '
+                             'E %(E)g MPa' % a)
+        lb.bind('<<ListboxSelect>>', on_select)
+
+        def apply_selection():
+            k = chosen()
+            if k is None:
+                messagebox.showinfo('Aluminium', 'Select an alloy first.')
+                return
+            try:
+                d = {key: float(v.get()) for key, v in vars_.items()}
+                self._make_aluminium_profile(prefix, k, shape_var.get(), d)
+            except (tk.TclError, ValueError) as exc:
+                messagebox.showerror('Aluminium', 'Give the section a '
+                                     'possible size in mm (%s).' % exc)
+                return
+            win.destroy()
+
+        tk.Button(win, text='Apply to ' + prefix.title(), bg='#1a6bbd',
+                  fg='white', font=('Helvetica', 10, 'bold'), relief='flat',
+                  command=apply_selection).pack(pady=(6, 10))
+        lb.selection_set(names.index('6061-T6 extrusions (all)'))
+        on_select()
 
     def _open_timber_picker(self, prefix):
         from apps.stereo import stereo_timber as stt

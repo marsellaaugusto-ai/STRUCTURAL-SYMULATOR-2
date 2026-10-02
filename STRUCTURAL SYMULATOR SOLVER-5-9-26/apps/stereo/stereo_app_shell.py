@@ -262,7 +262,8 @@ class StereoShellMixin:
             for w in (item, body, icon, name):
                 w.bind('<Button-1>', lambda _e, k=key: self._set_mode(k))
                 w.bind('<Enter>', lambda _e, t=tip: self.hint_var.set(t))
-                w.bind('<Leave>', lambda _e: self.hint_var.set(''))
+                w.bind('<Leave>', lambda _e: self.hint_var.set(
+                    getattr(self, '_next_hint', '')))
         self._bind_mode_keys()
 
     def _bind_mode_keys(self):
@@ -369,7 +370,15 @@ class StereoShellMixin:
     # ── context panel ───────────────────────────────────────────────────────
     def _build_context_panel(self, parent):
         from common import ScrollPanel
-        holder = tk.Frame(parent, bg=BG, width=PANEL_W)
+        # PANEL_W is the room the panels are designed to: the holder and
+        # the scroll panel get the vertical scrollbar's width on top, so
+        # what is VISIBLE is PANEL_W. At width=PANEL_W the bar took 13 px
+        # out of it and every mode ran past the visible edge, behind a
+        # horizontal scrollbar.
+        probe = tk.Scrollbar(parent, orient='vertical')
+        vsb_w = probe.winfo_reqwidth()
+        probe.destroy()
+        holder = tk.Frame(parent, bg=BG, width=PANEL_W + vsb_w)
         holder.pack(side='left', fill='y')
         holder.pack_propagate(False)
 
@@ -380,7 +389,7 @@ class StereoShellMixin:
                  font=('Helvetica', 8, 'bold'), anchor='w').pack(fill='x', padx=12, pady=(9, 6))
         tk.Frame(holder, bg=RULE, height=1).pack(fill='x')
 
-        self.panel_outer = ScrollPanel(holder, width=PANEL_W, bg=BG)
+        self.panel_outer = ScrollPanel(holder, width=PANEL_W + vsb_w, bg=BG)
         self.panel_outer.pack(fill='both', expand=True)
         self.panel_host = self.panel_outer.interior
 
@@ -420,6 +429,25 @@ class StereoShellMixin:
         self._build_model_tree_panel(self._mode_frames['results'])
         self._on_connectivity_change()   # hide I/J unless Rigid is selected
         self._on_col_style_change()      # hide the fields this style ignores
+        self._unify_combobox_fonts(self.panel_host)
+
+    COMBO_FONT = ('Helvetica', 9)
+
+    def _unify_combobox_fonts(self, widget):
+        """Every drop-down in the panels in the panel's own small face. A
+        ttk combobox otherwise takes the platform's larger text font: it
+        stood out against every label beside it, and at that size a
+        fixed-width box cut its own text ("Square (grid-aligned ch",
+        "10 años (sobrecarga de us") and pushed its row past the panel."""
+        for child in widget.winfo_children():
+            if child.winfo_class() == 'TCombobox':
+                try:
+                    if not child.cget('font') or str(child.cget('font')) in (
+                            'TkTextFont', ''):
+                        child.configure(font=self.COMBO_FONT)
+                except tk.TclError:
+                    pass
+            self._unify_combobox_fonts(child)
 
     # ── status bar ──────────────────────────────────────────────────────────
     def _build_status_bar(self):
@@ -446,8 +474,43 @@ class StereoShellMixin:
         """Recompute the status line from whatever state the model is in.
 
         Called after every command, so it is the one place that decides what
-        the window claims about itself.
+        the window claims about itself -- on the left what the model is, on
+        the right the next step.
         """
+        try:
+            self._next_hint = self._next_step()
+        except (AttributeError, tk.TclError):
+            self._next_hint = ''         # the panels are not built yet
+        self.hint_var.set(self._next_hint)
+        self._refresh_status_line()
+
+    def _next_step(self):
+        """The one thing to do next, for the right of the status bar: the
+        order a structure is built in -- shape, supports, loads, analysis,
+        then reading it. The bar's own docstring has promised this since
+        the shell was built; until now only the rail's tooltips used it."""
+        if not self.nodes:
+            return 'Next: Generate ▾ → a grid family, or the Example library'
+        if not self.supports:
+            return 'Next: Support — the model stands on nothing yet'
+        loaded = bool(self.loads) or (
+            self.area_load_on.get() and getattr(self, '_load_nodes', None)) \
+            or self.self_weight_on.get() or self.wind_on.get() \
+            or bool(getattr(self, 'member_loads', None))
+        if not loaded:
+            return 'Next: Load — nothing is applied yet'
+        if self.results is None:
+            return 'Next: ▶ Analyze'
+        if getattr(self, 'err', None):
+            return 'Fix: the loose nodes are selected on the drawing'
+        utils = [c['util'] for c in (self.member_checks or ())
+                 if c.get('checked') and c.get('util') is not None]
+        if utils and max(utils) > 1.0:
+            return ('Next: Results → Show me the governing rod '
+                    f'({sum(1 for u in utils if u > 1.0)} over capacity)')
+        return 'Next: Analyse → colour by utilisation, or Export ▾ → PDF'
+
+    def _refresh_status_line(self):
         if not self.nodes:
             self._set_status('No model. Pick a grid family under Generate.')
             return

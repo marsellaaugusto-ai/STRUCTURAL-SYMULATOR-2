@@ -954,10 +954,10 @@ class StereoPanelsMixin(_ToolbarModes):
     def _shape_range(self, parent, label_var, v0, v1, n):
         row = tk.Frame(parent, bg=BG)
         row.pack(fill='x', padx=6, pady=2)
-        tk.Label(row, textvariable=label_var, bg=BG, width=11, anchor='w',
+        tk.Label(row, textvariable=label_var, bg=BG, width=10, anchor='w',
                  font=('Helvetica', 9)).pack(side='left')
-        tk.Entry(row, textvariable=v0, width=7).pack(side='left')
-        tk.Entry(row, textvariable=v1, width=7).pack(side='left', padx=(3, 5))
+        tk.Entry(row, textvariable=v0, width=6).pack(side='left')
+        tk.Entry(row, textvariable=v1, width=6).pack(side='left', padx=(3, 5))
         tk.Label(row, text='÷', bg=BG, font=('Helvetica', 9)).pack(side='left')
         tk.Entry(row, textvariable=n, width=4).pack(side='left', padx=(3, 0))
 
@@ -1718,7 +1718,7 @@ class StereoPanelsMixin(_ToolbarModes):
 
         row = tk.Frame(adv, bg=BG)
         row.pack(fill='x', padx=4, pady=2)
-        tk.Label(row, text='Node:', bg=BG, width=8, anchor='w',
+        tk.Label(row, text='Node:', bg=BG, width=6, anchor='w',
                 font=('Helvetica', 9)).pack(side='left')
         self.sup_node_var = tk.IntVar(value=0)
         tk.Entry(row, textvariable=self.sup_node_var, width=6).pack(side='left')
@@ -1767,6 +1767,8 @@ class StereoPanelsMixin(_ToolbarModes):
 
     def _reset_support_sandbox(self):
         if not self._disabled_supports:
+            self._set_status('Every support is already enabled -- click one '
+                             'on the drawing to switch it off.')
             return
         self._disabled_supports = set()
         self._refresh_indeterminacy_label()
@@ -1938,10 +1940,10 @@ class StereoPanelsMixin(_ToolbarModes):
 
         btn = tk.Frame(rods, bg=BG)
         btn.pack(fill='x', padx=4, pady=(3, 2))
-        tk.Button(btn, text='Apply to rods', command=self._apply_rod_load
-                 ).pack(side='left', padx=2)
-        tk.Button(btn, text='Clear rod loads', command=self._clear_rod_loads
-                 ).pack(side='left', padx=2)
+        tk.Button(btn, text='Apply to rods', command=self._apply_rod_load,
+                  font=('Helvetica', 9)).pack(side='left', padx=2)
+        tk.Button(btn, text='Clear rod loads', command=self._clear_rod_loads,
+                  font=('Helvetica', 9)).pack(side='left', padx=2)
         self.rod_load_status = tk.Label(rods, text='No rod loads.', bg=BG, fg=HINT_FG,
                                         font=('Helvetica', 8), justify='left',
                                         wraplength=PANEL_TEXT_W)
@@ -2492,12 +2494,12 @@ class StereoPanelsMixin(_ToolbarModes):
                  bg='#f5f5f3', fg='#555', font=('Helvetica', 8),
                  wraplength=520, justify='left').pack(padx=10, anchor='w')
         tk.Label(win, text='Timber rods get the grade\'s E for the analysis '
-                           'and their own weight. Their stresses are shown '
-                           'beside the reference values, but they are NOT '
-                           'verified to CIRSOC 601: the adjustment factors '
-                           'and stability rules are in the Reglamento\'s '
-                           'chapters, not in the Supplements.',
-                 bg='#f5f5f3', fg='#a3241a', font=('Helvetica', 8),
+                           'and their own weight, and are verified to the '
+                           'Reglamento CIRSOC 601-2016 by allowable stress '
+                           '-- read the loads as SERVICE loads. Load '
+                           'duration, service condition and the rest are '
+                           'under Section → Timber check (CIRSOC 601).',
+                 bg='#f5f5f3', fg='#1f5a8a', font=('Helvetica', 8),
                  wraplength=520, justify='left').pack(padx=10, pady=(4, 0),
                                                       anchor='w')
 
@@ -2719,7 +2721,7 @@ class StereoPanelsMixin(_ToolbarModes):
         box.pack(fill='x', padx=6, pady=4)
         self.sel_label = tk.Label(box, textvariable=self.sel_var,
                                   bg=BG, fg='#666', font=('Helvetica', 9),
-                                  wraplength=PANEL_W - 24, justify='left')
+                                  wraplength=PANEL_TEXT_W, justify='left')
         self.sel_label.pack(anchor='w', padx=6, pady=4)
         tk.Button(box, text='Delete selected node(s)', command=self._on_delete_nodes
                  ).pack(anchor='w', padx=6, pady=(0, 4))
@@ -2727,7 +2729,7 @@ class StereoPanelsMixin(_ToolbarModes):
         prof_sel_fr = tk.Frame(box, bg=BG)
         prof_sel_fr.pack(fill='x', padx=6, pady=(0, 4))
         self.profile_combo = ttk.Combobox(prof_sel_fr, textvariable=self.active_profile,
-                                          width=16, font=('Helvetica', 8), state='readonly')
+                                          width=14, font=('Helvetica', 8), state='readonly')
         self.profile_combo.pack(side='left')
         tk.Button(prof_sel_fr, text='Assign', font=('Helvetica', 8),
                   command=self._assign_profile_to_selection).pack(side='left', padx=2)
@@ -2915,7 +2917,7 @@ class StereoPanelsMixin(_ToolbarModes):
                            'Vierendeel forces its own joints rigid -- pinned '
                            'it is a mechanism, not a frame.',
                 bg=BG, font=('Helvetica', 8), fg='#666',
-                wraplength=PANEL_W - 40, justify='left'
+                wraplength=PANEL_TEXT_W, justify='left'
                 ).pack(anchor='w', padx=4, pady=(2, 0))
         self.beam_depth = tk.DoubleVar(value=1.0)
         self.beam_dir = tk.StringVar(value='Down (-Z)')

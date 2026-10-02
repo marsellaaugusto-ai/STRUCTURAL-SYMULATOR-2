@@ -898,6 +898,22 @@ the shortcut. Alt rather than a bare digit because most of the work here is
 typing numbers into fields — the shortcut fires from inside a focused entry
 without typing into it.
 
+**Guidance where the eye already is.** The status bar's right side states
+the next step in the order a structure is built — *Next: Generate ▾ → a grid
+family*, *Next: Support — the model stands on nothing yet*, *Next: ▶ Analyze*,
+*Next: Results → Show me the governing rod (3 over capacity)* — and an empty
+canvas says where a structure comes from and in what order the work goes,
+instead of being a blank white rectangle.
+
+**The panel shows all of itself.** The side panel's visible width is the
+300 px its controls are laid out for; it used to lose 13 px to its own
+scrollbar, so every mode ran past the visible edge behind a horizontal
+scrollbar (the selected-node hint read *"click a rod t"*). Every drop-down
+uses the panel's small face, so none cuts its own text. A full press of every
+control — 1,126 buttons, check boxes and drop-down values in all nine modes,
+the menus and the dialogs — raises no error, and a button with nothing to do
+says so.
+
 **The toolbar** (46 px) keeps only what is not a mode: Generate, ▶ Analyze,
 undo/redo, the Display popover, Export, and the Load % slider.
 

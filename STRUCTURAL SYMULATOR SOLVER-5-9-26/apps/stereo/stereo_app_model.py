@@ -454,6 +454,9 @@ class StereoModelMixin:
         """Set the picked control to the typed value."""
         index = self._bz_selected_index()
         if index is None:
+            self.bz_error_note.config(
+                text='Pick a control point in the list first, then Set.',
+                fg='#a3241a')
             return
         try:
             value = em.evaluate_number(self.bz_value.get(), 'value')

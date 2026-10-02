@@ -459,12 +459,35 @@ class StereoRenderMixin:
         span = STRESS_WIDTH_MAX - STRESS_WIDTH_MIN
         return [STRESS_WIDTH_MIN + span * min(1.0, s / peak) for s in stresses]
 
+    EMPTY_STATE = (
+        'No structure yet',
+        'Generate ▾  →  Grid family  →  Generate now\n'
+        'Generate ▾  →  Example library   (a worked model to explore)\n'
+        'Generate ▾  →  Custom surface…   (your own z = f(x, y))\n'
+        'Export ▾  →  Import Excel…   (a saved model)\n\n'
+        'Then:  Support  →  Load  →  ▶ Analyze  →  Results')
+
+    def _draw_empty_state(self):
+        """What a blank canvas says: where a structure comes from and the
+        order the work goes in. It used to be an empty white rectangle with
+        the only hint in the status bar's small print."""
+        c = self.canvas
+        w = max(c.winfo_width(), 400)
+        h = max(c.winfo_height(), 300)
+        title, body = self.EMPTY_STATE
+        c.create_text(w / 2, h / 2 - 70, text=title, fill='#556270',
+                      font=('Helvetica', 16, 'bold'), tags=('empty_state',))
+        c.create_text(w / 2, h / 2 + 10, text=body, fill='#7a8591',
+                      font=('Helvetica', 10), justify='left',
+                      tags=('empty_state',))
+
     def _draw(self):
         c = self.canvas
         c.delete('all')
         # the line tool's cached node positions belong to the old view
         self._rubber_screen = None
         if not self.nodes:
+            self._draw_empty_state()
             return
         # Always the REST structure -- "Show deformed" draws an ADDITIONAL
         # green overlay in parallel (see _draw_deformed_overlay), it never

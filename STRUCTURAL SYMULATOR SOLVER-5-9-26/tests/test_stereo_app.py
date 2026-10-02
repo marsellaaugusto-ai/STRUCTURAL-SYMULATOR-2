@@ -5082,6 +5082,74 @@ def test_no_panel_asks_for_more_width_than_the_panel_has(app, mode):
     assert not _too_wide(frame, PANEL_W), _too_wide(frame, PANEL_W)
 
 
+@pytest.mark.parametrize('mode', ['build', 'shape', 'support', 'load',
+                                  'section', 'addons', 'module', 'analyse',
+                                  'results'])
+def test_every_mode_fits_what_the_panel_actually_shows(app, mode):
+    """The test above checks each widget against PANEL_W; this one checks
+    the whole mode against the width that is VISIBLE. The two used to
+    differ: the scroll panel was PANEL_W wide with its scrollbar inside
+    it, so 287 px showed, every mode asked for 291-311, and the right edge
+    of every panel sat behind a horizontal scrollbar -- the selected-node
+    hint read "click a rod t", Shape's domain boxes ran off the edge."""
+    _mode(app, mode)
+    app.root.update_idletasks()
+    from apps.stereo.stereo_app_shell import PANEL_W
+    visible = app.panel_outer.canvas.winfo_width()
+    assert visible >= PANEL_W
+    frame = app._mode_frames[mode]
+    assert frame.winfo_reqwidth() <= visible, (frame.winfo_reqwidth(),
+                                               visible)
+
+
+def test_the_drop_downs_use_the_panels_small_face(app):
+    combos = []
+
+    def rec(w):
+        for c in w.winfo_children():
+            if c.winfo_class() == 'TCombobox':
+                combos.append(c)
+            rec(c)
+    rec(app.panel_host)
+    assert combos
+    assert all(str(c.cget('font')) not in ('', 'TkTextFont')
+               for c in combos)
+
+
+def test_an_empty_canvas_says_where_to_start(blank_app):
+    app = blank_app
+    app._draw()
+    items = app.canvas.find_withtag('empty_state')
+    assert items
+    text = ' '.join(app.canvas.itemcget(i, 'text') for i in items)
+    assert 'Generate' in text and 'Analyze' in text
+    app._generate(push_undo=False)
+    app._draw()
+    assert not app.canvas.find_withtag('empty_state')
+
+
+def test_buttons_with_nothing_to_do_say_so(app):
+    app._reset_support_sandbox()
+    assert 'already enabled' in app.status_var.get()
+
+
+def test_the_status_bar_says_what_to_do_next(blank_app):
+    app = blank_app
+    app._refresh_status()
+    assert app.hint_var.get().startswith('Next: Generate')
+    app._generate(push_undo=False)
+    app._refresh_status()
+    assert app.hint_var.get() == 'Next: ▶ Analyze'
+    supports = app.supports
+    app.supports = []
+    app._refresh_status()
+    assert app.hint_var.get().startswith('Next: Support')
+    app.supports = supports
+    app._analyze()
+    assert 'Analyse' in app.hint_var.get() or 'governing rod' in \
+        app.hint_var.get()
+
+
 def _editable_entry(widget):
     """The first entry in a panel that actually takes typing -- a readonly
     combobox has a tk.Entry inside it that never does."""

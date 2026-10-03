@@ -44,7 +44,7 @@ PLUGIN_NAME = 'coordinate_coordinator_truss_app_amac'
 # filename anywhere else. The series continues the repo's own history: the
 # last numbered archive was structural_simulator_v21_moment_arrows.zip, so
 # the first dated build is v22. Bump this when you hand out a new one.
-APP_VERSION = 30
+APP_VERSION = 31
 
 
 def build_stamp():

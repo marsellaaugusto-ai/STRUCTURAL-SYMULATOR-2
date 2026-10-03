@@ -656,6 +656,15 @@ class StereoRenderMixin:
                 # With a group open its closed subgroups are tinted even in
                 # the plain view: they are objects, and should look it.
                 tints, _key = self._group_tint_map()
+            # Lift results (▶ Analyze lift): only the lifted pieces and
+            # their slings were solved; every other rod is greyed out, so
+            # it is not read as carrying nothing.
+            lift_ghost = None
+            if self.results is not None and \
+                    self.results.get('case') == 'lift':
+                lift_ghost = {j for j, r in
+                              enumerate(self.results['member_res'])
+                              if r.get('ghost')}
             order = sorted(range(len(self.members)), key=lambda i: -(
                 proj[self.members[i]['a']][2] + proj[self.members[i]['b']][2])) \
                 if self.show_members.get() else []
@@ -688,6 +697,10 @@ class StereoRenderMixin:
                 if open_rods is not None and i not in open_rods:
                     c.create_line(sx0, sy0, sx1, sy1, fill=LOCKED_DIM_COLOR,
                                   width=1, tags=('member', 'locked_dim'))
+                    continue
+                if lift_ghost is not None and i in lift_ghost:
+                    c.create_line(sx0, sy0, sx1, sy1, fill=LOCKED_DIM_COLOR,
+                                  width=1, tags=('member', 'lift_ghost'))
                     continue
                 if tints is not None and i in tints:
                     c.create_line(sx0, sy0, sx1, sy1, fill=tints[i], width=9,

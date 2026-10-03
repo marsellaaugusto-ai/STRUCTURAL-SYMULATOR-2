@@ -58,5 +58,5 @@ def test_the_cover_comes_first_and_names_every_sheet():
     assert sr.sheet_title('moment_rods_plan_top') == \
         'Bending moment along the rods, plan, top chords'
     assert sr.sheet_title('crane_K2_table') == \
-        'Crane K2 — slings, hook and mast'
+        'Crane K2 — slings, hook and rope sizes'
     assert sr.sheet_title('takeoff') == 'Material take-off'

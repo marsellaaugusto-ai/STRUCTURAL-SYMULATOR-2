@@ -147,13 +147,10 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self.selected_member = None
         self.selected_members = set()
         self._support_candidates = []
-        # Supports the add-ons took over, kept so clearing them hands
-        # each set back. Separate lists: clearing the columns must not
-        # restore what a lift took away, or the other way round.
+        # Supports the columns took over, kept so clearing them hands them
+        # back. A crane takes none: it is a lift calculation.
         self._column_freed = []
-        self._crane_freed = []
-        # The lift's tag line, so clearing the crane takes it away too.
-        self._crane_tag = None
+        # each crane's lift settings (stereo_lift_calc)
         self._crane_lifts = []
         # the last copy, and a paste waiting for the click that places it
         self._clip = None
@@ -283,13 +280,11 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
                 # the rod back while every group stayed remapped around its
                 # absence -- each branch then meant the wrong rods.
                 'groups': copy.deepcopy(self.groups),
-                # What the add-ons took off the ground, to hand back on
-                # Clear. Left out, an undone crane kept its list of freed
-                # supports and tag lines, and the next Clear handed back --
-                # or stripped -- supports the model no longer had reason to.
+                # What the columns took off the ground, to hand back on
+                # Clear, and each crane's lift settings: left out, an undone
+                # column kept its list of freed supports and the next Clear
+                # handed back supports the model no longer had reason to.
                 'column_freed': copy.deepcopy(getattr(self, '_column_freed', [])),
-                'crane_freed': copy.deepcopy(getattr(self, '_crane_freed', [])),
-                'crane_tag': copy.deepcopy(getattr(self, '_crane_tag', None)),
                 'crane_lifts': copy.deepcopy(getattr(self, '_crane_lifts', [])),
                 'project_info': dict(getattr(self, 'project_info', None) or {})}
 
@@ -306,8 +301,6 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self._bz_drag = None
         self.groups = snap.get('groups', [])
         self._column_freed = copy.deepcopy(snap.get('column_freed', []))
-        self._crane_freed = copy.deepcopy(snap.get('crane_freed', []))
-        self._crane_tag = copy.deepcopy(snap.get('crane_tag'))
         self._crane_lifts = copy.deepcopy(snap.get('crane_lifts', []))
         self.project_info = dict(snap.get('project_info') or {})
         self.results = None

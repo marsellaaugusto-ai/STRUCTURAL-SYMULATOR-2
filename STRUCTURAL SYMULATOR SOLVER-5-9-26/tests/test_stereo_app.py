@@ -8460,134 +8460,247 @@ class TestRodLoadOnABoxSelection:
         assert app._rods_in_scope() == [0, 1]
 
 
-class TestCraneAddon:
-    """Roadmap v2, 3.6: pick joints, hang them from a hook on tension-only
-    cables, stand a mast above it. Exercised through the panel's own button,
-    because the feature is the whole chain -- selection, geometry, boundary
-    conditions, solve -- not the geometry helper on its own.
-    """
+def _top_corners(app, lo_x=-1e9, hi_x=1e9):
+    top = max(p[2] for p in app.nodes)
+    tops = [i for i, p in enumerate(app.nodes)
+            if abs(p[2] - top) < 1e-9 and lo_x <= p[0] <= hi_x]
+    xs = [app.nodes[i][0] for i in tops]
+    ys = [app.nodes[i][1] for i in tops]
+    return sorted({min(tops, key=lambda i: (app.nodes[i][0] - tx) ** 2
+                       + (app.nodes[i][1] - ty) ** 2)
+                   for tx in (min(xs), max(xs)) for ty in (min(ys), max(ys))})
 
-    def _corners(self, app):
-        top_z = max(p[2] for p in app.nodes)
-        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top_z) < 1e-9]
-        xs = sorted({round(app.nodes[i][0], 6) for i in tops})
-        ys = sorted({round(app.nodes[i][1], 6) for i in tops})
-        out = []
-        for xv in (xs[0], xs[-1]):
-            for yv in (ys[0], ys[-1]):
-                for i in tops:
-                    if (abs(app.nodes[i][0] - xv) < 1e-9
-                            and abs(app.nodes[i][1] - yv) < 1e-9):
-                        out.append(i)
-                        break
-        return out
 
-    def _roles(self, app, role):
-        return [i for i, m in enumerate(app.members) if m.get('role') == role]
+def _cables(app):
+    return [i for i, m in enumerate(app.members)
+            if m.get('role') == 'crane_cable']
+
+
+def _set_hook(app, mode, value=None):
+    from apps.stereo import stereo_lift_calc as slc
+    app._crane_hook_choice.set(slc.HOOK_MODE_LABELS[mode])
+    app._on_crane_hook_mode()
+    if value is not None:
+        app.crane_rise.set(value)
+
+
+class TestCraneLiftCalculator:
+    """The crane is a lifting calculator (stereo_lift_calc): a hook straight
+    over the lifted piece's centre of gravity, a sling to each pick, no mast
+    and no supports. It answers what the piece weighs, how long and how
+    steep each sling is, what it carries and how thick it must be, and what
+    being picked up does to the piece. Driven through the panel, because
+    the feature is the whole chain."""
 
     def test_the_panel_offers_it(self, app):
-        assert hasattr(app, 'crane_auto') and hasattr(app, 'crane_rise')
-        assert hasattr(app, 'crane_mast')
-        assert callable(app._add_cable_crane)
-        assert callable(app._clear_cable_cranes)
+        for name in ('crane_hook_mode', 'crane_rise', 'crane_daf',
+                     'crane_allowance', 'crane_sizes', 'crane_summary',
+                     'crane_lift_target'):
+            assert hasattr(app, name), name
+        # the mast and the "take it off its supports" option are gone
+        for name in ('crane_mast', 'crane_auto', 'crane_off_ground'):
+            assert not hasattr(app, name), name
+        for fn in ('_add_cable_crane', '_analyze_lifts', '_clear_cable_cranes',
+                   '_copy_lift_summary'):
+            assert callable(getattr(app, fn))
 
-    def test_fewer_than_three_joints_is_refused(self, app, monkeypatch):
-        shown = []
-        monkeypatch.setattr('apps.stereo.stereo_app_addons.messagebox.showerror',
-                            lambda *a, **k: shown.append(a))
+    def test_fewer_than_three_joints_is_refused(self, app, dialogs):
         app.selected_nodes = {0, 1}
         n_before = len(app.nodes)
         app._add_cable_crane()
-        assert shown and len(app.nodes) == n_before
+        assert dialogs and len(app.nodes) == n_before
 
-    def test_lifting_builds_the_hook_cables_mast_and_restraint(self, app):
-        pick = self._corners(app)
+    def test_lifting_adds_a_hook_and_slings_and_nothing_else(self, app):
+        pick = _top_corners(app)
+        supports = [dict(s) for s in app.supports]
+        n0, m0 = len(app.nodes), len(app.members)
         app.selected_nodes = set(pick)
         app._add_cable_crane()
-        cables = self._roles(app, 'crane_cable')
-        masts = self._roles(app, 'crane_mast')
-        assert len(cables) == len(pick)
-        assert len(masts) == 1
-        assert all(app.members[i].get('tension_only') for i in cables)
-        assert app.members[masts[0]]['conn'] == 'rigid'
-        anchor = app.members[masts[0]]['b']
-        # FIXED, not pinned -- a rigid mast free to rotate at its top has a
-        # zero-energy torsional mode about its own axis
-        assert any(sp['node'] == anchor and sp['type'] == 'fixed'
-                   for sp in app.supports)
+        assert len(app.nodes) == n0 + 1, 'one node: the hook'
+        cables = _cables(app)
+        assert cables == list(range(m0, m0 + len(pick)))
+        assert all(app.members[i].get('tension_only')
+                   and app.members[i]['conn'] == 'pin' for i in cables)
+        assert not [m for m in app.members if m.get('role') == 'crane_mast']
+        # C2/C3: no supports added to the piece, none taken away, none at
+        # the hook
+        assert app.supports == supports
 
-    def test_the_hook_sits_over_the_centroid(self, app):
-        pick = self._corners(app)
+    def test_the_hook_sits_over_the_centre_of_gravity(self, app):
+        from apps.stereo import stereo_lift_calc as slc
+        pick = _top_corners(app)
+        _w, cog = slc.piece_weight(app.nodes, app.members,
+                                   range(len(app.members)))
         app.selected_nodes = set(pick)
-        cx = sum(app.nodes[i][0] for i in pick) / len(pick)
-        cy = sum(app.nodes[i][1] for i in pick) / len(pick)
         app._add_cable_crane()
-        hook = app.members[self._roles(app, 'crane_mast')[0]]['a']
-        assert app.nodes[hook][0] == pytest.approx(cx)
-        assert app.nodes[hook][1] == pytest.approx(cy)
+        hook = app._crane_lifts[-1]['hook']
+        assert app.nodes[hook][0] == pytest.approx(cog[0])
+        assert app.nodes[hook][1] == pytest.approx(cog[1])
         assert app.nodes[hook][2] > max(app.nodes[i][2] for i in pick)
 
-    def test_a_typed_rise_is_used_when_the_automatic_one_is_off(self, app):
-        pick = self._corners(app)
-        app.selected_nodes = set(pick)
-        app.crane_auto.set(False)
-        app.crane_rise.set(9.0)
+    def test_the_hook_height_set_four_ways(self, app):
+        import math
+        pick = _top_corners(app)
         top = max(app.nodes[i][2] for i in pick)
-        app._add_cable_crane()
-        hook = app.members[self._roles(app, 'crane_mast')[0]]['a']
-        assert app.nodes[hook][2] == pytest.approx(top + 9.0)
 
-    def test_no_cable_is_ever_in_compression(self, app):
-        pick = self._corners(app)
-        app.selected_nodes = set(pick)
+        def lift(mode, value=None):
+            app._clear_cable_cranes()
+            _set_hook(app, mode, value)
+            app.selected_nodes = set(pick)
+            app._add_cable_crane()
+            hook = app._crane_lifts[-1]['hook']
+            hx, hy, hz = app.nodes[hook]
+            lengths = [math.dist(app.nodes[p], (hx, hy, hz)) for p in pick]
+            angles = [math.degrees(math.asin((hz - app.nodes[p][2]) / L))
+                      for p, L in zip(pick, lengths)]
+            return hz, lengths, angles
+        hz, _l, angles = lift('auto')
+        assert min(angles) == pytest.approx(45.0, abs=0.5)
+        hz, _l, _a = lift('height', 9.0)
+        assert hz == pytest.approx(top + 9.0)
+        _hz, _l, angles = lift('angle', 60.0)
+        assert min(angles) == pytest.approx(60.0)
+        _hz, lengths, _a = lift('length', 30.0)
+        assert max(lengths) == pytest.approx(30.0)
+
+    def test_an_impossible_hook_is_refused_before_anything_is_built(
+            self, app, dialogs):
+        _set_hook(app, 'length', 1.0)
+        m0 = len(app.members)
+        app.selected_nodes = set(_top_corners(app))
+        app._add_cable_crane()
+        assert len(app.members) == m0
+        assert any('cannot reach' in str(d) for d in dialogs), dialogs
+
+    def test_a_centre_of_gravity_outside_the_picks_is_refused(
+            self, app, dialogs):
+        top = max(p[2] for p in app.nodes)
+        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
+        x0 = min(app.nodes[i][0] for i in tops)
+        edge = sorted((i for i in tops if abs(app.nodes[i][0] - x0) < 1e-9),
+                      key=lambda i: app.nodes[i][1])
+        m0 = len(app.members)
+        app.selected_nodes = {edge[0], edge[len(edge) // 2], edge[-1]}
+        app._add_cable_crane()
+        assert len(app.members) == m0, 'refused BEFORE building'
+        assert any('outside the pick points' in str(d) for d in dialogs)
+
+    def test_the_ordinary_analyze_leaves_the_crane_out(self, app):
+        app._analyze()
+        before = [r['N'] for r in app.results['member_res']]
+        app.selected_nodes = set(_top_corners(app))
         app._add_cable_crane()
         app._analyze()
-        assert app.results is not None
-        for i in self._roles(app, 'crane_cable'):
-            assert app.results['member_res'][i]['N'] >= 0.0
+        assert app.results is not None, app.err
+        after = [r['N'] for r in app.results['member_res']]
+        assert after[:len(before)] == pytest.approx(before, rel=1e-9,
+                                                     abs=1e-9)
+        for j in _cables(app):
+            assert app.results['member_res'][j]['N'] == 0.0
+            assert app.member_checks[j]['checked'] is False
 
-    def test_the_crane_carries_the_whole_lift(self, app):
-        """Take the model's own supports away so the crane alone holds it,
-        then check the cables' vertical pull against the load."""
-        pick = self._corners(app)
-        app.selected_nodes = set(pick)
+    def test_analyze_lift_balances_and_reads_what_45_degree_slings_should(
+            self, app):
+        import math
+        app.selected_nodes = set(_top_corners(app))
         app._add_cable_crane()
-        anchor = app.members[self._roles(app, 'crane_mast')[0]]['b']
-        app.supports = [sp for sp in app.supports if sp['node'] == anchor]
-        app.results = None
+        app._analyze_lifts()
+        assert app.results is not None and app.results['case'] == 'lift'
+        s = app._lift_solved[0]['summary']
+        assert s['verdict'] == 'OK'
+        assert s['balance'] < 0.01
+        # every sling at 45°, the four verticals carry the lift load
+        T = [sl['T'] for sl in s['slings']]
+        assert T == pytest.approx([s['lift_load'] / 4 / math.sin(
+            math.radians(45.0))] * 4, rel=1e-6)
+        assert s['hook_load'] == pytest.approx(s['lift_load'], rel=1e-6)
+        assert 'Balance 0.00 kN (level)' in app._lift_summary_text
+
+    def test_the_dynamic_factor_and_connections_scale_the_lift(self, app):
+        app.selected_nodes = set(_top_corners(app))
+        app._add_cable_crane()
+        app._analyze_lifts()
+        base = app._lift_solved[0]['summary']
+        app.crane_daf.set(1.25)
+        app.crane_allowance.set(10.0)
+        app._analyze_lifts()
+        s = app._lift_solved[0]['summary']
+        assert s['weight'] == pytest.approx(base['weight'] * 1.10)
+        assert s['lift_load'] == pytest.approx(base['weight'] * 1.10 * 1.25)
+        assert s['slings'][0]['T'] == pytest.approx(
+            base['slings'][0]['T'] * 1.10 * 1.25, rel=1e-6)
+
+    def test_the_rope_size_is_worked_out_and_rounded_up(self, app):
+        import math
+        from apps.stereo import stereo_lift as slift
+        app.selected_nodes = set(_top_corners(app))
+        app._add_cable_crane()
+        app.crane_sizes.set('20, 40, 60')
+        app._analyze_lifts()
+        sl = app._lift_solved[0]['summary']['slings'][0]
+        want = math.sqrt(sl['T'] * slift.ROPE_FACTOR / slift.ROPE_MBF_K)
+        assert sl['d_req'] == pytest.approx(want)
+        assert sl['d_std'] == min(d for d in (20, 40, 60) if d >= want)
+        assert sl['wll_req'] == pytest.approx(sl['T'])
+
+    def test_the_service_analyze_comes_back(self, app):
+        app.selected_nodes = set(_top_corners(app))
+        app._add_cable_crane()
+        app._analyze_lifts()
+        assert app.results['case'] == 'lift'
         app._analyze()
-        assert app.results is not None, 'the crane could not hold the model'
-        want = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
-        assert app.results['reactions'][anchor]['Fz'] == pytest.approx(want, rel=1e-6)
-        lifted = 0.0
-        for i in self._roles(app, 'crane_cable'):
-            _dx, _dy, dz, L = sm.member_vector(app.nodes, app.members[i])
-            assert app.results['member_res'][i]['N'] > 0
-            lifted += app.results['member_res'][i]['N'] * dz / L
-        assert lifted == pytest.approx(want, rel=1e-6)
+        assert app.results.get('case') != 'lift'
 
     def test_clearing_puts_the_model_back_exactly(self, app):
-        n0, m0, s0 = len(app.nodes), len(app.members), len(app.supports)
-        app.selected_nodes = set(self._corners(app))
+        snap = ([tuple(p) for p in app.nodes], [dict(m) for m in app.members],
+                [dict(s) for s in app.supports])
+        app.selected_nodes = set(_top_corners(app))
         app._add_cable_crane()
-        assert len(app.nodes) > n0
         app._clear_cable_cranes()
-        assert (len(app.nodes), len(app.members), len(app.supports)) == (n0, m0, s0)
-        assert not self._roles(app, 'crane_cable')
-        assert not self._roles(app, 'crane_mast')
+        assert ([tuple(p) for p in app.nodes], app.members,
+                app.supports) == snap
+        assert app._crane_lifts == []
+
+    def test_the_summary_can_be_copied(self, app):
+        app.selected_nodes = set(_top_corners(app))
+        app._add_cable_crane()
+        app._copy_lift_summary()
+        txt = app.root.clipboard_get()
+        assert txt.startswith('Crane K1')
+        assert 'Sling' in txt and 'use Ø mm' in txt
+        assert app.crane_summary.get('1.0', 'end').strip() == txt.strip()
+
+    def test_undo_takes_the_crane_and_its_record_back(self, app):
+        app.selected_nodes = set(_top_corners(app))
+        app._add_cable_crane()
+        assert len(app._crane_lifts) == 1
+        app._undo()
+        assert app._crane_lifts == [] and not _cables(app)
+        app._redo()
+        assert len(app._crane_lifts) == 1 and _cables(app)
+
+    def test_a_lift_that_leaves_a_mechanism_says_so_and_shows_where(
+            self, app, dialogs):
+        # three corners of the default grid: its free edge folds
+        c = _top_corners(app)[:3]
+        app.selected_nodes = set(c)
+        app._add_cable_crane()
+        assert len(app.selected_nodes) > 3, 'the loose part is selected'
+        assert 'no stiffness' in app.col_note.cget('text')
+        app._analyze_lifts()
+        assert any('no stiffness' in str(d) for d in dialogs), dialogs
+        # the ordinary analysis is not held up by it
+        app._analyze()
+        assert app.results is not None, app.err
 
 
 class TestCranePanelLayout:
-    """The Crane group as a user meets it, not through its handlers.
-
-    Every other crane test calls `app._add_cable_crane()` directly, which is
-    exactly the blind spot that let the merge delete working UI: the handler
-    is fine, the widget that reaches it is not. These press the real widgets
-    and read the real geometry manager.
-    """
+    """The Crane group as a user meets it, not through its handlers: the
+    real buttons, pressed."""
 
     def _crane_widgets(self, app):
         out = []
+
         def walk(w):
             out.append(w)
             for c in w.winfo_children():
@@ -8598,63 +8711,37 @@ class TestCranePanelLayout:
     def _button(self, app, needle):
         for w in self._crane_widgets(app):
             try:
-                if needle.lower() in str(w.cget('text')).lower() and w.cget('command'):
+                if needle.lower() in str(w.cget('text')).lower() \
+                        and w.cget('command'):
                     return w
             except tk.TclError:
                 continue
         return None
 
-    def test_the_lift_and_clear_buttons_exist_and_are_wired(self, app):
-        for needle in ('lift the selected nodes', 'clear every crane'):
+    def test_the_buttons_exist_and_are_wired(self, app):
+        for needle in ('lift the selected nodes', 'analyze lift',
+                       'clear every crane', 'copy summary'):
             assert self._button(app, needle) is not None, needle
 
-    def test_pressing_lift_on_the_real_button_builds_a_crane(self, app, monkeypatch):
-        shown = []
-        monkeypatch.setattr('apps.stereo.stereo_app_addons.messagebox.showerror',
-                            lambda *a, **k: shown.append(a))
-        zs = [p[2] for p in app.nodes]
-        top = max(zs)
-        top_nodes = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
-        app.selected_nodes = set(top_nodes[:4])
-        assert len(app.selected_nodes) >= 3
+    def test_pressing_the_real_buttons_lifts_and_analyzes(self, app, dialogs):
+        app.selected_nodes = set(_top_corners(app))
         self._button(app, 'lift the selected nodes').invoke()
-        assert not shown, shown
-        assert [m for m in app.members if m.get('role') == 'crane_cable']
+        assert not dialogs, dialogs
+        assert _cables(app)
+        self._button(app, 'analyze lift').invoke()
+        assert app.results is not None and app.results['case'] == 'lift'
         self._button(app, 'clear every crane').invoke()
-        assert not [m for m in app.members if m.get('role') == 'crane_cable']
+        assert not _cables(app)
 
-    def test_the_hook_rise_box_appears_above_the_mast_box_not_below_it(self, app):
-        """pack() appends, so a row hidden at build time and shown later lands
-        at the BOTTOM of the group -- under the Lift and Clear buttons, which
-        is not where the label says it is. `before=` is what keeps it in its
-        own place, and this is the test that notices when it is dropped.
-        """
-        app.crane_auto.set(False)
-        app._on_crane_auto_change()
-        group = app._crane_mast_row.master
-        order = list(group.pack_slaves())
-        assert app._crane_rise_row in order, 'the rise row never came back'
-        assert order.index(app._crane_rise_row) < order.index(app._crane_mast_row)
+    def test_the_hook_number_box_is_off_in_auto(self, app):
+        _set_hook(app, 'auto')
+        assert str(app._crane_rise_entry.cget('state')) == 'disabled'
+        for mode in ('height', 'angle', 'length'):
+            _set_hook(app, mode)
+            assert app.crane_hook_mode.get() == mode
+            assert str(app._crane_rise_entry.cget('state')) == 'normal'
 
-    def test_the_hook_rise_box_is_hidden_while_the_spread_decides(self, app):
-        app.crane_auto.set(True)
-        app._on_crane_auto_change()
-        assert app._crane_rise_row not in list(app._crane_mast_row.master.pack_slaves())
-
-    def test_the_rise_box_survives_being_hidden_and_shown_repeatedly(self, app):
-        group = app._crane_mast_row.master
-        for _ in range(3):
-            app.crane_auto.set(False); app._on_crane_auto_change()
-            app.crane_auto.set(True); app._on_crane_auto_change()
-        app.crane_auto.set(False); app._on_crane_auto_change()
-        order = list(group.pack_slaves())
-        assert order.index(app._crane_rise_row) < order.index(app._crane_mast_row)
-
-    def test_the_panel_does_not_promise_a_pin_the_code_does_not_build(self, app):
-        """The hint text said the mast "ends in a pin". It is FIXED, because a
-        rigid mast free to rotate at its top has a zero-energy torsional mode.
-        A hint that contradicts the model is worse than no hint.
-        """
+    def test_the_hint_promises_no_mast_and_no_supports(self, app):
         texts = []
         for w in self._crane_widgets(app):
             try:
@@ -8664,289 +8751,221 @@ class TestCranePanelLayout:
             if isinstance(t, str):
                 texts.append(t)
         blob = ' '.join(texts).lower()
-        assert 'crane' in blob
-        i = blob.find('crane (lift from selected nodes)')
+        i = blob.find('crane (lift calculator)')
         assert i >= 0
         hint = blob[i:i + 400]
-        assert 'fixed' in hint
-        assert 'ends in a pin' not in hint
+        assert 'centre of gravity' in hint
+        assert 'mast' not in hint
 
 
-class TestCraneTakesOverTheSupports:
-    """A lifted structure is not also standing on the ground.
+class TestLiftView:
+    """▶ Analyze lift solves ONLY what is lifted: the rest of the file is
+    greyed out, not shown carrying nothing."""
 
-    This is the bug the GUI sweep found, and it is the columns' bug again:
-    with the grid's own supports left in place all four slings read exactly
-    0.000 kN, because a support is a rigid path to ground in parallel with a
-    cable and it wins every time. The crane was in the picture, in the member
-    list and in the checks, and carrying nothing.
-    """
+    def _second_truss(self, app, dx=45.0):
+        n0, m0 = len(app.nodes), len(app.members)
+        app.nodes = list(app.nodes) + [(x + dx, y, z) for x, y, z in app.nodes]
+        app.members = list(app.members) + [
+            dict(m, a=m['a'] + n0, b=m['b'] + n0) for m in app.members]
+        app.supports = list(app.supports) + [
+            dict(s, node=s['node'] + n0) for s in app.supports]
+        app.results = None
+        return n0, m0
 
-    def _corners(self, app):
+    def test_only_the_lifted_truss_is_solved_and_the_other_is_grey(self, app):
+        n0, m0 = self._second_truss(app)
+        app.selected_nodes = set(_top_corners(app, -1.0, 40.0))
+        app._add_cable_crane()
+        assert app._crane_lifts[-1]['rods'] == list(range(m0))
+        app._analyze_lifts()
+        mr = app.results['member_res']
+        assert all(mr[j].get('ghost') for j in range(m0, 2 * m0))
+        assert not any(mr[j].get('ghost') for j in range(m0))
+        assert all(app.member_checks[j].get('ghost')
+                   for j in range(m0, 2 * m0))
+        app._draw()
+        assert len(app.canvas.find_withtag('lift_ghost')) == m0
+        # and the ordinary analysis still stands both on their supports
+        app._analyze()
+        assert app.results is not None, app.err
+        assert not app.canvas.find_withtag('lift_ghost')
+
+    def test_a_group_can_be_lifted_by_name(self, app):
+        from apps.stereo import stereo_groups as sgp
+        n0, m0 = self._second_truss(app)
+        g = sgp.new_group(app.groups, 'Truss B', members=range(m0, 2 * m0))
+        app._refresh_crane_lift_choices()
+        label = [c for c in app.crane_lift_box.cget('values')
+                 if 'Truss B' in c][0]
+        app.crane_lift_target.set(label)
+        app.selected_nodes = set(_top_corners(app, 44.0, 100.0))
+        app._add_cable_crane()
+        assert app._crane_lifts[-1]['group'] == g['id']
+        app._analyze_lifts()
+        s = app._lift_solved[0]
+        assert s['ok'] and s['rods'] == list(range(m0, 2 * m0))
+        assert 'group Truss B' in app._crane_meta()['K1']['what']
+
+    def test_a_group_still_joined_to_the_rest_is_refused(self, app, dialogs):
+        from apps.stereo import stereo_groups as sgp
+        half = list(range(len(app.members) // 2))
+        sgp.new_group(app.groups, 'Half', members=half)
+        app._refresh_crane_lift_choices()
+        app.crane_lift_target.set('Half')
+        m_before = len(app.members)
         top = max(p[2] for p in app.nodes)
-        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
-        xs = [app.nodes[i][0] for i in tops]
-        ys = [app.nodes[i][1] for i in tops]
-        out = set()
-        for tx in (min(xs), max(xs)):
-            for ty in (min(ys), max(ys)):
-                out.add(min(tops, key=lambda i: (app.nodes[i][0] - tx) ** 2
-                                                + (app.nodes[i][1] - ty) ** 2))
-        return out
-
-    def _cables(self, app):
-        return [i for i, m in enumerate(app.members)
-                if m.get('role') == 'crane_cable']
-
-    def test_the_slings_actually_carry_the_load(self, app):
-        app.selected_nodes = set(self._corners(app))
-        assert app.crane_off_ground.get(), 'has to default to on'
+        mine = {n for j in half for n in (app.members[j]['a'],
+                                         app.members[j]['b'])}
+        app.selected_nodes = set(sorted(i for i in mine
+                                        if app.nodes[i][2] == top)[:4])
         app._add_cable_crane()
-        app._analyze()
-        assert app.results is not None
-        forces = [app.results['member_res'][i]['N'] for i in self._cables(app)]
-        assert forces, 'no cables'
-        assert max(forces) > 1.0, forces
+        assert len(app.members) == m_before
+        assert any('still joined' in str(a) for a in dialogs), dialogs
 
-    def test_with_the_option_off_the_ground_still_wins(self, app):
-        """The old behaviour, kept reachable and documented rather than
-        removed: this is what "the crane reads zero" looks like, and the
-        panel says so when it happens."""
-        app.selected_nodes = set(self._corners(app))
-        app.crane_off_ground.set(False)
-        before = len(app.supports)
+    def test_slings_off_the_group_are_refused(self, app, dialogs):
+        from apps.stereo import stereo_groups as sgp
+        n0, m0 = self._second_truss(app)
+        sgp.new_group(app.groups, 'Truss B', members=range(m0, 2 * m0))
+        app._refresh_crane_lift_choices()
+        app.crane_lift_target.set('Truss B')
+        m_before = len(app.members)
+        app.selected_nodes = set(_top_corners(app, -1.0, 40.0))   # on A
         app._add_cable_crane()
-        assert len(app.supports) == before + 1     # only the mast's own top
-        app._analyze()
-        assert app.results is not None
-        forces = [app.results['member_res'][i]['N'] for i in self._cables(app)]
-        assert max(forces) == pytest.approx(0.0, abs=1e-6), forces
+        assert len(app.members) == m_before
+        assert any('hook onto group' in str(a) for a in dialogs), dialogs
 
-    def test_lifting_leaves_the_masts_top_and_the_steady_lines(self, app):
-        """Nothing of the model's own boundary survives a lift. What is left
-        is the mast's fixed top, which carries the whole load, and the three
-        single-DOF tag lines that steady a hanging body -- see
-        TestTheLiftIsWellPosed for why those three have to be there."""
-        app.selected_nodes = set(self._corners(app))
-        assert len(app.supports) > 0, 'the fixture grid has to be supported'
+    def test_the_lift_load_is_the_self_weight_only(self, app):
+        """C7: the service loads are not on a piece in the air."""
+        from apps.stereo import stereo_lift_calc as slc
+        app.loads = list(app.loads) + [{'node': 0, 'fz': -400.0}]
+        app.selected_nodes = set(_top_corners(app))
         app._add_cable_crane()
-        masts = [i for i, m in enumerate(app.members)
-                 if m.get('role') == 'crane_mast']
-        anchor = app.members[masts[0]]['b']
-        full = [sp for sp in app.supports if sp.get('type')]
-        assert [sp['node'] for sp in full] == [anchor]
-        assert full[0]['type'] == 'fixed'
-        steady = [sp for sp in app.supports if not sp.get('type')]
-        assert len(steady) == 3
-        # Each holds exactly ONE translation: any more and it would start
-        # carrying load the slings are there to carry.
-        for sp in steady:
-            assert list(sp['dofs'].values()) == [True]
-            assert list(sp['dofs'])[0] in ('ux', 'uy')
+        app._analyze_lifts()
+        w, _c = slc.piece_weight(app.nodes, app.members,
+                                 [j for j, m in enumerate(app.members)
+                                  if m.get('role') != 'crane_cable'])
+        assert app._lift_solved[0]['summary']['hook_load'] == \
+            pytest.approx(w, rel=1e-6)
 
-    def test_clearing_puts_the_model_back_on_the_ground(self, app):
-        before = sorted((sp['node'], sp.get('type')) for sp in app.supports)
-        app.selected_nodes = set(self._corners(app))
+
+class TestLiftReports:
+    """D1-D4: the lift in the workbook and the PDF, from the same solve."""
+
+    def _lift(self, app, mode='none', value=None):
+        app.selected_nodes = set(_top_corners(app))
+        app.crane_cap_mode.set(mode)
+        if mode == 'wll':
+            app.crane_wll.set(value)
+        elif mode == 'dia':
+            app.crane_dia.set(value)
         app._add_cable_crane()
+
+    def test_the_cable_capacity_is_kept_with_the_lift(self, app):
+        from apps.stereo import stereo_lift as slift
+        self._lift(app, 'dia', 20.0)
+        meta = app._crane_meta()
+        assert list(meta) == ['K1']
+        assert meta['K1']['wll_kN'] == pytest.approx(slift.rope_wll_kN(20.0))
+        assert 'Ø20 mm' in meta['K1']['cable_spec']
+        assert meta['K1']['what'] == 'the piece under the hook'
+        assert meta['K1']['solved']['ok']
+
+    def test_a_typed_wll_and_none(self, app):
+        self._lift(app, 'wll', 700.0)
+        assert app._crane_meta()['K1']['wll_kN'] == 700.0
         app._clear_cable_cranes()
-        assert sorted((sp['node'], sp.get('type'))
-                      for sp in app.supports) == before
-
-    def test_the_kind_of_each_support_survives_the_round_trip(self, app):
-        """Node numbers are not enough -- a pin handed back as a fixed base
-        is a different structure, and nothing in the mesh remembers which it
-        was."""
-        app.supports = [{'node': sp['node'], 'type': 'rollerX'}
-                        for sp in app.supports]
-        want = sorted((sp['node'], sp['type']) for sp in app.supports)
-        app.selected_nodes = set(self._corners(app))
-        app._add_cable_crane()
-        app._clear_cable_cranes()
-        assert sorted((sp['node'], sp['type']) for sp in app.supports) == want
-
-    def test_clearing_the_columns_does_not_hand_back_the_cranes_supports(self, app):
-        app.selected_nodes = set(self._corners(app))
-        app._add_cable_crane()
-        only_anchor = [dict(sp) for sp in app.supports]
-        app._clear_columns()
-        assert [dict(sp) for sp in app.supports] == only_anchor
-
-    def test_a_regenerate_forgets_what_the_old_lift_freed(self, app):
-        """Kept entries are node INDICES, so carrying them across a new mesh
-        would weld supports onto whichever nodes now hold those numbers."""
-        app.selected_nodes = set(self._corners(app))
-        app._add_cable_crane()
-        assert app._crane_freed
-        app._generate(push_undo=False)
-        assert app._crane_freed == []
-
-    def test_the_panel_says_which_way_it_went(self, app):
-        """Taking a support away is not a detail the user should have to
-        discover from a reaction that vanished, so the panel states it both
-        ways round -- and states the zero-slings case too, since that is the
-        one that looks like a broken crane."""
-        app.selected_nodes = set(self._corners(app))
-        app._add_cable_crane()
-        assert 'off its own' in str(app.col_note.cget('text')).lower()
-        app._clear_cable_cranes()
-        assert 'handed back' in str(app.col_note.cget('text')).lower()
-
-    def test_the_panel_warns_when_the_ground_will_win(self, app):
-        app.selected_nodes = set(self._corners(app))
-        app.crane_off_ground.set(False)
-        app._add_cable_crane()
-        note = str(app.col_note.cget('text')).lower()
-        assert 'still stands on its own supports' in note
-        assert 'zero' in note
-
-
-class TestTheLiftIsWellPosed:
-    """The lift has to give a MEANINGFUL answer, not merely an answer.
-
-    This class exists because of a bug that passed every check I had. A body
-    hanging from concurrent cables is a pendulum, and a linear
-    small-deflection solve gives a pendulum no lateral stiffness at all --
-    the restoring force is a geometric, second-order term this solver does
-    not carry. Three modes therefore had ZERO stiffness (swing in x, swing
-    in y, spin about the vertical), and the reduced matrix came back with a
-    condition number of 6.2e16.
-
-    It did not fail. `_beam_gauss_solve` judges a system by the residual of
-    the solution it found, which depends on the LOADS and not only on the
-    matrix, so under a plain area load the model returned four slings at
-    636.396 kN whose vertical components summed to exactly the applied
-    1800 kN -- correct for a 45 degree sling, and pure luck. Adding four rod
-    span loads changed the loads and not the matrix, and the same model
-    returned displacements of 1.2e10 m.
-
-    So a statics check cannot catch this: adding a rigid-body mode to a
-    solution does not violate equilibrium. These tests check the
-    CONDITIONING and check the answer under a second, asymmetric load case,
-    which is what actually distinguishes the two.
-    """
-
-    def _lift(self, app, rod_loads=False):
-        if rod_loads:
-            app.selected_members = set(range(4))
-            app.selected_member = None
-            app.rod_scope.set(sc.ROD_SCOPE_SELECTED)
-            app.rod_w.set(3.0)
-            app._apply_rod_load()
-        top = max(p[2] for p in app.nodes)
-        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
-        xs = [app.nodes[i][0] for i in tops]
-        ys = [app.nodes[i][1] for i in tops]
-        picks = set()
-        for tx in (min(xs), max(xs)):
-            for ty in (min(ys), max(ys)):
-                picks.add(min(tops, key=lambda i: (app.nodes[i][0] - tx) ** 2
-                                                  + (app.nodes[i][1] - ty) ** 2))
-        app.selected_nodes = set(picks)
-        app._add_cable_crane()
-        return picks
-
-    def _cables(self, app):
-        return [i for i, m in enumerate(app.members)
-                if m.get('role') == 'crane_cable']
-
-    def test_the_reduced_matrix_is_not_numerically_singular(self, app,
-                                                            monkeypatch):
-        """The measurement that actually catches it: before the steady lines
-        the condition number was 6.2e16, which is past what double precision
-        can carry. This asserts a bound many orders of magnitude below that,
-        so it fails long before the answers do."""
-        import numpy as np
-        seen = {}
-
-        def spying(real):
-            # The reduced matrix goes to the dense or the sparse solver
-            # depending on its size; measure it whichever one gets it.
-            def spy(A, b):
-                if 'cond' not in seen:
-                    M = A.toarray() if hasattr(A, 'toarray') else A
-                    sv = np.linalg.svd(np.asarray(M, float),
-                                       compute_uv=False)
-                    seen['cond'] = float(sv[0] / sv[-1])
-                    seen['smin'] = float(sv[-1])
-                    seen['smax'] = float(sv[0])
-                return real(A, b)
-            return spy
-
-        monkeypatch.setattr(sm, 'gauss_solve', spying(sm.gauss_solve))
-        monkeypatch.setattr(sm, '_sparse_solve', spying(sm._sparse_solve))
         self._lift(app)
-        app._analyze()
-        assert 'cond' in seen, 'the solve never ran'
-        assert seen['cond'] < 1e12, (
-            'the lifted model is near-singular: cond=%.3e smin=%.3e smax=%.3e'
-            % (seen['cond'], seen['smin'], seen['smax']))
+        assert app._crane_meta()['K1']['wll_kN'] is None
 
-    def test_the_answer_survives_an_asymmetric_load_case(self, app):
-        """The load case that exposed it. The matrix is the same either way,
-        so if this differs from the symmetric case by orders of magnitude the
-        model is rank-deficient and the symmetric answer was luck."""
-        self._lift(app, rod_loads=True)
-        app._analyze()
-        assert app.results is not None, 'the asymmetric lift did not solve'
-        # node_res carries displacements in MILLIMETRES.
-        biggest = max(abs(nr[k]) for nr in app.results['node_res']
-                      for k in ('ux', 'uy', 'uz'))
-        assert biggest < 1000.0, (
-            'displacements of %.3e mm are a null-space artefact, not a '
-            'solution' % biggest)
+    def test_the_workbook_carries_the_lift_and_brings_it_back(
+            self, app, tmp_path, monkeypatch):
+        import openpyxl
+        from apps.stereo import stereo_groups as sgp
+        sgp.new_group(app.groups, 'Roof',
+                      members=range(len(app.members)))
+        app._refresh_crane_lift_choices()
+        app.crane_lift_target.set('Roof')
+        _set_hook(app, 'angle', 55.0)
+        app.crane_daf.set(1.2)
+        app.crane_allowance.set(8.0)
+        self._lift(app, 'wll', 300.0)
+        app._analyze_lifts()
+        s = app._lift_solved[0]['summary']
+        path = str(tmp_path / 'lift.xlsx')
+        monkeypatch.setattr('apps.stereo.stereo_app_reports.filedialog'
+                            '.asksaveasfilename', lambda *a, **k: path)
+        monkeypatch.setattr('apps.stereo.stereo_app_reports.messagebox'
+                            '.showinfo', lambda *a, **k: None)
+        app._export_excel()
+        wb = openpyxl.load_workbook(path, data_only=True)
+        assert {'Lift results K1', 'Lift rods', 'Cranes'} <= set(wb.sheetnames)
+        info = {r[0]: r[1] for r in wb['Lift results K1'].iter_rows(
+            min_row=3, values_only=True) if r[0]}
+        assert info['verdict'] == 'OK'
+        assert info['lift load_kN'] == pytest.approx(s['lift_load'])
+        assert info['hook load_kN'] == pytest.approx(s['hook_load'])
+        assert info['balance check_kN'] == pytest.approx(s['balance'])
+        rows = list(wb['Lift results K1'].iter_rows(values_only=True))
+        h = next(k for k, r in enumerate(rows) if r and r[0] == 'sling')
+        slings = [r for r in rows[h + 1:] if r and r[0]]
+        assert len(slings) == 4
+        assert slings[0][rows[h].index('T_kN')] == pytest.approx(
+            s['slings'][0]['T'])
+        assert slings[0][rows[h].index('rope to use_mm')] == \
+            s['slings'][0]['d_std']
+        lr = list(wb['Lift rods'].iter_rows(values_only=True))
+        assert lr[0][:4] == ('crane', 'rod', 'group', 'N_kN')
+        assert len(lr) - 1 == s['n_rods']
+        assert {r[2] for r in lr[1:]} == {'Roof'}
+        # and back: the settings return with the model
+        monkeypatch.setattr('apps.stereo.stereo_app_reports.filedialog'
+                            '.askopenfilename', lambda *a, **k: path)
+        app._crane_lifts = []
+        app._import_excel()
+        rec = app._crane_lifts[0]
+        assert rec['code'] == 'K1'
+        assert rec['daf'] == pytest.approx(1.2)
+        assert rec['allowance'] == pytest.approx(0.08)
+        assert rec['wll_kN'] == pytest.approx(300.0)
+        assert rec['hook_mode'] == 'angle'
+        assert rec['hook_value'] == pytest.approx(55.0)
+        assert app._group_display_name(rec['group']).startswith('Roof')
+        assert app._crane_records()[0]['what'].startswith('group Roof')
 
-    def test_the_slings_read_what_a_45_degree_sling_should(self, app):
-        """1800 / (4 cos 45) = 636.396 kN. Sound only now that the model is
-        well posed -- the same number came out of the singular version."""
-        self._lift(app)
+    def test_the_pdf_carries_the_lift(self, app, tmp_path):
+        import subprocess
+        self._lift(app, 'wll', 700.0)
         app._analyze()
-        want = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
-        forces = [app.results['member_res'][i]['N'] for i in self._cables(app)]
-        assert len(forces) == 4
-        for f in forces:
-            assert f == pytest.approx(want / (4 * math.cos(math.radians(45.0))),
-                                      rel=1e-4), forces
+        meta = {'crane_lifts': app._crane_meta()}
+        s = meta['crane_lifts']['K1']['solved']['summary']
+        p = str(tmp_path / 'c.pdf')
+        sr_module.export_pdf(
+            app.nodes, app.members, app._all_loads(), app.supports,
+            app.results, p, checks=app.member_checks,
+            meta=meta, groups={'crane'})
+        plan = sr_module.plan_sheets(app.results, app.member_checks, 0,
+                                     {'crane'}, members=app.members)
+        assert plan == ['general', 'crane_K1', 'crane_K1_table']
+        txt = subprocess.run(['pdftotext', p, '-'], capture_output=True,
+                             text=True).stdout
+        assert 'Crane K1' in txt
+        assert 'WLL 700 kN per cable, as entered' in txt
+        T = s['slings'][0]['T']
+        assert f'{T:.2f}' in txt, 'the sling tension comes from the lift'
+        assert f'{T / 700.0:.2f}' in txt
+        assert '%g' % s['slings'][0]['d_std'] in txt
+        assert 'hook load' in txt and 'balance' in txt
 
-    def test_the_verticals_add_up_to_the_load(self, app):
-        self._lift(app)
+    def test_no_crane_no_crane_sheets(self, app):
         app._analyze()
-        want = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
-        lifted = 0.0
-        for i in self._cables(app):
-            _dx, _dy, dz, L = sm.member_vector(app.nodes, app.members[i])
-            lifted += app.results['member_res'][i]['N'] * dz / L
-        assert lifted == pytest.approx(want, rel=1e-8)
+        plan = sr_module.plan_sheets(app.results, app.member_checks, 0,
+                                     members=app.members)
+        assert not any(k.startswith('crane_') for k in plan)
 
-    def test_a_symmetric_lift_puts_nothing_into_the_steady_lines(self, app):
-        """The check that they are steadying and not carrying. If a tag line
-        takes real load in a symmetric lift, it has been placed where a sling
-        should be doing the work."""
-        self._lift(app)
-        app._analyze()
-        want = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
-        for t in app._crane_tag:
-            r = app.results['reactions'][t['node']]
-            got = r['Fx'] if t['dof'] == 'ux' else r['Fy']
-            assert abs(got) < 1e-6 * want, (t, got)
-
-    def test_the_whole_lift_goes_through_the_mast(self, app):
-        self._lift(app)
-        app._analyze()
-        want = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
-        mast = [i for i, m in enumerate(app.members)
-                if m.get('role') == 'crane_mast'][0]
-        assert app.results['member_res'][mast]['N'] == pytest.approx(want, rel=1e-8)
-
-    def test_clearing_the_crane_takes_the_steady_lines_with_it(self, app):
-        before = sorted((sp['node'], sp.get('type'), tuple(sorted((sp.get('dofs') or {}).items())))
-                        for sp in app.supports)
-        self._lift(app)
-        assert app._crane_tag
-        app._clear_cable_cranes()
-        after = sorted((sp['node'], sp.get('type'), tuple(sorted((sp.get('dofs') or {}).items())))
-                       for sp in app.supports)
-        assert after == before
-        assert not app._crane_tag
+    def test_the_chooser_offers_the_crane_report(self, app):
+        keys = [k for k, _l, _b in app.PDF_GROUP_LABELS]
+        assert 'crane' in keys
+        assert set(keys) == set(sr_module.PDF_SHEET_GROUPS)
 
 
 class TestGroupsPanel:
@@ -9385,15 +9404,14 @@ class TestCatalogDepthReachesMembers:
         assert {rod['a'], rod['b']} == {a, b}
         assert rod['c_cm'] == pytest.approx(props['c_cm'])
 
-    def test_the_crane_mast_carries_the_depth_it_needs_for_bending(self, app):
-        """The mast is RIGID, so it takes a bending check."""
+    def test_the_crane_slings_take_the_web_section(self, app):
+        """The slings are drawn with the web section, catalog depth and
+        all, like every other rod an add-on builds."""
         props = self._pick_catalog(app, 'web', 'IPE 200')
-        top = max(p[2] for p in app.nodes)
-        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
-        app.selected_nodes = set(tops[:4])
+        app.selected_nodes = set(_top_corners(app))
         app._add_cable_crane()
-        masts = [m for m in app.members if m.get('role') == 'crane_mast']
-        assert masts and masts[0]['c_cm'] == pytest.approx(props['c_cm'])
+        slings = [m for m in app.members if m.get('role') == 'crane_cable']
+        assert slings and slings[0]['c_cm'] == pytest.approx(props['c_cm'])
 
     def test_the_depth_survives_an_excel_round_trip(self, app, tmp_path):
         props = self._pick_catalog(app, 'web', 'L 50x5')
@@ -10836,51 +10854,19 @@ class TestCraneFixes:
                                + (app.nodes[i][1] - Y) ** 2))
         return out
 
-    def test_a_lift_that_leaves_a_mechanism_says_so_and_shows_where(
-            self, app, dialogs):
-        c = self._corners(app, self._top(app))[:3]
-        app.selected_nodes = set(c)
-        app._add_cable_crane()
-        assert len(app.selected_nodes) > 3, 'the loose part is selected'
-        assert 'no stiffness' in app.col_note.cget('text')
-        app._analyze()
-        assert app.results is None
-        assert 'Free to move with no stiffness' in app.err
-
-    def test_a_good_lift_still_solves_the_same(self, app):
-        app.selected_nodes = set(self._corners(app, self._top(app)))
-        app._add_cable_crane()
-        app._analyze()
-        assert app.results is not None
-        slings = [app.results['member_res'][i]['N']
-                  for i, m in enumerate(app.members)
-                  if m.get('role') == 'crane_cable']
-        assert slings == pytest.approx([636.396] * 4, rel=1e-4)
-
-    def test_a_second_crane_keeps_the_first_cranes_supports(self, app):
+    def test_a_second_crane_keeps_the_first_and_both_are_solved(self, app):
         corners = self._corners(app, self._top(app))
         app.selected_nodes = set(corners)
         app._add_cable_crane()
-        first_tops = {m['b'] for m in app.members
-                      if m.get('role') == 'crane_mast'}
         app.selected_nodes = set(corners)
         app._add_cable_crane()
-        held = {sp['node'] for sp in app.supports}
-        assert first_tops <= held, 'the first mast lost its support'
-        assert len(app._crane_tag) == 6, "both cranes' tag lines are kept"
+        assert [r['code'] for r in app._crane_lifts] == ['K1', 'K2']
+        app._analyze_lifts()
+        assert [s['ok'] for s in app._lift_solved] == [True, True]
+        assert 'Crane K1' in app._lift_summary_text
+        assert 'Crane K2' in app._lift_summary_text
         app._clear_cable_cranes()
-        assert not app._crane_tag
-        assert not any(sp.get('dofs') and len(sp['dofs']) == 1
-                       for sp in app.supports), 'a tag line was left behind'
-
-    def test_undo_takes_the_cranes_bookkeeping_back_too(self, app):
-        app.selected_nodes = set(self._corners(app, self._top(app)))
-        app._add_cable_crane()
-        assert app._crane_freed and app._crane_tag
-        app._undo()
-        assert app._crane_freed == [] and app._crane_tag is None
-        app._redo()
-        assert app._crane_freed and app._crane_tag
+        assert app._crane_lifts == []
 
     def test_the_cable_flag_survives_the_workbook(self, app, tmp_path):
         from apps.stereo import stereo_reports as sr
@@ -10905,27 +10891,6 @@ class TestCraneFixes:
         assert app.results is not None, 'the last pass is kept, with a caveat'
         assert app.err is None
 
-    def test_a_huge_displacement_is_flagged(self, app):
-        z = self._top(app)
-        xs = sorted({round(app.nodes[i][0], 3) for i in z})
-        ys = sorted({round(app.nodes[i][1], 3) for i in z})
-        mid = [i for i in z if xs[3] <= round(app.nodes[i][0], 3) <= xs[5]
-               and ys[3] <= round(app.nodes[i][1], 3) <= ys[5]]
-        # The hook hung over the picks' centroid (13.5, 13.5), as it was
-        # before it went over the centre of gravity (15, 15): off-centre,
-        # the grid tips on its slings and the answer runs away.
-        from apps.stereo import stereo_lift as slift
-        real = slift.centre_of_gravity
-        slift.centre_of_gravity = lambda *a, **k: None
-        try:
-            app.selected_nodes = set(mid)
-            app._add_cable_crane()
-        finally:
-            slift.centre_of_gravity = real
-        app._analyze()
-        if app.results is not None:
-            assert app.status_var.get().startswith('Caution')
-
     def test_the_same_patch_hung_over_its_centre_of_gravity_hangs_level(
             self, app):
         z = self._top(app)
@@ -10938,6 +10903,9 @@ class TestCraneFixes:
         app._analyze()
         assert app.results is not None, app.err
         assert not app.status_var.get().startswith('Caution')
+        app._analyze_lifts()
+        s = app._lift_solved[0]['summary']
+        assert s['balance'] < 0.01          # level: it only goes up
 
 
 class TestResponsiveness:
@@ -11024,12 +10992,11 @@ class TestAddonCodes:
             'reinf_chord', 'reinf_web'}
         assert app.panels[-1]['addon'] == 'P1'
 
-    def test_a_crane_is_K1_and_its_rods_are_its_mast_and_cables(self, app):
+    def test_a_crane_is_K1_and_its_rods_are_its_slings(self, app):
         from apps.stereo import stereo_addon_codes as sac
         self._crane(app)
         rods = sac.index(app.members)['K1']
-        assert {app.members[i]['role'] for i in rods} == {'crane_mast',
-                                                          'crane_cable'}
+        assert {app.members[i]['role'] for i in rods} == {'crane_cable'}
 
     def test_undo_takes_the_code_back_and_the_next_one_is_not_reused(self, app):
         from apps.stereo import stereo_addon_codes as sac
@@ -11142,230 +11109,36 @@ class TestAddonCodes:
         assert 'Column C1' in txt and 'Crane K1' in txt
 
 
-class TestCraneLiftsAPiece:
-    """Round 2, item 4: a crane lifts ONE piece -- the one under the hook,
-    or a group -- and only that piece comes off its supports. The rest of
-    the file stays on the ground and still solves."""
-
-    def _second_truss(self, app, dx=45.0):
-        """A copy of the default grid, 45 m along x: a separate piece with
-        its own supports, in the same file."""
-        n0, m0 = len(app.nodes), len(app.members)
-        app.nodes = list(app.nodes) + [(x + dx, y, z) for x, y, z in app.nodes]
-        app.members = list(app.members) + [
-            dict(m, a=m['a'] + n0, b=m['b'] + n0) for m in app.members]
-        app.supports = list(app.supports) + [
-            dict(s, node=s['node'] + n0) for s in app.supports]
-        app.loads = list(app.loads)
-        app.results = None
-        return n0, m0
-
-    def _corners(self, app, lo_x, hi_x):
-        top = max(p[2] for p in app.nodes)
-        tops = [i for i, p in enumerate(app.nodes)
-                if abs(p[2] - top) < 1e-9 and lo_x <= p[0] <= hi_x]
-        xs = [app.nodes[i][0] for i in tops]
-        ys = [app.nodes[i][1] for i in tops]
-        return {min(tops, key=lambda i: (app.nodes[i][0] - tx) ** 2
-                    + (app.nodes[i][1] - ty) ** 2)
-                for tx in (min(xs), max(xs)) for ty in (min(ys), max(ys))}
-
-    def test_lifting_one_truss_leaves_the_other_on_its_supports(self, app):
-        n0, m0 = self._second_truss(app)
-        b_supports = [s for s in app.supports if s['node'] >= n0]
-        app.selected_nodes = self._corners(app, -1.0, 40.0)
-        app._add_cable_crane()
-        # B's supports are all still there; A's are gone (handed to the
-        # crane and its tag lines)
-        assert all(s in app.supports for s in b_supports)
-        a_ground = [s for s in app.supports if s['node'] < n0
-                    and s.get('type') and s['node'] not in
-                    {t['node'] for t in app._crane_tag or []}]
-        assert a_ground == []
-        assert 'stay on their supports' in app.col_note.cget('text')
-        app._analyze()
-        assert app.results is not None, app.err
-        # B still stands -- before, its supports went with A's and the
-        # solve refused the whole file as a mechanism -- and A hangs: its
-        # loads go up the slings, none to the ground under B
-        assert all(abs(r.get('Fz', 0.0)) < 1e-6
-                   for node, r in app.results['reactions'].items()
-                   if n0 <= node < 2 * n0)
-        assert app._crane_lifts[-1]['rods'] == list(range(m0))
-
-    def test_a_group_can_be_lifted_by_name(self, app):
-        from apps.stereo import stereo_groups as sgp
-        n0, m0 = self._second_truss(app)
-        g = sgp.new_group(app.groups, 'Truss B', members=range(m0, 2 * m0))
-        app._refresh_crane_lift_choices()
-        label = [c for c in app.crane_lift_box.cget('values')
-                 if 'Truss B' in c][0]
-        app.crane_lift_target.set(label)
-        app.selected_nodes = self._corners(app, 44.0, 100.0)
-        app._add_cable_crane()
-        assert app._crane_lifts[-1]['group'] == g['id']
-        a_supports = [s for s in app.supports if s['node'] < n0]
-        assert len(a_supports) > 4          # A untouched
-        app._analyze()
-        assert app.results is not None, app.err
-
-    def test_a_group_still_joined_to_the_rest_is_refused(self, app, dialogs):
-        from apps.stereo import stereo_groups as sgp
-        half = list(range(len(app.members) // 2))
-        sgp.new_group(app.groups, 'Half', members=half)
-        app._refresh_crane_lift_choices()
-        app.crane_lift_target.set('Half')
-        m_before = len(app.members)
-        top = max(p[2] for p in app.nodes)
-        mine = {n for j in half for n in (app.members[j]['a'],
-                                         app.members[j]['b'])}
-        app.selected_nodes = set(sorted(i for i in mine
-                                        if app.nodes[i][2] == top)[:4])
-        app._add_cable_crane()
-        assert len(app.members) == m_before
-        assert any('still joined' in str(a) for a in dialogs), dialogs
-
-    def test_slings_off_the_group_are_refused(self, app, dialogs):
-        from apps.stereo import stereo_groups as sgp
-        n0, m0 = self._second_truss(app)
-        sgp.new_group(app.groups, 'Truss B', members=range(m0, 2 * m0))
-        app._refresh_crane_lift_choices()
-        app.crane_lift_target.set('Truss B')
-        m_before = len(app.members)
-        app.selected_nodes = self._corners(app, -1.0, 40.0)   # on A
-        app._add_cable_crane()
-        assert len(app.members) == m_before
-        assert any('hook onto group' in str(a) for a in dialogs), dialogs
-
-    def test_undo_and_clear_take_the_lift_record_back(self, app):
-        app.selected_nodes = self._corners(app, -1.0, 100.0)
-        app._add_cable_crane()
-        assert len(app._crane_lifts) == 1
-        app._undo()
-        assert app._crane_lifts == []
-        app._redo() if hasattr(app, '_redo') else None
-        app.selected_nodes = self._corners(app, -1.0, 100.0)
-        app._add_cable_crane()
-        app._clear_cable_cranes()
-        assert app._crane_lifts == []
-
-
-class TestCraneHangsOverTheCentreOfGravity:
-    """A rigger hangs the hook over the centre of gravity of what is lifted.
-    Over the middle of the PICKS instead, a piece whose weight is not
-    centred under them tips: the light side's slings go slack and the tag
-    lines -- there only to stop a linear solve's pendulum modes -- end up
-    carrying the lift. Found on a pitched roof module: two slings in
-    compression and 45 kN in the tag lines."""
-
-    def _corners(self, app):
-        top = max(p[2] for p in app.nodes)
-        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
-        xs = [app.nodes[i][0] for i in tops]
-        ys = [app.nodes[i][1] for i in tops]
-        return tops, {min(tops, key=lambda i: (app.nodes[i][0] - tx) ** 2
-                          + (app.nodes[i][1] - ty) ** 2)
-                      for tx in (min(xs), max(xs)) for ty in (min(ys), max(ys))}
-
-    def test_an_uneven_load_moves_the_hook_and_the_tag_lines_stay_idle(
-            self, app):
-        from apps.stereo import stereo_lift as slift
-        tops, picks = self._corners(app)
-        heavy = max(tops, key=lambda i: app.nodes[i][0] + 0.5 * app.nodes[i][1])
-        app.loads = list(app.loads) + [{'node': heavy, 'fz': -400.0}]
-        rods = [j for j, m in enumerate(app.members)]
-        cog = slift.centre_of_gravity(app.nodes, app.members, rods,
-                                      app._all_loads())
-        mid = (sum(app.nodes[i][0] for i in picks) / 4,
-               sum(app.nodes[i][1] for i in picks) / 4)
-        assert abs(cog[0] - mid[0]) + abs(cog[1] - mid[1]) > 0.5
-        app.selected_nodes = set(picks)
-        app._add_cable_crane()
-        hook = app._crane_lifts[-1]['hook']
-        assert abs(app.nodes[hook][0] - cog[0]) < 1e-9
-        assert abs(app.nodes[hook][1] - cog[1]) < 1e-9
-        assert 'centre of gravity' in app.col_note.cget('text')
-        app._analyze()
-        assert app.results is not None, app.err
-        total = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
-        tags = {t['node'] for t in app._crane_tag}
-        pull = sum(abs(v) for n, r in app.results['reactions'].items()
-                   if n in tags for v in r.values())
-        assert pull < 1e-3 * total, (pull, total)
-
-    def test_picks_all_to_one_side_of_the_weight_are_flagged(self, app):
-        tops, _picks = self._corners(app)
-        xs = sorted({round(app.nodes[i][0], 6) for i in tops})
-        ys = [app.nodes[i][1] for i in tops]
-        # three joints along the low-x edge: the grid's weight is off to
-        # the side of them, so no sling tension can hold it level
-        edge = sorted((i for i in tops if round(app.nodes[i][0], 6) == xs[0]),
-                      key=lambda i: app.nodes[i][1])
-        picks = {edge[0], edge[len(edge) // 2], edge[-1]}
-        nxt = [i for i in tops if round(app.nodes[i][0], 6) == xs[1]]
-        picks.add(min(nxt, key=lambda i: abs(app.nodes[i][1]
-                                             - (min(ys) + max(ys)) / 2)))
-        app.selected_nodes = picks
-        app._add_cable_crane()
-        note = app.col_note.cget('text')
-        assert 'outside the pick points' in note, note
-        assert 'tip' in app.status_var.get()
-
-
-    def test_a_flat_truss_hung_in_its_own_plane_is_named(self, app):
-        """A plane truss picked along its top chord hangs from slings that
-        all lie in its plane with the hook: it can turn about them like a
-        flag. Caught when it is lifted, with what to do about it."""
-        tpl = dict(app.members[0])
-        for k in ('addon', 'role', 'tension_only'):
-            tpl.pop(k, None)
-        tpl['conn'] = 'pin'
-        nodes = [(2.0 * i, 0.0, 0.0) for i in range(5)] + \
-            [(2.0 * i, 0.0, 1.5) for i in range(5)]
-        pairs = [(i, i + 1) for i in range(4)] + \
-            [(5 + i, 6 + i) for i in range(4)] + \
-            [(i, 5 + i) for i in range(5)] + [(i, 6 + i) for i in range(4)]
-        app.nodes = nodes
-        app.members = [dict(tpl, a=a, b=b) for a, b in pairs]
-        app.supports, app.loads, app.groups = [], [], []
-        app.panels = []
-        app.loads = [{'node': i, 'fz': -2.0} for i in range(5)]
-        app.results = None
-        app.selected_nodes = {5, 7, 9}
-        app._add_cable_crane()
-        note = app.col_note.cget('text')
-        assert 'one plane' in note, note
-
-
 class TestSupportEditorLeavesCraneSupportsAlone:
     """Found in a user's roof file: 45 roof supports and 8 crane mast tops
-    all held in X only. Clicking a node with a crane tag line (a support
-    holding one direction) loaded "X only" into the per-node editor without
-    a word, and Apply on a box over the roof put it under every node --
-    the mast tops included."""
+    all held in X only, and Apply on a box over the roof put the editor's
+    support under every node -- the mast tops included. The crane has no
+    mast now, but a workbook saved before still brings masts in, and their
+    fixed tops still belong to them."""
 
-    def _lifted(self, app):
-        top = max(p[2] for p in app.nodes)
-        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
-        xs = [app.nodes[i][0] for i in tops]
-        ys = [app.nodes[i][1] for i in tops]
-        app.selected_nodes = {min(tops, key=lambda i: (app.nodes[i][0] - tx)
-                                  ** 2 + (app.nodes[i][1] - ty) ** 2)
-                              for tx in (min(xs), max(xs))
-                              for ty in (min(ys), max(ys))}
-        app._add_cable_crane()
-        return app._crane_lifts[-1]['anchor']
+    def _legacy(self, app):
+        """A crane the way a workbook from before the lift calculator has
+        it: a rigid mast over the hook, its top fixed."""
+        from apps.stereo import stereo_geometry as sg_
+        from apps.stereo import stereo_addon_codes as sac_
+        pick = _top_corners(app)
+        n0 = len(app.members)
+        nodes, members, _hook, anchor = sg_.add_cable_crane(
+            app.nodes, app.members, pick, dict(app.members[0]), rise=4.0,
+            mast=3.0)
+        app.nodes, app.members = nodes, members
+        sac_.tag(app.members, range(n0, len(app.members)), 'K1')
+        app.supports.append({'node': anchor, 'type': 'fixed'})
+        app.results = None
+        return anchor
 
-    def test_clicking_a_tag_line_node_does_not_load_it_into_the_editor(
-            self, app):
-        self._lifted(app)
-        app.sup_preset_var.set('pin')
-        app._preset_to_checkboxes()
-        tag = app._crane_tag[0]['node']
-        app.selected_nodes = {tag}
-        app._sync_selection_fields()
-        assert app.sup_preset_var.get() == 'pin'
-        assert all(app.dof_vars[d].get() for d in ('ux', 'uy', 'uz'))
+    def test_a_legacy_crane_is_left_out_of_the_analysis_too(self, app):
+        self._legacy(app)
+        app._analyze()
+        assert app.results is not None, app.err
+        for j, m in enumerate(app.members):
+            if m.get('role') in ('crane_cable', 'crane_mast'):
+                assert app.results['member_res'][j]['N'] == 0.0
 
     def test_a_users_own_support_still_loads_into_the_editor(self, app):
         app.supports = [{'node': 3, 'dofs': {'ux': True, 'uz': True}}]
@@ -11376,16 +11149,13 @@ class TestSupportEditorLeavesCraneSupportsAlone:
         assert not app.dof_vars['uy'].get()
 
     def test_apply_over_a_mast_top_keeps_the_crane_anchor_fixed(self, app):
-        anchor = self._lifted(app)
-        tags = [(t['node'], t['dof']) for t in app._crane_tag]
+        anchor = self._legacy(app)
         app.sup_preset_var.set('pin')
         app._preset_to_checkboxes()
-        app.selected_nodes = {0, 1, anchor} | {n for n, _d in tags}
+        app.selected_nodes = {0, 1, anchor}
         app._apply_support()
         at_anchor = [sp for sp in app.supports if sp['node'] == anchor]
         assert at_anchor == [{'node': anchor, 'type': 'fixed'}]
-        for n, d in tags:            # the tag lines are still the crane's
-            assert {'node': n, 'dofs': {d: True}} in app.supports
         assert any(sp['node'] == 0 and sp.get('type') == 'pin'
                    for sp in app.supports)
         assert 'mast top' in app.status_var.get()
@@ -11411,82 +11181,6 @@ class TestSupportEditorLeavesCraneSupportsAlone:
         assert {'node': 0, 'dofs': {'ux': True, 'uy': False, 'uz': False,
                                     'rx': False, 'ry': False,
                                     'rz': False}} in app.supports
-
-
-class TestCraneReport:
-    """Round 2, item 5: the crane lift report in the PDF, with the cable
-    check against a capacity set when the crane goes on."""
-
-    def _lift(self, app, mode='none', value=None):
-        top = max(p[2] for p in app.nodes)
-        tops = [i for i, p in enumerate(app.nodes) if abs(p[2] - top) < 1e-9]
-        xs = [app.nodes[i][0] for i in tops]
-        ys = [app.nodes[i][1] for i in tops]
-        app.selected_nodes = {
-            min(tops, key=lambda i: (app.nodes[i][0] - tx) ** 2
-                + (app.nodes[i][1] - ty) ** 2)
-            for tx in (min(xs), max(xs)) for ty in (min(ys), max(ys))}
-        app.crane_cap_mode.set(mode)
-        if mode == 'wll':
-            app.crane_wll.set(value)
-        elif mode == 'dia':
-            app.crane_dia.set(value)
-        app._add_cable_crane()
-
-    def test_the_cable_capacity_is_kept_with_the_lift(self, app):
-        from apps.stereo import stereo_lift as slift
-        self._lift(app, 'dia', 20.0)
-        meta = app._crane_meta()
-        assert list(meta) == ['K1']
-        assert meta['K1']['wll_kN'] == pytest.approx(slift.rope_wll_kN(20.0))
-        assert 'Ø20 mm' in meta['K1']['cable_spec']
-        assert meta['K1']['what'] == 'the piece under the hook'
-
-    def test_a_typed_wll_and_none(self, app):
-        self._lift(app, 'wll', 700.0)
-        assert app._crane_meta()['K1']['wll_kN'] == 700.0
-        app._clear_cable_cranes()
-        self._lift(app)
-        assert app._crane_meta()['K1']['wll_kN'] is None
-
-    def test_the_pdf_carries_the_crane_report(self, app, tmp_path):
-        import subprocess
-        from apps.stereo import stereo_lift as slift
-        self._lift(app, 'wll', 700.0)
-        app._analyze()
-        assert app.results is not None
-        rep = slift.crane_report(app.nodes, app.members, app.results,
-                                 app.member_checks, 'K1', wll_kN=700.0)
-        # the slings carry the whole lifted load
-        applied = -sum(ld.get('fz', 0.0) for ld in app._all_loads())
-        assert rep['sum_vertical'] == pytest.approx(applied, rel=1e-6)
-        p = str(tmp_path / 'c.pdf')
-        sr_module.export_pdf(
-            app.nodes, app.members, app._all_loads(), app.supports,
-            app.results, p, checks=app.member_checks,
-            meta={'crane_lifts': app._crane_meta()}, groups={'crane'})
-        plan = sr_module.plan_sheets(app.results, app.member_checks, 0,
-                                     {'crane'}, members=app.members)
-        assert plan == ['general', 'crane_K1', 'crane_K1_table']
-        txt = subprocess.run(['pdftotext', p, '-'], capture_output=True,
-                             text=True).stdout
-        assert 'Crane K1' in txt
-        assert 'WLL 700 kN per cable, as entered' in txt
-        T = rep['cables'][0]['T']
-        assert f'{T:.2f}' in txt
-        assert f'{T / 700.0:.2f}' in txt
-
-    def test_no_crane_no_crane_sheets(self, app):
-        app._analyze()
-        plan = sr_module.plan_sheets(app.results, app.member_checks, 0,
-                                     members=app.members)
-        assert not any(k.startswith('crane_') for k in plan)
-
-    def test_the_chooser_offers_the_crane_report(self, app):
-        keys = [k for k, _l, _b in app.PDF_GROUP_LABELS]
-        assert 'crane' in keys
-        assert set(keys) == set(sr_module.PDF_SHEET_GROUPS)
-
 
 
 class TestGroupsPdfControl:

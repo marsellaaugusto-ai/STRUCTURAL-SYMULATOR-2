@@ -397,7 +397,7 @@ DEFAULT_MAX_CALC_MEMBERS = 40
 
 def export_excel(nodes, members, loads, supports, results, path, checks=None,
                   meta=None, max_calc_members=DEFAULT_MAX_CALC_MEMBERS,
-                  profiles=None, groups=None):
+                  profiles=None, groups=None, lifts=None):
     """Write a workbook with Nodes, Members, Loads, Supports, Results (if
     `results` is not None), Member Checks (if `checks` is not None) and a
     machine-parseable Model sheet. `meta` is an optional dict of free-text
@@ -407,6 +407,11 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
 
     `groups` (stereo_groups' list) adds the editable Groups sheet -- see
     stereo_groups_excel -- which Import from Excel reads back.
+
+    `lifts` -- {'records': the cranes' settings, 'solved': each lift solved
+    on its own (stereo_lift_calc.solve_lift), 'group_of': {rod: group
+    name}} -- adds a "Lift results" sheet per crane, the "Lift rods" sheet
+    and the "Cranes" sheet, which Import from Excel reads back.
 
     `max_calc_members` caps the Member Calculations sheet to the N most
     critical members (sorted by utilization desc), and defaults to
@@ -879,6 +884,99 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
                     mid_type='num', mid_value=0.7, mid_color='FFC000',
                     end_type='num', end_value=1.0, end_color='C00000'))
 
+    # ── Crane lifts (stereo_lift_calc) ───────────────────────────────────────
+    if lifts and lifts.get('records'):
+        from apps.stereo import stereo_lift_calc as _slc
+        for s in lifts.get('solved') or ():
+            ws_l = wb.create_sheet(('Lift results %s' % s['code'])[:31])
+            ws_l.sheet_properties.tabColor = 'B8860B'
+            ws_l.cell(row=1, column=1, value='Crane %s — lift calculation'
+                      % s['code']).font = TITLE_FONT
+            if not s.get('ok'):
+                ws_l.cell(row=3, column=1, value='did not solve').font = \
+                    LABEL_FONT
+                ws_l.cell(row=3, column=2, value=s.get('error') or
+                          'the lifted piece is a mechanism on its slings')
+                continue
+            sm_ = s['summary']
+            rec = next((r for r in lifts['records']
+                        if r.get('code') == s['code']), {})
+            cx, cy, cz = sm_['cog'] or (0.0, 0.0, 0.0)
+            hx, hy, hz = sm_['hook_xyz']
+            info = [
+                ('verdict', sm_['verdict']),
+                ('lifts', rec.get('what') or ''),
+                ('rods lifted', sm_['n_rods']),
+                ('weight_kN', sm_['weight']),
+                ('connections allowance %', 100.0 * sm_['allowance']),
+                ('dynamic factor', sm_['daf']),
+                ('lift load_kN', sm_['lift_load']),
+                ('centre of gravity x_m', cx), ('centre of gravity y_m', cy),
+                ('centre of gravity z_m', cz),
+                ('hook x_m', hx), ('hook y_m', hy), ('hook z_m', hz),
+                ('hook set by', _slc.HOOK_MODE_LABELS.get(
+                    rec.get('hook_mode') or 'auto', '')
+                 + ('' if rec.get('hook_value') in (None, '')
+                    else ' = %g' % rec['hook_value'])),
+                ('hook load_kN', sm_['hook_load']),
+                ('balance check_kN', sm_['balance']),
+                ('worst rod', sm_['worst'][1] if sm_['worst'] else ''),
+                ('worst utilization', sm_['worst'][0] if sm_['worst'] else ''),
+                ('rods over capacity', len(sm_['over'])),
+                ('cable capacity', rec.get('cable_spec') or ''),
+                ('rope sizing basis', sm_['rope_basis']),
+            ]
+            r0 = 3
+            for k, (lbl, val) in enumerate(info):
+                ws_l.cell(row=r0 + k, column=1, value=xl_hdr(lbl)).font = \
+                    LABEL_FONT
+                v = xl_row([lbl], [val])[0]
+                ws_l.cell(row=r0 + k, column=2, value=v).font = VALUE_FONT
+            r = r0 + len(info) + 1
+            sl_hdrs = ['sling', 'rod', 'pick node', 'length_m', 'angle_deg',
+                       'T_kN', 'WLL required_kN', 'rope required_mm',
+                       'rope to use_mm', 'T / WLL', 'flags']
+            styled_header(ws_l, sl_hdrs, row=r)
+            for k, sl in enumerate(sm_['slings'], 1):
+                flags = []
+                if sl['slack']:
+                    flags.append('slack')
+                if sl['angle'] < slift_min_angle():
+                    flags.append('flat')
+                if sl['util'] is not None and sl['util'] > 1.0:
+                    flags.append('over WLL')
+                if sl['T'] > 0 and sl['d_std'] is None:
+                    flags.append('above the size list')
+                vals = xl_row(sl_hdrs, [
+                    'S%d' % k, sl['rod'], sl['pick'], sl['length'],
+                    sl['angle'], sl['T'], sl['wll_req'], sl['d_req'],
+                    sl['d_std'], sl['util'], ', '.join(flags)])
+                for col, v in enumerate(vals, 1):
+                    ws_l.cell(row=r + k, column=col, value=v)
+            style_data_range(ws_l, r + 1, r + len(sm_['slings']),
+                             len(sl_hdrs))
+        rows = _slc.lift_rod_rows(nodes, members, lifts.get('solved') or (),
+                                  lifts.get('group_of'))
+        ws_r = wb.create_sheet('Lift rods')
+        ws_r.sheet_properties.tabColor = 'B8860B'
+        lr_hdrs = ['crane', 'rod', 'group', 'N_kN', 'M max_kNm', 'V max_kN',
+                   'utilization', 'governing']
+        styled_header(ws_r, lr_hdrs)
+        for k, row in enumerate(rows, 2):
+            for col, v in enumerate(xl_row(lr_hdrs, row), 1):
+                ws_r.cell(row=k, column=col, value=v)
+            if row[6] is not None and row[6] > 1.0:
+                for col in range(1, len(lr_hdrs) + 1):
+                    ws_r.cell(row=k, column=col).fill = OVER_FILL
+        style_data_range(ws_r, 2, 1 + len(rows), len(lr_hdrs))
+        ws_c = wb.create_sheet('Cranes')
+        ws_c.sheet_properties.tabColor = 'B8860B'
+        for col, lbl in enumerate(_slc.CRANE_SHEET_COLUMNS, 1):
+            ws_c.cell(row=1, column=col, value=lbl).font = Font(bold=True)
+        for k, row in enumerate(_slc.crane_rows(lifts['records']), 2):
+            for col, v in enumerate(row, 1):
+                ws_c.cell(row=k, column=col, value=v)
+
     # ── Groups sheet (editable; read back by Import from Excel) ─────────────
     if groups:
         from apps.stereo import stereo_groups_excel as _sge
@@ -1078,6 +1176,29 @@ def _read_timber(row, target):
         target['gamma_kN_m3'] = g
     target.pop('Fy', None)
     target.pop('Fu', None)
+
+
+def slift_min_angle():
+    from apps.stereo import stereo_lift as _slift
+    return _slift.SLING_MIN_ANGLE_DEG
+
+
+def read_cranes_sheet(path):
+    """{code: lift settings} from a workbook's Cranes sheet -- {} for a
+    workbook without one (stereo_lift_calc.read_crane_rows)."""
+    import openpyxl
+    from apps.stereo import stereo_lift_calc as _slc
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    if 'Cranes' not in wb.sheetnames:
+        return {}
+    it = wb['Cranes'].iter_rows(values_only=True)
+    try:
+        head = [str(h or '').strip() for h in next(it)]
+    except StopIteration:
+        return {}
+    rows = [dict(zip(head, r)) for r in it if r and any(
+        v not in (None, '') for v in r)]
+    return _slc.read_crane_rows(rows)
 
 
 def read_excel_meta(path):
@@ -3398,7 +3519,7 @@ def sheet_title(key):
     if key.startswith('crane_'):
         code = key[len('crane_'):]
         if code.endswith('_table'):
-            return 'Crane %s — slings, hook and mast' % code[:-len('_table')]
+            return 'Crane %s — slings, hook and rope sizes' % code[:-len('_table')]
         return 'Crane %s — lift' % code
     return key
 
@@ -4314,9 +4435,21 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
             if f'crane_{code}' not in plan:
                 continue
             info = crane_meta.get(code, {})
-            rep = slift.crane_report(nodes, members, results, checks, code,
+            # The lift solved ON ITS OWN (stereo_lift_calc) -- the same
+            # numbers as the panel's summary and the workbook's Lift sheets;
+            # the service results never carry a lift.
+            solved = info.get('solved') or {}
+            lsum = solved.get('summary') if solved.get('ok') else None
+            l_res, l_chk = results, checks
+            if lsum is not None:
+                from apps.stereo import stereo_lift_calc as _slc
+                l_res, l_chk = _slc.combine(len(nodes), members, [solved])
+            l_have = bool(l_chk) and any(
+                c and c.get('checked') for c in l_chk)
+            rep = slift.crane_report(nodes, members, l_res, l_chk, code,
                                      lifted_rods=info.get('rods'),
                                      wll_kN=info.get('wll_kN'))
+            d_std = {s['rod']: s for s in (lsum or {}).get('slings', ())}
             lifted = set(rep['lifted_rods'])
             cab_ids = {c['rod'] for c in rep['cables']}
             what = info.get('what', 'the piece under the hook')
@@ -4331,12 +4464,12 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
                     if m.get('addon') == code
                     and m.get('role') in slift.CRANE_ROLES} | cab_ids
 
-            def crane_col(i, _l=lifted, _c=mine):
+            def crane_col(i, _l=lifted, _c=mine, _k=l_chk, _h=l_have):
                 if i in _c:
                     return '#1f1f1f'
-                if i in _l and have_checks and i < len(checks) and \
-                        checks[i].get('checked'):
-                    return util_color(min(checks[i]['util'], 1.2))
+                if i in _l and _h and i < len(_k) and _k[i] and \
+                        _k[i].get('checked'):
+                    return util_color(min(_k[i]['util'], 1.2))
                 return PDF_ROD_CONTEXT_COLOR
 
             widths = [2.2 if i in mine else (1.1 if i in lifted else 0.4)
@@ -4363,7 +4496,7 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
 
             key = _PdfKey(ax)
             key.caption(f'Crane {code}: what the lift does to the piece')
-            if have_checks:
+            if l_have:
                 key.ramp(util_color, 0.0, 1.2,
                          [(0.0, '0'), (0.5, '0.5'), (1.0, '1.0'),
                           (1.2, '≥1.2')])
@@ -4373,7 +4506,7 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
                                f'({u.lab("force")}); ▼ hook')
             key.row(PDF_ROD_CONTEXT_COLOR, 'pale: the rest of the model, '
                                            'other cranes included')
-            key.row(SUPPORT_COLOR, 'support / crane anchor', marker='s')
+            key.row(SUPPORT_COLOR, 'support', marker='s')
 
             hxyz = rep['hook_xyz'] or (0.0, 0.0, 0.0)
             stats = [f'CRANE {code}',
@@ -4387,6 +4520,21 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
                      f'{u.f("length", hxyz[1], 2)}, '
                      f'{u.f("length", hxyz[2], 2)}',
                      f'Σ sling vertical {u.fl("force", rep["sum_vertical"], 2, comma=True)}']
+            if lsum is not None:
+                cgx, cgy, cgz = lsum['cog'] or (0.0, 0.0, 0.0)
+                stats += [
+                    f'weight          {u.fl("force", lsum["weight"], 2, comma=True)}'
+                    f' (+{100 * lsum["allowance"]:.0f}% connections)',
+                    f'dynamic factor  {lsum["daf"]:.2f}',
+                    f'lift load       {u.fl("force", lsum["lift_load"], 2, comma=True)}',
+                    f'centre of grav. {u.f("length", cgx, 2)}, '
+                    f'{u.f("length", cgy, 2)}, {u.f("length", cgz, 2)}',
+                    f'hook load       {u.fl("force", lsum["hook_load"], 2, comma=True)}',
+                    f'balance         {u.fl("force", lsum["balance"], 2, comma=True)}',
+                    f'verdict         {lsum["verdict"]}']
+            elif solved and not solved.get('ok'):
+                stats.append('lift did not solve: '
+                             + (solved.get('error') or 'a mechanism'))
             if rep['mast_N'] is not None:
                 stats.append(f'mast N          '
                              f'{u.fl("force", rep["mast_N"], 2, comma=True)}')
@@ -4409,7 +4557,7 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
             plt.close(fig)
 
             # the schedule
-            fig = new_sheet(f'Crane {code} — slings, hook and mast')
+            fig = new_sheet(f'Crane {code} — slings, hook and rope sizes')
             rows = []
             for k, c in enumerate(rep['cables'], start=1):
                 flags = []
@@ -4419,28 +4567,36 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
                     flags.append('flat')
                 if c['util'] is not None and c['util'] > 1.0:
                     flags.append('OVER WLL')
+                ds = d_std.get(c['rod']) or {}
                 rows.append([
                     str(k), str(c['rod']), str(c['pick']),
                     u.f('length', c['length'], 3),
                     f'{c["angle"]:.1f}',
                     u.f('force', c['T'], 2),
-                    u.f('force', c['Tx'], 2, sign=True),
-                    u.f('force', c['Ty'], 2, sign=True),
                     u.f('force', c['Tz'], 2, sign=True),
+                    (f'{ds["d_req"]:.1f}' if ds.get('d_req') else '—'),
+                    ('%g' % ds['d_std'] if ds.get('d_std') else '—'),
                     ('—' if c['util'] is None else f'{c["util"]:.2f}'),
                     ', '.join(flags)])
-            ar = rep['anchor_reaction'] or {}
             tail = [['Σ', '', '', '', '', '',
-                     '', '', u.f('force', rep['sum_vertical'], 2, sign=True),
-                     '', 'sling vertical = load lifted'],
-                    ['mast', '', '', '', '', '',
-                     '', '', u.f('force', rep['mast_N'] or 0.0, 2, sign=True),
-                     '', 'axial N, compression −'],
-                    ['anchor', '', str(rep['anchor']), '', '', '',
-                     u.f('force', ar.get('Fx', 0.0), 2, sign=True),
-                     u.f('force', ar.get('Fy', 0.0), 2, sign=True),
-                     u.f('force', ar.get('Fz', 0.0), 2, sign=True),
-                     '', 'reaction at the mast top']]
+                     u.f('force', rep['sum_vertical'], 2, sign=True),
+                     '', '', '', 'sling vertical = load lifted']]
+            if lsum is not None:
+                tail += [['hook', '', str(rep['hook']), '', '', '',
+                          u.f('force', lsum['hook_load'], 2, sign=True),
+                          '', '', '', 'what the hook carries'],
+                         ['balance', '', '', '', '', '',
+                          u.f('force', lsum['balance'], 2), '', '', '',
+                          'level' if lsum['verdict'] != 'not balanced'
+                          else 'NOT balanced']]
+            if rep['mast_N'] is not None:
+                ar = rep['anchor_reaction'] or {}
+                tail += [['mast', '', '', '', '', '',
+                          u.f('force', rep['mast_N'] or 0.0, 2, sign=True),
+                          '', '', '', 'axial N, compression −'],
+                         ['anchor', '', str(rep['anchor']), '', '', '',
+                          u.f('force', ar.get('Fz', 0.0), 2, sign=True),
+                          '', '', '', 'reaction at the mast top']]
             worst_txt = ''
             if rep['over']:
                 worst_txt = (' Over capacity in the lift: ' + ', '.join(
@@ -4455,14 +4611,16 @@ def _export_pdf_impl(nodes, members, loads, supports, results, path,
                 fig, f'Crane {code} — lift of {what}',
                 ['#', 'rod', 'pick node', f'L ({u.lab("length")})',
                  'angle (°)', f'T ({u.lab("force")})',
-                 f'Tx ({u.lab("force")})', f'Ty ({u.lab("force")})',
-                 f'Tz ({u.lab("force")})', 'T / WLL', 'flags'],
+                 f'Tz ({u.lab("force")})', 'req. Ø (mm)', 'use Ø (mm)',
+                 'T / WLL', 'flags'],
                 rows, [0.4, 0.6, 0.9, 0.9, 0.9, 1.0, 1.0, 1.0, 1.0, 0.8, 1.5],
                 note=(f'Angles from the horizontal; a sling flatter than '
                       f'{slift.SLING_MIN_ANGLE_DEG:g}° is flagged -- its '
                       f'tension rises as 1/sin(angle), and so does the '
                       f'horizontal pull it puts into the piece. Cable '
                       f'capacity: {info.get("cable_spec") or "not set -- tensions only"}.'
+                      + (f' Rope sizes: {lsum["rope_basis"]}.'
+                         if lsum is not None else '')
                       + worst_txt),
                 tail_rows=tail)
             pdf.savefig(fig)

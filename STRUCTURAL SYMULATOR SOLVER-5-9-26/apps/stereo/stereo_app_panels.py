@@ -22,6 +22,7 @@ from apps.stereo import expr_math as em
 from apps.stereo import stereo_examples as sx
 from apps.stereo import stereo_app_analysis as sa
 from apps.stereo import stereo_member_loads as mld
+from apps.stereo import stereo_lift_calc as slc
 from apps.stereo import stereo_bezier as bz
 from apps.stereo import stereo_wind as sw
 from apps.stereo.stereo_app_constants import (
@@ -3091,28 +3092,22 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Button(beam, text='Clear every beam', fg='#a3241a',
                   command=self._clear_beams).pack(fill='x', padx=6, pady=(0, 4))
 
-        # ── crane (roadmap v2, 3.6) ──────────────────────────────────────
-        crane = tk.LabelFrame(box, text='Crane (lift from selected nodes)', bg=BG,
+        # ── crane: a LIFTING CALCULATOR (stereo_lift_calc) ──────────────
+        # Not a simulation of the lift: it hangs the piece from a hook over
+        # its centre of gravity and works out the weight, the sling lengths,
+        # the sling forces and rope size, and what the lift does to the
+        # piece. Nothing is added to the model's supports.
+        crane = tk.LabelFrame(box, text='Crane (lift calculator)', bg=BG,
                               font=('Helvetica', 8, 'bold'))
         crane.pack(fill='x', padx=6, pady=(0, 4))
-        tk.Label(crane, text='Select 3 or more joints, then Lift. A hook goes '
-                             'over their centroid, one tension-only cable runs '
-                             'to each joint, and a mast above the hook is built '
-                             'into a fixed top. A cable pulls or goes slack -- '
-                             'it never pushes -- so Analyze solves this in '
-                             'passes.',
+        tk.Label(crane, text='Select 3 or more joints, then Lift. The hook '
+                             'goes straight over the piece\'s centre of '
+                             'gravity and a sling runs to each joint. '
+                             'Analyze lift then solves only what is lifted, '
+                             'under its own weight × the dynamic factor.',
                  bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
                  wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6, pady=(2, 2))
-        self.crane_auto = tk.BooleanVar(value=True)
-        self.crane_rise = tk.DoubleVar(value=4.0)
-        self.crane_mast = tk.DoubleVar(value=1.5)
-        # ON by default, and it has to be: with the model's own supports left
-        # in place the ground is a far stiffer path than a sling, so every
-        # cable reads zero and the crane appears to be carrying nothing.
-        # Clear every crane hands the supports back.
-        self.crane_off_ground = tk.BooleanVar(value=True)
         # WHAT is lifted: the piece the picked joints belong to, or a group.
-        # Only that comes off its supports; the rest of the file stands.
         self.crane_lift_target = tk.StringVar(value=self.CRANE_LIFT_PIECE)
         lift_row = tk.Frame(crane, bg=BG)
         lift_row.pack(fill='x', padx=6, pady=(0, 2))
@@ -3123,26 +3118,43 @@ class StereoPanelsMixin(_ToolbarModes):
             width=16, postcommand=self._refresh_crane_lift_choices)
         self.crane_lift_box.pack(side='left', fill='x', expand=True)
         self._refresh_crane_lift_choices()
-        tk.Checkbutton(crane, text='Take it off its own supports while lifting',
-                       variable=self.crane_off_ground, bg=BG,
-                       font=('Helvetica', 8)).pack(anchor='w', padx=6)
-        tk.Checkbutton(crane, text='Work the hook height out from the spread',
-                       variable=self.crane_auto, bg=BG, font=('Helvetica', 8),
-                       command=self._on_crane_auto_change
-                      ).pack(anchor='w', padx=6)
-        self._crane_rise_row = tk.Frame(crane, bg=BG)
-        tk.Label(self._crane_rise_row, text='Hook rise (m):', bg=BG, width=16,
-                 anchor='w', font=('Helvetica', 9)).pack(side='left')
-        tk.Entry(self._crane_rise_row, textvariable=self.crane_rise, width=10,
+        # Where the hook goes: over the centre of gravity always; HOW HIGH
+        # is set one of four ways (stereo_lift_calc.hook_rise).
+        self.crane_hook_mode = tk.StringVar(value='auto')
+        self.crane_rise = tk.DoubleVar(value=4.0)
+        hook_row = tk.Frame(crane, bg=BG)
+        hook_row.pack(fill='x', padx=6, pady=(0, 2))
+        tk.Label(hook_row, text='Hook:', bg=BG, width=6, anchor='w',
                  font=('Helvetica', 9)).pack(side='left')
-        # Kept so the rise row can be re-packed in ITS OWN place. pack()
-        # appends to the end of the parent, so a row hidden at build time and
-        # shown later reappears under the buttons instead of above the mast,
-        # which is not where the user left it.
-        self._crane_mast_row = self._labeled_entry(crane, 'Mast (m):',
-                                                   self.crane_mast)
-        # The cables' own capacity, for the crane report: a working load
-        # limit as typed, or one worked out from a wire rope's diameter.
+        self._crane_hook_labels = {v: k for k, v
+                                   in slc.HOOK_MODE_LABELS.items()}
+        self._crane_hook_choice = tk.StringVar(
+            value=slc.HOOK_MODE_LABELS['auto'])
+        hb = ttk.Combobox(hook_row, textvariable=self._crane_hook_choice,
+                          state='readonly', width=20,
+                          values=[slc.HOOK_MODE_LABELS[k]
+                                  for k in slc.HOOK_MODES])
+        hb.pack(side='left', fill='x', expand=True)
+        hb.bind('<<ComboboxSelected>>', self._on_crane_hook_mode)
+        self.crane_hook_box = hb
+        self._crane_rise_entry = tk.Entry(hook_row, textvariable=self.crane_rise,
+                                          width=6, font=('Helvetica', 9))
+        self._crane_rise_entry.pack(side='left', padx=(3, 0))
+        fac = tk.Frame(crane, bg=BG)
+        fac.pack(fill='x', padx=6, pady=(0, 2))
+        self.crane_daf = tk.DoubleVar(value=1.0)
+        self.crane_allowance = tk.DoubleVar(value=0.0)
+        tk.Label(fac, text='Dyn. factor', bg=BG,
+                 font=('Helvetica', 8)).pack(side='left')
+        tk.Entry(fac, textvariable=self.crane_daf, width=5,
+                 font=('Helvetica', 9)).pack(side='left', padx=(2, 6))
+        tk.Label(fac, text='Connections %', bg=BG,
+                 font=('Helvetica', 8)).pack(side='left')
+        tk.Entry(fac, textvariable=self.crane_allowance, width=5,
+                 font=('Helvetica', 9)).pack(side='left', padx=(2, 0))
+        # A cable to check against, if one is chosen: a typed working load
+        # limit, or a wire rope's diameter. The REQUIRED size is always
+        # worked out (the lift summary); the standard sizes are editable.
         self.crane_cap_mode = tk.StringVar(value='none')
         self.crane_wll = tk.DoubleVar(value=50.0)
         self.crane_dia = tk.DoubleVar(value=20.0)
@@ -3163,19 +3175,42 @@ class StereoPanelsMixin(_ToolbarModes):
                        ).grid(row=2, column=1, sticky='w')
         tk.Entry(cap, textvariable=self.crane_dia, width=7,
                  font=('Helvetica', 9)).grid(row=2, column=2, sticky='w')
+        sz = tk.Frame(crane, bg=BG)
+        sz.pack(fill='x', padx=6, pady=(1, 0))
+        tk.Label(sz, text='Rope sizes (mm):', bg=BG,
+                 font=('Helvetica', 8)).pack(side='left')
+        self.crane_sizes = tk.StringVar(
+            value=', '.join('%g' % d for d in slc.STANDARD_ROPE_MM))
+        tk.Entry(sz, textvariable=self.crane_sizes, width=18,
+                 font=('Helvetica', 8)).pack(side='left', fill='x',
+                                             expand=True, padx=(2, 0))
         tk.Button(crane, text='Lift the selected nodes',
                   command=self._add_cable_crane).pack(fill='x', padx=6, pady=(2, 2))
+        tk.Button(crane, text='▶ Analyze lift', fg='#1a6bbd',
+                  command=self._analyze_lifts).pack(fill='x', padx=6, pady=(0, 2))
         tk.Button(crane, text='Clear every crane', fg='#a3241a',
-                  command=self._clear_cable_cranes).pack(fill='x', padx=6, pady=(0, 4))
-        self._on_crane_auto_change()
+                  command=self._clear_cable_cranes).pack(fill='x', padx=6, pady=(0, 2))
+        # The lift summary: what a lift plan is made of, ready to copy.
+        self.crane_summary = tk.Text(crane, height=9, width=38, wrap='none',
+                                     font=('Courier', 7), bg='#fbfbf8',
+                                     relief='flat', state='disabled')
+        self.crane_summary.pack(fill='x', padx=6, pady=(2, 0))
+        tk.Button(crane, text='Copy summary', font=('Helvetica', 8),
+                  command=self._copy_lift_summary).pack(anchor='e', padx=6,
+                                                        pady=(1, 4))
+        self._on_crane_hook_mode()
 
-    def _on_crane_auto_change(self):
-        """The typed rise is only meaningful when the automatic one is off."""
-        if self.crane_auto.get():
-            self._crane_rise_row.pack_forget()
-        else:
-            self._crane_rise_row.pack(fill='x', padx=6, pady=1,
-                                      before=self._crane_mast_row)
+    def _on_crane_hook_mode(self, _event=None):
+        """The number box only means something when a mode needs one; its
+        unit follows the mode."""
+        mode = self._crane_hook_mode()
+        self.crane_hook_mode.set(mode)
+        self._crane_rise_entry.configure(
+            state='disabled' if mode == 'auto' else 'normal')
+
+    def _crane_hook_mode(self):
+        return self._crane_hook_labels.get(self._crane_hook_choice.get(),
+                                           'auto')
 
     def _build_results_panel(self, parent):
         box = tk.LabelFrame(parent, text='Results', bg=BG, font=('Helvetica', 10, 'bold'))

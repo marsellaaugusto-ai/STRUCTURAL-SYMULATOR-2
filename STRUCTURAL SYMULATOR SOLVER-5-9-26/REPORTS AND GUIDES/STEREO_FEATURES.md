@@ -496,169 +496,82 @@ screen explains.
 Each with a **constant** or **parabolic** depth law, any offset direction, and
 multi-tier stacking for a deeper girder.
 
-**Cable crane** (`add_cable_crane`). Select three or more joints and press *Lift
-the selected nodes* in the Crane group: a hook node goes up above the **centre
-of gravity of the piece it lifts**, one **tension-only cable** runs from each
-selected node to the hook, and a vertical mast runs from the hook to an anchor above it. This answers
-"what happens to my structure while it is being lifted", which is a different
-load case from the finished structure and often the governing one.
+**The crane is a lifting calculator** (`stereo_lift_calc.py`, v31). It does not
+simulate a lift; it answers the questions a lift plan asks before anything
+leaves the ground: how heavy the piece is and where its centre of gravity is,
+where the hook goes and how long and steep each sling is, what each sling
+carries and so how thick the rope must be, and what being picked up does to
+the piece -- axial forces, moments and utilisation in every rod.
 
-**Why the centre of gravity, not the middle of the picks.** A rigger hangs
-the hook over the centre of gravity, and so does the crane
-(`stereo_lift.centre_of_gravity`: the downward loads on the piece's joints,
-self-weight included when it is on; with none, the rods' own lengths). On a
-symmetric grid the two points coincide. On a pitched roof module they do
-not, and with the hook over the picks the module tipped: two slings went into
-compression (slack), and the tag lines -- there only to stop the linear
-solve's pendulum modes -- carried the lift, **45 kN** on one module. Hung over
-the centre of gravity, the same lift reads all four slings in tension, their
-vertical components summing to the 69.65 kN lifted, and **0.00 kN** in the
-tag lines. If the centre of gravity is **outside** the pick points seen from
-above (`cog_outside_picks`), no set of sling tensions can hold the piece
-level: the crane says so the moment it is added -- how far outside, and to
-pick around it -- rather than leaving it to a slack-cable error at Analyze.
+Select three or more joints and press *Lift the selected nodes* in the Crane
+group. A hook node goes **straight over the centre of gravity of the piece**
+(its rods' own weight, A·L·γ, each rod's material) and a pinned,
+**tension-only sling** runs from each joint to it. There is **no mast** and
+**no support is added or taken away** -- the hook itself is the fixed point the
+lift is solved from.
 
-Hook rise and mast length are typed, or worked out from the spread of the
-selection: the mean horizontal distance from the point under the hook out to
-the picked nodes, floored at 0.5 m, which puts the slings near 45° — the angle a rigger
-aims for, because steeper wastes height and flatter multiplies the tension for
-the same lift. The mast defaults to 35% of the rise. **Clear every crane**
-removes each crane member and node by role, so the action is repeatable.
+- **What is lifted** -- the *Lift* box: *Piece under the hook* (every rod
+  connected to the picks, a crane's own rods not counting as a connection) or a
+  **group** by name. The slings must hook onto the group, and a group still
+  joined to rods that stay on the ground is refused, naming the nodes.
+- **Where the hook goes** -- always over the centre of gravity; its height set
+  one of four ways: *auto* (the spread of the picks, slings near 45°), a
+  **height** above the highest pick, the **flattest sling angle**, or the
+  **longest sling length**. An impossible value (a sling shorter than the
+  distance it has to reach) is refused with the reason.
+- **Refused before anything is built**: a centre of gravity **outside the
+  picks** seen from above (the far slings would have to push and the piece
+  would tip), fewer than three joints, a piece with no weight.
+- **Load**: the piece's self-weight × (1 + *connections %*, the gussets, bolts
+  and welds) × the **dynamic factor**. Nothing else -- the service loads are not
+  on a piece in the air.
+- **Vertical lift only.** A body hanging from one hook is a pendulum, and a
+  linear solve gives a pendulum no lateral stiffness (three zero modes: swing
+  in x and y, spin). The lift is solved with three restraints that only stop
+  those -- and with the hook over the centre of gravity, statics leaves them
+  nothing to carry. What they *do* carry is printed as the **balance check**,
+  0.00 kN for a level lift; anything above 0.01 kN is flagged *not balanced*.
 
-The cables are pinned and tension-only, so the §1 active-set solve applies:
-a sling on the slack side of an off-centre lift reads **0.00, slack** instead of
-pushing. Compare a guyed mast under a horizontal load — with cables, the
-windward guy takes **+16.63 kN** and the leeward one goes slack; with the same
-members as ordinary bars, both read **±8.33 kN** and one of them is a strut,
-which is not what a guy rope does.
+The lift is **solved on its own**: the lifted rods, their slings and the hook,
+nothing else in the file. *Lift* solves it at once (it is small) and fills the
+**lift summary** in the panel -- weight, connections, dynamic factor, lift load,
+centre of gravity, hook position and **hook load**, the balance check, and per
+sling its pick, **length**, **angle**, tension, required rope Ø and the
+**standard size to use**, plus the worst rod. *Copy summary* puts it on the
+clipboard. A lift that cannot hang (three corners of the default grid fold its
+free edge; slings all in one plane let a flat truss turn like a flag) selects
+the loose nodes and says why.
 
-**The lift takes the model off its own supports** (a checkbox, on by default).
-A support left in place is a rigid path to ground in parallel with the slings and
-it wins every time: with the grid's own supports in, all four slings read exactly
-0.000 kN. *Clear every crane* hands them back, kind and all. With the checkbox off
-the panel warns you that the slings may read zero.
+**▶ Analyze lift** solves every crane's lift and shows it: the lifted pieces
+carry their lift forces, moments and utilisation, and **every other rod is
+greyed out** rather than shown carrying nothing. The panel's factors and cable
+check apply to every crane. **▶ Analyze** goes back to the service loads, in
+which the slings are **inert** -- the model is solved without them and its hook,
+so a piece lying in the file to be lifted no longer drags the analysis of the
+rest into a mechanism, and the slings' weight lands nowhere.
 
-**It lifts one piece, not the whole file** (`stereo_lift.py`). The point of the
-crane is how a piece takes being picked up -- the stress the lift itself puts
-into it. A file can hold more than one piece (two trusses side by side, a roof
-beside its columns), and the lift used to take *every* support in the file away,
-leaving the others floating and the whole model refused as a mechanism. The
-crane's **Lift** box chooses what comes off the ground:
+**Rope size.** Required WLL = the sling's tension; required Ø from a 6x36 IWRC
+grade 1770 rope, breaking at ≈0.65·d² kN (d in mm), worked at a fifth of that
+(WLL = MBF ÷ 5); the size to use is the next one up in the panel's editable
+*Rope sizes* list. The basis is printed with every result. The *Cable check*
+optionally rates each sling against a typed WLL or a chosen rope Ø (T / WLL).
 
-- *Piece under the hook* (the default): every rod connected, through any chain
-  of rods, to the joints the slings hook onto. A crane's own rods do not count
-  as a connection, so two pieces each on its own crane stay two pieces.
-- *a group*, by name: its rods (with its subgroups'). The slings must hook onto
-  the group, and the group must be a separate piece -- one still joined to rods
-  that stay on the ground is held, not lifted, so the crane refuses it and names
-  the nodes where it is joined.
+**In the workbook** (Export Excel): a **Lift results K1** sheet per crane (the
+summary and the sling table), a **Lift rods** sheet (crane, rod, group, N, peak
+M and V along the rod, utilisation and the governing check) and a **Cranes**
+sheet with every setting the lift was made with -- the group, the picks, the
+hook mode and value, the factors, the cable check and the size list -- which
+**Import from Excel reads back**, so the lifts survive the round trip.
 
-Only the lifted piece's supports are taken away; everything else stands, and
-the note says how many rods stay on their supports. Each lift is recorded --
-its code, the joints it hooks onto, the piece it lifts -- for the crane report.
+**In the PDF** (*Crane lift report*): two sheets per crane, built from the same
+lift solve as the panel and the workbook -- the lifted piece by utilisation
+with each sling labelled with its tension, and the sling schedule with length,
+angle, tension, vertical component, required and standard rope Ø, T / WLL and
+flags, then the hook load and the balance check.
 
-**The crane report** (PDF, *Crane lift report* in the sheet chooser): two
-sheets per crane.
-
-- *Crane K1 — lift of …*: the lifted piece coloured by member utilisation --
-  what the lift does to it, the reason for the crane -- with bars over
-  capacity dashed, every sling drawn and labelled with its tension, the hook
-  marked, and the rods that stay on the ground pale. The view is framed on
-  the lifted piece and its crane, and any other crane is drawn pale and left
-  unlabelled: in a file of fifteen lifts, the whole model with fifteen black
-  cranes made the one the sheet is about a corner of it. The panel gives the
-  hook position, the sum of the slings' vertical components (the load
-  lifted), the mast force, the worst member and how many are over capacity,
-  how many slings are flatter than 45°, and how many cables exceed their
-  capacity.
-- *Crane K1 — slings, hook and mast*: per sling its rod, pick node, length,
-  angle from horizontal, tension and its x/y/z components, tension ÷ WLL and
-  flags (*slack*, *flat* below 45°, *OVER WLL*); then the totals, the mast's
-  axial force and the anchor reaction, and the members the lift puts over
-  capacity, worst first.
-
-**The cable check.** The crane panel's *Cable check* sets each cable's
-capacity when the crane goes on: *none* (tensions only), a typed **WLL** in
-kN, or a wire **rope diameter** -- a 6x36 IWRC grade 1770 rope breaks at about
-0.65·d² kN (d in mm) and a sling works at a fifth of that, so Ø20 mm gives
-WLL 52 kN. The basis is printed on the report. On the default grid lifted
-from its four corners each sling carries 636 kN at 45°, and 116 bars of the
-grid go over capacity (worst 2.63) -- the lift check says so on its first
-sheet.
-
-**It also adds three tag lines**, and it has to. A body hanging from concurrent
-cables is a pendulum, and a linear small-deflection solve gives a pendulum no
-lateral stiffness at all — the restoring force is a geometric, second-order term
-this solver does not carry. Three modes therefore have zero stiffness: swing in x,
-swing in y, and spin about the vertical. Unsteadied, the lifted grid's stiffness
-matrix has a condition number of 6 × 10¹⁶ — numerically singular — and yet returns
-a clean, plausible answer under one load case and displacements of 10¹⁰ m under
-another, because the singularity test looks at the residual, which depends on the
-loads. A real rig steadies a hanging load the same way. The three restraints are
-the minimum and the maximum: at the lifted node furthest out, ux and uy; at the
-node furthest from that one, the direction across the line between them. In a
-symmetric lift they carry exactly zero, which is the check that they are steadying
-and not carrying; a non-zero reaction there is the net horizontal load on the lift,
-which has nowhere else to go.
-
-Steadied, the four-sling lift of 1800 kN reads **636.3961 kN** per sling with the
-vertical components summing to 1800.0000 kN — 1800/(4·cos 45°), the slings at 45°
-as the geometry says.
-
-**Off its supports, the model has to be stable on its own** — and a grid often
-is not. The default square-on-square grid, as a free body, has **seven**
-zero-stiffness modes, not six: the six rigid-body motions and a free-edge
-mechanism its perimeter supports were hiding. Hung from its four corners the
-slings hold that part; hung from three corners, or from a patch in the middle,
-nothing does, and the solve is singular. The crane checks this the moment it
-is added (`stereo_math.mechanism`, the softest mode of the supported stiffness
-matrix): it **selects the loose nodes** and says, in the panel and the status
-bar, to hook slings there too or keep the model on its supports. Any singular
-analysis now says the same — *"Free to move with no stiffness: nodes …"* — and
-selects them, rather than only "singular stiffness matrix".
-
-Fixed in the same pass (item 4):
-
-- a **second crane** used to take the first crane's mast support and tag lines
-  off as if they were ground; the crane's own supports now stay, and *Clear
-  every crane* removes every crane's tag lines, not just the last one's;
-- **undo** restores the list of supports the lift took off and the tag lines,
-  so a later *Clear* hands back exactly what the model had;
-- the **tension-only flag survives Excel** (a `tension_only` column) — a crane
-  exported and re-imported used to come back with cables that push;
-- a cable set that **never settles** keeps its last pass, with the caveat, where
-  it used to leave no result at all;
-- a lift that **tips on its slings** (picked well off its centre of load) moves
-  further than a linear analysis can describe — the status bar now says so
-  whenever the peak displacement passes 5 % of the model's size, rather than
-  presenting 12 m of rigid tilt as an answer;
-- a solve whose answer moves more than **a thousand times the model's size**
-  is refused as the mechanism it is: the residual test alone let one through.
-
-Found on a real file -- three versions of a roof, each as its trusses, its
-module and the complete roof, eighteen pieces and 1582 nodes in one workbook:
-
-- the hook hangs over the **centre of gravity** (above), and a lift whose
-  centre of gravity is outside its picks is flagged when it is made;
-- the **"can it hang?" check runs on every lift**, on the lifted piece and its
-  own crane -- not on the whole file, and not only when the lift took
-  supports away. A truss lying in the file to be lifted has no supports to
-  take, and was never checked; the check was also skipped above 2500 degrees
-  of freedom, which this file exceeds. Small, the piece is always checked;
-- slings that all hang **in one plane** with the hook (a flat truss picked
-  along its top chord) are named as such: the piece can turn about them like
-  a flag, and needs a spreader, a second line, or lifting with what holds it
-  upright;
-- the mechanism message, the tipping warning and the status line are set
-  after the panel refresh, which used to overwrite them with the plain model
-  summary.
-
-**The mast anchor is fixed, not pinned.** A rigid mast whose top can rotate has
-a zero-energy torsional mode about its own axis — the cables are pin-jointed and
-add no rotational stiffness at the hook, so nothing resists that rotation and
-the solve is singular before any cable has gone slack. The same fact is worth
-knowing when reading results: a body hanging from a single hook can spin, so its
-rotation about the mast axis is not restrained by the lift itself.
+Older workbooks still open: a crane saved with a mast keeps its mast and its
+fixed top (the support editor leaves that support alone), and both are inert
+in the analysis like the slings.
 
 ---
 

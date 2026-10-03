@@ -24,6 +24,7 @@ from apps.stereo import expr_math as em
 from apps.stereo import stereo_member_loads as mld
 from apps.stereo import stereo_bezier as bz
 from apps.stereo import stereo_wind as sw
+from apps.stereo import stereo_lift_calc as slc
 from apps.stereo.stereo_app_constants import (
     DOF_LABELS, FAMILY_KEY, PATTERN_KEY, BRACE_KEY, CHORD_ROLES,
     QUICK_SUPPORT_CUSTOM, QUICK_SUPPORT_PIN, QUICK_SUPPORT_FIXED,
@@ -282,10 +283,8 @@ class StereoModelMixin:
         # to hand back. Carrying the old model's entries over would restore
         # supports onto whatever node happens to hold those indices now.
         self._column_freed = []
-        # And the crane's, for the same reason: a lift on the OLD mesh freed
-        # supports whose node numbers mean something else now.
-        self._crane_freed = []
-        self._crane_tag = None
+        # And the cranes' lift records: their picks are node numbers on the
+        # OLD mesh.
         self._crane_lifts = []
         # And the groups, for the same reason and more sharply: a group holds
         # MEMBER indices, so one kept across a regenerate would name whatever
@@ -792,9 +791,9 @@ class StereoModelMixin:
             return
         dofs = {d: v.get() for d, v in self.dof_vars.items()}
         preset = self.sup_preset_var.get()
-        # A crane's mast top keeps its fixed support: a box drawn over a
-        # roof and its cranes used to overwrite the anchors too, leaving
-        # the masts hanging from whatever the editor held.
+        # A crane mast's top (in a model saved before the crane lost its
+        # mast) keeps its fixed support: a box drawn over a roof and its
+        # cranes used to overwrite the anchors too.
         tops = self._crane_mast_nodes()
         kept = [n for n in nodes if n in tops]
         nodes = [n for n in nodes if n not in tops]
@@ -824,7 +823,7 @@ class StereoModelMixin:
         self._push_undo('apply support')
         self.sup_quick_var.set(QUICK_SUPPORT_CUSTOM)
         target = set(nodes)
-        # the crane's tag lines on these nodes stay with the crane
+        # a legacy mast top's support stays with its crane
         own = self._crane_support_ids()
         self.supports = [s for s in self.supports
                          if s['node'] not in target or id(s) in own]
@@ -1122,11 +1121,19 @@ class StereoModelMixin:
                     direction=self._area_direction(), only=only))
         if self.self_weight_on.get():
             loads = sm.combine_loads(loads, sm.self_weight_loads(
-                self.nodes, self.members, self._unit_weight()))
+                self.nodes, self._weighing_members(), self._unit_weight()))
         wind = self._wind_loads()
         if wind:
             loads = sm.combine_loads(loads, wind)
         return loads
+
+    def _weighing_members(self):
+        """self.members as the self-weight sees them: a crane's slings
+        weigh nothing. They are a lift calculation, not part of the
+        structure, and their weight would otherwise land on the pick
+        joints of a model standing on its own supports."""
+        return [dict(m, A=0.0) if slc.is_crane_rod(m) else m
+                for m in self.members]
 
     def _solve_loads(self):
         """(nodal_loads, member_loads) for the solver.
@@ -1158,7 +1165,7 @@ class StereoModelMixin:
         member_loads = list(self._valid_member_loads())
         if self.self_weight_on.get():
             nodal_sw, span_sw = sm.self_weight_split(
-                self.nodes, self.members, self._unit_weight())
+                self.nodes, self._weighing_members(), self._unit_weight())
             loads = sm.combine_loads(loads, nodal_sw)
             member_loads.extend(span_sw)
         wind = self._wind_loads()
@@ -1253,9 +1260,23 @@ class StereoModelMixin:
             return
         t0 = time.perf_counter()
         loads, member_loads = self._solve_loads()
-        res, err = sm.analyze(self.nodes, self.members, loads,
-                              self._active_supports(), panels=self.panels,
-                              member_loads=member_loads)
+        # A crane is a lift calculation (▶ Analyze lift), not part of the
+        # building: the ordinary analysis solves the model without its
+        # slings and hook, and hands them back carrying nothing. Before
+        # this a lifted piece with no supports of its own took the whole
+        # model down with it as a mechanism.
+        svc = slc.service_model(self.nodes, self.members,
+                                self._active_supports(), loads,
+                                member_loads, self.panels)
+        if svc is None:
+            res, err = sm.analyze(self.nodes, self.members, loads,
+                                  self._active_supports(), panels=self.panels,
+                                  member_loads=member_loads)
+        else:
+            res, err = sm.analyze(svc['nodes'], svc['members'], svc['loads'],
+                                  svc['supports'], panels=svc['panels'],
+                                  member_loads=svc['member_loads'])
+            res = slc.expand_service(res, svc, self.nodes, self.members)
         warning = None
         if err and res is not None:
             # A result WITH a caveat -- the cable set that never settled
@@ -1282,6 +1303,8 @@ class StereoModelMixin:
             self.member_checks = sc.check_all_members(
                 self.nodes, self.members, res['member_res'],
                 timber=self._timber_settings())
+            for j in (svc or {}).get('crane', ()):
+                self.member_checks[j] = slc.inert_check()
             self._auto_deform_scale()
             # The Truss tab's own panel checks, reused rather than rewritten:
             # yield, weld and -- the one that actually governs a thin plate --
@@ -1393,9 +1416,8 @@ class StereoModelMixin:
 
     def _displacement_caution(self):
         """A line for the status bar when the answer has moved further than
-        a small-deflection analysis can describe -- the commonest case being
-        a lift that tips on its slings, which only second-order (pendulum)
-        stiffness would hold level. '' when the displacements are modest."""
+        a small-deflection analysis can describe. '' when the displacements
+        are modest."""
         if not self.results or not self.nodes:
             return ''
         peak_mm = max((math.sqrt(r['ux'] ** 2 + r['uy'] ** 2 + r['uz'] ** 2)
@@ -1404,14 +1426,10 @@ class StereoModelMixin:
                    for k in range(3))
         if span <= 0 or peak_mm / 1000.0 <= self.LARGE_DISPLACEMENT_FRAC * span:
             return ''
-        crane = any(m.get('role') == 'crane_cable' for m in self.members)
         return ('Caution: the peak displacement, %.0f mm, is %.0f%% of the '
                 'model\'s size -- beyond what a linear, small-deflection '
-                'analysis describes.%s' % (
-                    peak_mm, 100.0 * peak_mm / 1000.0 / span,
-                    ' On a crane lift this is the load tipping on its slings: '
-                    'hook them so it hangs level (around the centre of the '
-                    'load, out towards its edges).' if crane else ''))
+                'analysis describes.' % (
+                    peak_mm, 100.0 * peak_mm / 1000.0 / span))
 
     def _auto_deform_scale(self):
         """Set the deformation scale so the max visual displacement is about

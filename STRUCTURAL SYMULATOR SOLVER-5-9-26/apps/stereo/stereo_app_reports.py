@@ -201,7 +201,8 @@ class StereoReportsMixin:
                             self.supports,
                             self.results, path, checks=self.member_checks,
                             meta=self._excel_meta(),
-                            profiles=self.profiles, groups=self.groups)
+                            profiles=self.profiles, groups=self.groups,
+                            lifts=self._lift_export())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return
@@ -246,6 +247,10 @@ class StereoReportsMixin:
             ts = None
         if ts and hasattr(self, 'timber_duration'):
             self._set_timber_settings(ts)
+        try:
+            cranes = sr.read_cranes_sheet(path)
+        except Exception:
+            cranes = {}
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
         # The old model's groups cannot stay: a group holds member INDICES,
         # and these are different rods. The workbook's own come in instead.
@@ -253,6 +258,8 @@ class StereoReportsMixin:
         if groups:
             self.groups = groups
             self._refresh_group_list()
+        # the cranes' lift settings come back from the Cranes sheet
+        self._crane_lifts = self._crane_lifts_from_sheet(cranes)
         if profiles:
             self.profiles.update(profiles)
         self._support_candidates = [s['node'] for s in supports]
@@ -451,7 +458,8 @@ class StereoReportsMixin:
          'solicitation, steel take-off'),
         ('crane', 'Crane lift report',
          'for each crane: the lifted piece by utilisation, every sling\'s '
-         'length, angle and tension, the hook and mast, and the cable check'),
+         'length, angle, tension and rope size, the hook load and the '
+         'balance check'),
     )
 
     def _pdf_view_opts(self):
@@ -983,6 +991,7 @@ class StereoReportsMixin:
         self._push_undo('open example')
         self._model_label = 'Example: paraboloid dish (antenna)'
         self.nodes, self.members, self.loads, self.supports = nodes, members, loads, supports
+        self._crane_lifts = []
         # The workbook carries no groups, so the old model's cannot stay: a
         # group holds member INDICES, and these are different rods.
         self._drop_groups()

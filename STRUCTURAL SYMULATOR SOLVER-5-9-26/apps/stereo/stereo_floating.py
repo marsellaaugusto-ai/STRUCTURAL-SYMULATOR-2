@@ -64,78 +64,64 @@ PICK_RULE_BUTTONS = {'corners': 'Corners', 'corners_mid': 'Corners + mid',
                      'chords': 'Chords ¼–¾'}
 
 
-def _upper_nodes(nodes, members, rods):
-    """The piece's upper joints: the top half by height (all of them for a
-    flat piece), which is where slings hook on."""
-    ns = sorted(slift.nodes_of(members, rods))
-    if not ns:
-        return []
-    zs = [nodes[n][2] for n in ns]
-    lo, hi = min(zs), max(zs)
-    if hi - lo < 1e-6:
-        return ns
-    cut = lo + 0.5 * (hi - lo)
-    return [n for n in ns if nodes[n][2] >= cut - 1e-9]
-
-
-def _nearest(nodes, cands, x, y, taken):
-    pool = [n for n in cands if n not in taken] or list(cands)
-    return min(pool, key=lambda n: (nodes[n][0] - x) ** 2
-               + (nodes[n][1] - y) ** 2)
+def _nearest(nodes, cands, x, y, lift=0.05):
+    """The candidate nearest (x, y) in plan, a higher joint winning a
+    near-tie (slings hook on top). A spot whose nearest joint is already
+    picked adds nothing -- a lower joint under it is no second pick."""
+    return min(cands, key=lambda n: math.hypot(nodes[n][0] - x,
+                                              nodes[n][1] - y)
+               - lift * nodes[n][2])
 
 
 def pick_nodes(nodes, members, rods, rule):
     """The joints rule `rule` picks on the piece `rods`, sorted.
 
-      'corners'      the upper joints nearest the four corners of the
-                     piece's plan;
-      'corners_mid'  those, and the ones nearest the middle of each side;
-      'chords'       along the piece's long axis, on each top chord, the
-                     joints nearest a quarter and three quarters of its
-                     length -- how a long truss is usually picked.
+      'corners'      the joints nearest the four corners of the piece's
+                     plan (a higher one winning a near-tie);
+      'corners_mid'  those, and the ones nearest the middle of each LONG
+                     side -- of all four sides when the plan is about
+                     square;
+      'chords'       at a quarter and three quarters of the piece's long
+                     axis, the two joints furthest apart across it -- both
+                     chords of a truss at its quarter points.
+
+    Every joint of the piece is a candidate, not only the highest ones: on
+    a pitched truss or module the top half by height is one side of the
+    ridge, and picks there leave the centre of gravity outside them.
     """
-    cands = _upper_nodes(nodes, members, rods)
+    cands = sorted(slift.nodes_of(members, rods))
     if not cands:
         return []
     xs = [nodes[n][0] for n in cands]
     ys = [nodes[n][1] for n in cands]
     x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
     taken = []
+
+    def add(n):
+        if n not in taken:
+            taken.append(n)
     if rule in ('corners', 'corners_mid'):
         spots = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
         if rule == 'corners_mid':
             xm, ym = (x0 + x1) / 2, (y0 + y1) / 2
-            spots += [(xm, y0), (x1, ym), (xm, y1), (x0, ym)]
+            lx, ly = x1 - x0, y1 - y0
+            square = max(lx, ly) <= 1.25 * max(min(lx, ly), 1e-9)
+            if square or lx >= ly:
+                spots += [(xm, y0), (xm, y1)]
+            if square or ly > lx:
+                spots += [(x0, ym), (x1, ym)]
         for x, y in spots:
-            n = _nearest(nodes, cands, x, y, taken)
-            if n not in taken:
-                taken.append(n)
+            add(_nearest(nodes, cands, x, y))
         return sorted(taken)
     if rule == 'chords':
         along = 0 if (x1 - x0) >= (y1 - y0) else 1
         across = 1 - along
         lo, hi = (x0, x1) if along == 0 else (y0, y1)
-        span = hi - lo
-        # the top chords: the upper joints in lines along the long axis,
-        # told apart by their position across it
-        width = (y1 - y0) if along == 0 else (x1 - x0)
-        tol = max(0.05 * width, 0.05)
-        lines = []
-        for n in sorted(cands, key=lambda n: nodes[n][across]):
-            c = nodes[n][across]
-            if lines and abs(lines[-1][0] - c) <= tol:
-                lines[-1][1].append(n)
-            else:
-                lines.append([c, [n]])
-        # outermost chords only: a module's inner lines are not picked
-        if len(lines) > 2:
-            lines = [lines[0], lines[-1]]
-        for _c, line in lines:
-            for f in (0.25, 0.75):
-                t = lo + f * span
-                n = min(line, key=lambda n: abs(nodes[n][along] - t))
-                if n not in taken:
-                    taken.append(n)
+        for f in (0.25, 0.75):
+            t = lo + f * (hi - lo)
+            near = sorted(cands, key=lambda n: abs(nodes[n][along] - t))[:6]
+            add(max(near, key=lambda n: (nodes[n][across], nodes[n][2])))
+            add(min(near, key=lambda n: (nodes[n][across], -nodes[n][2])))
         return sorted(taken)
     raise ValueError('Unknown pick rule %r.' % rule)
 

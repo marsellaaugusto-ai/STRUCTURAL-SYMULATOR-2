@@ -177,8 +177,11 @@ def check_lift(nodes, members, rods, rule, settings, unit_weight,
                        unit_weight=unit_weight, timber=timber,
                        sizes=settings.get('sizes') or slc.STANDARD_ROPE_MM)
     if not s['ok']:
-        row['verdict'] = ('mechanism on these picks' if s.get('loose')
-                          else (s.get('error') or 'did not solve'))
+        err = s.get('error') or ''
+        row['verdict'] = ('mechanism on these picks -- part of the piece '
+                          'cannot hang from them'
+                          if s.get('loose') or 'ingular' in err
+                          or 'mechanism' in err else (err or 'did not solve'))
         return row
     sm_ = s['summary']
     sl = sm_['slings']

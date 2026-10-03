@@ -602,9 +602,16 @@ list -- and every way of choosing it shows in the other places:
 
 **C10: the crane workflow.** The Lift box **follows the current group**. *Pick*
 buttons select the usual lift points on it (`stereo_floating.pick_nodes`):
-*Corners* (the upper joints nearest the plan corners), *Corners + mid sides*
-(eight), *Chords ¼–¾* (on each outer top chord, the joints nearest a quarter
-and three quarters of the length -- how a long truss is picked). A **live check**
+*Corners* (the joints nearest the plan corners, a higher one winning a
+near-tie), *Corners + mid sides* (plus the middle of each long side -- of all
+four on a square plan), *Chords ¼–¾* (at a quarter and three quarters of the
+long axis, the two joints furthest apart across it: both chords of a truss).
+Every joint of the piece is a candidate, not only the highest: on a pitched
+truss or module the upper half by height is one side of the ridge, and picks
+there leave the centre of gravity outside them. Checked on the three-iteration
+roof file: all twelve trusses lift on *Chords ¼–¾* (worst rod 0.37–0.97 at
+DAF 1.25 and +10 % connections), the modules on *Corners + mid sides* at
+0.93 / 1.06 / 1.04. A **live check**
 under them says what Lift would do with the joints selected now (picks, rods,
 weight and lift load, centre of gravity inside or not, hook height, sling
 angles, longest sling), and while the Add-ons panel is open the would-be slings

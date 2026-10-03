@@ -12754,3 +12754,16 @@ class TestIterations:
                   for g in groups if g.get('stage')]
         assert tagged == [('Module %d' % k, str(k), 'module')
                           for k in (1, 2, 3)]
+
+
+def test_the_force_scale_ignores_rods_the_lift_did_not_carry(app):
+    """In the lift view nearly every rod of a big file is greyed out at
+    N = 0 (98.8 % in the three-iteration roof file); the colour scale is
+    the lifted piece's, not pulled to zero by them."""
+    carried = [{'N': float(k + 1)} for k in range(40)]
+    ghosts = [{'N': 0.0, 'ghost': True} for _ in range(4000)]
+    app.results = {'member_res': carried + ghosts, 'node_res': [],
+                   'reactions': {}, 'case': 'lift'}
+    assert app._force_anchor() > 0.9 * 40.0
+    grey, _exact = app._near_zero_counts(app._force_anchor(), 1.0)
+    assert grey <= 2

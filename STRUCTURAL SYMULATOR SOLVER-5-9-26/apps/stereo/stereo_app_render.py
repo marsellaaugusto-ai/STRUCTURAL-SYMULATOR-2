@@ -376,7 +376,12 @@ class StereoRenderMixin:
         """
         if self.results is None:
             return 0.0
-        mags = sorted(abs(mr['N']) for mr in self.results['member_res'])
+        # Rods the solve did not carry -- greyed out in the lift view, or
+        # left out of the analysis -- are not part of the scale: in a lift
+        # of one piece out of a whole file they are nearly every rod, and
+        # their zeros pulled the 95th percentile down to nothing.
+        mags = sorted(abs(mr['N']) for mr in self.results['member_res']
+                      if not (mr.get('ghost') or mr.get('left_out')))
         if not mags:
             return 0.0
         if self.force_scale.get() != SCALE_P95 or len(mags) < 3:
@@ -400,6 +405,8 @@ class StereoRenderMixin:
             return 0, 0
         grey = exact = 0
         for mr in self.results['member_res']:
+            if mr.get('ghost') or mr.get('left_out'):
+                continue
             n = abs(mr['N'] * frac)
             if n / max_abs_N < NEAR_ZERO_FRAC:
                 grey += 1

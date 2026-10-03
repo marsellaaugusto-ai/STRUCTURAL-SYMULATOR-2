@@ -9,6 +9,7 @@ renders the returned report. Units follow perforated_beam_math.py: mm, N,
 MPa, N*mm (shown in every relevant label since this differs from the other
 tabs' units -- see MANIFESTO).
 """
+import os
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -1615,6 +1616,7 @@ class PerforatedBeamApp(UnitsMixin, tk.Frame):
 
     # ── actions ──────────────────────────────────────────────────────────
     def _clear_all(self):
+        self.document_name = None          # a new drawing
         self.openings = []
         self.loads = []
         self.supports = None
@@ -2480,6 +2482,7 @@ class PerforatedBeamApp(UnitsMixin, tk.Frame):
             messagebox.showerror('Excel import',
                                  f'The workbook was read, but could not be applied:\n\n{ex}')
             return
+        self.document_name = os.path.basename(path)  # the window title names it
         self.report = None
         self._set_results_text(
             f'Imported from {path}\n\n'

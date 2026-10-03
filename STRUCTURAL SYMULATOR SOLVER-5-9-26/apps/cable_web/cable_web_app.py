@@ -8,6 +8,7 @@ solution is requested those continuous user cables are discretised into
 straight solver segments.
 """
 import math
+import os
 import re
 import threading
 import queue
@@ -5389,6 +5390,7 @@ class CableWebApp(UnitsMixin, tk.Frame):
             self._update_reference_result(); self._refresh_tree(); self._show_empty_inspector(); self._draw()
             self.validation_var.set('Excel model imported. Validate before solving.')
             self.status_var.set(f'Excel imported: {path}')
+            self.document_name = os.path.basename(path)  # the window title names it
         except Exception as ex:
             messagebox.showerror('Excel import failed', str(ex), parent=self.winfo_toplevel())
 
@@ -5416,6 +5418,7 @@ class CableWebApp(UnitsMixin, tk.Frame):
         self.selected_items=set()
         self.next_node_id=self.next_cable_id=self.next_load_id=1
         self.validation_var.set('Model cleared.')
+        self.document_name = None          # a new drawing
         self._refresh_tree(); self._show_empty_inspector(); self._draw()
 
     def _load_example(self):

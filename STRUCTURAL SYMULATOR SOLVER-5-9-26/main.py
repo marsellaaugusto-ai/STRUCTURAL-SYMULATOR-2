@@ -132,6 +132,7 @@ from tkinter import ttk
 
 import units
 import about
+import appinfo
 
 from apps.truss.truss_app import TrussApp
 from apps.beam.beam_app import BeamApp
@@ -146,7 +147,7 @@ class App:
     def __init__(self, root):
         # root is always tk.Tk() when launched from __main__
         try:
-            root.title('STRUCTURAL SYMULATOR SOLVER-5-9-26')
+            root.title(appinfo.window_title(tab='Truss'))
             root.resizable(True, True)
         except Exception:
             pass   # safety: never called with a Frame
@@ -211,7 +212,7 @@ class App:
         nb.add(stereo_tab, text='Stereo')
         nb.add(shell_tab, text='Shell (RC)')
 
-        TrussApp(truss_tab)
+        truss_app = TrussApp(truss_tab)
         beam_app = BeamApp(beam_tab)
         beam_app.pack(fill='both', expand=True)
         arch_app = ArchApp(arch_tab)
@@ -222,9 +223,46 @@ class App:
         cable_web_app.pack(fill='both', expand=True)
         perforated_beam_app = PerforatedBeamApp(perforated_beam_tab)
         perforated_beam_app.pack(fill='both', expand=True)
-        StereoApp(stereo_tab)
+        stereo_app = StereoApp(stereo_tab)
         shell_app = ShellApp(shell_tab)
         shell_app.pack(fill='both', expand=True)
+
+        # The window title names the version and date, and the Excel file
+        # the tab in front is drawing -- or "<tab> drawing" when none is
+        # (appinfo.window_title). Each tab keeps its own `document_name`;
+        # the title follows the tab in front and any file opened in it.
+        self.root, self.nb = root, nb
+        self.tab_apps = [('Truss', truss_app), ('Beam', beam_app),
+                         ('Arch', arch_app), ('Cable', cable_app),
+                         ('Cable Web', cable_web_app),
+                         ('Perforated Beam', perforated_beam_app),
+                         ('Stereo', stereo_app), ('Shell (RC)', shell_app)]
+        self._build_info = appinfo.build_info()
+        nb.bind('<<NotebookTabChanged>>', lambda _e: self.refresh_title())
+        self.refresh_title()
+
+    def current_title(self):
+        try:
+            name, app = self.tab_apps[self.nb.index('current')]
+        except (tk.TclError, IndexError):
+            name, app = self.tab_apps[0]
+        doc = getattr(app, 'document_name', None)
+        return appinfo.window_title(doc, tab=name, info=self._build_info)
+
+    def refresh_title(self):
+        """Set the title from the tab in front; again every half second, so
+        a file opened (or a drawing cleared) shows without every tab having
+        to tell the window."""
+        try:
+            title = self.current_title()
+            if self.root.title() != title:
+                self.root.title(title)
+            pending = getattr(self, '_title_after', None)
+            if pending is not None:
+                self.root.after_cancel(pending)
+            self._title_after = self.root.after(500, self.refresh_title)
+        except (tk.TclError, AttributeError):
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

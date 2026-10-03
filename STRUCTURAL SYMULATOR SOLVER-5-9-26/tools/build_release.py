@@ -44,7 +44,16 @@ PLUGIN_NAME = 'coordinate_coordinator_truss_app_amac'
 # filename anywhere else. The series continues the repo's own history: the
 # last numbered archive was structural_simulator_v21_moment_arrows.zip, so
 # the first dated build is v22. Bump this when you hand out a new one.
-APP_VERSION = 31
+APP_VERSION = 32
+
+
+# Written into every archive: what appinfo.py reads for the window title.
+STAMP_NAME = 'BUILD_STAMP.txt'
+
+
+def stamp_text():
+    """BUILD_STAMP.txt's contents: '31 2026-10-03' -- this version, today."""
+    return '%d %s\n' % (APP_VERSION, time.strftime('%Y-%m-%d'))
 
 
 def build_stamp():
@@ -103,6 +112,8 @@ ZIP_INCLUDE_FILES = ('main.py', 'common.py', 'cirsoc_301.py', 'units.py',
                      'formula.py', 'view3d.py',
                      # the About box, its licence notices and the guide
                      'about.py', 'notices.py', 'USER_GUIDE.html',
+                     # the version and date in the window title
+                     'appinfo.py',
                      'requirements.txt', RBZ_NAME,
                      # a real model to open straight after unpacking
                      'wave_like_structure_1.xlsx')
@@ -315,6 +326,7 @@ def build_zip(dest=None, check_only=False, customer=False):
     # would have unpacked cleanly and then refused to start.
     for must in ('main.py', 'common.py', 'units.py', 'cirsoc_301.py',
                  'formula.py', 'view3d.py', 'about.py', 'notices.py',
+                 'appinfo.py',
                  'apps/stereo/stereo_app.py', 'apps/stereo/stereo_reports.py',
                  'apps/stereo/stereo_app_inspector.py',
                  'apps/shell/shell_app.py', 'apps/shell/shell_model.py',
@@ -337,6 +349,8 @@ def build_zip(dest=None, check_only=False, customer=False):
             z.write(disk, f'{root}/{rel}')
         if notices_text is not None:
             z.writestr(f'{root}/{NOTICES_NAME}', notices_text)
+        # the version and date the window title shows (appinfo.py)
+        z.writestr(f'{root}/{STAMP_NAME}', stamp_text())
     with zipfile.ZipFile(dest) as z:
         bad = z.testzip()
         if bad is not None:

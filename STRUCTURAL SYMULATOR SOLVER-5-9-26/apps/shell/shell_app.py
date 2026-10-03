@@ -2944,6 +2944,7 @@ class ShellApp(UnitsMixin, tk.Frame):
 
     def set_model(self, model):
         self.model = model
+        self.document_name = None          # import_excel names it after
         self._reset_results()
         self._load_model_into_panels()
         self._rebuild_geometry(fit=True)
@@ -3688,6 +3689,7 @@ class ShellApp(UnitsMixin, tk.Frame):
     def import_excel(self, path):
         _ensure_openpyxl()
         self.set_model(rp.import_excel_model(path))
+        self.document_name = os.path.basename(path)  # the window title names it
         self.status.set(f'Imported {os.path.basename(path)}. Press Analyze & design.')
 
     def _export_dialog(self):

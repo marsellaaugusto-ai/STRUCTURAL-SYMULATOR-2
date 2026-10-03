@@ -114,6 +114,13 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
     # numbers in a member dict mean.
     STORAGE_UNITS = sr_storage_units
 
+    @property
+    def document_name(self):
+        """What the window title names: the workbook this model came from
+        (or the example, the merge, the variant), None for a model built
+        here -- "Stereo drawing"."""
+        return getattr(self, '_model_label', None)
+
     def __init__(self, root):
         self.root = root
         self.nodes = []

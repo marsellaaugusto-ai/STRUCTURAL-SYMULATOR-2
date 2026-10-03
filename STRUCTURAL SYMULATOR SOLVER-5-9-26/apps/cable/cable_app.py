@@ -1517,6 +1517,7 @@ class CableApp(UnitsMixin, tk.Frame):
         self._draw_schematic()
 
     def _clear_all(self):
+        self.document_name = None          # a new drawing
         self.point_loads = []
         self.distributed_loads = []
         self.result = None; self.model = None
@@ -1585,6 +1586,7 @@ class CableApp(UnitsMixin, tk.Frame):
             messagebox.showerror('Import failed', str(e)); return
 
         self._clear_all()
+        self.document_name = os.path.basename(path)  # the window title names it
         self.span = st['span']; self.length = st['length']
         self.set_unit_value(self.span_var, st['span'])
         self.set_unit_value(self.length_var, st['length'])

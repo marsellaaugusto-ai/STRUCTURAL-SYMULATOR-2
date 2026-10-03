@@ -4943,6 +4943,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
             messagebox.showerror('Import failed', str(e)); return
 
         self._clear_all()
+        self.document_name = os.path.basename(path)  # the window title names it
         self.nodes = [list(n) for n in nodes]
         self.rods = rods
         self.loads = loads
@@ -5019,6 +5020,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
     def _clear_all(self, push_undo=True):
         if push_undo:
             self._push_undo('clear all')
+        self.document_name = None          # a new drawing: "Truss drawing"
         self.nodes=[];self.rods=[];self.loads=[];self.supports=[]
         self.plates=[];self.plate_checks=[]
         self.guides=[]

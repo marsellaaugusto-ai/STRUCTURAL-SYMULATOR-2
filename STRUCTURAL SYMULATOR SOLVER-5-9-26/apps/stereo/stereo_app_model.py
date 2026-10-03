@@ -1265,9 +1265,11 @@ class StereoModelMixin:
         # slings and hook, and hands them back carrying nothing. Before
         # this a lifted piece with no supports of its own took the whole
         # model down with it as a mechanism.
+        left_out = self._excluded_rods() if hasattr(
+            self, '_excluded_rods') else set()
         svc = slc.service_model(self.nodes, self.members,
                                 self._active_supports(), loads,
-                                member_loads, self.panels)
+                                member_loads, self.panels, inert=left_out)
         if svc is None:
             res, err = sm.analyze(self.nodes, self.members, loads,
                                   self._active_supports(), panels=self.panels,
@@ -1291,7 +1293,13 @@ class StereoModelMixin:
             # draw it moving the way it can: started before the dialog,
             # whose own event loop keeps it running behind the box
             moving = self._show_mechanism(which=0, quiet=True)
-            if not quiet:
+            # Pieces standing on nothing are named by group, with three
+            # ways forward (stereo_floating), instead of a bare "singular".
+            floating = self._floating_pieces(left_out) if not quiet and \
+                hasattr(self, '_floating_pieces') else []
+            if floating:
+                self._offer_floating_fixes(floating, err)
+            elif not quiet:
                 free = self._mechanism_selection(err)
                 messagebox.showerror('Analysis', err + (
                     '\n\nThose nodes are selected on the drawing.'
@@ -1304,7 +1312,7 @@ class StereoModelMixin:
                 self.nodes, self.members, res['member_res'],
                 timber=self._timber_settings())
             for j in (svc or {}).get('crane', ()):
-                self.member_checks[j] = slc.inert_check()
+                self.member_checks[j] = slc.inert_check(j in left_out)
             self._auto_deform_scale()
             # The Truss tab's own panel checks, reused rather than rewritten:
             # yield, weld and -- the one that actually governs a thin plate --

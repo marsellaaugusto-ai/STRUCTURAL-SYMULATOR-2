@@ -573,6 +573,81 @@ Older workbooks still open: a crane saved with a mast keeps its mast and its
 fixed top (the support editor leaves that support alone), and both are inert
 in the analysis like the slings.
 
+**A1–A5, B1–B5: seeing and choosing groups in the view** (`stereo_app_groupview.py`, v31).
+The **current group** is one piece of state -- the row picked in the Groups
+list -- and every way of choosing it shows in the other places:
+
+- **The group bar** over the 3D view, in every mode: `Group: Model › Module 1 ›
+  Truss 3 (40 rods) · Selected: 4 nodes · Lift takes: Module 1 (159 rods)`.
+  Each name is a link: clicking it steps back up to that level (closing an
+  open group the target is outside of).
+- **Highlight**: the current group's rods get an amber halo and a name tag;
+  *Dim others* (Groups panel, Display) greys everything else.
+- **Group #** (Display, beside Node # and Rod #): group names on the model,
+  for the *top level*, *one level down* or *all*; up to twelve names are
+  always drawn (nudged apart); more are hidden while crowded, like the numbers.
+- **Group colours** (Display): the grouped tint and its key, switched on there
+  too.
+- **Hover**: the status line names the rod under the pointer, its group (and
+  top-level group), its section and, after Analyze, its utilisation --
+  `Rod 3960 · Truss 1 top strip (Truss 1) · L 50x5 · u 0.67`; over a node, the
+  groups it belongs to.
+- **Double-click** a rod: its (innermost) group becomes current; double-click
+  again: the group above it; on empty canvas: up a level. The list follows.
+- **Picking joints keeps the current group**, and with **Pick inside group** on
+  (the default) clicks and lassos only take joints and rods of the current
+  group -- picking a module's lift points no longer catches its neighbour's.
+- **Hide / show** a group (Groups panel; *Show all*): not drawn and not
+  pickable, still in the model and the analysis. The list marks it ◌.
+
+**C10: the crane workflow.** The Lift box **follows the current group**. *Pick*
+buttons select the usual lift points on it (`stereo_floating.pick_nodes`):
+*Corners* (the upper joints nearest the plan corners), *Corners + mid sides*
+(eight), *Chords ¼–¾* (on each outer top chord, the joints nearest a quarter
+and three quarters of the length -- how a long truss is picked). A **live check**
+under them says what Lift would do with the joints selected now (picks, rods,
+weight and lift load, centre of gravity inside or not, hook height, sling
+angles, longest sling), and while the Add-ons panel is open the would-be slings
+and hook are **previewed** dashed in the view. The **crane list** shows every
+crane with what it lifts and its last verdict; *Remove this crane* takes one out
+and keeps the rest.
+
+**F1: leave a group out of the analysis** (Groups panel, ⊘ in the list). Its
+rods stay in the model, the drawings and the workbook (an `excluded` column on
+the Groups sheet, read back on import); Analyze solves without them and the
+nodes only they reach, draws them dashed grey, and checks them as *left out of
+the analysis*. Analyze lift still solves them when a crane lifts them.
+
+**F2: a failed Analyze names the floating pieces.** When a piece of the model
+touches no support (`stereo_floating.floating_pieces`), the bare "singular
+matrix" error is replaced by a window that names each piece by its groups and
+size and offers three ways forward: **Leave them out of the analysis** (their
+groups are marked; a piece of ungrouped rods becomes a group "Left out n"; a
+piece that is only part of a group is not taken), **Lift them with a crane**
+(its group made current, its corners picked, the Crane panel opened), or **Give
+them supports** (their lowest joints selected, the Support panel opened).
+
+**E1–E3: comparing iterations** (`stereo_compare.py`, *Iterations: tags, lift
+plan, compare…* in the Groups and Crane panels). Each group can carry three
+tags -- **iteration**, **stage** (truss, module, roof, column) and **position**
+within its stage -- proposed from the names (*Propose tags from names*: a stage
+keyword, English or Spanish; an iteration said outright -- "R2", "Iteración 2",
+"v3" -- or else each stage's groups dealt out evenly in number order: twelve
+trusses over three iterations is four each, so *Truss 6* is iteration 2,
+position 2). Only the outermost staged groups are tagged (not "Truss 1 top
+strip"), a tag already set is never overwritten, and every tag can be edited in
+the window. The tags go to the Groups sheet and come back on import.
+
+The **lift plan** gives each tagged group a pick rule (by stage: trusses
+*Chords ¼–¾*, modules *Corners + mid sides*, roofs *Corners*; editable). **▶ Check
+lifts** solves every planned lift at once with the crane panel's factors -- on a
+copy, adding nothing to the model -- and **Compare** lays the answers out by slot
+(stage + position) and iteration: weight, worst rod utilisation, rods over 1.0,
+hook load, heaviest sling, **longest sling**, flattest sling, **rope Ø** and the
+verdict, with the lightest passing iteration per slot named. Export Excel adds
+the **Compare** sheet (the winner's cell green). The comparison is dropped, not
+shown stale, once the model changes.
+
 ---
 
 ## 5. Visualisation

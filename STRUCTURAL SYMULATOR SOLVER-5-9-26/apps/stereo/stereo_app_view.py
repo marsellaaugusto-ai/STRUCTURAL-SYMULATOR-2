@@ -246,6 +246,14 @@ class StereoViewMixin:
             return
         self._drag_node = None
         self._drag_node_active = False
+        if getattr(self, '_dbl_click', False):
+            # the release that ends a double-click: the double-click has
+            # already done its work (the rod's group), so it selects nothing
+            self._dbl_click = False
+            self._lasso_press = None
+            self._lasso_dragging = False
+            self._lasso_cur = None
+            return
         additive = bool(event.state & 0x0001)   # Shift held: add to selection
         if getattr(self, '_paste_pending', None) is not None:
             # a paste is waiting for the node it goes on
@@ -285,6 +293,14 @@ class StereoViewMixin:
             x1, y1 = self._lasso_cur
             found_nodes = set(self._nodes_in_screen_box(x0, y0, x1, y1))
             found_members = set(self._members_in_screen_box(x0, y0, x1, y1))
+            ok_nodes, ok_rods = self._pick_filter()
+            n_box = len(found_nodes) + len(found_members)
+            if ok_nodes is not None:
+                found_nodes &= ok_nodes
+            if ok_rods is not None:
+                found_members &= ok_rods
+            if len(found_nodes) + len(found_members) < n_box:
+                self._say_pick_inside()
             if additive:
                 self.selected_nodes = self.selected_nodes | found_nodes
                 self.selected_members = self.selected_members | found_members
@@ -1341,8 +1357,14 @@ class StereoViewMixin:
     def _select_node_at(self, ex, ey, additive=False):
         if not self.nodes:
             return
+        # Hidden groups are never picked, and with "Pick inside group" on
+        # only the current group is. The current group itself is not
+        # changed by picking joints.
+        ok_nodes, ok_rods = self._pick_filter()
         best, best_d = None, 12.0
         for i, (sx, sy) in enumerate(self._screen_positions()):
+            if ok_nodes is not None and i not in ok_nodes:
+                continue
             d = math.hypot(sx - ex, sy - ey)
             if d < best_d:
                 best, best_d = i, d
@@ -1366,7 +1388,7 @@ class StereoViewMixin:
             return
         # No node close enough -- try the nearest rod instead, so a click
         # on empty space near a member still does something useful.
-        mi = self._select_member_at(ex, ey)
+        mi = self._select_member_at(ex, ey, allowed=ok_rods)
         if mi is not None:
             self.selected_member = mi
             if additive:
@@ -1377,6 +1399,12 @@ class StereoViewMixin:
             self._sync_selection_fields()
             self._draw()
             return
+        if ok_nodes is not None and any(
+                math.hypot(sx - ex, sy - ey) < 12.0
+                for sx, sy in self._screen_positions()):
+            # there WAS a joint there -- one the filter keeps out
+            self._say_pick_inside()
+            return
         if not additive:
             self.selected_nodes = set()
             self.selected_member = None
@@ -1384,14 +1412,17 @@ class StereoViewMixin:
             self._sync_selection_fields()
             self._draw()
 
-    def _select_member_at(self, ex, ey):
+    def _select_member_at(self, ex, ey, allowed=None):
         """The nearest member to screen point (ex, ey), within
         MEMBER_SEL_HIT_PX of its own line segment, or None -- shares
         _screen_positions()'s REST-position frame so a rod click always
-        targets the same geometry a node click would."""
+        targets the same geometry a node click would. `allowed`, when
+        given, is the only rods it may return."""
         pts = self._screen_positions()
         best, best_d = None, MEMBER_SEL_HIT_PX
         for i, m in enumerate(self.members):
+            if allowed is not None and i not in allowed:
+                continue
             sx0, sy0 = pts[m['a']]
             sx1, sy1 = pts[m['b']]
             d = _point_segment_distance(ex, ey, sx0, sy0, sx1, sy1)
@@ -1523,16 +1554,22 @@ class StereoViewMixin:
                     mid_d = d
         self._snap_midpoint = best_mid
 
+        hover_rod = None
+        if self._snap_node is None:
+            hover_rod = self._select_member_at(ex, ey)
         if self._snap_node is not None:
             x, y, z = self.nodes[self._snap_node]
             self._cursor_world = (x, y, z)
             self._set_status(
-                f'Node {self._snap_node}: ({x:.3f}, {y:.3f}, {z:.3f}) m')
+                f'Node {self._snap_node}: ({x:.3f}, {y:.3f}, {z:.3f}) m'
+                + self._node_hover_group(self._snap_node))
         elif self._snap_midpoint is not None:
             _, _, x, y, z, mi = self._snap_midpoint
             self._cursor_world = (x, y, z)
-            self._set_status(
-                f'Midpoint of member {mi}: ({x:.3f}, {y:.3f}, {z:.3f}) m')
+            self._set_status(self._rod_hover_text(mi)
+                             + f' · Midpoint ({x:.3f}, {y:.3f}, {z:.3f}) m')
+        elif hover_rod is not None:
+            self._set_status(self._rod_hover_text(hover_rod))
         else:
             world = self._unproject_to_z0(ex, ey)
             if world is not None:

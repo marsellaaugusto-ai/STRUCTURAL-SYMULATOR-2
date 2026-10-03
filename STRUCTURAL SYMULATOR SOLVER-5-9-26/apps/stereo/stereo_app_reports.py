@@ -202,7 +202,8 @@ class StereoReportsMixin:
                             self.results, path, checks=self.member_checks,
                             meta=self._excel_meta(),
                             profiles=self.profiles, groups=self.groups,
-                            lifts=self._lift_export())
+                            lifts=self._lift_export(),
+                            compare=self._compare_export())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return

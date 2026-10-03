@@ -397,7 +397,7 @@ DEFAULT_MAX_CALC_MEMBERS = 40
 
 def export_excel(nodes, members, loads, supports, results, path, checks=None,
                   meta=None, max_calc_members=DEFAULT_MAX_CALC_MEMBERS,
-                  profiles=None, groups=None, lifts=None):
+                  profiles=None, groups=None, lifts=None, compare=None):
     """Write a workbook with Nodes, Members, Loads, Supports, Results (if
     `results` is not None), Member Checks (if `checks` is not None) and a
     machine-parseable Model sheet. `meta` is an optional dict of free-text
@@ -412,6 +412,9 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     on its own (stereo_lift_calc.solve_lift), 'group_of': {rod: group
     name}} -- adds a "Lift results" sheet per crane, the "Lift rods" sheet
     and the "Cranes" sheet, which Import from Excel reads back.
+
+    `compare` -- {'iterations', 'table', 'best'} from stereo_compare --
+    adds the "Compare" sheet: each slot's lift, iteration by iteration.
 
     `max_calc_members` caps the Member Calculations sheet to the N most
     critical members (sorted by utilization desc), and defaults to
@@ -976,6 +979,31 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
         for k, row in enumerate(_slc.crane_rows(lifts['records']), 2):
             for col, v in enumerate(row, 1):
                 ws_c.cell(row=k, column=col, value=v)
+
+    # ── Compare iterations (stereo_compare) ──────────────────────────────────
+    if compare and compare.get('table'):
+        ws_k = wb.create_sheet('Compare')
+        ws_k.sheet_properties.tabColor = '2E7D32'
+        its = list(compare['iterations'])
+        k_hdrs = ['stage', 'position', 'value'] + ['iteration %s' % i
+                                                   for i in its]
+        styled_header(ws_k, k_hdrs)
+        best = compare.get('best') or {}
+        r = 2
+        for st, pos, label, vals in compare['table']:
+            cells = [st, pos, label] + [vals.get(i, '') for i in its]
+            for col, v in enumerate(cells, 1):
+                try:
+                    v = float(v) if label != 'group' and v not in (
+                        '', '—') and label != 'verdict' else v
+                except (TypeError, ValueError):
+                    pass
+                ws_k.cell(row=r, column=col, value=v)
+            win = best.get((st, pos))
+            if label == 'group' and win in its:
+                ws_k.cell(row=r, column=4 + its.index(win)).fill = OK_FILL
+            r += 1
+        style_data_range(ws_k, 2, r - 1, len(k_hdrs))
 
     # ── Groups sheet (editable; read back by Import from Excel) ─────────────
     if groups:

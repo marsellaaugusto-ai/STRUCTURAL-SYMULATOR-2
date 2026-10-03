@@ -23,6 +23,8 @@ from apps.stereo import stereo_examples as sx
 from apps.stereo import stereo_app_analysis as sa
 from apps.stereo import stereo_member_loads as mld
 from apps.stereo import stereo_lift_calc as slc
+from apps.stereo import stereo_floating as sf
+from apps.stereo.stereo_app_groupview import GROUP_LABEL_DEPTHS
 from apps.stereo import stereo_bezier as bz
 from apps.stereo import stereo_wind as sw
 from apps.stereo.stereo_app_constants import (
@@ -310,6 +312,17 @@ class StereoPanelsMixin(_ToolbarModes):
                        command=self._draw).pack(side='left', padx=(4, 0))
         tk.Checkbutton(g, text='Rod #', variable=self.show_member_labels, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
+        tk.Checkbutton(g, text='Group #', variable=self.show_group_labels,
+                       bg=BG, command=self._draw).pack(side='left', padx=(4, 0))
+        gd = ttk.Combobox(g, textvariable=self.group_label_depth,
+                          state='readonly', width=13,
+                          values=list(GROUP_LABEL_DEPTHS))
+        gd.pack(side='left', padx=(2, 0))
+        gd.bind('<<ComboboxSelected>>', lambda _e: self._draw())
+        tk.Checkbutton(g, text='Group colours', variable=self.group_view,
+                       bg=BG, command=self._draw).pack(side='left', padx=(4, 0))
+        tk.Checkbutton(g, text='Dim others', variable=self.group_dim_others,
+                       bg=BG, command=self._draw).pack(side='left', padx=(4, 0))
         tk.Checkbutton(g, text='Hide # when crowded',
                        variable=self.labels_auto_hide, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
@@ -453,6 +466,9 @@ class StereoPanelsMixin(_ToolbarModes):
                    ('Rod #', self.show_member_labels),
                    ('Add-on codes', self.show_addon_codes),
                    ('Node #', self.show_node_labels),
+                   ('Group #', self.show_group_labels),
+                   ('Group colours', self.group_view),
+                   ('Dim other groups', self.group_dim_others),
                    ('Loads', self.show_loads), ('Reactions', self.show_reactions),
                    ('Axes + ground', self.show_axes),
                    ('Load-path arrows', self.load_path_anim))
@@ -462,6 +478,15 @@ class StereoPanelsMixin(_ToolbarModes):
             tk.Checkbutton(grid, text=text, variable=var, bg=BG,
                            font=('Helvetica', 8), anchor='w', command=cmd
                            ).grid(row=k // 2, column=k % 2, sticky='w')
+        gdr = tk.Frame(box, bg=BG)
+        gdr.pack(fill='x', padx=6)
+        tk.Label(gdr, text='Group # for:', bg=BG,
+                 font=('Helvetica', 8)).pack(side='left')
+        gd2 = ttk.Combobox(gdr, textvariable=self.group_label_depth,
+                           state='readonly', width=14,
+                           values=list(GROUP_LABEL_DEPTHS))
+        gd2.pack(side='left', padx=(3, 0))
+        gd2.bind('<<ComboboxSelected>>', lambda _e: self._draw())
         tk.Checkbutton(box, text='Hide # when crowded (zoom in to read)',
                        variable=self.labels_auto_hide, bg=BG,
                        font=('Helvetica', 8), anchor='w',
@@ -558,6 +583,9 @@ class StereoPanelsMixin(_ToolbarModes):
 
         canvas_frame = tk.Frame(parent, bg=BG)
         canvas_frame.pack(side='left', fill='both', expand=True)
+        # Which group is current, what is selected, what a lift would take
+        # -- over the view, in every mode (stereo_app_groupview).
+        self._build_group_bar(canvas_frame)
         self.zc = ZoomCanvas(canvas_frame, bg=CANVAS_BG, bd=1, relief='solid')
         self.zc.pack(fill='both', expand=True)
         self.zc._on_zoom_changed = self._draw
@@ -587,6 +615,8 @@ class StereoPanelsMixin(_ToolbarModes):
         self.canvas.bind('<ButtonPress-1>', self._on_canvas_press)
         self.canvas.bind('<B1-Motion>', self._on_canvas_motion)
         self.canvas.bind('<ButtonRelease-1>', self._on_canvas_release)
+        # double-click a rod: its group; again: the group above it
+        self.canvas.bind('<Double-Button-1>', self._on_canvas_double)
         self.canvas.bind('<ButtonPress-3>', self._on_orbit_press)
         self.canvas.bind('<B3-Motion>', self._on_orbit_motion)
         self.canvas.bind('<ButtonRelease-3>', self._on_orbit_release)
@@ -3117,7 +3147,20 @@ class StereoPanelsMixin(_ToolbarModes):
             lift_row, textvariable=self.crane_lift_target, state='readonly',
             width=16, postcommand=self._refresh_crane_lift_choices)
         self.crane_lift_box.pack(side='left', fill='x', expand=True)
+        self.crane_lift_box.bind('<<ComboboxSelected>>',
+                                 lambda _e: self._draw())
         self._refresh_crane_lift_choices()
+        # Where slings usually go, picked on the piece the Lift box names
+        # (or the current group): stereo_floating.pick_nodes.
+        tk.Label(crane, text='Pick the lift joints on it:', bg=BG,
+                 font=('Helvetica', 8), anchor='w').pack(fill='x', padx=6)
+        rules = tk.Frame(crane, bg=BG)
+        rules.pack(fill='x', padx=6, pady=(0, 2))
+        for rule in sf.PICK_RULES:
+            tk.Button(rules, text=sf.PICK_RULE_BUTTONS[rule],
+                      font=('Helvetica', 7),
+                      command=lambda r=rule: self._crane_pick_rule(r)
+                      ).pack(side='left', padx=(0, 2))
         # Where the hook goes: over the centre of gravity always; HOW HIGH
         # is set one of four ways (stereo_lift_calc.hook_rise).
         self.crane_hook_mode = tk.StringVar(value='auto')
@@ -3184,12 +3227,30 @@ class StereoPanelsMixin(_ToolbarModes):
         tk.Entry(sz, textvariable=self.crane_sizes, width=18,
                  font=('Helvetica', 8)).pack(side='left', fill='x',
                                              expand=True, padx=(2, 0))
+        # The live check: what Lift would do with the joints selected now.
+        self.crane_check = tk.Label(crane, text='', bg=BG, fg='#1d2328',
+                                    font=('Helvetica', 8), justify='left',
+                                    anchor='w', wraplength=PANEL_TEXT_W - 12)
+        self.crane_check.pack(fill='x', padx=6, pady=(2, 0))
         tk.Button(crane, text='Lift the selected nodes',
                   command=self._add_cable_crane).pack(fill='x', padx=6, pady=(2, 2))
         tk.Button(crane, text='▶ Analyze lift', fg='#1a6bbd',
                   command=self._analyze_lifts).pack(fill='x', padx=6, pady=(0, 2))
-        tk.Button(crane, text='Clear every crane', fg='#a3241a',
-                  command=self._clear_cable_cranes).pack(fill='x', padx=6, pady=(0, 2))
+        # Every crane in the model; one can be removed on its own.
+        self.crane_list = tk.Listbox(crane, height=3, exportselection=False,
+                                     font=('Courier', 8), activestyle='none')
+        self.crane_list.pack(fill='x', padx=6, pady=(2, 0))
+        crow = tk.Frame(crane, bg=BG)
+        crow.pack(fill='x', padx=6, pady=(1, 2))
+        tk.Button(crow, text='Remove this crane', font=('Helvetica', 8),
+                  command=self._remove_crane).pack(side='left', expand=True,
+                                                   fill='x')
+        tk.Button(crow, text='Clear every crane', fg='#a3241a',
+                  font=('Helvetica', 8), command=self._clear_cable_cranes
+                  ).pack(side='left', expand=True, fill='x', padx=(3, 0))
+        tk.Button(crane, text='Lift plan & compare iterations…',
+                  font=('Helvetica', 8), command=self._open_iterations
+                  ).pack(fill='x', padx=6, pady=(0, 2))
         # The lift summary: what a lift plan is made of, ready to copy.
         self.crane_summary = tk.Text(crane, height=9, width=38, wrap='none',
                                      font=('Courier', 7), bg='#fbfbf8',

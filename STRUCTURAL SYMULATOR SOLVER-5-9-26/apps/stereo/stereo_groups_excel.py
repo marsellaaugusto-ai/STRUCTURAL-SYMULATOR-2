@@ -50,7 +50,12 @@ FIELDS = (
     ('r_gyr_cm', 'r_gyr', 'num'),
     ('c_cm', 'c_cm', 'num'),
 )
-HEADERS = ('id', 'name', 'parent', 'rods') + tuple(f[0] for f in FIELDS)
+# Facts about the GROUP, not its rods: left out of the analysis, and where
+# it sits among the iterations being compared (stereo_compare). Read back by
+# name; a workbook without them reads as before.
+GROUP_FLAGS = ('excluded', 'iteration', 'stage', 'position')
+HEADERS = ('id', 'name', 'parent', 'rods') + tuple(f[0] for f in FIELDS) \
+    + GROUP_FLAGS
 # Written for the reader, never read back.
 INFO_HEADERS = ('info: rods', 'info: worst util', 'info: mixed')
 
@@ -155,6 +160,7 @@ def group_rows(groups, members, checks=None):
                  and checks[i].get('util') is not None]
             worst = max(u) if u else None
         rows.append({'id': g['id'], 'name': g['name'], 'parent': g['parent'],
+                     'flags': {k: g.get(k) for k in GROUP_FLAGS},
                      'level': lvl, 'rods': rods_to_ranges(own),
                      'values': values, 'mixed': mixed, 'n_rods': len(own),
                      'worst': worst})
@@ -201,6 +207,9 @@ def write_groups_sheet(wb, groups, members, checks=None):
                  row['parent'] if row['parent'] is not None else None,
                  row['rods']]
         cells += [row['values'].get(key) for _h, key, _k in FIELDS]
+        flags = row['flags']
+        cells += [1 if flags.get('excluded') else None] + [
+            flags.get(k) or None for k in GROUP_FLAGS[1:]]
         cells += [row['n_rods'],
                   None if row['worst'] is None else round(row['worst'], 3),
                   ', '.join(row['mixed'])]
@@ -286,8 +295,16 @@ def build_groups(sheet_rows, n_members):
         parent = r.get('parent')
         parent = None if parent in (None, '') else int(
             _num(parent, 'Groups row "%s", parent' % name))
-        groups.append({'id': gid, 'name': name, 'parent': parent,
-                       'members': set(rods)})
+        g = {'id': gid, 'name': name, 'parent': parent, 'members': set(rods)}
+        if str(r.get('excluded') or '').strip().lower() not in (
+                '', '0', 'no', 'false', 'n'):
+            g['excluded'] = True
+        for k in GROUP_FLAGS[1:]:
+            v = r.get(k)
+            if v not in (None, '') and str(v).strip():
+                v = str(v).strip()
+                g[k] = v[:-2] if v.endswith('.0') else v
+        groups.append(g)
     for g in groups:
         if g['parent'] is not None and sgp.find(groups, g['parent']) is None:
             raise ValueError('Group "%s" names parent %d, which is not a row '

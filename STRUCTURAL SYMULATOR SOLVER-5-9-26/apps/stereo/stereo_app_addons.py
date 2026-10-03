@@ -200,7 +200,7 @@ class StereoAddonsMixin:
         self._refresh_all()
 
     # ── clearing add-ons, and building a column array ───────────────────────
-    def _strip_members(self, roles, label):
+    def _strip_members(self, roles, label, codes=None):
         """Remove every member in `roles`, then every node they leave with
         nothing attached, and renumber what is left.
 
@@ -211,7 +211,8 @@ class StereoAddonsMixin:
         Returns the number of members removed.
         """
         victims = [i for i, m in enumerate(self.members)
-                   if m.get('role') in roles]
+                   if m.get('role') in roles
+                   and (codes is None or m.get('addon') in codes)]
         if not victims:
             return 0
         if getattr(self, 'groups', None):
@@ -566,6 +567,11 @@ class StereoAddonsMixin:
                     s.get('code'), s.get('error') or 'a mechanism'))
         text = '\n\n'.join(blocks)
         self._lift_summary_text = text
+        verdicts = dict(getattr(self, '_lift_verdicts', None) or {})
+        verdicts.update({s.get('code'): (s['summary']['verdict']
+                                         if s.get('ok') else 'did not solve')
+                         for s in solved})
+        self._lift_verdicts = verdicts
         if box is None:
             return text
         box.configure(state='normal')
@@ -583,6 +589,199 @@ class StereoAddonsMixin:
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
         self._set_status('Lift summary copied to the clipboard.', 'ok')
+
+    # ── C10: the Lift box follows the group; live check; pick rules ────────
+
+    def _follow_current_group(self):
+        """The current group becomes what Lift takes."""
+        gid = self._cur_gid() if hasattr(self, '_cur_gid') else None
+        if gid is None or not hasattr(self, 'crane_lift_target'):
+            return
+        self._refresh_crane_lift_choices()
+        for label, g in self._crane_lift_gids.items():
+            if g == gid:
+                self.crane_lift_target.set(label)
+                return
+
+    def _crane_preview(self):
+        """What "Lift the selected nodes" would do now, without building
+        anything or opening a dialog: {'ok', 'text', 'picks', 'hook_xyz'}."""
+        targets = sorted(n for n in self.selected_nodes if n < len(self.nodes))
+        out = {'ok': False, 'text': '', 'picks': targets, 'hook_xyz': None}
+        if len(targets) < 3:
+            out['text'] = ('Select 3 or more joints to lift by -- or use a '
+                           'Pick button.' if self.members else '')
+            return out
+        self._refresh_crane_lift_choices()
+        gid = self._crane_lift_gids.get(self.crane_lift_target.get())
+        if gid is not None and sgp.find(self.groups, gid):
+            rods = sorted(sgp.rods_of(self.groups, gid, deep=True))
+            mine = slift.nodes_of(self.members, rods)
+            off = [n for n in targets if n not in mine]
+            if off:
+                out['text'] = ('%d of the selected joints are not on group %s.'
+                               % (len(off), self._group_display_name(gid)))
+                return out
+        else:
+            rods = slift.connected_piece(self.members, targets)
+        try:
+            s = self._crane_settings()
+        except ValueError as exc:
+            out['text'] = str(exc)
+            return out
+        weight, cog = slc.piece_weight(self.nodes, self.members, rods,
+                                       s['allowance'], self._unit_weight())
+        if cog is None:
+            out['text'] = 'The piece weighs nothing: give its rods a section.'
+            return out
+        off = slift.cog_outside_picks(self.nodes, targets, cog[:2])
+        if off > CRANE_COG_TOL:
+            out['text'] = ('✗ Centre of gravity %.2f m outside the picks -- '
+                           'the piece would tip.' % off)
+            return out
+        try:
+            rise = slc.hook_rise(self.nodes, targets, cog[:2],
+                                 s['hook_mode'], s['hook_value'])
+        except ValueError as exc:
+            out['text'] = '✗ ' + str(exc)
+            return out
+        import math
+        top = max(self.nodes[i][2] for i in targets)
+        hook = (cog[0], cog[1], top + rise)
+        L = [math.dist(self.nodes[p], hook) for p in targets]
+        ang = [math.degrees(math.asin((hook[2] - self.nodes[p][2]) / l))
+               for p, l in zip(targets, L)]
+        out.update(ok=True, hook_xyz=hook, text=(
+            '✓ %d picks · %d rods, %.2f kN (lift %.2f kN) · centre of gravity '
+            'inside · hook +%.2f m · slings %.0f–%.0f° · longest %.2f m'
+            % (len(targets), len(rods), weight, weight * s['daf'], rise,
+               min(ang), max(ang), max(L))))
+        return out
+
+    def _refresh_crane_check(self):
+        """The live check line, and the preview it draws -- only while the
+        Add-ons panel is open."""
+        lbl = getattr(self, 'crane_check', None)
+        if lbl is None:
+            return None
+        self._refresh_crane_list()
+        mode = getattr(self, 'active_mode', None)
+        if mode is not None and mode.get() != 'addons':
+            self._crane_preview_now = None
+            return None
+        try:
+            prev = self._crane_preview()
+        except Exception as exc:                            # noqa: BLE001
+            prev = {'ok': False, 'text': str(exc), 'hook_xyz': None,
+                    'picks': []}
+        self._crane_preview_now = prev
+        lbl.config(text=prev['text'], fg='#1d6b2e' if prev['ok'] else
+                   ('#a3241a' if prev['text'].startswith('✗') else '#1d2328'))
+        return prev
+
+    def _draw_lift_preview(self, c, to_screen):
+        """Dashed slings from the selected joints to where the hook would
+        go, while the Add-ons panel is open."""
+        prev = self._refresh_crane_check()
+        if not prev or not prev.get('ok'):
+            return
+        hx, hy, _ = self._project(*prev['hook_xyz'])
+        sx, sy = to_screen(hx, hy)
+        for p in prev['picks']:
+            px, py, _ = self._project(*self.nodes[p])
+            ax, ay = to_screen(px, py)
+            c.create_line(ax, ay, sx, sy, fill='#b8860b', dash=(4, 3),
+                          width=1, tags='lift_preview')
+        c.create_polygon(sx - 6, sy - 6, sx + 6, sy - 6, sx, sy + 3,
+                         fill='#b8860b', outline='', tags='lift_preview')
+
+    def _crane_rule_rods(self):
+        """The piece a pick rule works on: the Lift box's group, else the
+        current group, else the piece under the selected joints."""
+        self._refresh_crane_lift_choices()
+        gid = self._crane_lift_gids.get(self.crane_lift_target.get())
+        if gid is None and hasattr(self, '_cur_gid'):
+            gid = self._cur_gid()
+        if gid is not None and sgp.find(self.groups, gid):
+            return sorted(sgp.rods_of(self.groups, gid, deep=True)), gid
+        if self.selected_nodes:
+            return slift.connected_piece(self.members,
+                                         sorted(self.selected_nodes)), None
+        return [], None
+
+    def _crane_pick_rule(self, rule):
+        """Select the joints a pick rule gives on the piece to lift."""
+        from apps.stereo import stereo_floating as sf
+        rods, gid = self._crane_rule_rods()
+        if not rods:
+            self._set_status('Pick a group first (double-click one of its '
+                             'rods, or choose it in the Lift box) -- or one '
+                             'joint of the piece.', 'error')
+            return []
+        picks = sf.pick_nodes(self.nodes, self.members, rods, rule)
+        self.selected_nodes = set(picks)
+        self.selected_members = set()
+        self.selected_member = None
+        self._sync_selection_fields()
+        self._draw()
+        what = (self._group_display_name(gid) if gid is not None
+                else 'the piece')
+        self._set_status('%s: %d joint(s) picked on %s.' % (
+            sf.PICK_RULE_LABELS[rule], len(picks), what),
+            'ok' if len(picks) >= 3 else 'error')
+        return picks
+
+    def _crane_list_rows(self):
+        last = getattr(self, '_lift_verdicts', None) or {}
+        rows = []
+        for r in self._crane_records():
+            rows.append(('%-3s %s · %d slings%s' % (
+                r['code'], r['what'], len(r['picks']),
+                (' · ' + last[r['code']]) if r['code'] in last else ''),
+                r['code']))
+        return rows
+
+    def _refresh_crane_list(self):
+        lst = getattr(self, 'crane_list', None)
+        if lst is None:
+            return
+        rows = self._crane_list_rows()
+        if rows == getattr(self, '_crane_list_rows_now', None):
+            return
+        keep = self._crane_list_code()
+        self._crane_list_rows_now = rows
+        lst.delete(0, 'end')
+        for text, _code in rows:
+            lst.insert('end', text)
+        codes = [c for _t, c in rows]
+        if keep in codes:
+            lst.selection_set(codes.index(keep))
+
+    def _crane_list_code(self):
+        lst = getattr(self, 'crane_list', None)
+        rows = getattr(self, '_crane_list_rows_now', None) or []
+        if lst is None or not lst.curselection():
+            return None
+        i = lst.curselection()[0]
+        return rows[i][1] if i < len(rows) else None
+
+    def _remove_crane(self, code=None):
+        """Take one crane out -- its slings and hook -- and keep the rest."""
+        code = code or self._crane_list_code()
+        if code is None:
+            self._set_status('Pick a crane in the list to remove.', 'error')
+            return 0
+        n = self._strip_members(self.CRANE_ROLES, 'remove crane %s' % code,
+                                codes={code})
+        if not n:
+            return 0
+        self._crane_lifts = [r for r in getattr(self, '_crane_lifts', [])
+                             if r.get('code') != code]
+        (getattr(self, '_lift_verdicts', None) or {}).pop(code, None)
+        self._me_maybe_refresh_topology()
+        self._set_addon_note(f'{sac.describe(code)} removed ({n} slings).')
+        self._refresh_all()
+        return n
 
     def _crane_meta(self):
         """{code: what the crane report needs to know about each lift} --
@@ -700,6 +899,7 @@ class StereoAddonsMixin:
         # node and keeps only the supports whose node survived. The model's
         # own supports were never touched.
         self._crane_lifts = []
+        self._lift_verdicts = {}
         self._show_lift_summary([])
         self._me_maybe_refresh_topology()
         self._set_addon_note(f'{n} crane member(s) removed.')

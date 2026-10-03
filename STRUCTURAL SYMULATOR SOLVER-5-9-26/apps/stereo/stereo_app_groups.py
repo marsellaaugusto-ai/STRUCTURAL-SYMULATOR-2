@@ -125,6 +125,39 @@ class StereoGroupsMixin:
         self.group_actions_btn['menu'] = self._group_actions_menu(
             self.group_actions_btn)
 
+        # The current group in the view: pick inside it, dim the rest,
+        # hide groups that are in the way (stereo_app_groupview).
+        vis = tk.Frame(box, bg=BG)
+        vis.pack(fill='x', padx=6, pady=(0, 2))
+        tk.Button(vis, text='Hide / show', font=('Helvetica', 8),
+                  command=self._group_toggle_hidden
+                  ).pack(side='left', expand=True, fill='x')
+        tk.Button(vis, text='Show all', font=('Helvetica', 8),
+                  command=self._group_show_all
+                  ).pack(side='left', expand=True, fill='x', padx=(3, 0))
+        tk.Button(box, text='Leave out of analysis / put back',
+                  font=('Helvetica', 8), command=self._group_toggle_excluded
+                  ).pack(fill='x', padx=6, pady=(0, 2))
+        tk.Button(box, text='Iterations: tags, lift plan, compare…',
+                  font=('Helvetica', 8, 'bold'),
+                  command=self._open_iterations
+                  ).pack(fill='x', padx=6, pady=(0, 2))
+        opts = tk.Frame(box, bg=BG)
+        opts.pack(fill='x', padx=6, pady=(0, 4))
+        tk.Checkbutton(opts, text='Pick inside group',
+                       variable=self.pick_inside_group, bg=BG,
+                       font=('Helvetica', 8), command=self._draw
+                       ).pack(side='left')
+        tk.Checkbutton(opts, text='Dim others',
+                       variable=self.group_dim_others, bg=BG,
+                       font=('Helvetica', 8), command=self._draw
+                       ).pack(side='left', padx=(6, 0))
+        tk.Label(box, text='Double-click a rod to make its group current; '
+                           'double-click again for the group above it.',
+                 bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
+                 wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6,
+                                               pady=(0, 4))
+
         # ── rarer tools, folded away ──────────────────────────────────────
         self.group_more_open = tk.BooleanVar(value=False)
         tk.Checkbutton(box, text='More group tools (section, checks, PDF)',
@@ -276,9 +309,18 @@ class StereoGroupsMixin:
             own = len(g['members'])
             count = ('%d' % own) if deep == own else ('%d/%d' % (own, deep))
             mark = '✎ ' if g['id'] == editing else ''
-            rows.append(('%s%s%s  [%s]' % ('   ' * lvl, mark,
-                                           self._group_display_name(g['id']),
-                                           count),
+            if g['id'] in (getattr(self, '_hidden_groups', None) or ()):
+                mark += '◌ '
+            if g.get('excluded'):
+                mark += '⊘ '
+            tag = ''
+            if g.get('stage'):
+                tag = '  {it %s · %s %s}' % (g.get('iteration') or '?',
+                                             g['stage'],
+                                             g.get('position') or '')
+            rows.append(('%s%s%s  [%s]%s' % ('   ' * lvl, mark,
+                                             self._group_display_name(g['id']),
+                                             count, tag),
                          g['id']))
         rest = sgp.ungrouped_rods(self.groups, len(self.members))
         if rest:
@@ -318,9 +360,15 @@ class StereoGroupsMixin:
         return ids[i] if 0 <= i < len(ids) else False
 
     def _on_group_pick(self, _event=None):
+        """A row picked in the list is the current group in the view too
+        -- the highlight, the bar and Pick inside group follow it."""
         gid = self._current_group()
         self._group_sel = None if gid is False else gid
         self._refresh_group_note()
+        if hasattr(self, '_follow_current_group'):
+            self._follow_current_group()
+        if hasattr(self, 'canvas'):
+            self._draw()
 
     def _group_rods(self, gid, deep=True):
         if gid is None:
@@ -1452,6 +1500,7 @@ class StereoGroupsMixin:
         self._group_sel = None
         self._group_editing = None
         self._group_edit_stack = []
+        self._hidden_groups = set()
         self._refresh_group_list()
         self._refresh_group_edit_controls()
 

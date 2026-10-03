@@ -419,13 +419,16 @@ def is_crane_rod(m):
 
 
 def service_model(nodes, members, supports, loads, member_loads=(),
-                  panels=()):
+                  panels=(), inert=()):
     """The model the ordinary Analyze solves: everything except the crane
-    rods, and except the nodes only a crane rod touches (the hook). None
-    when there is no crane. The dict carries the reduced lists and the maps
-    expand_service needs to give the answer back in the model's numbering.
-    """
-    crane = [j for j, m in enumerate(members) if is_crane_rod(m)]
+    rods and the `inert` rods (a group left out of the analysis), and
+    except the nodes only those rods touch (a crane's hook). None when
+    there is nothing to leave out. The dict carries the reduced lists and
+    the maps expand_service needs to give the answer back in the model's
+    numbering."""
+    inert = set(inert or ())
+    crane = [j for j, m in enumerate(members)
+             if is_crane_rod(m) or j in inert]
     if not crane:
         return None
     crane_set = set(crane)
@@ -473,6 +476,8 @@ def expand_service(res, model, nodes, members):
         member_res[j] = {'N': 0.0, 'conn': 'pin',
                          'length_m': math.dist(nodes[m['a']], nodes[m['b']]),
                          'w_local': (0.0, 0.0, 0.0), 'inert': True}
+        if not is_crane_rod(m):
+            member_res[j]['left_out'] = True
     reactions = {model['kept_nodes'][n]: r
                  for n, r in (res.get('reactions') or {}).items()}
     out = dict(res)
@@ -480,10 +485,13 @@ def expand_service(res, model, nodes, members):
     return out
 
 
-def inert_check():
-    """The check entry of a crane rod in the service analysis."""
+def inert_check(left_out=False):
+    """The check entry of a crane rod -- or of a rod in a group left out
+    of the analysis -- in the service analysis."""
     return {'checked': False, 'util': None, 'governing': None,
-            'note': 'crane sling: solved only in Analyze lift', 'inert': True}
+            'note': ('left out of the analysis' if left_out else
+                     'crane sling: solved only in Analyze lift'),
+            'inert': True}
 
 
 # ── the lift in the workbook ──────────────────────────────────────────────

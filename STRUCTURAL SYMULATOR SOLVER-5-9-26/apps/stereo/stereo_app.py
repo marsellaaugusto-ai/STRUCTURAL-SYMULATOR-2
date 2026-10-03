@@ -84,6 +84,8 @@ from apps.stereo.stereo_app_addons import StereoAddonsMixin
 from apps.stereo.stereo_app_reports import StereoReportsMixin
 from apps.stereo.stereo_app_inspector import StereoInspectorMixin
 from apps.stereo.stereo_app_groups import StereoGroupsMixin
+from apps.stereo.stereo_app_groupview import StereoGroupViewMixin
+from apps.stereo.stereo_app_compare import StereoCompareMixin
 from apps.stereo.stereo_app_transform import StereoTransformMixin
 from apps.stereo.stereo_app_clipboard import StereoClipboardMixin
 from apps.stereo.stereo_app_mechanism import StereoMechanismMixin
@@ -95,7 +97,9 @@ from apps.stereo.stereo_reports import STORAGE_UNITS as sr_storage_units
 class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoViewMixin,
                 StereoRenderMixin, StereoModuleEditorMixin,
                 StereoWizardMixin, StereoAddonsMixin, StereoReportsMixin,
-                StereoInspectorMixin, StereoGroupsMixin, StereoTransformMixin,
+                StereoInspectorMixin, StereoGroupsMixin, StereoGroupViewMixin,
+                StereoCompareMixin,
+                StereoTransformMixin,
                 StereoClipboardMixin, StereoMechanismMixin,
                 StereoPlayLoadMixin, StereoBucklingMixin, UnitsMixin):
     """The Stereo tab.
@@ -172,6 +176,9 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         # Grouped / Ungrouped mode -- see _build_groups_panel. A view of the
         # model; the locks apply either way.
         self.group_view = tk.BooleanVar(value=False)
+        # The current group made visible: the bar over the view, the
+        # highlight, Group # labels, Pick inside group, hidden groups.
+        self._init_group_view_state()
         # Rotate / mirror (roadmap 3.4): the active axis, set by the arrow
         # keys and the panel's radio buttons alike, and where the mirror
         # plane sits.

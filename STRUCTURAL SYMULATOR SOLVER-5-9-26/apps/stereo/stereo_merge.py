@@ -150,9 +150,13 @@ def merge_models(base, part, tol=DEFAULT_TOL_M, label='part'):
         for j in g['members']:
             if j in member_map:
                 own.add(member_map[j])
-        groups.append({'id': id_map[g['id']], 'name': name,
-                       'parent': id_map.get(g['parent']),
-                       'members': own})
+        ng = {'id': id_map[g['id']], 'name': name,
+              'parent': id_map.get(g['parent']), 'members': own}
+        # what the group is (left out, its iteration tags) comes along
+        for k in ('excluded', 'iteration', 'stage', 'position'):
+            if g.get(k):
+                ng[k] = g[k]
+        groups.append(ng)
         rep['groups_added'] += 1
     # Rule 1 -- a rod in one group only. A rod the part grouped that landed
     # on a base rod stays where the base had it.

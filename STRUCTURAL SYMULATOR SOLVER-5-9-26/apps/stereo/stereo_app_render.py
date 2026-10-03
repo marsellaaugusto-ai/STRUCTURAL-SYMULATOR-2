@@ -27,6 +27,7 @@ from apps.stereo import stereo_member_loads as mld
 from apps.stereo import stereo_bezier as bz
 from apps.stereo import expr_math as em
 from apps.stereo import stereo_groups as sgp
+from apps.stereo.stereo_app_groupview import GROUP_HALO_COLOR
 from apps.stereo.stereo_app_colors import (
     surface_preview_color,
     load_path_color,
@@ -659,6 +660,11 @@ class StereoRenderMixin:
             # Lift results (▶ Analyze lift): only the lifted pieces and
             # their slings were solved; every other rod is greyed out, so
             # it is not read as carrying nothing.
+            # The current group (stereo_app_groupview): a halo under its
+            # rods, the rest dimmed when asked; hidden groups not drawn.
+            hidden_rods = self._hidden_rods()
+            cur_rods = self._cur_rods()
+            dim_rest = bool(cur_rods) and self.group_dim_others.get()
             lift_ghost = None
             if self.results is not None and \
                     self.results.get('case') == 'lift':
@@ -689,14 +695,31 @@ class StereoRenderMixin:
                     N_hide = self.results['member_res'][i]['N'] * frac
                     if abs(N_hide) / max_abs_N_lp < NEAR_ZERO_FRAC:
                         continue
+                if i in hidden_rods:
+                    continue
                 m = self.members[i]
                 ax, ay, _ = proj[m['a']]
                 bx, by, _ = proj[m['b']]
                 sx0, sy0 = to_screen(ax, ay)
                 sx1, sy1 = to_screen(bx, by)
+                if dim_rest and i not in cur_rods:
+                    c.create_line(sx0, sy0, sx1, sy1, fill=LOCKED_DIM_COLOR,
+                                  width=1, tags=('member', 'group_dim'))
+                    continue
+                if i in cur_rods:
+                    c.create_line(sx0, sy0, sx1, sy1, fill=GROUP_HALO_COLOR,
+                                  width=7 + int(self.rod_thickness.get()),
+                                  capstyle='round', tags='group_halo')
                 if open_rods is not None and i not in open_rods:
                     c.create_line(sx0, sy0, sx1, sy1, fill=LOCKED_DIM_COLOR,
                                   width=1, tags=('member', 'locked_dim'))
+                    continue
+                if self.results is not None and i < len(
+                        self.results['member_res']) and \
+                        self.results['member_res'][i].get('left_out'):
+                    c.create_line(sx0, sy0, sx1, sy1, fill=LOCKED_DIM_COLOR,
+                                  width=1, dash=(3, 3),
+                                  tags=('member', 'left_out'))
                     continue
                 if lift_ghost is not None and i in lift_ghost:
                     c.create_line(sx0, sy0, sx1, sy1, fill=LOCKED_DIM_COLOR,
@@ -852,7 +875,10 @@ class StereoRenderMixin:
             # Same empty-iterable trick as `order` above for show_members --
             # keeps every per-node branch (selection, support box, moment
             # colouring) at its existing indentation regardless of the toggle.
+            hidden_nodes = self._hidden_nodes(hidden_rods)
             for i, (px, py, _) in (enumerate(proj) if self.show_nodes.get() else []):
+                if i in hidden_nodes:
+                    continue
                 sx, sy = to_screen(px, py)
                 sel = i in self.selected_nodes
                 # Roadmap 2.1: the slider sets the dot radius in screen px.
@@ -1045,6 +1071,9 @@ class StereoRenderMixin:
                     self.show_addon_codes.get():
                 self._draw_addon_codes(c, to_screen)
 
+            self._draw_group_overlays(c, proj, to_screen)
+            self._draw_lift_preview(c, to_screen)
+
             if self.show_loads.get():
                 self._draw_load_arrows(c, to_screen)
 
@@ -1068,6 +1097,7 @@ class StereoRenderMixin:
         self._draw_flag_caption(c)
         self._draw_group_key(c)
         self._draw_edit_banner(c)
+        self._refresh_group_bar()
         self._to_screen_cache = to_screen   # for hit-testing on click
 
     _flag_caption_at = None

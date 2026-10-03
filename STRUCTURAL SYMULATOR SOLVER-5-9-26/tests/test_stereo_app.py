@@ -12330,3 +12330,427 @@ class TestBucklingDemonstrations:
         texts = {w.cget('text') for w in walk(app._mode_frames['analyse'])
                  if isinstance(w, tk.Button)}
         assert {'Buckling shapes', 'Load–deflection…'} <= texts
+
+
+class TestGroupsInTheView:
+    """A1-A5, B1-B5: which group is current, seen and chosen in the 3D view
+    (stereo_app_groupview)."""
+
+    def _two_levels(self, app):
+        """Module 1 (the first half of the rods) holding Truss 3 (its first
+        forty), and Module 2 (the rest)."""
+        m = len(app.members)
+        half = list(range(m // 2))
+        g1 = sgp.new_group(app.groups, 'Module 1', members=half)
+        g2 = sgp.new_group(app.groups, 'Truss 3', parent=g1['id'],
+                           members=half[:40])
+        g3 = sgp.new_group(app.groups, 'Module 2',
+                           members=range(m // 2, m))
+        app._refresh_group_list()
+        return g1['id'], g2['id'], g3['id']
+
+    def _rod_screen(self, app, rod):
+        sp = app._screen_positions()
+        m = app.members[rod]
+        return ((sp[m['a']][0] + sp[m['b']][0]) / 2,
+                (sp[m['a']][1] + sp[m['b']][1]) / 2)
+
+    # A1 -- the bar
+    def test_the_bar_names_the_current_group_and_its_path(self, app):
+        g1, g2, _g3 = self._two_levels(app)
+        app.selected_nodes = {0, 1, 2, 3}
+        app._set_current_group(g2)
+        texts = [t for t, _g in app._group_bar_text()]
+        assert texts[:6] == ['Group:', 'Model', '›', 'Module 1', '›',
+                             'Truss 3']
+        joined = ' '.join(texts)
+        assert '(40 rods)' in joined
+        assert 'Selected: 4 nodes' in joined
+        assert 'Lift takes:' in joined
+        # the bar is on screen, over the view, with the names as links
+        shown = [w.cget('text') for w in app._group_bar_items]
+        assert 'Truss 3' in shown and 'Module 1' in shown
+
+    def test_clicking_a_name_on_the_bar_steps_up_to_it(self, app):
+        g1, g2, _g3 = self._two_levels(app)
+        app._group_open(g1)
+        app._group_open(g2, nested=True)
+        app._set_current_group(g2)
+        app._group_bar_goto(g1)
+        assert app._cur_gid() == g1
+        assert app._editing_gid() == g1, 'the inner group closed on the way'
+        app._group_bar_goto(None)
+        assert app._cur_gid() is None and app._editing_gid() is None
+
+    # A2 -- highlight, name tag, dim others
+    def test_the_current_group_is_highlighted_and_named(self, app):
+        _g1, g2, _g3 = self._two_levels(app)
+        app._set_current_group(g2)
+        assert len(app.canvas.find_withtag('group_halo')) == 40
+        tag = [app.canvas.itemcget(i, 'text')
+               for i in app.canvas.find_withtag('group_tag')
+               if app.canvas.type(i) == 'text']
+        assert tag == ['Truss 3']
+        assert not app.canvas.find_withtag('group_dim')
+        app.group_dim_others.set(True)
+        app._draw()
+        assert len(app.canvas.find_withtag('group_dim')) == \
+            len(app.members) - 40
+
+    # A3 -- Group # labels
+    def test_group_names_by_depth(self, app):
+        self._two_levels(app)
+        app.show_group_labels.set(True)
+
+        def labels():
+            app._draw()
+            return sorted(app.canvas.itemcget(i, 'text') for i in
+                          app.canvas.find_withtag('group_label'))
+        assert labels() == ['Module 1', 'Module 2']
+        app.group_label_depth.set('all')
+        assert labels() == ['Module 1', 'Module 2', 'Truss 3']
+        app.show_group_labels.set(False)
+        assert labels() == []
+
+    def test_group_names_hide_when_crowded(self, app):
+        # sixty one-rod groups round the middle of the grid
+        cx = sum(p[0] for p in app.nodes) / len(app.nodes)
+        cy = sum(p[1] for p in app.nodes) / len(app.nodes)
+
+        def off(j):
+            m = app.members[j]
+            a, b = app.nodes[m['a']], app.nodes[m['b']]
+            return ((a[0] + b[0]) / 2 - cx) ** 2 + ((a[1] + b[1]) / 2 - cy) ** 2
+        for j in sorted(range(len(app.members)), key=off)[:60]:
+            sgp.new_group(app.groups, 'G%d' % j, members=[j])
+        app.show_group_labels.set(True)
+        app.labels_auto_hide.set(True)
+        app._draw()
+        assert not app.canvas.find_withtag('group_label')
+        app.labels_auto_hide.set(False)
+        app._draw()
+        assert len(app.canvas.find_withtag('group_label')) == 60
+
+    # A3/A4 -- the Display toggles exist and are wired
+    def test_display_offers_group_names_and_colours(self, app):
+        found = {}
+
+        def walk(w):
+            for c in w.winfo_children():
+                try:
+                    found.setdefault(str(c.cget('text')), []).append(
+                        str(c.cget('variable')))
+                except tk.TclError:
+                    pass
+                walk(c)
+        walk(app.root if hasattr(app, 'root') else app.canvas.winfo_toplevel())
+        assert str(app.show_group_labels) in found.get('Group #', [])
+        assert str(app.group_view) in found.get('Group colours', [])
+        assert str(app.group_dim_others) in (found.get('Dim others', [])
+                                            + found.get('Dim other groups',
+                                                        []))
+        self._two_levels(app)
+        app.group_view.set(True)
+        app._draw()
+        assert app.canvas.find_withtag('group_key')
+
+    # A5 -- hover
+    def test_hovering_a_rod_names_it_its_group_and_section(self, app):
+        _g1, _g2, _g3 = self._two_levels(app)
+        app._analyze()
+        txt = app._rod_hover_text(3)
+        assert txt.startswith('Rod 3 · Truss 3 (Module 1) · ')
+        assert app.members[3].get('profile', 'unnamed section') in txt
+        assert ' · u ' in txt
+        x, y = self._rod_screen(app, 3)
+        app._on_mouse_motion(FakeEvent(int(x), int(y)))
+        assert app.status_var.get().startswith('Rod ')
+
+    # B1 + B2 -- double-click, and the list follows
+    def test_double_click_picks_the_group_then_goes_up(self, app):
+        g1, g2, _g3 = self._two_levels(app)
+        x, y = self._rod_screen(app, 5)
+        assert app._on_canvas_double(FakeEvent(x, y)) == g2
+        assert app._current_group() == g2, 'the list follows the view'
+        assert app._group_double_click(x, y) == g1
+        assert app._current_group() == g1
+        assert app._group_double_click(x, y) == g1, 'top level stays'
+        before = set(app.selected_nodes)
+        app._on_canvas_release(FakeEvent(x, y))
+        assert app.selected_nodes == before, 'the double-click selects nothing'
+
+    def test_picking_a_row_makes_it_current_in_the_view(self, app):
+        _g1, _g2, g3 = self._two_levels(app)
+        i = app._group_row_ids.index(g3)
+        app.group_list.selection_clear(0, 'end')
+        app.group_list.selection_set(i)
+        app._on_group_pick()
+        assert app._cur_gid() == g3
+        assert len(app.canvas.find_withtag('group_halo')) == \
+            len(sgp.rods_of(app.groups, g3, deep=True))
+
+    # B3 + B4 -- picking joints keeps the group; pick inside it
+    def test_picking_joints_keeps_the_group_and_stays_inside_it(self, app):
+        _g1, g2, _g3 = self._two_levels(app)
+        app._set_current_group(g2)
+        mine = set(sgp.nodes_of_rods(app.members,
+                                     sgp.rods_of(app.groups, g2)))
+        outside = next(n for n in range(len(app.nodes)) if n not in mine)
+        inside = sorted(mine)[0]
+        sp = app._screen_positions()
+        app._select_node_at(*sp[inside])
+        assert app.selected_nodes == {inside}
+        assert app._cur_gid() == g2
+        app._select_node_at(*sp[outside])
+        assert outside not in app.selected_nodes
+        assert app.status_var.get().startswith('Pick inside group is on')
+        # a lasso over everything takes only the group's joints
+        w, h = app.canvas.winfo_width(), app.canvas.winfo_height()
+        app._lasso_press, app._lasso_cur = (0, 0), (w, h)
+        app._lasso_dragging = True
+        app._on_canvas_release(FakeEvent(w, h))
+        assert app.selected_nodes == mine
+        assert app._cur_gid() == g2
+        app.pick_inside_group.set(False)
+        app._select_node_at(*sp[outside])
+        assert app.selected_nodes == {outside}
+
+    # B5 -- hide / show
+    def test_a_hidden_group_is_not_drawn_or_picked(self, app):
+        _g1, _g2, g3 = self._two_levels(app)
+        n_rods = len(sgp.rods_of(app.groups, g3))
+        assert app._group_toggle_hidden(g3) is True
+        app._draw()
+        assert len(app.canvas.find_withtag('member')) == \
+            len(app.members) - n_rods
+        assert any(app.group_list.get(k).lstrip().startswith('◌')
+                   for k in range(app.group_list.size()))
+        rod = sgp.rods_of(app.groups, g3)[0]
+        x, y = self._rod_screen(app, rod)
+        nodes, rods = app._pick_filter()
+        assert rod not in rods
+        app._group_show_all()
+        assert app._hidden_groups == set()
+        assert len(app.canvas.find_withtag('member')) == len(app.members)
+
+
+class TestCraneWorkflow:
+    """C10, F1, F2: the Lift box follows the current group, a live check
+    and preview, pick rules, one crane removed at a time; a group left out
+    of the analysis; a failed Analyze that names the floating pieces."""
+
+    def _two(self, app, supports_b=False):
+        n0, m0 = len(app.nodes), len(app.members)
+        app.nodes = list(app.nodes) + [(x + 45.0, y, z)
+                                       for x, y, z in app.nodes]
+        app.members = list(app.members) + [
+            dict(m, a=m['a'] + n0, b=m['b'] + n0) for m in app.members]
+        if supports_b:
+            app.supports = list(app.supports) + [
+                dict(s, node=s['node'] + n0) for s in app.supports]
+        g = sgp.new_group(app.groups, 'Truss B', members=range(m0, 2 * m0))
+        app._refresh_group_list()
+        app.results = None
+        return n0, m0, g['id']
+
+    def test_the_lift_box_follows_the_current_group(self, app):
+        _n0, _m0, gid = self._two(app, supports_b=True)
+        app._set_current_group(gid)
+        assert 'Truss B' in app.crane_lift_target.get()
+        assert 'Lift takes: Truss B' in ' '.join(
+            t for t, _g in app._group_bar_text())
+
+    def test_the_pick_rules(self, app):
+        from apps.stereo import stereo_floating as sf
+        _n0, m0, gid = self._two(app, supports_b=True)
+        app._set_current_group(gid)
+        corners = app._crane_pick_rule('corners')
+        assert len(corners) == 4
+        assert all(app.nodes[n][0] >= 44.0 for n in corners), 'on Truss B'
+        assert len(app._crane_pick_rule('corners_mid')) == 8
+        chords = app._crane_pick_rule('chords')
+        assert len(chords) == 4
+        xs = sorted({round(app.nodes[n][0], 6) for n in chords})
+        assert xs == pytest.approx([45.0 + 7.5, 45.0 + 22.5], abs=1.6)
+        assert set(sf.PICK_RULES) == {'corners', 'corners_mid', 'chords'}
+
+    def test_the_live_check_and_the_preview(self, app):
+        _n0, _m0, gid = self._two(app, supports_b=True)
+        app._set_mode('addons')
+        app._set_current_group(gid)
+        app.selected_nodes = {0, 1}
+        app._draw()
+        assert 'Select 3 or more' in app.crane_check.cget('text')
+        app._crane_pick_rule('corners')
+        assert app.crane_check.cget('text').startswith('✓ 4 picks')
+        assert len(app.canvas.find_withtag('lift_preview')) == 5
+        # joints off the group: said, and no preview
+        app.selected_nodes = {0, 1, 2, 3}
+        app._draw()
+        assert 'not on group' in app.crane_check.cget('text')
+        assert not app.canvas.find_withtag('lift_preview')
+
+    def test_one_crane_can_be_removed(self, app):
+        _n0, _m0, gid = self._two(app, supports_b=True)
+        app._set_current_group(gid)
+        app._crane_pick_rule('corners')
+        app._add_cable_crane()
+        app._crane_pick_rule('corners_mid')
+        app._add_cable_crane()
+        app._draw()
+        rows = app.crane_list.get(0, 'end')
+        assert [r[:2] for r in rows] == ['K1', 'K2']
+        app.crane_list.selection_set(0)
+        app._remove_crane()
+        assert [r['code'] for r in app._crane_lifts] == ['K2']
+        assert {m.get('addon') for m in app.members
+                if m.get('role') == 'crane_cable'} == {'K2'}
+        app._draw()
+        assert [r[:2] for r in app.crane_list.get(0, 'end')] == ['K2']
+
+    def test_a_group_left_out_of_the_analysis(self, app):
+        _n0, m0, gid = self._two(app)          # Truss B stands on nothing
+        app.self_weight_on.set(True)
+        assert app._group_toggle_excluded(gid) is True
+        app._analyze()
+        assert app.results is not None, app.err
+        mr = app.results['member_res']
+        assert all(mr[j].get('left_out') and mr[j]['N'] == 0.0
+                   for j in range(m0, 2 * m0))
+        assert app.member_checks[m0]['note'] == 'left out of the analysis'
+        assert '⊘' in ' '.join(app.group_list.get(0, 'end'))
+        app._draw()
+        assert len(app.canvas.find_withtag('left_out')) == m0
+        assert app._group_toggle_excluded(gid) is False
+
+    def test_the_flag_survives_the_workbook(self, app, tmp_path):
+        from apps.stereo import stereo_groups_excel as sge
+        _n0, _m0, gid = self._two(app)
+        sgp.find(app.groups, gid)['excluded'] = True
+        path = str(tmp_path / 'g.xlsx')
+        sr_module.export_excel(app.nodes, app.members, [], app.supports,
+                               None, path, groups=app.groups)
+        groups, _rep = sge.import_groups(path, app.members)
+        assert groups[0]['excluded'] is True
+
+    def test_a_failed_analyze_names_the_floating_pieces(self, app, dialogs):
+        _n0, m0, gid = self._two(app)
+        app.self_weight_on.set(True)
+        app._analyze()
+        assert app.results is None
+        win = app._floating_win
+        assert win.winfo_exists()
+        assert app._floating_last == [list(range(m0, 2 * m0))]
+        assert 'Truss B (%d rods)' % m0 in app._floating_text(
+            app._floating_last)
+        assert not [d for d in dialogs if d[0] == 'showerror'], \
+            'the window replaces the bare error'
+        buttons = []
+
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, tk.Button):
+                    buttons.append(c.cget('text'))
+                walk(c)
+        walk(win)
+        for text in ('Leave them out of the analysis',
+                     'Lift them with a crane', 'Give them supports'):
+            assert text in buttons
+        win.destroy()
+
+    def test_the_three_ways_forward(self, app):
+        _n0, m0, gid = self._two(app)
+        app.self_weight_on.set(True)
+        pieces = app._floating_pieces()
+        # supports: the lowest joints are selected, Support panel open
+        sel = app._floating_support(pieces)
+        assert sel and all(app.nodes[n][2] == min(
+            app.nodes[k][2] for k in sel) for n in sel)
+        assert app.active_mode.get() == 'support'
+        # crane: its group current, its corners picked, Add-ons open
+        picks = app._floating_lift(pieces)
+        assert len(picks) == 4 and app._cur_gid() == gid
+        assert app.active_mode.get() == 'addons'
+        # leave out: the group is marked and the model solves
+        assert app._floating_leave_out(pieces) == ['Truss B']
+        assert app.results is not None
+
+
+class TestIterations:
+    """E1-E3: tags on groups, a lift plan checked in one go, and the
+    iterations compared slot by slot -- on screen and in the workbook."""
+
+    def _three(self, app):
+        n0, m0 = len(app.nodes), len(app.members)
+        nodes, members = list(app.nodes), list(app.members)
+        for k in (1, 2):
+            nodes += [(x + 45.0 * k, y, z) for x, y, z in app.nodes]
+            members += [dict(m, a=m['a'] + n0 * k, b=m['b'] + n0 * k)
+                        for m in app.members]
+        app.nodes, app.members = nodes, members
+        gids = [sgp.new_group(app.groups, 'Module %d' % (k + 1),
+                              members=range(m0 * k, m0 * (k + 1)))['id']
+                for k in range(3)]
+        sgp.new_group(app.groups, 'Module 1 top strip', parent=gids[0],
+                      members=list(range(10)))
+        app._refresh_group_list()
+        return gids
+
+    def test_tags_are_proposed_and_never_overwrite(self, app):
+        gids = self._three(app)
+        sgp.find(app.groups, gids[2])['iteration'] = '7'
+        changed = app._propose_group_tags()
+        assert set(changed) == set(gids), 'the strip inside is not tagged'
+        g = [sgp.find(app.groups, i) for i in gids]
+        assert [x['stage'] for x in g] == ['module'] * 3
+        assert [x['iteration'] for x in g] == ['1', '2', '7']
+        assert '{it 2 · module 1}' in ' '.join(app.group_list.get(0, 'end'))
+        app._set_group_tags(gids[0], iteration='', stage='roof')
+        assert 'iteration' not in g[0] and g[0]['stage'] == 'roof'
+
+    def test_check_lifts_and_compare(self, app):
+        gids = self._three(app)
+        app._propose_group_tags()
+        app._set_lift_rule(gids[1], 'corners')
+        plan = app._lift_plan()
+        assert [p['rule'] for p in plan] == ['corners_mid', 'corners',
+                                             'corners_mid']
+        n_members = len(app.members)
+        checked = app._check_lifts()
+        assert len(app.members) == n_members, 'nothing added to the model'
+        assert [c['row']['verdict'] for c in checked] == ['OK'] * 3
+        its, table = app._compare_table()
+        assert its == ['1', '2', '3']
+        labels = {r[2] for r in table}
+        assert {'longest sling m', 'rope Ø mm', 'heaviest sling kN',
+                'worst rod util', 'weight kN'} <= labels
+        win = app._open_iterations()
+        assert len(app._iter_tags_tv.get_children()) >= 3
+        assert app._iter_cmp_tv.get_children()
+        win.destroy()
+        # an edit makes the comparison stale rather than wrong
+        app.nodes[0] = (app.nodes[0][0], app.nodes[0][1],
+                        app.nodes[0][2] + 0.01)
+        assert app._compare_table() == ([], [])
+
+    def test_the_compare_sheet_and_the_tags_in_the_workbook(
+            self, app, tmp_path, monkeypatch):
+        import openpyxl
+        from apps.stereo import stereo_groups_excel as sge
+        gids = self._three(app)
+        app._propose_group_tags()
+        app._check_lifts()
+        path = str(tmp_path / 'cmp.xlsx')
+        monkeypatch.setattr('apps.stereo.stereo_app_reports.filedialog'
+                            '.asksaveasfilename', lambda *a, **k: path)
+        app._export_excel()
+        wb = openpyxl.load_workbook(path, data_only=True)
+        rows = list(wb['Compare'].iter_rows(values_only=True))
+        assert rows[0][:5] == ('stage', 'position', 'value', 'iteration 1',
+                               'iteration 2')
+        assert rows[1][:4] == ('module', '1', 'group', 'Module 1')
+        groups, _r = sge.import_groups(path, app.members)
+        tagged = [(g['name'], g.get('iteration'), g.get('stage'))
+                  for g in groups if g.get('stage')]
+        assert tagged == [('Module %d' % k, str(k), 'module')
+                          for k in (1, 2, 3)]

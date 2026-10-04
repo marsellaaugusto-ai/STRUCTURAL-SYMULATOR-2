@@ -255,6 +255,40 @@ def _find_diagram_maxima(xs, ys, tol_rel=1e-3):
     return locations, maxabs
 
 
+def fit_caption(text, avail, font, fallback=None, separator=' \u2014 '):
+    """The longest form of a diagram caption that fits `avail` pixels.
+
+    Every caption in this project reads "NAME (units) — explanation", and all
+    of them were drawn at full length into whatever space happened to be
+    there: in the Arch pane they ran straight through the panel's own
+    `max ±...` readout (2026-09-10 finding A-5), and in the Beam pane the
+    moment caption did the same from 1200 px down (B-8 / R-13). Elision is
+    the fix, but WHICH part goes matters -- a caption shortened to nothing
+    leaves a band of numbers with no statement of what they are, which is
+    worse than an overlap because it is not even visibly wrong.
+
+    So the forms are tried longest first: the whole caption, then the part
+    before `separator` (the name and its unit), then `fallback` (a symbol,
+    e.g. "M (kN·m)"). The shortest form is returned even when it does not
+    fit, because something has to be drawn.
+
+    Returns (text, width_px), the width being the measured width of what was
+    chosen -- callers use it to know where the caption ends, so a readout
+    drawn afterwards can start clear of it.
+    """
+    forms = [text]
+    head = text.split(separator, 1)[0]
+    if head != text:
+        forms.append(head)
+    if fallback:
+        forms.append(fallback)
+    for form in forms:
+        width = font.measure(form)
+        if width <= avail:
+            return form, width
+    return forms[-1], font.measure(forms[-1])
+
+
 def moment_arrow_points(cx, cy, r, ccw, n=24, sweep_deg=300.0, start_deg=100.0):
     """Pure geometry for a curved-arrow "applied moment" glyph, in SCREEN
     coordinates (y increases downward, as in a Tkinter canvas).

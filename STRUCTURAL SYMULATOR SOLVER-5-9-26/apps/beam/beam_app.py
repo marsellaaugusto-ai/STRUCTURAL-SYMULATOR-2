@@ -16,6 +16,7 @@ unchanged.
 """
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+from tkinter import font as tkfont
 import math
 
 import units
@@ -24,7 +25,7 @@ from common import (
     _ensure_openpyxl,
     PANEL_W,
     ScrollPanel, WrapBar, UnitsMixin,
-    _nice_ticks, _find_diagram_maxima, make_shape_fn,
+    _nice_ticks, _find_diagram_maxima, make_shape_fn, fit_caption,
     draw_moment_arrow, LoadScale, declutter_text,
 )
 from .beam_math import (
@@ -1072,6 +1073,35 @@ class BeamApp(UnitsMixin, tk.Frame):
         self.res_text.delete('1.0', 'end')
         self.res_text.insert('1.0', '\n'.join(lines))
 
+    @staticmethod
+    def _place_clear(canvas, x, y_options, text, others, bounds, **kw):
+        """Draw `text` at the first y in `y_options` that hits nothing.
+
+        `others` are canvas items already placed; `bounds` is the (top, bottom)
+        the label must stay inside. If every option collides, the first is
+        used: a visible overlap beats a label that was never drawn, which is
+        the same reasoning as common.declutter_text's.
+        """
+        top, bot = bounds
+        item = None
+        for i, y in enumerate(y_options):
+            if item is not None:
+                canvas.delete(item)
+            item = canvas.create_text(x, y, text=text, **kw)
+            x0, y0, x1, y1 = canvas.bbox(item)
+            if y0 < top or y1 > bot:
+                continue
+            clash = False
+            for other in others:
+                X0, Y0, X1, Y1 = canvas.bbox(other)
+                if x0 < X1 and X0 < x1 and y0 < Y1 and Y0 < y1:
+                    clash = True
+                    break
+            if not clash:
+                return item
+        canvas.delete(item)
+        return canvas.create_text(x, y_options[0], text=text, **kw)
+
     # ── where the extremes are ──────────────────────────────────────────────
     @staticmethod
     def _extreme_station(diag, key, score):
@@ -1321,7 +1351,25 @@ class BeamApp(UnitsMixin, tk.Frame):
         L = self.length
         margin = 45
         scale_x = (w - 2 * margin) / L
-        band_h = (h - 40) / 3
+        cap_font = tkfont.Font(font=('Helvetica', 8, 'bold'))
+        max_font = tkfont.Font(font=('Helvetica', 8))
+        tick_font = tkfont.Font(font=('Helvetica', 7))
+        # Room below the last band for the x-axis numbers, measured rather
+        # than guessed. They were drawn at `bot + 10` into a pane whose bands
+        # filled it to `h - 20`, so every one of them was clipped by a couple
+        # of pixels at ANY window size -- found by the R-13 test that asserts
+        # no label leaves its own canvas.
+        tick_h = tick_font.metrics('linespace')
+        axis_strip = tick_h + 6
+        band_h = (h - 20 - axis_strip) / 3
+        # How many ticks the axes can actually label. Asking for a fixed 8
+        # drew labels that touched on a narrow pane -- '9' and '10'
+        # overlapping by 2 px at a 340 px window -- and the same crowding
+        # applies vertically in a short band. Both counts now come from the
+        # space available and the font's own measurements.
+        n_xticks = max(2, min(8, int((w - margin - 10)
+                                     / max(1, tick_font.measure(f'{L:g}') + 14))))
+        n_vticks = max(2, min(5, int(band_h / max(1, tick_h + 6))))
 
         M_vals = [units.from_si('moment', mv) for mv in diag['M']]
         if self.reverse_bmd_var.get():
@@ -1332,39 +1380,64 @@ class BeamApp(UnitsMixin, tk.Frame):
             M_label = (f'MOMENT M ({units.label("moment")}) — sagging (+) plotted UP,'
                         ' hogging (−) plotted DOWN')
 
+        # Each band's caption, and the symbol to fall back on when the pane is
+        # too narrow for the name. See common.fit_caption for the order.
         bands = [(f'SHEAR V ({units.label("force")}) — positive plotted UP',
+                  f'V ({units.label("force")})',
                   [units.from_si('force', v) for v in diag['V']], self.CV_, 0),
-                 (M_label, M_vals, self.CM_, 1),
+                 (M_label, f'M ({units.label("moment")})',
+                  M_vals, self.CM_, 1),
                  (f'DEFLECTION ({units.label("deflection")}) — negative = downward',
+                  f'\u03b4 ({units.label("deflection")})',
                   [units.from_si('deflection', vv) for vv in diag['v']], self.CDEFL, 2)]
 
         last_band_idx = len(bands) - 1
-        for label, ys, color, bidx in bands:
+        for label, symbol, ys, color, bidx in bands:
             y0 = 20 + bidx * band_h + band_h / 2
             top = 20 + bidx * band_h
             bot = 20 + (bidx + 1) * band_h
             maxabs = max(1e-9, max(abs(v) for v in ys))
             avail = band_h / 2 - 14
 
-            v_ticks = _nice_ticks(-maxabs, maxabs, 5)
+            v_ticks = _nice_ticks(-maxabs, maxabs, n_vticks)
             for vt in v_ticks:
                 yy = y0 - (vt / maxabs) * avail
                 if top + 2 <= yy <= bot - 2:
                     c.create_line(margin, yy, w - 10, yy, fill='#eee')
                     c.create_text(margin - 4, yy, text=f'{vt:g}', anchor='e',
                                   font=('Helvetica', 6), fill='#aaa')
-            x_ticks = _nice_ticks(0, L, 8)
+            x_ticks = _nice_ticks(0, L, n_xticks)
             for xt in x_ticks:
                 xx = margin + xt * scale_x
                 if margin - 1 <= xx <= w - 9:
                     c.create_line(xx, top, xx, bot, fill='#eee')
                     if bidx == last_band_idx:
-                        c.create_text(xx, bot + 10, text=f'{xt:g}', anchor='n',
+                        c.create_text(xx, bot + 3, text=f'{xt:g}', anchor='n',
                                       font=('Helvetica', 7), fill='#888')
 
             c.create_line(margin, top, margin, bot, fill=self.CGRID)
             c.create_line(margin, y0, w - 10, y0, fill='#bbb')
-            c.create_text(margin, top + 8, text=label, anchor='w', font=('Helvetica', 8, 'bold'), fill='#555')
+
+            # The caption, the max readout and the peak labels were each
+            # placed from their own geometry with no regard for the others, so
+            # they ran through one another as soon as the pane was not wide:
+            # 1 overlapping pair at 1500 px and 4 at 700 px (R-13). The
+            # caption is fitted to what is left after reserving the readout's
+            # own measured width, and when even its symbol will not fit beside
+            # the readout, the readout moves to the band's bottom right.
+            max_text = f"max ±{maxabs:.2f}"
+            max_w = max_font.measure(max_text)
+            avail_cap = (w - 10 - margin) - (max_w + 14)
+            if avail_cap < cap_font.measure(symbol):
+                avail_cap = w - 10 - margin
+                max_xy, max_anchor = (w - 10, bot - 4), 'se'
+            else:
+                max_xy, max_anchor = (w - 10, top + 8), 'e'
+            text, _ = fit_caption(label, avail_cap, cap_font, symbol)
+            keep = [c.create_text(margin, top + 8, text=text, anchor='w',
+                                  font=('Helvetica', 8, 'bold'), fill='#555'),
+                    c.create_text(*max_xy, text=max_text, anchor=max_anchor,
+                                  font=('Helvetica', 8), fill='#777')]
             pts = []
             for x, v in zip(xs, ys):
                 sx = margin + x * scale_x
@@ -1375,13 +1448,19 @@ class BeamApp(UnitsMixin, tk.Frame):
             c.create_polygon(flat, fill=color, outline=color, stipple='gray50')
             for i in range(len(pts) - 1):
                 c.create_line(*pts[i], *pts[i + 1], fill=color, width=2)
-            c.create_text(w - 10, top + 8, text=f"max ±{maxabs:.2f}", anchor='e',
-                          font=('Helvetica', 8), fill='#777')
 
             locs, _ = _find_diagram_maxima(xs, ys)
             for xv in locs:
                 idx = min(range(len(xs)), key=lambda i: abs(xs[i] - xv))
                 sx, sy = pts[idx]
                 c.create_oval(sx - 4, sy - 4, sx + 4, sy + 4, fill='#c0392b', outline='white', width=1)
-                label_y = sy - 11 if ys[idx] >= 0 else sy + 11
-                c.create_text(sx, label_y, text=f"x={xv:.2f}", font=('Helvetica', 7), fill='#c0392b')
+                # Its own side of the point first, then the other side, then
+                # a line further out: whichever is free. A marker is never
+                # dropped for want of room -- an annotation that silently
+                # disappears is the failure this finding is about.
+                near = sy - 11 if ys[idx] >= 0 else sy + 11
+                far = sy + 11 if ys[idx] >= 0 else sy - 11
+                keep.append(self._place_clear(
+                    c, sx, (near, far, far + 11, near - 11),
+                    f"x={xv:.2f}", keep, (top, bot),
+                    font=('Helvetica', 7), fill='#c0392b'))

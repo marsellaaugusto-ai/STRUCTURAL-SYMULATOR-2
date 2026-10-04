@@ -21,7 +21,7 @@ from common import (
     PANEL_W, INIT_CW, INIT_CH, INIT_DH,
     ScrollPanel, WrapBar,
     _beam_gauss_solve, _GAUSS5_NODES, _GAUSS5_WEIGHTS,
-    _nice_ticks, _find_diagram_maxima, make_shape_fn,
+    _nice_ticks, _find_diagram_maxima, make_shape_fn, fit_caption,
 )
 
 def _adaptive_integral(fn, a, b, tol=1e-7, max_depth=20):
@@ -1844,15 +1844,16 @@ class ArchApp(UnitsMixin, tk.Frame):
         for label, curves, box, user_scale, kind in quads:
             left, top, right, bot = box
             avail = (right - left - 16) - MAX_LABEL_W
-            # Longest form that fits, in order: full caption, name only, symbol.
-            # A quarter panel is about 97 px wide at a 1000 px window, so on a
-            # narrow window even the name does not fit and only the symbol does.
-            text = label
-            if cap_font.measure(text) > avail:
-                text = label.split(' — ', 1)[0]
-            if cap_font.measure(text) > avail:
-                text = short_caption(kind) or text
-            cap_end = left + 6 + cap_font.measure(text)
+            # Longest form that fits, in order: full caption, name only,
+            # symbol. A quarter panel is about 97 px wide at a 1000 px window,
+            # so on a narrow window even the name does not fit and only the
+            # symbol does. The choosing lives in common.fit_caption since
+            # 2026-10-04, because the Beam pane needed the same three steps
+            # for the same reason (R-13) and two copies of one rule drift
+            # (MANIFESTO s3j).
+            text, text_w = fit_caption(label, avail, cap_font,
+                                       short_caption(kind))
+            cap_end = left + 6 + text_w
             c.create_text(left + 6, top + 2, text=text, anchor='nw',
                           font=('Helvetica', 8, 'bold'), fill='#555',
                           width=max(40, avail))

@@ -51,7 +51,7 @@ So this is not a list of old debt. Everything in Tier 1 below is new.
 | **R-10** | 6 dead imports (B-6) | LOW | ✅ **done** |
 | **R-11** | Retire the stale 2026-09-10 Beam report | LOW | 15 min |
 | **R-12** | Tests for everything above, before the fixes land | MED | ~3 h |
-| **R-13** | Diagram captions still collide — now even at 1500 px | LOW | ~1 h |
+| **R-13** | Diagram captions still collide — now even at 1500 px | LOW | ✅ **done** |
 | **R-14** | No row editing, no undo, results box is editable | LOW | ~4 h |
 | **R-15** | No zoom/pan, no hover readout, no diagram export | LOW | ~6 h |
 | **R-16** | Results omit *where* the maxima are, both M extremes, and any deflection limit | MED | ✅ **done** |
@@ -498,6 +498,35 @@ above is a hole it does not reach:
 # Tier 3 — UI and reporting
 
 ## R-13 · LOW · Diagram captions still collide (B-8), now at every width
+
+> **✅ Fixed 2026-10-04.** Collisions in the diagram canvas, same model and
+> same measurement as the table below: **0 at every width**, down from
+> 1 / 2 / 4 / 4 — and still 0 at 420 px and 340 px, which the original table
+> did not reach.
+>
+> The choosing moved to `common.fit_caption`, and **the Arch tab now calls
+> it too**, so the three-step rule A-5 invented exists once rather than
+> twice. The caption sheds its explanation before its name and its name
+> before its symbol, the readout's own measured width is reserved on the
+> right, and when even a symbol will not fit beside it the readout drops to
+> the band's bottom right — which then frees enough width for the caption to
+> come back to its full name. Peak labels take the first free side of their
+> point instead of always the same one, and are never dropped for want of
+> room.
+>
+> **Two more defects the new tests caught, both fixed:**
+>
+> * **Every x-axis number was clipped, at any window size.** The bands
+>   filled the pane to `h - 20` and the axis labels were drawn at
+>   `bot + 10`, so the bottom two pixels of each one fell outside the
+>   canvas. The strip below the last band is now measured from the tick
+>   font's own line height.
+> * **Tick density ignored the width.** `_nice_ticks(0, L, 8)` asked for
+>   eight labels however narrow the pane was, and at a 340 px window the
+>   '9' and '10' labels overlapped by 2 px. Both axes now take their count
+>   from the space available and the font's measurements. This is the Beam
+>   counterpart of the Arch tick-density item `FIXES_2026-09-10.md` §8 left
+>   open.
 
 Re-measured today on the live canvas (L = 10, UDL 6 kN/m, 25 kN at x = 7),
 counting overlapping text bounding boxes in `diag_canvas`:

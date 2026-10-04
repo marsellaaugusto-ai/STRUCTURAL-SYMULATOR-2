@@ -43,9 +43,9 @@ So this is not a list of old debt. Everything in Tier 1 below is new.
 | **R-2** | No equilibrium / closure self-check anywhere in the results | **HIGH** | ✅ **done** |
 | **R-3** | Reaction-moment sign is a heuristic, wrong in meaning at an interior fixed support | MED | ~3 h |
 | **R-4** | Non-uniform q(x) loads bypass the unit layer *and* the on-beam check | MED | ~2 h |
-| **R-5** | No validation of L, E, I, c, A — negative EI solves and returns garbage | MED | ~1 h |
-| **R-6** | Non-numeric entry raises an unhandled `TclError`; the user sees nothing | MED | ~1 h |
-| **R-7** | Shortening the beam leaves stale off-beam rows; Analyze then fails wholesale | MED | ~2 h |
+| **R-5** | No validation of L, E, I, c, A — negative EI solves and returns garbage | MED | ✅ **done** |
+| **R-6** | Non-numeric entry raises an unhandled `TclError`; the user sees nothing | MED | ✅ **done** |
+| **R-7** | Shortening the beam leaves stale off-beam rows; Analyze then fails wholesale | MED | ✅ **done** |
 | **R-8** | Split `beam_math.py` out of `beam_app.py` — the project's own stated boundary | MED | ~3 h |
 | **R-9** | Adopt `common.UnitsMixin`; hard-coded `kN` / `kN/m` labels ignore the selector | MED | ~3 h |
 | **R-10** | 6 dead imports (B-6) | LOW | 5 min |
@@ -209,6 +209,14 @@ is not.
 
 ## R-5 · MED · No validation of the beam's own numbers
 
+> **✅ Fixed 2026-10-04.** `BeamModel._valid_length` / `_valid_EI` guard the
+> model on the way in and again at solve time, each naming the real cause
+> instead of "fully constrained" or "a mechanism". `BeamApp._model_problems`
+> collects **every** reason a model cannot be analysed — bad length, no
+> support, each stranded row, each non-positive E/I/c/A, each negative
+> allowable — and reports them in one dialog. A zero allowable now prints
+> `not checked (no allowable stress given)` instead of `OK`.
+
 | input | today | should be |
 |---|---|---|
 | `L = 0` | "Beam is fully constrained; nothing to solve" | "Beam length must be greater than zero" |
@@ -225,6 +233,19 @@ Put the guards in `BeamModel.solve()` (so a model driven from a script or an
 imported workbook is covered) and surface them in `_analyze`.
 
 ## R-6 · MED · Non-numeric input raises an unhandled `TclError`
+
+> **✅ Fixed 2026-10-04.** One `_num(var, label)` read behind every entry
+> box, raising a message that names the field and quotes what was typed;
+> `_set_length` warns and puts the working length back, both Add dialogs
+> stay open so the number can be corrected where it was typed, and
+> `_current_state` (which feeds the export) fails by field name.
+>
+> **Noticed while testing it, still open:** the tab builds its `DoubleVar`s
+> with no `master`, so they bind to `tkinter._default_root` rather than to
+> the tab's own interpreter. In the running app that is the same object and
+> nothing is wrong; under a test suite that creates several roots it is not,
+> which is why one of these tests passed alone and failed in the full suite.
+> Worth passing `master=self` when `_build_ui` is next touched (R-9 does).
 
 Measured: type `abc` in the length box and press **Set length** →
 
@@ -244,6 +265,18 @@ the raw Tcl text.
 Prefer `tk.StringVar` + explicit parse over `DoubleVar` for new fields.
 
 ## R-7 · MED · Shortening the beam leaves rows that are no longer on it
+
+> **✅ Fixed 2026-10-04.** **Set length** now counts what would fall off and
+> asks once — *Delete them / Move them onto the beam / Cancel* (dismissing
+> the dialog means cancel) — through `_entries_off_beam`, `_apply_length`
+> and `_ask_stray_policy`, kept separate so the policy is testable without
+> driving a modal dialog. Clamping drops a distributed segment that would
+> collapse to zero width, since a no-op load row is the same class of
+> silence. Any row still off the beam is tagged red in its own table, and
+> Analyze names every one of them rather than the first.
+>
+> The remaining route by which a stranded row can reach Analyze is an
+> imported workbook, which validates nothing — see **R-17**.
 
 Measured: L = 6 with a point load at x = 5, then set length to 3 →
 

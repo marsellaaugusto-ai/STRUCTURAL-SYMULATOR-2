@@ -495,3 +495,60 @@ def test_merging_a_duplicate_support_does_not_inflate_the_degree():
                            m.add_dload(0, L, W, W))).equilibrium()
     assert eq['constrained_dof'] == 3
     assert eq['indeterminacy'] == 1
+
+
+# ------------------------------------------- the model's own numbers (R-5)
+#
+# A beam with no length and a beam with no stiffness both used to fail as
+# something else: L = 0 came back as "Beam is fully constrained; nothing to
+# solve" (it is neither), and E = 0 as "Singular stiffness matrix -- beam is a
+# mechanism" (it is not). A NEGATIVE EI solved happily and returned
+# deflections with the sign flipped, with nothing said at all.
+
+@pytest.mark.parametrize('length', [0.0, -3.0, float('nan')])
+def test_a_beam_with_no_length_says_so(length):
+    with pytest.raises(ValueError, match='length'):
+        BeamModel(length)
+
+
+def test_a_length_zeroed_after_construction_is_still_caught():
+    """The guard is on the way in AND at solve time: the tab rebuilds its
+    model every Analyze, but a script can assign to m.L."""
+    m = BeamModel(L)
+    m.EI = EI
+    m.add_support(0, 'pin')
+    m.add_support(L, 'roller')
+    m.L = 0.0
+    with pytest.raises(ValueError, match='length'):
+        m.solve()
+
+
+@pytest.mark.parametrize('bad', [0.0, -1.0, -16e6, float('inf'), float('nan')])
+def test_a_beam_with_no_usable_stiffness_says_so(bad):
+    """A negative EI is the dangerous one: it solved, and every deflection came
+    back with the wrong sign."""
+    m = BeamModel(L)
+    m.EI = bad
+    m.add_support(0, 'pin')
+    m.add_support(L, 'roller')
+    m.add_dload(0, L, W, W)
+    with pytest.raises(ValueError, match='EI'):
+        m.solve()
+
+
+def test_the_missing_ei_message_still_distinguishes_unset_from_invalid():
+    m = BeamModel(L)
+    m.add_support(0, 'pin')
+    with pytest.raises(ValueError, match='must be set'):
+        m.solve()
+
+
+def test_a_valid_tiny_beam_is_not_caught_by_the_new_guards():
+    """The guards must reject nothing that works. A 50 mm span with a light
+    section is a legitimate model."""
+    m = BeamModel(0.05)
+    m.EI = 1.0
+    m.add_support(0.0, 'pin')
+    m.add_support(0.05, 'roller')
+    m.add_dload(0.0, 0.05, 1.0, 1.0)
+    assert m.solve().equilibrium()['ok']

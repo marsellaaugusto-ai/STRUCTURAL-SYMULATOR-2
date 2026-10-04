@@ -22,7 +22,7 @@ from common import (
 
 class BeamModel:
     def __init__(self, length):
-        self.L = length
+        self.L = self._valid_length(length)
         self.supports = []     # [{'x':, 'type':}]
         self.point_loads = []  # [{'x':, 'P':}]   +P = downward (N)
         self.moments = []      # [{'x':, 'M':}]   +M = CCW (N*m)
@@ -32,6 +32,47 @@ class BeamModel:
         # Supports that add_support() folded into an earlier one at the same
         # station, so the tab can say so: [{'x':, 'kept':, 'added':, 'result':}]
         self.support_merges = []
+
+    @staticmethod
+    def _valid_length(length):
+        """A usable beam length, or a ValueError that names the real problem.
+
+        A zero-length beam used to come back as "Beam is fully constrained;
+        nothing to solve" -- it is neither over-constrained nor a mechanism,
+        and a user reading that message has no way to find the empty length
+        box that caused it (2026-10-04, R-5).
+        """
+        try:
+            length = float(length)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f'Beam length must be a number; got {length!r}.') from None
+        if not math.isfinite(length) or length <= 0.0:
+            raise ValueError(
+                f'Beam length must be greater than zero; got {length:g} m. '
+                f'Set the beam length first.')
+        return length
+
+    @staticmethod
+    def _valid_EI(EI):
+        """A usable bending stiffness, or a ValueError that names it.
+
+        E = 0 used to surface as "Singular stiffness matrix -- beam is a
+        mechanism", which sends the user looking at their supports instead of
+        at their section. A NEGATIVE EI was worse: it SOLVED, and returned
+        every deflection with the sign flipped, silently (R-5).
+        """
+        if EI is None:
+            raise ValueError("EI must be set before solving")
+        try:
+            EI = float(EI)
+        except (TypeError, ValueError):
+            raise ValueError(f'EI must be a number; got {EI!r}.') from None
+        if not math.isfinite(EI) or EI <= 0.0:
+            raise ValueError(
+                f'EI must be a positive, finite number; got {EI:g} N*m^2. '
+                f'Check the section: E and I must both be greater than zero.')
+        return EI
 
     def _on_beam(self, x, what):
         """Reject a station that is not on the beam.
@@ -209,9 +250,10 @@ class BeamModel:
         return total
 
     def solve(self):
-        if self.EI is None:
-            raise ValueError("EI must be set before solving")
-        EI = self.EI
+        # Re-checked here as well as in __init__: the tab rebuilds its model
+        # on every Analyze, but a script can assign to m.L or m.EI directly.
+        self.L = self._valid_length(self.L)
+        EI = self.EI = self._valid_EI(self.EI)
         xs = self._node_positions()
         n_nodes = len(xs)
         idx_of = {x: i for i, x in enumerate(xs)}
@@ -1248,6 +1290,162 @@ class BeamApp(tk.Frame):
         q = self._FIELD_Q.get(field)
         return units.label(q) if q else ''
 
+    # ── reading what the user typed ─────────────────────────────────────────
+    def _num(self, var, label):
+        """A number out of an entry box, or a ValueError that names the box.
+
+        `tk.DoubleVar.get()` raises TclError the moment its box holds anything
+        that is not a float, and the message it raises -- *expected
+        floating-point number but got "abc"* -- does not say WHICH box. Worse,
+        `_set_length` and both Add dialogs read these unguarded, so the
+        exception escaped into the Tk callback: the length did not change and
+        NOTHING WAS SAID. In a double-clicked app that traceback goes to a
+        console nobody sees (2026-10-04, R-6).
+        """
+        try:
+            value = float(var.get())
+        except Exception:
+            # The raw text, so the message can quote what was actually
+            # typed. Read through this tab's interpreter first and the
+            # variable's own second: the tab's variables are built without a
+            # master, so they belong to tkinter's default root, which is the
+            # same object in the running app but not necessarily under a test
+            # suite that creates several.
+            raw = ''
+            for interp in (self, getattr(var, '_root', None)):
+                try:
+                    raw = str(interp.globalgetvar(str(var)))
+                    break
+                except Exception:
+                    continue
+            raise ValueError(
+                f'{label} must be a number'
+                + (f' — got "{raw}".' if raw else ' — the box is empty.')
+            ) from None
+        if not math.isfinite(value):
+            raise ValueError(f'{label} must be a finite number; got {value:g}.')
+        return value
+
+    def _typed_length(self):
+        """The beam length as currently typed, in storage units."""
+        return self._stored('x', self._num(self.len_var, 'Beam length'))
+
+    def _typed_profile(self):
+        """The section/material fields as currently typed, in storage units."""
+        return {k: self._sec_stored(k, self._num(v, dict(self._sec_fields())[k]))
+                for k, v in self.sec_vars.items()}
+
+    # ── entries that are no longer on the beam ──────────────────────────────
+    # The Add dialogs refuse an off-beam station (B-5, fixed 2026-09-10), but
+    # SHORTENING the beam could still strand entries that were legal when they
+    # were entered: Analyze then failed wholesale, naming whichever one it
+    # reached first, and nothing marked the offending rows (R-7).
+    _STRAY_TABLES = (
+        ('support', 'supports', ('x',)),
+        ('point load', 'point_loads', ('x',)),
+        ('moment', 'moments', ('x',)),
+        ('distributed load', 'dloads', ('x1', 'x2')),
+        ('distributed load', 'nonuniform_loads', ('x1', 'x2')),
+    )
+
+    def _entries_off_beam(self, length=None):
+        """Every entry with a station outside [0, length], newest last.
+
+        One entry can be listed once per off-beam end, which is deliberate: a
+        distributed load with both ends past the new right-hand end is a
+        different problem from one that merely overhangs it.
+        """
+        L = self.length if length is None else length
+        tol = 1e-9 * max(1.0, abs(L))
+        out = []
+        for kind, attr, keys in self._STRAY_TABLES:
+            for i, row in enumerate(getattr(self, attr)):
+                for key in keys:
+                    x = row.get(key)
+                    if isinstance(x, (int, float)) and not (-tol <= x <= L + tol):
+                        out.append({'kind': kind, 'attr': attr, 'index': i,
+                                    'key': key, 'x': float(x)})
+        return out
+
+    def _stray_label(self, stray):
+        """One stranded entry, as the user sees it in its own table."""
+        n = stray['index'] + 1
+        return (f"{stray['kind']} {n} at "
+                f"{self._shown('x', stray['x']):.2f} {self._u('x')}")
+
+    def _apply_length(self, length, strays='cancel'):
+        """Set the beam length, dealing with whatever falls off it.
+
+        `strays` is 'delete', 'clamp' or 'cancel'. Returns True if the length
+        was applied. Kept separate from `_set_length` so the policy can be
+        chosen by a caller -- a test, or the question the tab asks the user --
+        rather than decided inside a modal dialog.
+        """
+        pending = self._entries_off_beam(length)
+        if pending:
+            if strays == 'cancel':
+                return False
+            if strays == 'delete':
+                for attr in {s['attr'] for s in pending}:
+                    drop = {s['index'] for s in pending if s['attr'] == attr}
+                    rows = getattr(self, attr)
+                    setattr(self, attr, [r for i, r in enumerate(rows)
+                                         if i not in drop])
+            elif strays == 'clamp':
+                for s in pending:
+                    row = getattr(self, s['attr'])[s['index']]
+                    row[s['key']] = min(max(row[s['key']], 0.0), length)
+                # A segment entirely beyond the new end clamps to zero width
+                # and then carries no load at all. A silent no-op row is the
+                # very thing this finding is about, so it goes.
+                for attr in ('dloads', 'nonuniform_loads'):
+                    setattr(self, attr, [
+                        d for d in getattr(self, attr)
+                        if abs(d['x2'] - d['x1']) > 1e-9 * max(1.0, abs(length))])
+            else:
+                raise ValueError(f'unknown stray policy {strays!r}')
+        self.length = length
+        self.len_var.set(self._shown('x', length))
+        self._refresh_tables()
+        return True
+
+    def _ask_stray_policy(self, strays):
+        """Ask what to do with entries the new length would strand.
+
+        A method of its own so a test can answer it without driving a modal
+        dialog, and so the decision is made ONCE for the whole set rather than
+        row by row.
+        """
+        listed = '\n'.join(f'  • {self._stray_label(s)}' for s in strays[:8])
+        if len(strays) > 8:
+            listed += f'\n  • ... and {len(strays) - 8} more'
+        win = tk.Toplevel(self)
+        win.title('Entries beyond the new beam length')
+        win.configure(bg='#f0f0ee')
+        win.grab_set()
+        tk.Label(win, bg='#f0f0ee', justify='left', font=('Helvetica', 10),
+                 text=(f'{len(strays)} entr' + ('y' if len(strays) == 1 else 'ies')
+                       + ' would lie beyond the new beam length of '
+                       + f"{self._shown('x', getattr(self, 'length_pending', self.length)):.2f} "
+                       + f'{self._u("x")}:')).pack(anchor='w', padx=12, pady=(12, 2))
+        tk.Label(win, text=listed, bg='#f0f0ee', justify='left',
+                 font=('Courier', 9)).pack(anchor='w', padx=12)
+        choice = {'value': 'cancel'}
+
+        def pick(value):
+            choice['value'] = value
+            win.destroy()
+
+        row = tk.Frame(win, bg='#f0f0ee')
+        row.pack(fill='x', padx=12, pady=12)
+        for text, value in [('Delete them', 'delete'),
+                            ('Move them onto the beam', 'clamp'),
+                            ('Cancel', 'cancel')]:
+            tk.Button(row, text=text, width=22,
+                      command=lambda v=value: pick(v)).pack(side='left', padx=3)
+        win.wait_window()
+        return choice['value']
+
     def _refresh_tables(self):
         for tree, rows, cols in [
             (self.sup_tree, self.supports, ('x', 'type')),
@@ -1257,12 +1455,17 @@ class BeamApp(tk.Frame):
             (self.ndl_tree, self.nonuniform_loads, ('expr', 'x1', 'x2')),
         ]:
             tree.delete(*tree.get_children())
-            for r in rows:
+            # Visible before Analyze, not only in an error message afterwards.
+            tree.tag_configure('stray', background='#ffe4e1', foreground='#a33')
+            stray_rows = {s['index'] for s in self._entries_off_beam()
+                          if getattr(self, s['attr']) is rows}
+            for i, r in enumerate(rows):
                 vals = []
                 for c in cols:
                     v = self._shown(c, r[c])
                     vals.append(f'{v:g}' if isinstance(v, float) else v)
-                tree.insert('', 'end', values=tuple(vals))
+                tree.insert('', 'end', values=tuple(vals),
+                            tags=('stray',) if i in stray_rows else ())
         self._draw_schematic()
 
     def _ask(self, title, fields):
@@ -1280,10 +1483,24 @@ class BeamApp(tk.Frame):
             else:
                 tk.Entry(win, textvariable=v, width=10).grid(row=i, column=1, padx=8, pady=4)
         result = {}
+        labels = {key: label for key, label, _ in fields}
 
         def ok():
+            # A bad number used to raise TclError straight out of this
+            # callback: the dialog stayed open with no explanation and no row
+            # was added (R-6). Say which field, and keep the dialog open so
+            # the number can be fixed where it was typed.
+            values = {}
             for k, v in vars_.items():
-                result[k] = v.get()
+                if isinstance(v, tk.StringVar):
+                    values[k] = v.get()
+                    continue
+                try:
+                    values[k] = self._num(v, labels.get(k, k))
+                except ValueError as e:
+                    messagebox.showwarning(title, str(e))
+                    return
+            result.update(values)
             win.destroy()
         tk.Button(win, text='OK', command=ok, bg='#1a6bbd', fg='white').grid(
             row=len(fields), column=0, columnspan=2, pady=8)
@@ -1376,15 +1593,21 @@ class BeamApp(tk.Frame):
         def ok():
             expr = expr_var.get().strip()
             try:
-                ctx = {'L': self._stored('x', self.len_var.get())}
-                x1_, x2_ = x1_var.get(), x2_var.get()
+                x1_ = self._num(x1_var, 'x\u2081')
+                x2_ = self._num(x2_var, 'x\u2082')
+            except ValueError as e:
+                messagebox.showwarning('Add non-uniform distributed load',
+                                       str(e))
+                return
+            try:
+                ctx = {'L': self._typed_length()}
                 x_mid = (min(x1_, x2_) + max(x1_, x2_)) / 2
                 make_shape_fn(expr, ctx)(x_mid)   # validate it compiles & evaluates
             except Exception as e:
                 messagebox.showerror('Invalid expression', str(e)); return
             result['expr'] = expr
-            result['x1'] = x1_var.get()
-            result['x2'] = x2_var.get()
+            result['x1'] = x1_
+            result['x2'] = x2_
             win.destroy()
 
         tk.Button(win, text='OK', command=ok, bg='#1a6bbd', fg='white').grid(
@@ -1395,7 +1618,23 @@ class BeamApp(tk.Frame):
             self._refresh_tables()
 
     def _set_length(self):
-        self.length = self._stored('x', self.len_var.get())
+        try:
+            length = self._typed_length()
+            BeamModel._valid_length(length)
+        except ValueError as e:
+            messagebox.showwarning('Beam length', str(e))
+            self.len_var.set(self._shown('x', self.length))
+            return
+        strays = self._entries_off_beam(length)
+        policy = 'delete'
+        if strays:
+            # self.length is still the OLD length here, which is what the
+            # dialog needs to quote the new one against.
+            self.length_pending = length
+            policy = self._ask_stray_policy(strays)
+        if not self._apply_length(length, strays=policy):
+            self.len_var.set(self._shown('x', self.length))
+            return
         self._draw_schematic()
 
     def _clear_all(self):
@@ -1409,12 +1648,11 @@ class BeamApp(tk.Frame):
     # ── Excel export / import ────────────────────────────────────────────────
     def _current_state(self):
         return {
-            'length': self._stored('x', self.len_var.get()),
+            'length': self._typed_length(),
             'supports': self.supports, 'point_loads': self.point_loads,
             'moments': self.moments, 'dloads': self.dloads,
             'nonuniform_loads': self.nonuniform_loads,
-            'profile': {k: self._sec_stored(k, v.get())
-                        for k, v in self.sec_vars.items()},
+            'profile': self._typed_profile(),
         }
 
     def _export_excel(self):
@@ -1502,14 +1740,64 @@ class BeamApp(tk.Frame):
         self._refresh_tables()
 
     # ── analysis ─────────────────────────────────────────────────────────────
-    def _analyze(self):
-        try:
-            self.length = self._stored('x', self.len_var.get())
-            if not self.supports:
-                messagebox.showwarning('Analyze', 'Add at least one support.'); return
-            for k in self.sec_vars:
-                self.profile[k] = self._sec_stored(k, self.sec_vars[k].get())
+    def _model_problems(self):
+        """Every reason this model cannot be analysed, in one list.
 
+        Reporting the first problem and stopping meant fixing a model one
+        modal dialog at a time -- and three of these were not reported at all
+        before 2026-10-04: a zero or negative section number, a negative
+        allowable, and any entry stranded beyond the beam by a later Set
+        length (R-5, R-7).
+        """
+        problems = []
+
+        try:
+            length = self._typed_length()
+            BeamModel._valid_length(length)
+        except ValueError as e:
+            problems.append(str(e))
+            length = self.length
+        else:
+            self.length = length
+
+        if not self.supports:
+            problems.append('Add at least one support.')
+
+        for stray in self._entries_off_beam(length):
+            problems.append(
+                f'{self._stray_label(stray).capitalize()} is beyond the beam, '
+                f"which spans 0 to {self._shown('x', length):.2f} "
+                f"{self._u('x')}. Move it onto the beam, or set the beam "
+                f'length first.')
+
+        labels = dict(self._sec_fields())
+        try:
+            profile = self._typed_profile()
+        except ValueError as e:
+            problems.append(str(e))
+        else:
+            for key in ('E', 'I', 'c', 'A'):
+                if profile[key] <= 0.0:
+                    problems.append(f'{labels[key]} must be greater than '
+                                    f"zero; got {profile[key]:g}.")
+            for key in ('allow_bend', 'allow_shear'):
+                if profile[key] < 0.0:
+                    problems.append(
+                        f'{labels[key]} cannot be negative: an allowable '
+                        f'stress is positive, or 0 to skip that check.')
+            if not problems:
+                self.profile = profile
+        return problems
+
+    def _analyze(self):
+        problems = self._model_problems()
+        if problems:
+            messagebox.showwarning(
+                'Cannot analyze',
+                'This model cannot be analysed yet:\n\n'
+                + '\n'.join(f'  \u2022 {p}' for p in problems))
+            return
+        try:
             E_Pa = self.profile['E'] * 1e9
             I_m4 = self.profile['I'] * 1e-8
             EI = E_Pa * I_m4
@@ -1585,19 +1873,27 @@ class BeamApp(tk.Frame):
                   '']
         lines += self._equilibrium_lines(r)
         lines += ['', 'STRESS CHECK']
-        bend_ratio = sigma_kncm2 / self.profile['allow_bend'] if self.profile['allow_bend'] else 0
-        shear_ratio = tau_kncm2 / self.profile['allow_shear'] if self.profile['allow_shear'] else 0
         su = units.label('stress')
-        lines.append(f'  Bending sigma = M*c/I = '
-                      f'{self._sec_shown("allow_bend", sigma_kncm2):6.3f} {su}')
-        lines.append(f'    allowable = '
-                      f'{self._sec_shown("allow_bend", self.profile["allow_bend"]):.3f} {su} '
-                      f'  ({"OK" if bend_ratio <= 1.0 else "FAIL"}, ratio {bend_ratio:.2f})')
-        lines.append(f'  Shear tau = V/A   = '
-                      f'{self._sec_shown("allow_shear", tau_kncm2):6.3f} {su}')
-        lines.append(f'    allowable = '
-                      f'{self._sec_shown("allow_shear", self.profile["allow_shear"]):.3f} {su} '
-                      f'  ({"OK" if shear_ratio <= 1.0 else "FAIL"}, ratio {shear_ratio:.2f})')
+
+        def _check(title, demand, key):
+            # `ratio = demand / allow if allow else 0` turned a MISSING
+            # allowable into a printed OK -- a check that cannot fail is worse
+            # than no check at all (2026-10-04, R-5). Zero now reads as what
+            # it is: nothing to check against.
+            allow = self.profile[key]
+            lines.append(f'  {title} = '
+                         f'{self._sec_shown(key, demand):6.3f} {su}')
+            if allow > 0:
+                ratio = demand / allow
+                lines.append(
+                    f'    allowable = {self._sec_shown(key, allow):.3f} {su} '
+                    f'  ({"OK" if ratio <= 1.0 else "FAIL"}, ratio {ratio:.2f})')
+            else:
+                lines.append('    allowable = not checked '
+                             '(no allowable stress given)')
+
+        _check('Bending sigma = M*c/I', sigma_kncm2, 'allow_bend')
+        _check('Shear tau = V/A  ', tau_kncm2, 'allow_shear')
 
         lines += self._model_note_lines(m)
 

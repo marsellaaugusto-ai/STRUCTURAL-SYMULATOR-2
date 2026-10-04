@@ -265,3 +265,233 @@ def test_the_beam_ends_themselves_are_valid_stations():
     r = _solve(lambda m: (m.add_support(0.0, 'pin'), m.add_support(L, 'roller'),
                           m.add_point_load(L, 0.0), m.add_dload(0.0, L, W, W)))
     assert _rel(r.reaction_at(0)[0], W * L / 2) < STATICS_TOL
+
+
+# ---------------------------------------- two supports at one station (R-1)
+#
+# BeamResult.reaction_at() looks a reaction up by STATION, so two supports
+# sharing a node both reported that one node's residual -- and _V_M_at added
+# it once per support. A pin and a roller both at x = 0 on a 6 m beam under
+# 10 kN/m reported 90 kN of reaction for 60 kN of load, max |M| = 180 against
+# a true 45, and failed the stress check on a beam that passes. Constraint
+# assembly was always right (`constrained[dof] = 0.0` twice is idempotent),
+# so the displacements were right and only the recovery was wrong -- which is
+# why no closed form in this file caught it.
+#
+# A second support at an occupied station is merged into the first: the DOF it
+# restrains are added to that station's, which is what the user meant by
+# putting it there.
+
+def _udl_reference():
+    """Simply-supported span under a full UDL, one support per station."""
+    return _solve(lambda m: (m.add_support(0, 'pin'), m.add_support(L, 'roller'),
+                             m.add_dload(0, L, W, W)))
+
+
+@pytest.mark.parametrize('dup', ['pin', 'roller'])
+def test_a_second_vertical_support_at_one_station_does_not_double_count(dup):
+    r = _solve(lambda m: (m.add_support(0, 'pin'), m.add_support(0, dup),
+                          m.add_support(L, 'roller'), m.add_dload(0, L, W, W)))
+    ref = _udl_reference()
+    assert _rel(r.reaction_at(0)[0], W * L / 2) < STATICS_TOL
+    # V just right of the support is probed at x + 1e-7, so it carries that
+    # much of the UDL whatever the supports are -- hence the comparison
+    # against the one-support reference, which carries the same artifact, and
+    # a looser absolute tolerance beside it.
+    assert _rel(r.shear_at(0.0, 'right'), ref.shear_at(0.0, 'right')) < STATICS_TOL
+    assert _rel(r.shear_at(0.0, 'right'), W * L / 2) < 1e-6
+    assert _rel(r.moment_at(L / 2), W * L * L / 8) < STATICS_TOL
+    assert _rel(r.moment_at(L / 2), ref.moment_at(L / 2)) < STATICS_TOL
+    assert abs(r.moment_at(L, 'right')) < STATICS_TOL * W * L * L
+
+
+def test_duplicate_supports_are_merged_into_one_entry():
+    """The reactions report and the Excel sheet both iterate model.supports, so
+    a duplicate must not survive as a second row claiming its own reaction."""
+    m = _model(lambda mm: (mm.add_support(0, 'pin'), mm.add_support(0, 'roller'),
+                           mm.add_support(L, 'roller'), mm.add_dload(0, L, W, W)))
+    assert [s['x'] for s in m.supports] == [0.0, L]
+
+
+@pytest.mark.parametrize('first,second', [('pin', 'guided'), ('guided', 'pin'),
+                                          ('roller', 'guided')])
+def test_a_vertical_and_a_rotational_support_at_one_station_act_as_fixed(first, second):
+    """The worst form of the bug, because it looks like a legitimate model: a
+    pin plus a guided support at one station is how a user builds a fixed end
+    without reaching for the 'fixed' type. It must give the propped cantilever,
+    which it did not -- M(0) came out -90 against a true -45, and the moment
+    diagram did not close at the free end."""
+    r = _solve(lambda m: (m.add_support(0, first), m.add_support(0, second),
+                          m.add_support(L, 'roller'), m.add_dload(0, L, W, W)))
+    assert _rel(r.reaction_at(0)[0], 5 * W * L / 8) < STATICS_TOL
+    assert _rel(r.reaction_at(L)[0], 3 * W * L / 8) < STATICS_TOL
+    assert _rel(r.moment_at(0.0, 'right'), -W * L * L / 8) < STATICS_TOL
+    assert abs(r.moment_at(L, 'right')) < STATICS_TOL * W * L * L
+
+
+def test_merging_a_duplicate_support_names_the_type_it_became():
+    m = _model(lambda mm: (mm.add_support(0, 'pin'), mm.add_support(0, 'guided')))
+    assert m.supports[0]['type'] == 'fixed'
+    assert len(m.supports) == 1
+
+
+def test_two_identical_supports_at_one_station_change_nothing():
+    for kind in ('pin', 'roller', 'fixed', 'guided'):
+        m = _model(lambda mm, k=kind: (mm.add_support(0, k), mm.add_support(0, k)))
+        assert [s['type'] for s in m.supports] == [kind], kind
+
+
+def test_a_merge_is_recorded_so_the_tab_can_say_it_happened():
+    """Silently changing the model the user described is what this bug was.
+    Merging is the right answer, but it has to be reported."""
+    m = _model(lambda mm: (mm.add_support(0, 'pin'), mm.add_support(0, 'guided'),
+                           mm.add_support(L, 'roller')))
+    assert len(m.support_merges) == 1
+    note = m.support_merges[0]
+    assert note['x'] == 0.0
+    assert note['added'] == 'guided'
+    assert note['result'] == 'fixed'
+
+
+def test_merging_keeps_the_mesh_and_the_dof_count_right():
+    plain = _model(lambda mm: (mm.add_support(0, 'fixed'), mm.add_support(L, 'roller'),
+                               mm.add_dload(0, L, W, W)))
+    merged = _model(lambda mm: (mm.add_support(0, 'pin'), mm.add_support(0, 'guided'),
+                                mm.add_support(L, 'roller'), mm.add_dload(0, L, W, W)))
+    assert merged._node_positions() == plain._node_positions()
+    assert (merged.solve().equilibrium()['indeterminacy']
+            == plain.solve().equilibrium()['indeterminacy'])
+
+
+def test_an_unknown_support_type_is_refused_when_it_is_added():
+    m = BeamModel(L)
+    m.EI = EI
+    with pytest.raises(ValueError, match='Unknown support type'):
+        m.add_support(0.0, 'spring')
+
+
+# ------------------------------------------- equilibrium and closure (R-2)
+#
+# Nothing in the tab checked that its own answer balanced, which is why R-1
+# could report 90 kN of reaction for 60 kN of load with a green suite. These
+# residuals are the net: one leg (the applied total) is integrated
+# independently of the solver, the other comes back through the same recovery
+# path the diagrams and the reactions report use.
+
+EQ_BUILDS = {
+    'ss_udl': (lambda m: (m.add_support(0, 'pin'), m.add_support(L, 'roller'),
+                          m.add_dload(0, L, W, W)), L),
+    'cantilever_point': (lambda m: (m.add_support(0, 'fixed'),
+                                    m.add_point_load(L, P)), L),
+    'cantilever_right_end': (lambda m: (m.add_support(L, 'fixed'),
+                                        m.add_point_load(0.0, P)), L),
+    'fixed_fixed': (lambda m: (m.add_support(0, 'fixed'), m.add_support(L, 'fixed'),
+                               m.add_dload(0, L, W, W)), L),
+    'propped': (lambda m: (m.add_support(0, 'fixed'), m.add_support(L, 'roller'),
+                           m.add_dload(0, L, W, W)), L),
+    'two_span': (lambda m: (m.add_support(0, 'pin'), m.add_support(L, 'roller'),
+                            m.add_support(2 * L, 'roller'),
+                            m.add_dload(0, 2 * L, W, W)), 2 * L),
+    'guided_end': (lambda m: (m.add_support(0, 'fixed'), m.add_support(L, 'guided'),
+                              m.add_dload(0, L, W, W)), L),
+    'interior_fixed': (lambda m: (m.add_support(L / 2, 'fixed'),
+                                  m.add_point_load(0.0, P),
+                                  m.add_point_load(L, P / 2)), L),
+    'overhangs_ramp_and_moment': (
+        lambda m: (m.add_support(1.0, 'pin'), m.add_support(8.0, 'roller'),
+                   m.add_point_load(3.0, 20e3), m.add_dload(4.0, 9.0, 5e3, 12e3),
+                   m.add_moment(6.0, 15e3)), 10.0),
+    'merged_duplicate': (lambda m: (m.add_support(0, 'pin'), m.add_support(0, 'guided'),
+                                    m.add_support(L, 'roller'),
+                                    m.add_dload(0, L, W, W)), L),
+}
+
+
+@pytest.mark.parametrize('name', sorted(EQ_BUILDS))
+def test_every_valid_model_balances(name):
+    build, length = EQ_BUILDS[name]
+    eq = _solve(build, length=length).equilibrium()
+    assert eq['ok'], eq
+    assert abs(eq['residual_Fy']) <= 1e-9 * eq['scale_F'], eq
+    assert abs(eq['residual_M0']) <= 1e-9 * eq['scale_M'], eq
+    assert abs(eq['shear_beyond_end']) <= 1e-9 * eq['scale_F'], eq
+    assert abs(eq['moment_beyond_end']) <= 1e-9 * eq['scale_M'], eq
+
+
+def test_the_total_applied_load_is_integrated_not_assumed():
+    """Point loads, a trapezoid and a q(x) expression in one model, against the
+    hand-computed total. This is the leg of the check that does not come from
+    the solver, so it has to be right on its own."""
+    from common import make_shape_fn
+    r = _solve(lambda m: (m.add_support(0, 'pin'), m.add_support(L, 'roller'),
+                          m.add_point_load(2.0, P),
+                          m.add_dload(0.0, 3.0, 4e3, 10e3),
+                          m.add_nonuniform_load(
+                              make_shape_fn('10000*sin(pi*x/L)', {'L': L}), 0, L)))
+    want = P + (4e3 + 10e3) / 2 * 3.0 + 2 * W * L / math.pi
+    assert _rel(r.equilibrium()['applied_down'], want) < 1e-6
+
+
+def test_the_reactions_sum_to_the_applied_load():
+    eq = _udl_reference().equilibrium()
+    assert _rel(eq['reactions_up'], eq['applied_down']) < 1e-9
+    assert _rel(eq['applied_down'], W * L) < 1e-9
+
+
+def test_an_uplift_load_balances_too():
+    """A negative P is upward; the residual must stay a residual and not a
+    sum of absolute values that cancels by luck."""
+    eq = _solve(lambda m: (m.add_support(0, 'pin'), m.add_support(L, 'roller'),
+                           m.add_point_load(2.0, -P),
+                           m.add_point_load(4.0, P))).equilibrium()
+    assert eq['ok']
+    assert abs(eq['applied_down']) < 1e-9 * P
+    assert eq['scale_F'] >= P, 'the scale must not collapse when loads cancel'
+
+
+def test_a_model_with_no_load_at_all_balances():
+    eq = _solve(lambda m: (m.add_support(0, 'pin'),
+                           m.add_support(L, 'roller'))).equilibrium()
+    assert eq['ok']
+    assert eq['scale_F'] > 0 and eq['scale_M'] > 0, 'no division by a zero scale'
+
+
+def test_a_corrupted_reaction_is_caught():
+    """The point of the check. If any future change makes the recovery disagree
+    with the loads -- double counting a reaction, dropping a load segment,
+    reading the wrong DOF -- this is what says so. R-1 went unnoticed for two
+    diagnoses because nothing asked this question."""
+    r = _udl_reference()
+    eq = r.equilibrium()
+    assert eq['ok']
+    i = r.idx_of[round(0.0, 9)]
+    r.R[2 * i] *= 2.0                      # as if one reaction were counted twice
+    bad = r.equilibrium()
+    assert not bad['ok']
+    assert abs(bad['residual_Fy']) > 1e-6 * bad['scale_F']
+
+
+@pytest.mark.parametrize('name,degree', [
+    ('ss_udl', 0),
+    ('cantilever_point', 0),
+    ('interior_fixed', 0),
+    ('propped', 1),
+    ('two_span', 1),
+    ('fixed_fixed', 2),
+])
+def test_the_degree_of_indeterminacy_is_reported(name, degree):
+    """A planar bending model has two equilibrium equations, so the degree is
+    (restrained DOF) - 2. It tells the user whether the answer they are reading
+    depended on EI at all."""
+    build, length = EQ_BUILDS[name]
+    assert _solve(build, length=length).equilibrium()['indeterminacy'] == degree
+
+
+def test_merging_a_duplicate_support_does_not_inflate_the_degree():
+    """pin + guided at one station is a fixed support: two restrained DOF, not
+    three."""
+    eq = _solve(lambda m: (m.add_support(0, 'pin'), m.add_support(0, 'guided'),
+                           m.add_support(L, 'roller'),
+                           m.add_dload(0, L, W, W))).equilibrium()
+    assert eq['constrained_dof'] == 3
+    assert eq['indeterminacy'] == 1

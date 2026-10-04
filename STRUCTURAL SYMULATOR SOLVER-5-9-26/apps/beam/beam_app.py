@@ -29,6 +29,9 @@ class BeamModel:
         self.dloads = []       # [{'x1':,'x2':,'w1':,'w2':}]  +w = downward (N/m)
         self.nonuniform_loads = []  # [{'fn': q(x)->N/m (+down), 'x1':, 'x2':}]
         self.EI = None         # N*m^2
+        # Supports that add_support() folded into an earlier one at the same
+        # station, so the tab can say so: [{'x':, 'kept':, 'added':, 'result':}]
+        self.support_merges = []
 
     def _on_beam(self, x, what):
         """Reject a station that is not on the beam.
@@ -47,8 +50,65 @@ class BeamModel:
                 f"first.")
         return min(max(x, 0.0), self.L)
 
+    # Which DOF each support type restrains: 'v' = vertical translation,
+    # 'theta' = rotation. Written once, so the constraint assembly in solve(),
+    # the merge below, and the restrained-DOF count behind the indeterminacy
+    # report can never drift out of step with each other.
+    SUPPORT_DOF = {
+        'pin':    ('v',),
+        'roller': ('v',),
+        'fixed':  ('v', 'theta'),
+        'guided': ('theta',),
+    }
+
+    @classmethod
+    def _merged_type(cls, kept, added):
+        """The support type that restrains the union of two types' DOF."""
+        dof = set(cls.SUPPORT_DOF[kept]) | set(cls.SUPPORT_DOF[added])
+        if dof == {'v', 'theta'}:
+            return 'fixed'
+        if dof == {'theta'}:
+            return 'guided'
+        # Vertical only. 'pin' and 'roller' restrain the same DOF in a
+        # bending-only model, so there is nothing to choose between them --
+        # keep the name the user entered first.
+        return kept
+
     def add_support(self, x, type_):
-        self.supports.append({'x': self._on_beam(x, 'Support'), 'type': type_})
+        """Add a support, folding it into any support already at that station.
+
+        Two supports at one station share a NODE, and until 2026-10-04 both of
+        them reported that one node's reaction: `reaction_at()` is keyed by
+        station, and `_V_M_at` added what it returned once per support. A pin
+        and a roller both at x = 0 on a 6 m beam under 10 kN/m reported 90 kN
+        of reaction for 60 kN of load, max |M| = 180 against a true 45, and
+        failed the stress check on a beam that passes. It was silent because
+        the constraint assembly was always right -- `constrained[dof] = 0.0`
+        twice is idempotent -- so the displacements were right and only the
+        recovery was wrong, which is why no closed form in
+        tests/test_beam_math.py caught it.
+
+        Merging rather than refusing is deliberate: a pin plus a guided
+        support at one station IS a fixed support, and that is what the user
+        was describing. But it is recorded in `support_merges` and reported in
+        the RESULTS panel, because analysing something other than what was
+        typed without saying so is the whole of this bug.
+        """
+        if type_ not in self.SUPPORT_DOF:
+            raise ValueError(f"Unknown support type {type_}")
+        x = self._on_beam(x, 'Support')
+        key = round(x, 9)
+        for s in self.supports:
+            if round(s['x'], 9) != key:
+                continue
+            merged = self._merged_type(s['type'], type_)
+            self.support_merges.append({'x': s['x'], 'kept': s['type'],
+                                        'added': type_, 'result': merged})
+            s['type'] = merged
+            return s
+        s = {'x': x, 'type': type_}
+        self.supports.append(s)
+        return s
 
     def add_point_load(self, x, P):
         self.point_loads.append({'x': self._on_beam(x, 'Point load'), 'P': P})
@@ -205,19 +265,21 @@ class BeamModel:
             i = idx_of[round(m['x'], 9)]
             F[2 * i + 1] += m['M']
 
+        # One pass over SUPPORT_DOF, so this cannot disagree with the merge
+        # in add_support() or with the restrained-DOF count in
+        # BeamResult.equilibrium(). Still raises on an unknown type: a model
+        # can be built by hand or out of a workbook, bypassing add_support().
         constrained = {}
         for s in self.supports:
             i = idx_of[round(s['x'], 9)]
-            t = s['type']
-            if t in ('pin', 'roller'):
+            try:
+                restrains = self.SUPPORT_DOF[s['type']]
+            except KeyError:
+                raise ValueError(f"Unknown support type {s['type']}") from None
+            if 'v' in restrains:
                 constrained[2 * i] = 0.0
-            elif t == 'fixed':
-                constrained[2 * i] = 0.0
+            if 'theta' in restrains:
                 constrained[2 * i + 1] = 0.0
-            elif t == 'guided':
-                constrained[2 * i + 1] = 0.0
-            else:
-                raise ValueError(f"Unknown support type {t}")
 
         free = [i for i in range(dof) if i not in constrained]
         if not free:
@@ -249,6 +311,19 @@ class BeamResult:
         self.R = R
         self.idx_of = idx_of
         self.EI = EI
+        # One entry per support NODE, in order, rather than one per support.
+        # add_support() already merges duplicates, so model.supports is unique
+        # by station -- this is the second line of defence, because
+        # reaction_at() is keyed by station and anything that appended to that
+        # list directly (a hand-built model, a future editor) would double
+        # count every shared reaction again exactly as R-1 did.
+        seen = set()
+        self.support_stations = []
+        for s in model.supports:
+            key = round(s['x'], 9)
+            if key not in seen:
+                seen.add(key)
+                self.support_stations.append(s['x'])
 
     def reaction_at(self, x):
         """Returns (Fy, M) at the support/node located at x. Fy: vertical
@@ -271,11 +346,11 @@ class BeamResult:
 
         V = 0.0
         M = 0.0
-        for s in self.model.supports:
-            if s['x'] <= xx + 1e-9:
-                Fy, Mr = self.reaction_at(s['x'])
+        for sx in self.support_stations:
+            if sx <= xx + 1e-9:
+                Fy, Mr = self.reaction_at(sx)
                 V += Fy
-                M += Fy * (x - s['x']) - Mr
+                M += Fy * (x - sx) - Mr
         for p in self.model.point_loads:
             if p['x'] <= xx + 1e-9:
                 Fy = -p['P']
@@ -362,6 +437,153 @@ class BeamResult:
             if seg_end >= x_target - 1e-12:
                 break
         return th, v
+
+    # Relative residual at or below which a model is reported as balanced.
+    # The solver reaches ~1e-13 of the applied load on every model in
+    # tests/test_beam_math.py; 1e-6 is far outside that and far inside any
+    # real error, so this neither cries wolf nor passes a wrong answer.
+    EQUILIBRIUM_TOL = 1e-6
+
+    def _applied_resultants(self):
+        """Everything applied to the beam, resolved about x = 0.
+
+        Returns (Fy, M0, scale_F, scale_M) in the solver's own convention: Fy
+        upward-positive -- so a downward load is negative -- and M0
+        counter-clockwise-positive. The two scales are the sums of the
+        individual contributions' MAGNITUDES, which is what makes a residual
+        meaningful on a model whose loads cancel: an uplift of P and a load of
+        P sum to zero, and dividing a residual by that zero would report any
+        error at all as perfect balance.
+
+        This is integrated from the load definitions and never touches the
+        solved displacements, so it is a genuine second opinion on the answer
+        rather than a restatement of it.
+        """
+        Fy = M0 = 0.0
+        scale_F = scale_M = 0.0
+
+        for p in self.model.point_loads:
+            Fy += -p['P']
+            M0 += -p['P'] * p['x']
+            scale_F += abs(p['P'])
+            scale_M += abs(p['P'] * p['x'])
+        for mm in self.model.moments:
+            M0 += mm['M']
+            scale_M += abs(mm['M'])
+
+        for d in self.model.dloads:
+            span = d['x2'] - d['x1']
+            if span < 1e-12:
+                continue
+
+            def qfn(sx, d=d, span=span):
+                frac = (sx - d['x1']) / span
+                return -(d['w1'] + (d['w2'] - d['w1']) * frac)
+
+            q_int, mom = _gauss_VM_integral(qfn, d['x1'], d['x2'], 0.0)
+            Fy += q_int
+            M0 += -mom          # mom = integral of q*(0-s); the moment of q
+            scale_F += abs(q_int)   # about the origin is +integral of s*q
+            scale_M += abs(mom)
+
+        for d in self.model.nonuniform_loads:
+            if d['x2'] - d['x1'] < 1e-12:
+                continue
+
+            def qfn(sx, d=d):
+                return -d['fn'](sx)
+
+            q_int, mom = _gauss_VM_integral(qfn, d['x1'], d['x2'], 0.0)
+            Fy += q_int
+            M0 += -mom
+            scale_F += abs(q_int)
+            scale_M += abs(mom)
+
+        return Fy, M0, scale_F, scale_M
+
+    def total_applied_load(self):
+        """Total applied vertical load (N, +down)."""
+        return -self._applied_resultants()[0]
+
+    def restrained_dof(self):
+        """How many DOF the supports restrain, counted per NODE.
+
+        Two supports at one station restrain one set of DOF between them, not
+        two sets -- the merge in add_support() means this is normally just the
+        sum, but counting per node keeps the number right for a model built by
+        hand (see BeamResult.__init__ on why that case is defended at all).
+        """
+        dofs = set()
+        for s in self.model.supports:
+            i = self.idx_of[round(s['x'], 9)]
+            for which in BeamModel.SUPPORT_DOF.get(s['type'], ()):
+                dofs.add((i, which))
+        return len(dofs)
+
+    def equilibrium(self):
+        """Does this answer balance? The check the tab never had.
+
+        Nothing in the Beam tab ever asked whether its own result satisfied
+        global equilibrium, which is exactly how R-1 came to report 90 kN of
+        reaction for 60 kN of load with a green test suite. Two residuals,
+        each assembled from one independent leg (the applied loads, integrated
+        here) and one solver leg (the reactions, through the same
+        `reaction_at` the diagrams and the reactions report use):
+
+            residual_Fy  = sum of reactions (up) - total applied load (down)
+            residual_M0  = the same balance of moments, about x = 0
+
+        plus the closure of the diagrams themselves: just beyond the right-hand
+        end of the beam there is nothing left to carry, so V and M there must
+        be zero. Both residuals are also reported relative to a scale, since
+        1 N of residual means something different on a 2 kN beam and a 2 MN one.
+
+        `indeterminacy` is (restrained DOF - 2), the two being the equilibrium
+        equations a planar bending model has. It tells the reader whether the
+        numbers above depended on EI at all.
+        """
+        Fy_applied, M0_applied, scale_F, scale_M = self._applied_resultants()
+
+        reactions_up = 0.0
+        reaction_M0 = 0.0
+        for sx in self.support_stations:
+            fy, m_theta = self.reaction_at(sx)
+            reactions_up += fy
+            reaction_M0 += fy * sx + m_theta
+            scale_F += abs(fy)
+            scale_M += abs(fy * sx) + abs(m_theta)
+
+        # A 1 N / 1 N*m floor, so a beam with no load at all divides by
+        # something: its residual is identically zero and must read as
+        # balanced, not as 0/0.
+        scale_F = max(1.0, scale_F)
+        scale_M = max(1.0, scale_M)
+
+        residual_Fy = reactions_up + Fy_applied
+        residual_M0 = reaction_M0 + M0_applied
+        v_end = self.shear_at(self.model.L, side='right')
+        m_end = self.moment_at(self.model.L, side='right')
+
+        tol = self.EQUILIBRIUM_TOL
+        n_dof = self.restrained_dof()
+        return {
+            'applied_down': -Fy_applied,
+            'reactions_up': reactions_up,
+            'residual_Fy': residual_Fy,
+            'residual_M0': residual_M0,
+            'shear_beyond_end': v_end,
+            'moment_beyond_end': m_end,
+            'scale_F': scale_F,
+            'scale_M': scale_M,
+            'rel_Fy': abs(residual_Fy) / scale_F,
+            'rel_M0': abs(residual_M0) / scale_M,
+            'constrained_dof': n_dof,
+            'indeterminacy': n_dof - 2,
+            'ok': (abs(residual_Fy) <= tol * scale_F
+                   and abs(residual_M0) <= tol * scale_M
+                   and abs(v_end) <= tol * scale_F
+                   and abs(m_end) <= tol * scale_M),
+        }
 
     def sample_diagram(self, n_per_element=30):
         """Samples V, M, and deflection along the beam for plotting.
@@ -625,6 +847,35 @@ def export_beam_excel(state, path, result=None, model=None):
         row_r += 1
         wr.cell(row=row_r, column=1, value='Max |defl| (mm)'); wr.cell(row=row_r, column=2, value=abs(vmax) * 1000)
         row_r += 1
+
+        # Does the answer balance? The reviewer who opens this workbook is the
+        # reader most likely to want it, and the sheet said nothing about it
+        # until 2026-10-04 -- see BeamResult.equilibrium() and R-2.
+        eq = result.equilibrium()
+        row_r += 1
+        wr.cell(row=row_r, column=1, value='EQUILIBRIUM').font = Font(bold=True)
+        row_r += 1
+        for label, value in [
+            ('Total load (kN, down)', eq['applied_down'] / 1e3),
+            ('Sum of reactions (kN, up)', eq['reactions_up'] / 1e3),
+            ('Residual sum Fy (kN)', eq['residual_Fy'] / 1e3),
+            ('Residual sum M about x=0 (kN*m)', eq['residual_M0'] / 1e3),
+            ('V beyond x=L (kN)', eq['shear_beyond_end'] / 1e3),
+            ('M beyond x=L (kN*m)', eq['moment_beyond_end'] / 1e3),
+            ('Restrained DOF', eq['constrained_dof']),
+            ('Degree of indeterminacy', max(0, eq['indeterminacy'])),
+            ('Balanced', 'yes' if eq['ok'] else 'NO -- DO NOT USE'),
+        ]:
+            wr.cell(row=row_r, column=1, value=label)
+            wr.cell(row=row_r, column=2, value=value)
+            row_r += 1
+
+        for mg in getattr(model, 'support_merges', []):
+            wr.cell(row=row_r, column=1, value='Note')
+            wr.cell(row=row_r, column=2,
+                    value=f"two supports at x={mg['x']:.3f} m merged "
+                          f"({mg['kept']} + {mg['added']} -> {mg['result']})")
+            row_r += 1
 
         hdr_row = row_r + 2
         for col, lbl in enumerate(['x_m', 'V_kN', 'M_kNm', 'defl_mm'], 1):
@@ -1331,7 +1582,9 @@ class BeamApp(tk.Frame):
                   f"Max |M|  = {units.from_si('moment', abs(Mmax)):8.2f} {units.label('moment')}",
                   f"Max |defl| = {units.from_si('deflection', abs(vmax)):8.3f} "
                   f"{units.label('deflection')}",
-                  '', 'STRESS CHECK']
+                  '']
+        lines += self._equilibrium_lines(r)
+        lines += ['', 'STRESS CHECK']
         bend_ratio = sigma_kncm2 / self.profile['allow_bend'] if self.profile['allow_bend'] else 0
         shear_ratio = tau_kncm2 / self.profile['allow_shear'] if self.profile['allow_shear'] else 0
         su = units.label('stress')
@@ -1346,8 +1599,73 @@ class BeamApp(tk.Frame):
                       f'{self._sec_shown("allow_shear", self.profile["allow_shear"]):.3f} {su} '
                       f'  ({"OK" if shear_ratio <= 1.0 else "FAIL"}, ratio {shear_ratio:.2f})')
 
+        lines += self._model_note_lines(m)
+
         self.res_text.delete('1.0', 'end')
         self.res_text.insert('1.0', '\n'.join(lines))
+
+    # ── what the tab says about its own answer ──────────────────────────────
+    def _equilibrium_lines(self, result):
+        """The EQUILIBRIUM block.
+
+        A residual the user never sees is not a check. The tab reported
+        reactions and extremes and stopped, so a result that did not balance
+        looked exactly like one that did -- which is how two supports at one
+        station came to report 90 kN of reaction for 60 kN of load (R-1)
+        against a green suite. Written in the selected convention, like every
+        other number here.
+        """
+        eq = result.equilibrium()
+        fu, mu = units.label('force'), units.label('moment')
+
+        def f(v):
+            return units.from_si('force', v)
+
+        def mo(v):
+            return units.from_si('moment', v)
+
+        verdict_F = 'ok' if abs(eq['residual_Fy']) <= result.EQUILIBRIUM_TOL * eq['scale_F'] \
+            else '*** OUT OF BALANCE ***'
+        verdict_M = 'ok' if abs(eq['residual_M0']) <= result.EQUILIBRIUM_TOL * eq['scale_M'] \
+            else '*** OUT OF BALANCE ***'
+        degree = eq['indeterminacy']
+        if degree <= 0:
+            statics = f"Statically determinate ({eq['constrained_dof']} restrained DOF)"
+        else:
+            statics = (f'Statically indeterminate to degree {degree} '
+                       f"({eq['constrained_dof']} restrained DOF)")
+        return [
+            'EQUILIBRIUM',
+            f"  Total load       = {f(eq['applied_down']):+9.2f} {fu} (down)",
+            f"  Sum of reactions = {f(eq['reactions_up']):+9.2f} {fu} (up)",
+            f"  Residual SumFy   = {f(eq['residual_Fy']):+9.2e} {fu}"
+            f"   ({eq['rel_Fy']:.1e} of load)  {verdict_F}",
+            f"  Residual SumM(0) = {mo(eq['residual_M0']):+9.2e} {mu}"
+            f"   ({eq['rel_M0']:.1e})  {verdict_M}",
+            f"  Beyond x = L     : V = {f(eq['shear_beyond_end']):+.2e} {fu}"
+            f"   M = {mo(eq['moment_beyond_end']):+.2e} {mu}",
+            f'  {statics}',
+        ]
+
+    def _model_note_lines(self, model):
+        """Anything the solver changed about the model as described.
+
+        Today that is only the support merge (R-1): two supports at one
+        station are one support, which is almost always what the user meant,
+        but the tab must not analyse a different structure than the one on
+        screen without saying so.
+        """
+        merges = getattr(model, 'support_merges', [])
+        if not merges:
+            return []
+        lines = ['', 'NOTES']
+        for mg in merges:
+            lines.append(
+                f"  Two supports at x={self._shown('x', mg['x']):.2f} "
+                f"{self._u('x')} were merged "
+                f"({mg['kept']} + {mg['added']} -> {mg['result']}); one "
+                f"reaction is reported for that station.")
+        return lines
 
     # ── drawing ──────────────────────────────────────────────────────────────
     def _draw_schematic(self):

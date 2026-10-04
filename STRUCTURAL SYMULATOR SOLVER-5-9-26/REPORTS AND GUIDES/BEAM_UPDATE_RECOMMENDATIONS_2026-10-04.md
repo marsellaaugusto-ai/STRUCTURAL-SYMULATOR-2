@@ -39,8 +39,8 @@ So this is not a list of old debt. Everything in Tier 1 below is new.
 
 | # | recommendation | severity | effort |
 |---|---|---|---|
-| **R-1** | Two supports at the same station double-count the reaction — silently wrong V, M, σ | **HIGH** | ~2 h |
-| **R-2** | No equilibrium / closure self-check anywhere in the results | **HIGH** | ~2 h |
+| **R-1** | Two supports at the same station double-count the reaction — silently wrong V, M, σ | **HIGH** | ✅ **done** |
+| **R-2** | No equilibrium / closure self-check anywhere in the results | **HIGH** | ✅ **done** |
 | **R-3** | Reaction-moment sign is a heuristic, wrong in meaning at an interior fixed support | MED | ~3 h |
 | **R-4** | Non-uniform q(x) loads bypass the unit layer *and* the on-beam check | MED | ~2 h |
 | **R-5** | No validation of L, E, I, c, A — negative EI solves and returns garbage | MED | ~1 h |
@@ -67,6 +67,13 @@ So this is not a list of old debt. Everything in Tier 1 below is new.
 # Tier 1 — correctness
 
 ## R-1 · HIGH · Two supports at the same station double-count the reaction
+
+> **✅ Fixed 2026-10-04.** `add_support()` folds a second support at an
+> occupied station into the first (union of restrained DOF, so pin + guided
+> becomes a genuine `fixed`), the merge is reported in the RESULTS panel and
+> the workbook, and `_V_M_at` now iterates support **nodes** so a duplicate
+> reaching the list by another route cannot double count again. Covered by
+> 9 tests in `test_beam_math.py` and 3 in `test_beam_equilibrium_report.py`.
 
 The single highest-value fix in the tab. Measured, SS beam, L = 6 m, UDL
 10 kN/m (total load 60 kN), with a `pin` **and** a `roller` both at x = 0:
@@ -120,6 +127,14 @@ duplicates.
 ΣRy = Σloads and V(L⁺) = M(L⁺) = 0 for each.
 
 ## R-2 · HIGH · Nothing checks equilibrium, so R-1 could ship unnoticed
+
+> **✅ Fixed 2026-10-04.** `BeamResult.equilibrium()` returns the force and
+> moment residuals, the diagram closure beyond x = L, both scales, the
+> restrained-DOF count and the degree of indeterminacy; the panel and the
+> Excel `Results` sheet print them. The applied-load leg is integrated from
+> the load definitions, independently of the solve. Measured residuals are
+> 1e-16 to 1e-13 of the applied load on every model in the suite, and a
+> deliberately corrupted reaction is caught.
 
 The results panel prints reactions and extremes and stops. Add three numbers
 the user — and the test suite — can read at a glance:

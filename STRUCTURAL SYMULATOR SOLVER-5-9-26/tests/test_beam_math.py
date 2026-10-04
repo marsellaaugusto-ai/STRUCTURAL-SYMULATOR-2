@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from apps.beam.beam_app import BeamModel
+from apps.beam.beam_math import BeamModel
 
 # E = 200 GPa, I = 8000 cm^4 -> 16.0e6 N.m^2, the app's own default section.
 EI = 200e9 * 8000e-8
@@ -177,7 +177,7 @@ def test_guided_support_carries_moment_but_no_shear():
 # ------------------------------------------------------------- non-uniform q
 
 def test_nonuniform_constant_expression_equals_the_equivalent_udl():
-    from common import make_shape_fn
+    from numerics import make_shape_fn
     a = _solve(lambda m: (m.add_support(0, 'pin'), m.add_support(L, 'roller'),
                           m.add_dload(0, L, W, W)))
     b = _solve(lambda m: (m.add_support(0, 'pin'), m.add_support(L, 'roller'),
@@ -188,7 +188,7 @@ def test_nonuniform_constant_expression_equals_the_equivalent_udl():
 
 
 def test_nonuniform_sinusoid_matches_its_closed_form():
-    from common import make_shape_fn
+    from numerics import make_shape_fn
     r = _solve(lambda m: (m.add_support(0, 'pin'), m.add_support(L, 'roller'),
                           m.add_nonuniform_load(
                               make_shape_fn('10000*sin(pi*x/L)', {'L': L}), 0, L)))
@@ -422,7 +422,7 @@ def test_the_total_applied_load_is_integrated_not_assumed():
     """Point loads, a trapezoid and a q(x) expression in one model, against the
     hand-computed total. This is the leg of the check that does not come from
     the solver, so it has to be right on its own."""
-    from common import make_shape_fn
+    from numerics import make_shape_fn
     r = _solve(lambda m: (m.add_support(0, 'pin'), m.add_support(L, 'roller'),
                           m.add_point_load(2.0, P),
                           m.add_dload(0.0, 3.0, 4e3, 10e3),
@@ -688,3 +688,64 @@ def test_support_reaction_and_reaction_at_agree_on_the_force():
                           m.add_dload(0, L, W, W)))
     for sx in (0.0, L):
         assert r.support_reaction(sx)['Fy'] == r.reaction_at(sx)[0]
+
+
+# ------------------------------------------- the math/UI boundary (R-8)
+
+def test_the_solver_imports_and_runs_without_tkinter():
+    """The boundary MODULAR_ARCHITECTURE.md calls the C++ migration boundary,
+    pinned so it cannot quietly drift back.
+
+    Until 2026-10-04 BeamModel sat in the same file as `import tkinter as tk`,
+    so this very module could not be COLLECTED on a Python built without Tk --
+    to test code with no UI in it. `apps/truss/truss_math.py` and
+    `apps/cable_web/cable_web_math.py` are described as pure engines and still
+    import `common`, which imports tkinter, so they still need Tk: that is
+    what drift looks like, and why this is a test rather than a comment.
+
+    Run in a subprocess with tkinter poisoned, since this process has it.
+    """
+    import subprocess
+    import textwrap
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    script = textwrap.dedent("""
+        import sys
+        sys.modules['tkinter'] = None      # any `import tkinter` now fails
+        sys.path.insert(0, sys.argv[1])
+
+        import apps.beam.beam_math as bm
+
+        m = bm.BeamModel(6.0)
+        m.EI = 200e9 * 8000e-8
+        m.add_support(0, 'pin')
+        m.add_support(6.0, 'roller')
+        m.add_dload(0, 6.0, 10e3, 10e3)
+        r = m.solve()
+        assert abs(r.moment_at(3.0) - 45e3) < 1.0, r.moment_at(3.0)
+        assert r.equilibrium()['ok']
+
+        for forbidden in ('tkinter', 'common', 'units'):
+            assert forbidden not in [n for n in sys.modules
+                                     if sys.modules[n] is not None], forbidden
+        print('ok')
+    """)
+    done = subprocess.run([sys.executable, '-c', script, root],
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip().endswith('ok'), done.stdout
+
+
+def test_the_names_are_still_importable_from_beam_app():
+    """The split must not break anything that imported them from the tab --
+    tests/test_truss_math.py builds a BeamModel as its own cross-check
+    reference, and test_excel_roundtrip.py takes the workbook functions from
+    there."""
+    pytest.importorskip('tkinter')
+    from apps.beam import beam_app
+    from apps.beam import beam_math
+    assert beam_app.BeamModel is beam_math.BeamModel
+    assert beam_app.BeamResult is beam_math.BeamResult
+    from apps.beam import beam_reports
+    assert beam_app.export_beam_excel is beam_reports.export_beam_excel
+    assert beam_app.import_beam_excel is beam_reports.import_beam_excel

@@ -14,6 +14,9 @@ apps/
     truss_reports.py            Excel/report support
   beam/
     beam_app.py                 Beam UI/controller
+    beam_math.py                Beam solver (Hermitian FEM, V/M recovery,
+                                 deflection, equilibrium check) -- no Tkinter
+    beam_reports.py             Excel report / model import
   arch/
     arch_app.py                 Arch UI/controller
   cable/
@@ -70,6 +73,47 @@ python main.py
 The Truss app is deliberately split at the stable boundary between stateful Tkinter interaction (`truss_app.py`) and deterministic calculations (`truss_math.py`). The solver receives plain lists/dictionaries and has no Tkinter, Excel, or drawing dependencies. That is the intended C++ migration boundary.
 
 `truss_reports.py` owns Excel and PIL/matplotlib report output. Keep these in Python unless a future product requirement calls for a native reporting layer.
+
+### What "no Tkinter dependency" has to mean
+
+`common.py` imports tkinter at module scope, because most of what it holds
+is widgets. A module that reaches into `common` for a numeric helper
+therefore needs a working Tk however pure its own code is -- which is not a
+theoretical cost: it means the solver cannot be imported, or tested, on a
+Python built without Tk.
+
+Measured 2026-10-04: of the modules described here as engines, only
+`perforated_beam_math.py` and `profile_sketcher_math.py` actually imported
+without tkinter. `truss_math.py` and `cable_web_math.py` did not, and
+`beam_app.py` still held `BeamModel` in the same file as `import tkinter as
+tk`.
+
+So the shared numeric core now lives in root-level **`numerics.py`**, which
+imports nothing but `math`: `_beam_gauss_solve`, `_require_numpy`, the
+5-point Gauss nodes and weights, and `make_shape_fn`. `common.py` re-exports
+all four as the same objects, so every existing `from common import
+_beam_gauss_solve` is unchanged.
+
+`apps/beam/beam_math.py` imports from `numerics` and is held to the boundary
+by a test (`test_beam_math.py::test_the_solver_imports_and_runs_without_tkinter`)
+that imports it in a subprocess with tkinter poisoned and asserts `common`
+and `units` never get loaded. Pointing `truss_math.py` and
+`cable_web_math.py` at `numerics` is a one-line change each, worth doing
+whenever someone is next in those files.
+
+## Beam
+
+Same split as Truss, since 2026-10-04: `beam_math.py` is the engine
+(`BeamModel`, `BeamResult`, the adaptive quadrature), `beam_reports.py` owns
+the workbook, and `beam_app.py` builds a model from widget state and draws
+what comes back. The engine works in SI throughout -- m, N, N*m, N/m, EI in
+N*m^2 -- and the tab converts at its own edge through `units.py`. Note that
+the Perforated Beam engine deliberately uses mm/N/MPa instead; both say so in
+their own docstrings.
+
+`BeamModel`, `BeamResult`, `export_beam_excel` and `import_beam_excel` are
+re-exported from `beam_app.py` so that code predating the split keeps
+working.
 
 ## Perforated Beam
 

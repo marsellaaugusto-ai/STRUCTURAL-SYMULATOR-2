@@ -46,9 +46,9 @@ So this is not a list of old debt. Everything in Tier 1 below is new.
 | **R-5** | No validation of L, E, I, c, A — negative EI solves and returns garbage | MED | ✅ **done** |
 | **R-6** | Non-numeric entry raises an unhandled `TclError`; the user sees nothing | MED | ✅ **done** |
 | **R-7** | Shortening the beam leaves stale off-beam rows; Analyze then fails wholesale | MED | ✅ **done** |
-| **R-8** | Split `beam_math.py` out of `beam_app.py` — the project's own stated boundary | MED | ~3 h |
+| **R-8** | Split `beam_math.py` out of `beam_app.py` — the project's own stated boundary | MED | ✅ **done** |
 | **R-9** | Adopt `common.UnitsMixin`; hard-coded `kN` / `kN/m` labels ignore the selector | MED | ~3 h |
-| **R-10** | 6 dead imports (B-6) | LOW | 5 min |
+| **R-10** | 6 dead imports (B-6) | LOW | ✅ **done** |
 | **R-11** | Retire the stale 2026-09-10 Beam report | LOW | 15 min |
 | **R-12** | Tests for everything above, before the fixes land | MED | ~3 h |
 | **R-13** | Diagram captions still collide — now even at 1500 px | LOW | ~1 h |
@@ -345,6 +345,30 @@ Treeview tag so it is visible before Analyze, and make `_analyze` report
 
 ## R-8 · MED · Split `beam_math.py` out of `beam_app.py`
 
+> **✅ Fixed 2026-10-04.** `apps/beam/beam_math.py` holds `BeamModel`,
+> `BeamResult` and the adaptive quadrature; `apps/beam/beam_reports.py` holds
+> the workbook pair, mirroring `truss_reports.py`; `beam_app.py` drops from
+> 2307 to 1261 lines and re-exports all four names so nothing that imported
+> them from the tab had to change.
+>
+> **It needed more than moving code.** `common.py` imports tkinter at module
+> scope, so a solver reaching into it for `_beam_gauss_solve` still could not
+> be imported headlessly — and measurement showed `truss_math.py` and
+> `cable_web_math.py`, both described as pure engines, have exactly that
+> problem today. The shared numeric core (`_beam_gauss_solve`,
+> `_require_numpy`, the Gauss nodes and weights, `make_shape_fn`) now lives in
+> root-level **`numerics.py`**, which imports only `math`; `common.py`
+> re-exports all four as the same objects, so every existing import is
+> unchanged and `appdiag.py` still reads the live backend off
+> `common._beam_gauss_solve.__doc__`.
+>
+> **Verified the way the finding was raised:** `tests/test_beam_math.py` now
+> runs on a Python with no Tk at all — 87 passed, 1 skipped (the re-export
+> check, which asks for tkinter) — where before it could not be collected. A
+> test imports the engine in a subprocess with tkinter poisoned and asserts
+> `common` and `units` never load, so the boundary cannot drift back silently
+> the way Truss's has.
+
 `MODULAR_ARCHITECTURE.md` states the project's own boundary: Truss, Cable Web,
 Perforated Beam and Stereo all split a pure-Python engine from the Tkinter
 controller, and the split is called "the intended C++ migration boundary."
@@ -397,6 +421,10 @@ with no unit in any convention. `test_units_in_every_tab.py` is the natural
 place to assert that no tab paints a hard-coded `kN` while AISC is selected.
 
 ## R-10 · LOW · Dead imports (B-6, still open)
+
+> **✅ Fixed 2026-10-04**, folded into the R-8 file split as suggested. All
+> three beam modules are pyflakes-clean; `common.py` is back to its own
+> pre-existing 12 warnings with nothing added.
 
 ```
 apps/beam/beam_app.py:10: 'os' imported but unused

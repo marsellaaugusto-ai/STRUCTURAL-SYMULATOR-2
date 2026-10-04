@@ -67,7 +67,11 @@ class BeamApp(UnitsMixin, tk.Frame):
         self.dloads = []        # {'x1','x2','w1','w2'}  kN/m, +down
         self.nonuniform_loads = []  # {'expr','x1','x2'}  kN/m, +down, over [x1,x2] m
         self.profile = {'E': 200.0, 'I': 8000.0, 'c': 15.0, 'A': 80.0,
-                        'allow_bend': 16.0, 'allow_shear': 10.0}
+                        'allow_bend': 16.0, 'allow_shear': 10.0,
+                        # The denominator of the span/deflection limit: 360
+                        # means L/360. Dimensionless, so the unit selector
+                        # leaves it alone. 0 means "do not check".
+                        'defl_ratio': 360.0}
         self.result = None
         self.model = None
         # Before _build_ui, because the widgets register themselves with the
@@ -254,9 +258,10 @@ class BeamApp(UnitsMixin, tk.Frame):
             # selected convention; `unit_value` reads the exact stored figure
             # back, so a switch there and back cannot round-trip 200 GPa into
             # 199.99999 (see UnitsMixin.unit_value).
-            v = self.unit_var(
-                tk.DoubleVar(master=sec, value=self.profile[key]),
-                self._FIELD_Q[key])
+            quantity = self._FIELD_Q[key]
+            v = tk.DoubleVar(master=sec, value=self.profile[key])
+            if quantity is not None:
+                self.unit_var(v, quantity)
             self.sec_vars[key] = v
             tk.Entry(sec, textvariable=v, width=8, font=('Helvetica', 9)).grid(row=i, column=1, pady=1, padx=4)
 
@@ -285,19 +290,24 @@ class BeamApp(UnitsMixin, tk.Frame):
                 'w1': 'line_load', 'w2': 'line_load',
                 'type': None, 'expr': None,
                 'E': 'modulus', 'I': 'inertia', 'c': 'section_length',
-                'A': 'area', 'allow_bend': 'stress', 'allow_shear': 'stress'}
+                'A': 'area', 'allow_bend': 'stress', 'allow_shear': 'stress',
+                'defl_ratio': None}
 
     # The section/material boxes, in the order they are shown, and how each
     # one is named. One source for the widget label AND for the message when
     # that box cannot be read (R-5/R-6), so the two can never disagree about
     # which field the user is being told about.
-    SECTION_FIELDS = ('E', 'I', 'c', 'A', 'allow_bend', 'allow_shear')
+    SECTION_FIELDS = ('E', 'I', 'c', 'A', 'allow_bend', 'allow_shear',
+                      'defl_ratio')
     _SECTION_NAMES = {'E': 'E', 'I': 'I', 'c': 'c',
                       'A': 'Shear area',
                       'allow_bend': 'Allow. bending \u03c3',
-                      'allow_shear': 'Allow. shear \u03c4'}
+                      'allow_shear': 'Allow. shear \u03c4',
+                      'defl_ratio': 'Deflection limit L/'}
 
     def _sec_label(self, key):
+        if key == 'defl_ratio':             # dimensionless; L/360, not L/360 m
+            return f'{self._SECTION_NAMES[key]}'
         extra = ', extreme fiber' if key == 'c' else ''
         return f'{self._SECTION_NAMES[key]} ({self._u(key)}{extra})'
 
@@ -362,8 +372,9 @@ class BeamApp(UnitsMixin, tk.Frame):
             # _num first, so garbage in a box is reported against that box's
             # own name (R-6); unit_value second, because it returns the exact
             # figure behind the box rather than the rounded one shown in it.
-            self._num(var, self._sec_label(key))
-            out[key] = self.unit_value(var, self.profile[key])
+            value = self._num(var, self._sec_label(key))
+            out[key] = (self.unit_value(var, self.profile[key])
+                        if self._FIELD_Q[key] is not None else value)
         return out
 
     # ── entries that are no longer on the beam ──────────────────────────────
@@ -886,6 +897,9 @@ class BeamApp(UnitsMixin, tk.Frame):
                 if profile[key] <= 0.0:
                     problems.append(f'{labels[key]} must be greater than '
                                     f"zero; got {profile[key]:g}.")
+            if profile['defl_ratio'] < 0.0:
+                problems.append('The deflection limit L/n cannot be negative; '
+                                'use 0 to skip that check.')
             for key in ('allow_bend', 'allow_shear'):
                 if profile[key] < 0.0:
                     problems.append(
@@ -946,6 +960,13 @@ class BeamApp(UnitsMixin, tk.Frame):
         Vmax = max(diag['V'], key=abs)
         Mmax = max(diag['M'], key=abs)
         vmax = max(diag['v'], key=abs)
+        # Where each extreme is, not just how big it is. The diagram marks its
+        # peaks with red dots, but the TEXT is the part that gets copied into a
+        # calculation, and it gave no station at all (R-16).
+        x_V = self._extreme_station(diag, 'V', abs)
+        x_v = self._extreme_station(diag, 'v', abs)
+        M_sag, x_sag = self._signed_extreme(diag, 'M', +1)
+        M_hog, x_hog = self._signed_extreme(diag, 'M', -1)
 
         c_m = self.profile['c'] * 1e-2
         I_m4 = self.profile['I'] * 1e-8
@@ -978,13 +999,41 @@ class BeamApp(UnitsMixin, tk.Frame):
                     f"{units.from_si('moment', react['M_left']):+8.2f}, "
                     f"just right "
                     f"{units.from_si('moment', react['M_right']):+8.2f} {mu}")
-        lines += ['',
-                  f"Max |V|  = {units.from_si('force', abs(Vmax)):8.2f} {units.label('force')}",
-                  f"Max |M|  = {units.from_si('moment', abs(Mmax)):8.2f} {units.label('moment')}",
-                  f"Max |defl| = {units.from_si('deflection', abs(vmax)):8.3f} "
-                  f"{units.label('deflection')}",
-                  '']
+        xu = self._u('x')
+
+        def at(x):
+            return f"at x = {self._shown('x', x):.2f} {xu}"
+
+        lines += ['', 'EXTREMES',
+                  f"  Max |V|    = {units.from_si('force', abs(Vmax)):9.2f} "
+                  f"{fu}   {at(x_V)}"]
+        # max(M, key=abs) collapsed sagging and hogging into one absolute
+        # number. A continuous beam needs both, with their stations, and a
+        # different section modulus may apply to each. Only the ones that
+        # actually occur are printed -- a cantilever has no sagging peak.
+        if M_sag is not None:
+            lines.append(f"  Max +M     = {units.from_si('moment', M_sag):+9.2f} "
+                         f"{mu} {at(x_sag)}  (sagging)")
+        if M_hog is not None:
+            lines.append(f"  Max -M     = {units.from_si('moment', M_hog):+9.2f} "
+                         f"{mu} {at(x_hog)}  (hogging)")
+        lines += ['']
         lines += self._equilibrium_lines(r)
+        lines += ['', 'SERVICEABILITY']
+        du = units.label('deflection')
+        lines.append(f"  Max |defl| = {units.from_si('deflection', abs(vmax)):9.3f} "
+                     f"{du}   {at(x_v)}")
+        ratio_n = self.profile['defl_ratio']
+        if ratio_n > 0:
+            allow_m = self.length / ratio_n
+            util = abs(vmax) / allow_m if allow_m else 0.0
+            lines.append(
+                f"    allowable = L/{ratio_n:g} = "
+                f"{units.from_si('deflection', allow_m):.3f} {du}"
+                f"   ({'OK' if util <= 1.0 else 'FAIL'}, ratio {util:.2f})")
+        else:
+            lines.append('    allowable = not checked '
+                         '(no deflection limit given)')
         lines += ['', 'STRESS CHECK']
         su = units.label('stress')
 
@@ -1007,11 +1056,45 @@ class BeamApp(UnitsMixin, tk.Frame):
 
         _check('Bending sigma = M*c/I', sigma_kncm2, 'allow_bend')
         _check('Shear tau = V/A  ', tau_kncm2, 'allow_shear')
+        # sigma uses max |M| and tau uses max |V|, which on almost any beam are
+        # different places. The pair is conservative, but it is not a section
+        # check at any ONE point, and saying nothing invited it to be read as
+        # one (R-16). A real station-by-station utilisation belongs with the
+        # code-check work (R-21).
+        x_M = self._extreme_station(diag, 'M', abs)
+        if abs(x_M - x_V) > 1e-6 * max(1.0, self.length):
+            lines.append(f'  NB these two are at different stations '
+                         f'({at(x_M)} and {at(x_V)}), so the pair is')
+            lines.append('     conservative rather than a check at one point.')
 
         lines += self._model_note_lines(m)
 
         self.res_text.delete('1.0', 'end')
         self.res_text.insert('1.0', '\n'.join(lines))
+
+    # ── where the extremes are ──────────────────────────────────────────────
+    @staticmethod
+    def _extreme_station(diag, key, score):
+        """The x at which `score(diag[key])` is largest."""
+        values = diag[key]
+        i = max(range(len(values)), key=lambda j: score(values[j]))
+        return diag['x'][i]
+
+    @staticmethod
+    def _signed_extreme(diag, key, sign, rel_tol=1e-9):
+        """The largest value of one SIGN and where it is, or (None, None).
+
+        None means that sign does not occur: a cantilever has no sagging peak,
+        and printing "Max +M = +0.00" for it would be noise dressed up as a
+        result.
+        """
+        values = diag[key]
+        best = max(range(len(values)), key=lambda j: sign * values[j])
+        value = values[best]
+        scale = max(abs(v) for v in values) if values else 0.0
+        if sign * value <= rel_tol * max(scale, 1.0):
+            return None, None
+        return value, diag['x'][best]
 
     # ── what the tab says about its own answer ──────────────────────────────
     def _equilibrium_lines(self, result):

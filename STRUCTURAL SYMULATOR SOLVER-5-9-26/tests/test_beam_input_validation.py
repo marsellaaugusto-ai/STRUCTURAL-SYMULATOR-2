@@ -210,8 +210,10 @@ def test_a_missing_allowable_is_not_checked_rather_than_ok(beam):
     app._analyze()
     root.update()
     assert app.result is not None, 'no allowable is a choice, not an error'
-    text = app.res_text.get('1.0', 'end')
-    bending = [ln for ln in text.splitlines() if 'allowable' in ln][0]
+    # Scoped to the stress check: SERVICEABILITY has an 'allowable' line of
+    # its own (the L/n deflection limit, R-16) and it comes first.
+    stress = app.res_text.get('1.0', 'end').split('STRESS CHECK')[1]
+    bending = [ln for ln in stress.splitlines() if 'allowable' in ln][0]
     assert 'not checked' in bending.lower(), bending
     assert 'OK' not in bending, bending
 

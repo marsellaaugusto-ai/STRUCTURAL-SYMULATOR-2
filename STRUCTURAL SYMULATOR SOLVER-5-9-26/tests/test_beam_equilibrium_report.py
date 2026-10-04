@@ -266,3 +266,90 @@ def test_the_workbook_reports_the_couple_and_both_internal_moments(beam):
     assert right[2] == pytest.approx(-30.0, rel=1e-6), right
     assert left[4] == pytest.approx(-30.0, rel=1e-6), left    # internal, beam side
     assert right[3] == pytest.approx(-30.0, rel=1e-6), right
+
+
+# ----------------------------------- what a checker writes down (R-16)
+
+def test_the_extremes_say_where_they_are(beam):
+    """The diagram marks its peaks with red dots; the TEXT -- the part that
+    gets copied into a calculation -- gave no station at all."""
+    app, root = beam
+    _ss_udl(app)
+    text = _results(app, root)
+    extremes = text.split('EXTREMES')[1].split('\n\n')[0]
+    assert 'at x =' in extremes, extremes
+    # max |V| at a support, max +M at midspan of a 6 m span under UDL
+    assert '3.00' in extremes, extremes
+
+
+def test_both_moment_extremes_are_reported_with_their_stations(beam):
+    """max(M, key=abs) collapsed sagging and hogging into one absolute number.
+    A continuous beam needs both, and a different section modulus may apply to
+    each."""
+    app, root = beam
+    _ss_udl(app)
+    app.supports = [{'x': 0.0, 'type': 'pin'}, {'x': 4.0, 'type': 'roller'}]
+    app._refresh_tables()                       # 2 m overhang: sags and hogs
+    text = _results(app, root)
+    extremes = text.split('EXTREMES')[1].split('\n\n')[0]
+    assert 'sagging' in extremes and 'hogging' in extremes, extremes
+    assert '-20.00' in extremes, extremes          # -w*2^2/2 over the overhang
+
+
+def test_a_beam_that_only_hogs_does_not_claim_a_sagging_peak(beam):
+    app, root = beam
+    _ss_udl(app)
+    app.supports = [{'x': 0.0, 'type': 'fixed'}]
+    app.dloads = [{'x1': 0.0, 'x2': 6.0, 'w1': 10.0, 'w2': 10.0}]
+    app._refresh_tables()
+    extremes = _results(app, root).split('EXTREMES')[1].split('\n\n')[0]
+    assert 'hogging' in extremes, extremes
+    assert 'sagging' not in extremes, extremes
+
+
+def test_the_deflection_is_checked_against_a_span_ratio(beam):
+    """max |defl| was printed with nothing to compare it to, and serviceability
+    is what governs most beams in this tab's range."""
+    app, root = beam
+    _ss_udl(app)
+    text = _results(app, root)
+    assert 'SERVICEABILITY' in text, text
+    assert 'L/360' in text, text
+    # 10.546 mm against 6000/360 = 16.667 mm
+    assert '16.667' in text, text
+    assert 'ratio 0.63' in text, text
+
+
+def _block(text, heading):
+    """Just that section of the panel: the following blocks have their own
+    OK/FAIL verdicts and must not be mistaken for this one's."""
+    return text.split(heading)[1].split('\n\n')[0]
+
+
+def test_an_excessive_deflection_fails_the_span_check(beam):
+    app, root = beam
+    _ss_udl(app)
+    app.sec_vars['defl_ratio'].set(2000)
+    text = _results(app, root)
+    assert 'FAIL' in _block(text, 'SERVICEABILITY'), text
+
+
+def test_a_zero_span_ratio_is_not_checked_rather_than_ok(beam):
+    app, root = beam
+    _ss_udl(app)
+    app.sec_vars['defl_ratio'].set(0)
+    text = _results(app, root)
+    assert app.result is not None
+    service = _block(text, 'SERVICEABILITY')
+    assert 'not checked' in service.lower(), service
+    assert 'OK' not in service, service
+
+
+def test_the_panel_says_when_the_two_stress_checks_are_at_different_stations(beam):
+    """sigma uses max |M| and tau uses max |V|, which on almost any beam are
+    different places: the pair is conservative but it is not a section check
+    at any one point, and the panel never said so."""
+    app, root = beam
+    _ss_udl(app)
+    text = _results(app, root)
+    assert 'different stations' in text.lower(), text

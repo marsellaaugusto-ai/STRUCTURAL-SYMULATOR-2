@@ -16,6 +16,7 @@ GPa) whatever the Units selector shows, so a saved file never changes meaning
 because someone picked a different convention -- see `units.py`.
 """
 from common import _ensure_openpyxl
+from .beam_math import BeamModel
 
 
 def export_beam_excel(state, path, result=None, model=None):
@@ -40,6 +41,15 @@ def export_beam_excel(state, path, result=None, model=None):
     row = 1
     ws.cell(row=row, column=1, value='BEAM MODEL DATA — for Import from Excel (do not reorder columns)')
     ws.cell(row=row, column=1).font = Font(bold=True, size=11, color='1F4E79')
+    row += 1
+    # Which units these numbers are in. The sheet is ALWAYS written in the
+    # tab's storage units, deliberately: a saved file must not change meaning
+    # because someone picked a different convention in the selector (see
+    # units.py). That is only safe if the file says so (R-17).
+    ws.cell(row=row, column=1,
+            value='Written in the app\'s storage units (m, kN, kN/m, kN·m, '
+                  'GPa, cm², cm⁴, kN/cm²) — NOT in whatever the Units '
+                  'selector shows.')
     row += 2
 
     ws.cell(row=row, column=1, value='[GEOMETRY]'); row += 1
@@ -77,7 +87,10 @@ def export_beam_excel(state, path, result=None, model=None):
     row += 1
 
     ws.cell(row=row, column=1, value='[DISTRIBUTED_LOADS]'); row += 1
-    for col, lbl in enumerate(['x1_m', 'x2_m', 'w1_kNm', 'w2_kNm'], 1):
+    # 'w1_kNm' read as kN·m to anyone filling this in by hand; it is a load
+    # per unit length. import_beam_excel accepts the old spelling, exactly as
+    # it does for the [DLOADS] -> [DISTRIBUTED_LOADS] rename (R-17).
+    for col, lbl in enumerate(['x1_m', 'x2_m', 'w1_kN_per_m', 'w2_kN_per_m'], 1):
         ws.cell(row=row, column=col, value=lbl)
     row += 1
     for d in state['dloads']:
@@ -100,8 +113,9 @@ def export_beam_excel(state, path, result=None, model=None):
     row += 1
 
     ws.cell(row=row, column=1, value='[SECTION]'); row += 1
-    keys = ['E', 'I', 'c', 'A', 'allow_bend', 'allow_shear']
-    labels = ['E_GPa', 'I_cm4', 'c_cm', 'A_cm2', 'allow_bend_kNcm2', 'allow_shear_kNcm2']
+    keys = ['E', 'I', 'c', 'A', 'allow_bend', 'allow_shear', 'defl_ratio']
+    labels = ['E_GPa', 'I_cm4', 'c_cm', 'A_cm2', 'allow_bend_kNcm2',
+              'allow_shear_kNcm2', 'defl_limit_L_over_n']
     for col, lbl in enumerate(labels, 1):
         ws.cell(row=row, column=col, value=lbl)
     row += 1
@@ -109,8 +123,8 @@ def export_beam_excel(state, path, result=None, model=None):
         ws.cell(row=row, column=col, value=state['profile'][key])
     row += 1
 
-    for col in range(1, 7):
-        ws.column_dimensions[get_column_letter(col)].width = 14
+    for col in range(1, 8):
+        ws.column_dimensions[get_column_letter(col)].width = 16
 
     if result is not None and model is not None:
         wr = wb.create_sheet('Results')
@@ -217,9 +231,48 @@ def import_beam_excel(path):
         i = hdr_i + 1
         while i < len(rows) and rows[i] and rows[i][0] is not None and not str(rows[i][0]).startswith('['):
             vals = rows[i]
-            out.append({headers[j]: vals[j] for j in range(len(headers))})
+            # A row with fewer cells than its header used to raise IndexError
+            # with no row number at all. Missing cells read as None and are
+            # reported by name and row below (R-17). `row` is the sheet's own
+            # 1-based number, which is what the user sees in Excel.
+            out.append(dict({headers[j]: (vals[j] if j < len(vals) else None)
+                             for j in range(len(headers))},
+                            row=i + 1))
             i += 1
         return out
+
+    def number(r, *names, what=None):
+        """One cell as a number, or a ValueError naming the column and row.
+
+        Nothing validated these before 2026-10-04: a hand-edited workbook
+        failed at Analyze instead, far from the file that caused it, and a
+        blank cell raised `float(None)` with no row number (R-17). `names`
+        takes more than one spelling so a renamed column can keep reading old
+        files.
+        """
+        for name in names:
+            if name in r:
+                value = r[name]
+                break
+        else:
+            raise ValueError(
+                f"Row {r['row']}: no '{names[0]}' column in this section.")
+        if value is None or value == '':
+            raise ValueError(f"Row {r['row']}: '{names[0]}' is empty.")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Row {r['row']}: '{names[0]}' is not a number "
+                f"({value!r}).") from None
+
+    def on_beam(r, value, what):
+        tol = 1e-9 * max(1.0, abs(length))
+        if not (-tol <= value <= length + tol):
+            raise ValueError(
+                f"Row {r['row']}: {what} at x = {value:g} m is not on the "
+                f"beam, which spans 0 to {length:g} m.")
+        return min(max(value, 0.0), length)
 
     gi = find_section('[GEOMETRY]')
     if gi < 0:
@@ -227,25 +280,38 @@ def import_beam_excel(path):
     grow = read_table(gi)
     if not grow:
         raise ValueError('Empty [GEOMETRY] section.')
-    length = float(grow[0]['length_m'])
+    length = number(grow[0], 'length_m')
+    if not (length > 0) or length != length:        # NaN-safe
+        raise ValueError(
+            f"Row {grow[0]['row']}: the beam length must be greater than "
+            f"zero; this workbook says {length:g}.")
 
     supports = []
     si = find_section('[SUPPORTS]')
     if si >= 0:
         for r in read_table(si):
-            supports.append({'x': float(r['x_m']), 'type': str(r['type'])})
+            kind = str(r.get('type') or '').strip().lower()
+            if kind not in BeamModel.SUPPORT_DOF:
+                raise ValueError(
+                    f"Row {r['row']}: {r.get('type')!r} is not a support "
+                    f"type. Use one of: "
+                    f"{', '.join(sorted(BeamModel.SUPPORT_DOF))}.")
+            supports.append({'x': on_beam(r, number(r, 'x_m'), 'Support'),
+                             'type': kind})
 
     point_loads = []
     pi = find_section('[POINT_LOADS]')
     if pi >= 0:
         for r in read_table(pi):
-            point_loads.append({'x': float(r['x_m']), 'P': float(r['P_kN'])})
+            point_loads.append({'x': on_beam(r, number(r, 'x_m'), 'Point load'),
+                                'P': number(r, 'P_kN')})
 
     moments = []
     mi = find_section('[MOMENTS]')
     if mi >= 0:
         for r in read_table(mi):
-            moments.append({'x': float(r['x_m']), 'M': float(r['M_kNm'])})
+            moments.append({'x': on_beam(r, number(r, 'x_m'), 'Applied moment'),
+                            'M': number(r, 'M_kNm')})
 
     dloads = []
     # Accept the pre-2026-09-07 name too, so workbooks already on disk
@@ -255,28 +321,44 @@ def import_beam_excel(path):
         di = find_section('[DLOADS]')
     if di >= 0:
         for r in read_table(di):
-            dloads.append({'x1': float(r['x1_m']), 'x2': float(r['x2_m']),
-                            'w1': float(r['w1_kNm']), 'w2': float(r['w2_kNm'])})
+            # w1_kN_per_m since 2026-10-04; w1_kNm is the old, misleading
+            # spelling of the same column.
+            dloads.append({
+                'x1': on_beam(r, number(r, 'x1_m'), 'Distributed load start'),
+                'x2': on_beam(r, number(r, 'x2_m'), 'Distributed load end'),
+                'w1': number(r, 'w1_kN_per_m', 'w1_kNm'),
+                'w2': number(r, 'w2_kN_per_m', 'w2_kNm')})
 
     nonuniform_loads = []
     ni = find_section('[NONUNIFORM_LOADS]')
     if ni >= 0:
         for r in read_table(ni):
-            nonuniform_loads.append({'expr': str(r['expr']), 'x1': float(r['x1_m']), 'x2': float(r['x2_m'])})
+            expr = str(r.get('expr') or '').strip()
+            if not expr:
+                raise ValueError(f"Row {r['row']}: the q(x) expression is "
+                                 f"empty.")
+            nonuniform_loads.append({
+                'expr': expr,
+                'x1': on_beam(r, number(r, 'x1_m'), 'Non-uniform load start'),
+                'x2': on_beam(r, number(r, 'x2_m'), 'Non-uniform load end')})
 
     profile = {'E': 200.0, 'I': 8000.0, 'c': 15.0, 'A': 80.0,
-               'allow_bend': 16.0, 'allow_shear': 10.0}
+               'allow_bend': 16.0, 'allow_shear': 10.0, 'defl_ratio': 360.0}
     seci = find_section('[SECTION]')
     if seci >= 0:
         srow = read_table(seci)
         if srow:
             s0 = srow[0]
-            profile['E'] = float(s0.get('E_GPa') or profile['E'])
-            profile['I'] = float(s0.get('I_cm4') or profile['I'])
-            profile['c'] = float(s0.get('c_cm') or profile['c'])
-            profile['A'] = float(s0.get('A_cm2') or profile['A'])
-            profile['allow_bend'] = float(s0.get('allow_bend_kNcm2') or profile['allow_bend'])
-            profile['allow_shear'] = float(s0.get('allow_shear_kNcm2') or profile['allow_shear'])
+            # `or default` keeps a blank cell at its default rather than
+            # reading it as zero -- which for an allowable would have meant
+            # "not checked" and for E a beam with no stiffness.
+            for key, column in (('E', 'E_GPa'), ('I', 'I_cm4'),
+                                ('c', 'c_cm'), ('A', 'A_cm2'),
+                                ('allow_bend', 'allow_bend_kNcm2'),
+                                ('allow_shear', 'allow_shear_kNcm2'),
+                                ('defl_ratio', 'defl_limit_L_over_n')):
+                if s0.get(column) not in (None, ''):
+                    profile[key] = number(s0, column)
 
     return {'length': length, 'supports': supports, 'point_loads': point_loads,
             'moments': moments, 'dloads': dloads, 'nonuniform_loads': nonuniform_loads,

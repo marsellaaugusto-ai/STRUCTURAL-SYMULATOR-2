@@ -512,3 +512,169 @@ def test_truss_node_force_vector_sheet_balances_at_every_node():
 
     body = ' '.join(str(c) for r in rows for c in (r or []) if c)
     assert 'panel' in body.lower(), 'the shear panel never appears in the sheet'
+
+
+# ------------------------------------------- the Beam workbook (R-17)
+
+def _beam_app():
+    root, app = _make('beam')
+    return root, app
+
+
+def test_beam_distributed_load_headers_name_a_line_load():
+    """`w1_kNm` reads as kN*m to anyone filling the sheet in by hand. It is a
+    load per unit length."""
+    import openpyxl
+    from apps.beam.beam_app import export_beam_excel
+
+    root, app = _beam_app()
+    try:
+        app._load_example_overhang()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'b.xlsx')
+            export_beam_excel(app._current_state(), path)
+            wb = openpyxl.load_workbook(path, data_only=True)
+            headers = [v for row in wb['Model'].iter_rows(values_only=True)
+                       for v in row if isinstance(v, str)]
+            wb.close()
+    finally:
+        root.destroy()
+    assert 'w1_kN_per_m' in headers, headers
+    assert 'w1_kNm' not in headers, headers
+
+
+def test_beam_imports_a_workbook_written_with_the_old_header():
+    """Files already on disk must still import -- the same courtesy the
+    [DLOADS] -> [DISTRIBUTED_LOADS] rename got."""
+    import openpyxl
+    from apps.beam.beam_app import export_beam_excel, import_beam_excel
+
+    root, app = _beam_app()
+    try:
+        app._load_example_overhang()
+        state = app._current_state()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'b.xlsx')
+            export_beam_excel(state, path)
+            wb = openpyxl.load_workbook(path)
+            ws = wb['Model']
+            for row in ws.iter_rows():
+                for cell in row:
+                    if cell.value == 'w1_kN_per_m':
+                        cell.value = 'w1_kNm'
+                    elif cell.value == 'w2_kN_per_m':
+                        cell.value = 'w2_kNm'
+            wb.save(path)
+            wb.close()
+            back = import_beam_excel(path)
+    finally:
+        root.destroy()
+    assert back['dloads'] == state['dloads']
+
+
+def test_beam_model_sheet_declares_the_units_it_is_written_in():
+    import openpyxl
+    from apps.beam.beam_app import export_beam_excel
+
+    root, app = _beam_app()
+    try:
+        app._load_example_overhang()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'b.xlsx')
+            export_beam_excel(app._current_state(), path)
+            wb = openpyxl.load_workbook(path, data_only=True)
+            blurb = ' '.join(str(v) for row in wb['Model'].iter_rows(values_only=True)
+                             for v in row if isinstance(v, str))
+            wb.close()
+    finally:
+        root.destroy()
+    assert 'storage units' in blurb.lower(), blurb
+    assert 'Units selector' in blurb, blurb
+
+
+@pytest.mark.parametrize('break_it,message', [
+    (lambda ws: _set(ws, 'type', 'wobbly'), 'support type'),
+    (lambda ws: _set(ws, 'x_m', 99.0), 'not on the beam'),
+    (lambda ws: _set(ws, 'length_m', 0.0), 'length'),
+])
+def test_beam_rejects_a_workbook_it_cannot_use(break_it, message):
+    """An unvalidated import failed at Analyze instead, far from the file that
+    caused it."""
+    import openpyxl
+    from apps.beam.beam_app import export_beam_excel, import_beam_excel
+
+    root, app = _beam_app()
+    try:
+        app._load_example_overhang()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'b.xlsx')
+            export_beam_excel(app._current_state(), path)
+            wb = openpyxl.load_workbook(path)
+            break_it(wb['Model'])
+            wb.save(path)
+            wb.close()
+            with pytest.raises(ValueError, match=message):
+                import_beam_excel(path)
+    finally:
+        root.destroy()
+
+
+def _set(ws, header, value):
+    """Overwrite the first value under `header` with `value`."""
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value == header:
+                ws.cell(row=cell.row + 1, column=cell.column, value=value)
+                return
+    raise AssertionError(f'{header} not found in the sheet')
+
+
+def test_beam_names_the_row_it_could_not_read():
+    import openpyxl
+    from apps.beam.beam_app import export_beam_excel, import_beam_excel
+
+    root, app = _beam_app()
+    try:
+        app._load_example_overhang()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'b.xlsx')
+            export_beam_excel(app._current_state(), path)
+            wb = openpyxl.load_workbook(path)
+            _set(wb['Model'], 'type', 'wobbly')
+            wb.save(path)
+            wb.close()
+            with pytest.raises(ValueError) as caught:
+                import_beam_excel(path)
+    finally:
+        root.destroy()
+    assert 'row' in str(caught.value).lower(), caught.value
+
+
+def test_beam_survives_a_short_row():
+    """`{headers[j]: vals[j] ...}` raised IndexError with no row number when a
+    row held fewer cells than its header."""
+    import openpyxl
+    from apps.beam.beam_app import export_beam_excel, import_beam_excel
+
+    root, app = _beam_app()
+    try:
+        app._load_example_overhang()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'b.xlsx')
+            export_beam_excel(app._current_state(), path)
+            wb = openpyxl.load_workbook(path)
+            ws = wb['Model']
+            for row in ws.iter_rows():
+                for cell in row:
+                    if cell.value == 'w2_kN_per_m':
+                        # Assigning .value directly: ws.cell(..., value=None)
+                        # does not clear a cell, it only assigns when the
+                        # value is not None.
+                        ws.cell(row=cell.row + 1,
+                                column=cell.column).value = None
+            wb.save(path)
+            wb.close()
+            with pytest.raises(ValueError):
+                import_beam_excel(path)      # a message, not an IndexError
+    finally:
+        root.destroy()

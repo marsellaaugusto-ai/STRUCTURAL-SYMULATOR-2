@@ -54,8 +54,8 @@ So this is not a list of old debt. Everything in Tier 1 below is new.
 | **R-13** | Diagram captions still collide — now even at 1500 px | LOW | ~1 h |
 | **R-14** | No row editing, no undo, results box is editable | LOW | ~4 h |
 | **R-15** | No zoom/pan, no hover readout, no diagram export | LOW | ~6 h |
-| **R-16** | Results omit *where* the maxima are, both M extremes, and any deflection limit | MED | ~2 h |
-| **R-17** | Excel: `w1_kNm` mislabels a kN/m load; imports are unvalidated | LOW | ~2 h |
+| **R-16** | Results omit *where* the maxima are, both M extremes, and any deflection limit | MED | ✅ **done** |
+| **R-17** | Excel: `w1_kNm` mislabels a kN/m load; imports are unvalidated | LOW | ✅ **done** |
 | **R-18** | No internal hinges, springs or prescribed settlements | feature | ~1 d |
 | **R-19** | One scalar EI — no stepped or haunched beams | feature | ~1 d |
 | **R-20** | No load cases or factored combinations (the module already exists) | feature | ~1 d |
@@ -552,6 +552,16 @@ Three additions, in value order:
 
 ## R-16 · MED · The results panel omits the things a checker writes down
 
+> **✅ Fixed 2026-10-04.** The panel gained an **EXTREMES** block that names
+> the station of every peak, and reports the sagging and hogging moments
+> separately with theirs — printing only the ones that occur, so a cantilever
+> does not claim a sagging peak of +0.00. A **SERVICEABILITY** block checks
+> max |δ| against L/n, with n a new section field (default 360, 0 meaning not
+> checked, which reads as `not checked` and never as `OK`). Where max |M| and
+> max |V| fall at different stations the panel now says so, since the pair is
+> conservative rather than a section check at any one point — a real
+> station-by-station utilisation belongs with **R-21**.
+
 `_show_results` prints reactions, `max |V|`, `max |M|`, `max |δ|` and two
 stress ratios. Missing, in rough order of how often it is needed:
 
@@ -570,6 +580,17 @@ stress ratios. Missing, in rough order of how often it is needed:
   utilisation station-by-station and report the governing x (see R-21).
 
 ## R-17 · LOW · Excel round-trip details
+
+> **✅ Fixed 2026-10-04.** `w1_kNm`/`w2_kNm` are written as
+> `w1_kN_per_m`/`w2_kN_per_m` and the old spelling still imports, exactly as
+> the `[DLOADS]` rename is still accepted. Imports are validated: a support
+> type must be one of the four, every station must lie on the beam, the
+> length must be positive, and a blank or non-numeric cell is reported by
+> column name **and sheet row number** instead of failing later at Analyze —
+> *Row 10: 'wobbly' is not a support type. Use one of: fixed, guided, pin,
+> roller.* A short row reads as empty cells rather than raising `IndexError`.
+> The Model sheet's second line now states that it is written in storage
+> units and not in whatever the selector shows.
 
 * **Mislabelled header.** `[DISTRIBUTED_LOADS]` writes `w1_kNm` / `w2_kNm` for
   a load in **kN/m**. Anyone filling the sheet by hand reads that as kN·m.

@@ -47,7 +47,7 @@ So this is not a list of old debt. Everything in Tier 1 below is new.
 | **R-6** | Non-numeric entry raises an unhandled `TclError`; the user sees nothing | MED | ✅ **done** |
 | **R-7** | Shortening the beam leaves stale off-beam rows; Analyze then fails wholesale | MED | ✅ **done** |
 | **R-8** | Split `beam_math.py` out of `beam_app.py` — the project's own stated boundary | MED | ✅ **done** |
-| **R-9** | Adopt `common.UnitsMixin`; hard-coded `kN` / `kN/m` labels ignore the selector | MED | ~3 h |
+| **R-9** | Adopt `common.UnitsMixin`; hard-coded `kN` / `kN/m` labels ignore the selector | MED | ✅ **done** |
 | **R-10** | 6 dead imports (B-6) | LOW | ✅ **done** |
 | **R-11** | Retire the stale 2026-09-10 Beam report | LOW | 15 min |
 | **R-12** | Tests for everything above, before the fixes land | MED | ~3 h |
@@ -398,6 +398,31 @@ as its cross-check reference, keeps working unchanged.
 
 ## R-9 · MED · Adopt `common.UnitsMixin`, and let the panel headings follow the selector
 
+> **✅ Fixed 2026-10-04.** `BeamApp(UnitsMixin, tk.Frame)`. The mixin already
+> had `_shown`/`_stored`/`_u` with the same signatures the tab had grown by
+> hand, so the 85 call sites did not change at all — what went is the second
+> copy of the machinery behind them: `_shown`, `_stored`, `_u`, `_sec_shown`,
+> `_sec_stored`, the `_SECTION_Q` map parallel to `_FIELD_Q`, the manual
+> `units.on_change` listener and the hand-written repaint. One `_FIELD_Q` now
+> covers the table and section fields together.
+>
+> Every label that names a unit is registered with `unit_label`, so the four
+> that spelled theirs out in SI and never repainted now follow the selector:
+> under AISC the panel no longer says *POINT LOADS (+down, kN)* above a table
+> of kip. Both entry groups go through `unit_var`/`unit_value`, which keeps
+> the exact stored figure behind the rounded display — 10 m reads as
+> 32.8084 ft and stores 10.0, not 10.000000000000002 — and `_num` still runs
+> first on every read so R-6's named error survives.
+>
+> The distributed-load columns, which read a bare `x1 x2 w1 w2` with no unit
+> in any convention, are now named from one `_TREE_COLUMNS` table with the
+> rest. A ttk heading is not a widget `config`, so those cannot go through
+> `unit_label` and are repainted from the tab's own callback — which is all
+> that callback still does.
+>
+> Pinned by 8 new tests, including one asserting the tab no longer carries
+> its own copy of any of those five accessors.
+
 `common.UnitsMixin` exists *because* of this tab — its docstring says the Beam
 tab was wired to `units.py` by hand first and the machinery was then extracted
 so it would not be copied six times. Arch, Cable Web and Stereo use the mixin;
@@ -664,7 +689,7 @@ root saying so.
    R-2's equilibrium assertion is the net that holds everything after it.
 2. **R-8 + R-10** together (the file split touches the import block), then
    **R-9** on the split file. Pure refactors, with the Tier-1 tests already in
-   place to prove nothing moved.
+   place to prove nothing moved. *(Done 2026-10-04, in that order.)*
 3. **R-3, R-4, R-16, R-17, R-13** — sign conventions, units and reporting, all
    small and all user-visible.
 4. **R-11** as the sequence lands, so the reports describe the tree again.

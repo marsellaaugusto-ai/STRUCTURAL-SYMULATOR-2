@@ -23,7 +23,7 @@ import units
 from common import (
     _ensure_openpyxl,
     PANEL_W,
-    ScrollPanel, WrapBar,
+    ScrollPanel, WrapBar, UnitsMixin,
     _nice_ticks, _find_diagram_maxima, make_shape_fn,
     draw_moment_arrow, LoadScale, declutter_text,
 )
@@ -39,13 +39,21 @@ __all__ = ['BeamApp', 'BeamModel', 'BeamResult',
            '_adaptive_vector_integral', '_gauss_VM_integral']
 
 
-class BeamApp(tk.Frame):
+class BeamApp(UnitsMixin, tk.Frame):
     """
     Beam tab — isostatic and hyperstatic beams, single and double cantilevers
-    (overhangs), via the BeamModel direct-stiffness solver above.
-    Units: lengths in m, forces in kN, moments in kN*m, distributed loads in
-    kN/m, E in GPa, section I in cm^4, c (extreme fiber distance) in cm, areas
-    in cm^2. Stresses reported in kN/cm^2 (matches the rest of the app).
+    (overhangs), via the beam_math.BeamModel direct-stiffness solver.
+
+    STORAGE units, which is what the tab holds and what a workbook written
+    from it contains: lengths in m, forces in kN, moments in kN*m, distributed
+    loads in kN/m, E in GPa, section I in cm^4, c (extreme fibre distance) in
+    cm, areas in cm^2, stresses in kN/cm^2. That is `units.STORAGE` exactly,
+    which is why STORAGE_UNITS is left at its default below. What the user
+    SEES is whichever convention the selector above the notebook names, and
+    `common.UnitsMixin` does that conversion -- see its docstring, which was
+    written about this tab: the machinery was extracted FROM here so it would
+    not be built six times, and until 2026-10-04 this tab still carried the
+    original hand-rolled copy of it (R-9).
     """
     CBEAM, CSUP, CLOAD, CMOM, CDLOAD = '#333333', '#555555', '#D85A30', '#8e44ad', '#c0785a'
     CV_, CM_, CDEFL, CGRID = '#7F77DD', '#D85A30', '#1D9E75', '#e8e8e8'
@@ -62,21 +70,24 @@ class BeamApp(tk.Frame):
                         'allow_bend': 16.0, 'allow_shear': 10.0}
         self.result = None
         self.model = None
+        # Before _build_ui, because the widgets register themselves with the
+        # mixin as they are created. Nothing in the model changes when the
+        # convention does -- only how it is written -- so `repaint` only has
+        # to redraw what the mixin does not own: the tables, the results text
+        # and the diagrams. The mixin drops its own listener when this tab
+        # stops existing, so a destroyed tab cannot be left repainting.
+        self.init_units(repaint=self._on_units_changed)
         self._build_ui()
         self._draw_schematic()
-        # Nothing in the model changes when the convention does -- only how it
-        # is written -- so the whole tab is simply repainted. Held as an
-        # attribute so the listener can be removed if this tab is ever
-        # destroyed and rebuilt, which would otherwise leave a dead callback
-        # repainting a widget that no longer exists.
-        self._units_listener = units.on_change(lambda _sys: self._on_units_changed())
 
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
         tb = tk.Frame(self, bg='#ebebea')
         tb.pack(fill='x', padx=6, pady=(6, 0))
-        tk.Label(tb, text=f'Beam length ({units.label("length")}):', bg='#ebebea', font=('Helvetica', 11)).pack(side='left', padx=(4, 2))
+        self.unit_label(
+            tk.Label(tb, bg='#ebebea', font=('Helvetica', 11)),
+            lambda: f'Beam length ({self.u("length")}):').pack(side='left', padx=(4, 2))
         # Every Variable in this tab names its master explicitly. Without
         # one, tkinter binds it to its module-global default root, which is
         # the same interpreter as this widget in the running app -- but not
@@ -84,7 +95,8 @@ class BeamApp(tk.Frame):
         # interpreter's copy of the variable while .get() reads another's.
         # Found 2026-10-04: the non-uniform load dialog read stale values
         # under the test suite for exactly this reason (R-4/R-9).
-        self.len_var = tk.DoubleVar(master=self, value=self._shown('x', self.length))
+        self.len_var = self.unit_var(
+            tk.DoubleVar(master=self, value=self.length), 'length')
         tk.Entry(tb, textvariable=self.len_var, width=7, font=('Helvetica', 11)).pack(side='left')
         tk.Button(tb, text='Set length', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica', 11), command=self._set_length).pack(side='left', padx=4)
@@ -142,6 +154,7 @@ class BeamApp(tk.Frame):
         self.diag_canvas.bind('<Configure>', lambda e: self._draw_diagrams())
 
         self._build_panel(self.panel_outer.interior)
+        self._label_tree_columns()
         # Adopt whatever width the panel's own content needs, so nothing
         # starts life behind the horizontal scrollbar.
         self.panel_outer.fit_to_content()
@@ -171,35 +184,44 @@ class BeamApp(tk.Frame):
 
         tk.Label(panel, text='SUPPORTS', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
         self.sup_tree = ttk.Treeview(panel, columns=('x', 'type'), show='headings', height=4)
-        self.sup_tree.heading('x', text=f'x ({self._u("x")})'); self.sup_tree.column('x', width=70)
-        self.sup_tree.heading('type', text='Type'); self.sup_tree.column('type', width=100)
+        self.sup_tree.column('x', width=70)
+        self.sup_tree.column('type', width=100)
         self.sup_tree.pack(fill='x', padx=8)
         sf = tk.Frame(panel, bg='#f0f0ee'); sf.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(sf, text='Add', command=self._add_support).pack(side='left', padx=2)
         tk.Button(sf, text='Delete', command=lambda: self._del_row(self.sup_tree, self.supports)).pack(side='left', padx=2)
 
-        tk.Label(panel, text='POINT LOADS (+down, kN)', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
+        self.unit_label(
+            tk.Label(panel, bg='#f0f0ee', font=('Helvetica', 10, 'bold')),
+            lambda: f'POINT LOADS (+down, {self.u("force")})'
+        ).pack(anchor='w', **pad)
         self.pl_tree = ttk.Treeview(panel, columns=('x', 'P'), show='headings', height=3)
-        self.pl_tree.heading('x', text=f'x ({self._u("x")})'); self.pl_tree.column('x', width=70)
-        self.pl_tree.heading('P', text=f'P ({self._u("P")})'); self.pl_tree.column('P', width=100)
+        self.pl_tree.column('x', width=70)
+        self.pl_tree.column('P', width=100)
         self.pl_tree.pack(fill='x', padx=8)
         pf = tk.Frame(panel, bg='#f0f0ee'); pf.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(pf, text='Add', command=self._add_pointload).pack(side='left', padx=2)
         tk.Button(pf, text='Delete', command=lambda: self._del_row(self.pl_tree, self.point_loads)).pack(side='left', padx=2)
 
-        tk.Label(panel, text='POINT MOMENTS (+CCW, kN·m)', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
+        self.unit_label(
+            tk.Label(panel, bg='#f0f0ee', font=('Helvetica', 10, 'bold')),
+            lambda: f'POINT MOMENTS (+CCW, {self.u("moment")})'
+        ).pack(anchor='w', **pad)
         self.mm_tree = ttk.Treeview(panel, columns=('x', 'M'), show='headings', height=2)
-        self.mm_tree.heading('x', text=f'x ({self._u("x")})'); self.mm_tree.column('x', width=70)
-        self.mm_tree.heading('M', text=f'M ({self._u("M")})'); self.mm_tree.column('M', width=100)
+        self.mm_tree.column('x', width=70)
+        self.mm_tree.column('M', width=100)
         self.mm_tree.pack(fill='x', padx=8)
         mf = tk.Frame(panel, bg='#f0f0ee'); mf.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(mf, text='Add', command=self._add_moment).pack(side='left', padx=2)
         tk.Button(mf, text='Delete', command=lambda: self._del_row(self.mm_tree, self.moments)).pack(side='left', padx=2)
 
-        tk.Label(panel, text='DISTRIBUTED LOADS (+down, kN/m)', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
+        self.unit_label(
+            tk.Label(panel, bg='#f0f0ee', font=('Helvetica', 10, 'bold')),
+            lambda: f'DISTRIBUTED LOADS (+down, {self.u("line_load")})'
+        ).pack(anchor='w', **pad)
         self.dl_tree = ttk.Treeview(panel, columns=('x1', 'x2', 'w1', 'w2'), show='headings', height=3)
-        for c, w in [('x1', 55), ('x2', 55), ('w1', 60), ('w2', 60)]:
-            self.dl_tree.heading(c, text=c); self.dl_tree.column(c, width=w)
+        for c, w in [('x1', 70), ('x2', 70), ('w1', 80), ('w2', 80)]:
+            self.dl_tree.column(c, width=w)
         self.dl_tree.pack(fill='x', padx=8)
         df = tk.Frame(panel, bg='#f0f0ee'); df.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(df, text='Add', command=self._add_dload).pack(side='left', padx=2)
@@ -207,14 +229,13 @@ class BeamApp(tk.Frame):
 
         tk.Label(panel, text='NON-UNIFORM DISTRIBUTED LOADS', bg='#f0f0ee',
                  font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
-        self._ndl_hint = tk.Label(panel, text=self._ndl_hint_text(), bg='#f0f0ee',
-                                  font=('Helvetica', 8), fg='#777',
-                                  justify='left')
-        self._ndl_hint.pack(anchor='w', padx=8)
+        self.unit_label(
+            tk.Label(panel, bg='#f0f0ee', font=('Helvetica', 8), fg='#777',
+                     justify='left'),
+            self._ndl_hint_text).pack(anchor='w', padx=8)
         self.ndl_tree = ttk.Treeview(panel, columns=('expr', 'x1', 'x2'), show='headings', height=3)
-        for c, w in [('expr', 130, ), ('x1', 55, ), ('x2', 55, )]:
+        for c, w in [('expr', 130), ('x1', 70), ('x2', 70)]:
             self.ndl_tree.column(c, width=w)
-        self._label_ndl_columns()
         self.ndl_tree.pack(fill='x', padx=8)
         ndf = tk.Frame(panel, bg='#f0f0ee'); ndf.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(ndf, text='Add', command=self._add_nonuniform_load).pack(side='left', padx=2)
@@ -224,21 +245,18 @@ class BeamApp(tk.Frame):
         tk.Label(panel, text='CROSS-SECTION / MATERIAL', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
         sec = tk.Frame(panel, bg='#f0f0ee'); sec.pack(fill='x', padx=8)
         self.sec_vars = {}
-        def _sec_fields():
-            u = units.label
-            return [('E', f'E ({u("modulus")})'), ('I', f'I ({u("inertia")})'),
-                    ('c', f'c ({u("section_length")}, extreme fiber)'),
-                    ('A', f'Shear area ({u("area")})'),
-                    ('allow_bend', f'Allow. bending σ ({u("stress")})'),
-                    ('allow_shear', f'Allow. shear τ ({u("stress")})')]
-
-        self._sec_fields = _sec_fields
-        self._sec_labels = {}
-        for i, (key, label) in enumerate(_sec_fields()):
-            lb = tk.Label(sec, text=label, bg='#f0f0ee', font=('Helvetica', 9))
-            lb.grid(row=i, column=0, sticky='w', pady=1)
-            self._sec_labels[key] = lb
-            v = tk.DoubleVar(master=sec, value=self._sec_shown(key, self.profile[key]))
+        for i, key in enumerate(self.SECTION_FIELDS):
+            self.unit_label(
+                tk.Label(sec, bg='#f0f0ee', font=('Helvetica', 9)),
+                lambda k=key: self._sec_label(k),
+            ).grid(row=i, column=0, sticky='w', pady=1)
+            # The box holds the STORAGE value and the mixin writes it in the
+            # selected convention; `unit_value` reads the exact stored figure
+            # back, so a switch there and back cannot round-trip 200 GPa into
+            # 199.99999 (see UnitsMixin.unit_value).
+            v = self.unit_var(
+                tk.DoubleVar(master=sec, value=self.profile[key]),
+                self._FIELD_Q[key])
             self.sec_vars[key] = v
             tk.Entry(sec, textvariable=v, width=8, font=('Helvetica', 9)).grid(row=i, column=1, pady=1, padx=4)
 
@@ -255,66 +273,47 @@ class BeamApp(tk.Frame):
         del data_list[idx]
         self._refresh_tables()
 
-    # Which physical quantity each model field is, so one table-refresh can
-    # convert every column without a per-column special case. Fields that are
-    # not numbers (a support type, a q(x) expression) map to None and are
-    # passed through untouched.
+    # Which physical quantity each model field is, so one table refresh can
+    # convert every column without a per-column special case. This is the only
+    # thing UnitsMixin asks a tab to supply, and it covers the section fields
+    # too -- they were a second map with a parallel set of _sec_shown /
+    # _sec_stored accessors until 2026-10-04 (R-9). Fields that are not
+    # numbers (a support type, a q(x) expression) map to None and pass
+    # through untouched.
     _FIELD_Q = {'x': 'length', 'x1': 'length', 'x2': 'length',
                 'P': 'force', 'M': 'moment',
                 'w1': 'line_load', 'w2': 'line_load',
-                'type': None, 'expr': None}
+                'type': None, 'expr': None,
+                'E': 'modulus', 'I': 'inertia', 'c': 'section_length',
+                'A': 'area', 'allow_bend': 'stress', 'allow_shear': 'stress'}
 
-    _SECTION_Q = {'E': 'modulus', 'I': 'inertia', 'c': 'section_length',
-                  'A': 'area', 'allow_bend': 'stress', 'allow_shear': 'stress'}
+    # The section/material boxes, in the order they are shown, and how each
+    # one is named. One source for the widget label AND for the message when
+    # that box cannot be read (R-5/R-6), so the two can never disagree about
+    # which field the user is being told about.
+    SECTION_FIELDS = ('E', 'I', 'c', 'A', 'allow_bend', 'allow_shear')
+    _SECTION_NAMES = {'E': 'E', 'I': 'I', 'c': 'c',
+                      'A': 'Shear area',
+                      'allow_bend': 'Allow. bending \u03c3',
+                      'allow_shear': 'Allow. shear \u03c4'}
 
-    def _shown(self, field, stored):
-        """A stored model value as the current unit convention writes it."""
-        q = self._FIELD_Q.get(field)
-        if q is None or not isinstance(stored, (int, float)):
-            return stored
-        return units.to_display(q, stored)
-
-    def _stored(self, field, shown):
-        """The inverse of `_shown`, for a number the user typed."""
-        q = self._FIELD_Q.get(field)
-        if q is None or not isinstance(shown, (int, float)):
-            return shown
-        return units.from_display(q, shown)
+    def _sec_label(self, key):
+        extra = ', extreme fiber' if key == 'c' else ''
+        return f'{self._SECTION_NAMES[key]} ({self._u(key)}{extra})'
 
     def _on_units_changed(self):
-        """Repaint every place a unit is written or a number is shown."""
-        try:
-            if not self.winfo_exists():
-                return
-        except Exception:
-            return
-        self.len_var.set(self._shown('x', self.length))
-        for key, lb in getattr(self, '_sec_labels', {}).items():
-            lb.config(text=dict(self._sec_fields())[key])
-            self.sec_vars[key].set(self._sec_shown(key, self.profile[key]))
-        self.sup_tree.heading('x', text=f'x ({self._u("x")})')
-        self.pl_tree.heading('x', text=f'x ({self._u("x")})')
-        self.pl_tree.heading('P', text=f'P ({self._u("P")})')
-        self.mm_tree.heading('x', text=f'x ({self._u("x")})')
-        self.mm_tree.heading('M', text=f'M ({self._u("M")})')
-        self._label_ndl_columns()
-        if getattr(self, '_ndl_hint', None) is not None:
-            self._ndl_hint.config(text=self._ndl_hint_text())
+        """Repaint what the mixin does not own.
+
+        It has already converted the registered entry boxes and repainted
+        every label that names a unit, so what is left is this tab's own
+        furniture: the tree headings, the tables, and the results text and
+        diagrams if there is a result to redraw.
+        """
+        self._label_tree_columns()
         self._refresh_tables()
         if self.result is not None:
             self._show_results()
             self._draw_diagrams()
-
-    def _sec_shown(self, key, stored):
-        return units.to_display(self._SECTION_Q[key], stored)
-
-    def _sec_stored(self, key, shown):
-        return units.from_display(self._SECTION_Q[key], shown)
-
-    def _u(self, field):
-        """Label for the unit a field is currently shown in."""
-        q = self._FIELD_Q.get(field)
-        return units.label(q) if q else ''
 
     # ── reading what the user typed ─────────────────────────────────────────
     def _num(self, var, label):
@@ -353,12 +352,19 @@ class BeamApp(tk.Frame):
 
     def _typed_length(self):
         """The beam length as currently typed, in storage units."""
-        return self._stored('x', self._num(self.len_var, 'Beam length'))
+        self._num(self.len_var, 'Beam length')     # names the box if unreadable
+        return self.unit_value(self.len_var, self.length)
 
     def _typed_profile(self):
         """The section/material fields as currently typed, in storage units."""
-        return {k: self._sec_stored(k, self._num(v, dict(self._sec_fields())[k]))
-                for k, v in self.sec_vars.items()}
+        out = {}
+        for key, var in self.sec_vars.items():
+            # _num first, so garbage in a box is reported against that box's
+            # own name (R-6); unit_value second, because it returns the exact
+            # figure behind the box rather than the rounded one shown in it.
+            self._num(var, self._sec_label(key))
+            out[key] = self.unit_value(var, self.profile[key])
+        return out
 
     # ── entries that are no longer on the beam ──────────────────────────────
     # The Add dialogs refuse an off-beam station (B-5, fixed 2026-09-10), but
@@ -489,10 +495,29 @@ class BeamApp(tk.Frame):
                 f"as written. Its sub-domain [x\u2081,x\u2082] is in "
                 f"{self._u('x')}.")
 
-    def _label_ndl_columns(self):
+    # Every table column that carries a unit, named in one place so none can
+    # be forgotten on a switch -- the distributed-load columns read a bare
+    # 'x1 x2 w1 w2', with no unit in any convention, until 2026-10-04 (R-9).
+    # A ttk heading is not a widget `config`, so these cannot go through
+    # UnitsMixin.unit_label and are repainted from _on_units_changed instead.
+    _TREE_COLUMNS = (
+        ('sup_tree',  (('x', 'x', 'x'),)),
+        ('pl_tree',   (('x', 'x', 'x'), ('P', 'P', 'P'))),
+        ('mm_tree',   (('x', 'x', 'x'), ('M', 'M', 'M'))),
+        ('dl_tree',   (('x1', 'x\u2081', 'x1'), ('x2', 'x\u2082', 'x2'),
+                       ('w1', 'w\u2081', 'w1'), ('w2', 'w\u2082', 'w2'))),
+        ('ndl_tree',  (('x1', 'x\u2081', 'x1'), ('x2', 'x\u2082', 'x2'))),
+    )
+
+    def _label_tree_columns(self):
+        for attr, columns in self._TREE_COLUMNS:
+            tree = getattr(self, attr, None)
+            if tree is None:
+                continue
+            for column, name, field in columns:
+                tree.heading(column, text=f'{name} ({self._u(field)})')
+        self.sup_tree.heading('type', text='Type')
         self.ndl_tree.heading('expr', text='q(x)')
-        self.ndl_tree.heading('x1', text=f'x\u2081 ({self._u("x")})')
-        self.ndl_tree.heading('x2', text=f'x\u2082 ({self._u("x")})')
 
     def _refresh_tables(self):
         for tree, rows, cols in [
@@ -792,7 +817,7 @@ class BeamApp(tk.Frame):
         self.nonuniform_loads = st['nonuniform_loads']
         for k, v in st['profile'].items():
             if k in self.sec_vars:
-                self.sec_vars[k].set(self._sec_shown(k, v))
+                self.set_unit_value(self.sec_vars[k], v)
                 self.profile[k] = v
         self._refresh_tables()
         self._draw_schematic()
@@ -851,7 +876,7 @@ class BeamApp(tk.Frame):
                 f"{self._u('x')}. Move it onto the beam, or set the beam "
                 f'length first.')
 
-        labels = dict(self._sec_fields())
+        labels = {k: self._sec_label(k) for k in self.SECTION_FIELDS}
         try:
             profile = self._typed_profile()
         except ValueError as e:
@@ -970,11 +995,11 @@ class BeamApp(tk.Frame):
             # it is: nothing to check against.
             allow = self.profile[key]
             lines.append(f'  {title} = '
-                         f'{self._sec_shown(key, demand):6.3f} {su}')
+                         f'{self._shown(key, demand):6.3f} {su}')
             if allow > 0:
                 ratio = demand / allow
                 lines.append(
-                    f'    allowable = {self._sec_shown(key, allow):.3f} {su} '
+                    f'    allowable = {self._shown(key, allow):.3f} {su} '
                     f'  ({"OK" if ratio <= 1.0 else "FAIL"}, ratio {ratio:.2f})')
             else:
                 lines.append('    allowable = not checked '

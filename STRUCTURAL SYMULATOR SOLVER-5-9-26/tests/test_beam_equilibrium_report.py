@@ -186,3 +186,83 @@ def test_the_excel_results_sheet_carries_the_equilibrium_rows(beam):
         wb.close()
     for want in ('Total load', 'Sum of reactions', 'Residual'):
         assert want in joined, joined
+
+
+# ------------------------------------------- the reaction moment (R-3)
+
+def test_the_reactions_block_states_its_moment_convention(beam):
+    """The column used to mean the internal moment at x = 0 and the support's
+    couple everywhere else, with nothing saying which."""
+    app, root = beam
+    _ss_udl(app)
+    text = _results(app, root)
+    head = text.split('\n')[0] + ' ' + text.split('\n')[1]
+    assert 'couple' in head.lower(), head
+    assert 'counter-clockwise' in head.lower(), head
+
+
+def test_a_fixed_support_reports_the_internal_moment_on_each_side(beam):
+    app, root = beam
+    _ss_udl(app)
+    app.supports = [{'x': 0.0, 'type': 'fixed'}, {'x': 6.0, 'type': 'fixed'}]
+    app._refresh_tables()
+    text = _results(app, root)
+    internal = [ln for ln in text.splitlines() if 'internal M' in ln]
+    assert len(internal) == 2, text
+    # fixed-fixed under 10 kN/m over 6 m: -wL^2/12 = -30 on the beam side of
+    # each support, and the two couples are +30 and -30
+    assert '-30.00' in internal[0], internal[0]
+    assert '+30.00' in text and '-30.00' in text, text
+
+
+def test_a_pin_does_not_claim_an_internal_moment_pair(beam):
+    """A support that does not restrain rotation has no couple and no jump, so
+    the extra line would say nothing."""
+    app, root = beam
+    _ss_udl(app)
+    assert 'internal M' not in _results(app, root)
+
+
+def test_an_interior_fixed_support_shows_two_different_internal_moments(beam):
+    app, root = beam
+    _ss_udl(app)
+    app.supports = [{'x': 3.0, 'type': 'fixed'}]
+    app.dloads = []
+    app.point_loads = [{'x': 0.0, 'P': 40.0}]
+    app._refresh_tables()
+    text = _results(app, root)
+    internal = [ln for ln in text.splitlines() if 'internal M' in ln]
+    assert len(internal) == 1, text
+    # -P*L/2 = -120 on the loaded cantilever, 0 on the other side
+    assert '-120.00' in internal[0], internal[0]
+    assert '+0.00' in internal[0] or '-0.00' in internal[0], internal[0]
+
+
+def test_the_workbook_reports_the_couple_and_both_internal_moments(beam):
+    pytest.importorskip('openpyxl')
+    import openpyxl
+    from apps.beam.beam_app import export_beam_excel
+
+    app, root = beam
+    _ss_udl(app)
+    app.supports = [{'x': 0.0, 'type': 'fixed'}, {'x': 6.0, 'type': 'fixed'}]
+    app._refresh_tables()
+    app._analyze()
+    root.update()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'beam.xlsx')
+        export_beam_excel(app._current_state(), path,
+                          result=app.result, model=app.model)
+        wb = openpyxl.load_workbook(path, data_only=True)
+        rows = list(wb['Results'].iter_rows(values_only=True))
+        wb.close()
+    header = [r for r in rows if r and r[0] == 'Support'][0]
+    assert 'couple' in str(header[2]).lower(), header
+    assert 'M_left' in str(header[3]) and 'M_right' in str(header[4]), header
+    body = [r for r in rows if r and isinstance(r[0], str) and r[0].startswith('x=')]
+    assert len(body) == 2, body
+    left, right = body
+    assert left[2] == pytest.approx(30.0, rel=1e-6), left     # couple, +CCW
+    assert right[2] == pytest.approx(-30.0, rel=1e-6), right
+    assert left[4] == pytest.approx(-30.0, rel=1e-6), left    # internal, beam side
+    assert right[3] == pytest.approx(-30.0, rel=1e-6), right

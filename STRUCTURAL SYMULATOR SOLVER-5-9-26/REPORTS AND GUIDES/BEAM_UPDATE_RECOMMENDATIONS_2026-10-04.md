@@ -41,8 +41,8 @@ So this is not a list of old debt. Everything in Tier 1 below is new.
 |---|---|---|---|
 | **R-1** | Two supports at the same station double-count the reaction — silently wrong V, M, σ | **HIGH** | ✅ **done** |
 | **R-2** | No equilibrium / closure self-check anywhere in the results | **HIGH** | ✅ **done** |
-| **R-3** | Reaction-moment sign is a heuristic, wrong in meaning at an interior fixed support | MED | ~3 h |
-| **R-4** | Non-uniform q(x) loads bypass the unit layer *and* the on-beam check | MED | ~2 h |
+| **R-3** | Reaction-moment sign is a heuristic, wrong in meaning at an interior fixed support | MED | ✅ **done** |
+| **R-4** | Non-uniform q(x) loads bypass the unit layer *and* the on-beam check | MED | ✅ **done** |
 | **R-5** | No validation of L, E, I, c, A — negative EI solves and returns garbage | MED | ✅ **done** |
 | **R-6** | Non-numeric entry raises an unhandled `TclError`; the user sees nothing | MED | ✅ **done** |
 | **R-7** | Shortening the beam leaves stale off-beam rows; Analyze then fails wholesale | MED | ✅ **done** |
@@ -156,6 +156,27 @@ reading depended on EI at all.
 
 ## R-3 · MED · The reaction moment is a heuristic, and means something else at an interior support
 
+> **✅ Fixed 2026-10-04.** `BeamResult.support_reaction(x)` returns the couple
+> the support applies (counter-clockwise positive) together with the internal
+> moment just left and just right of the station. The couple needs no sign
+> heuristic because `M == M_left - M_right` at every station — an identity now
+> pinned at every support of eight models, replacing a rule that had been
+> arrived at by trying three. `_V_M_at` no longer clamps a `side='left'` query
+> up to x = 0, so the moment just left of the left end reads as zero, which is
+> what made the x = 0 case look as though it needed negating. The panel states
+> the convention and prints both internal moments for any support that
+> restrains rotation; the workbook gained `M_left`/`M_right` columns.
+>
+> **Correction to this report.** The sentence below claiming the interior
+> support's couple is `+30 kN·m` was wrong: taking moments about the support
+> for the left-reaching cantilever, the tip load contributes `+P·L/2`
+> counter-clockwise, so the couple is `-30`, which is what the residual
+> already held. The displayed value was therefore right as a number and wrong
+> only in what it was labelled — the column meant the internal moment at
+> x = 0 and the couple everywhere else, and an interior support has two
+> internal moments and no single one to print. That ambiguity, not a sign
+> error, is what R-3 fixed.
+
 `reaction_at` returns a raw rotational-DOF residual, and `_show_results`
 negates it **only at x = 0**. The docstring is admirably honest that this was
 established by testing left-end, right-end and both-ends fixed cases. It does
@@ -183,6 +204,27 @@ in `test_beam_math.py` first — the current behaviour at the two end cases must
 not change.
 
 ## R-4 · MED · Non-uniform q(x) loads bypass the unit layer and the on-beam check
+
+> **✅ Fixed 2026-10-04.** The sub-domain now goes through `_shown`/`_stored`
+> and `_on_beam` like every other station, so the dialog agrees with its own
+> table, a reversed pair is normalised, and an off-beam domain is refused
+> instead of being silently clamped in `_analyze`. The expression keeps its
+> storage units and the tab now says so — in the dialog, in the panel heading
+> and on the schematic label — because a stored string whose meaning followed
+> the selector would change the load when someone switched convention, which
+> is the one thing `units.py` exists to prevent. This follows the Arch tab's
+> wording; note that Arch stores its own stations raw and has the same defect
+> in its stations, with a label that actively promises feet.
+>
+> **Found while fixing it, also fixed:** `BeamApp._on_beam` compared stations
+> to `[0, L]` *exactly* while `BeamModel._on_beam` allows a tolerance. A beam
+> end does not survive a round trip through a non-metric convention exactly —
+> 6 m is 19.68503937007874 ft, which converts back to 6.000000000000001 m — so
+> **every** Add dialog refused a load at the far end of the beam under AISC,
+> in a message that quoted the typed number against a length in metres. The
+> check now carries the model's tolerance, snaps a station inside it onto the
+> end so the stored model stays clean, and writes both numbers in the selected
+> unit.
 
 Everything else in the tab was wired through `units.py` and `_on_beam`; this
 one dialog was left behind.
@@ -240,12 +282,12 @@ imported workbook is covered) and surface them in `_analyze`.
 > stay open so the number can be corrected where it was typed, and
 > `_current_state` (which feeds the export) fails by field name.
 >
-> **Noticed while testing it, still open:** the tab builds its `DoubleVar`s
-> with no `master`, so they bind to `tkinter._default_root` rather than to
+> **Noticed while testing it, fixed with R-4:** the tab built its `DoubleVar`s
+> with no `master`, so they bound to `tkinter._default_root` rather than to
 > the tab's own interpreter. In the running app that is the same object and
-> nothing is wrong; under a test suite that creates several roots it is not,
-> which is why one of these tests passed alone and failed in the full suite.
-> Worth passing `master=self` when `_build_ui` is next touched (R-9 does).
+> nothing was wrong; under a test suite that creates several roots it is not,
+> and the non-uniform load dialog then read a *different* variable from the one
+> its own Entry wrote into. Every Variable in the tab now names its master.
 
 Measured: type `abc` in the length box and press **Set length** →
 

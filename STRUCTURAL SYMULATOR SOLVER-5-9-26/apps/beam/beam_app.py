@@ -368,23 +368,56 @@ class BeamResult:
                 self.support_stations.append(s['x'])
 
     def reaction_at(self, x):
-        """Returns (Fy, M) at the support/node located at x. Fy: vertical
-        reaction (+up). M: raw rotational-DOF residual (K*d - F at that
-        DOF) — used internally by _V_M_at below, which already accounts
-        for its sign convention via the "- Mr" term. For a *display* value
-        directly comparable to the M(x) diagram's sagging-positive
-        convention, see BeamApp's presentation layer, which negates this
-        value specifically at the beam's leftmost node (x=0) — verified
-        against fixed supports at the left end, right end, and both ends
-        simultaneously (fixed-fixed): negating only the x=0 case matches
-        the diagram's M(x) in every case tested."""
+        """Returns (Fy, M) at the support/node located at x.
+
+        Fy is the vertical reaction, positive up. M is the COUPLE the support
+        applies to the beam, positive counter-clockwise -- the same convention
+        as an applied moment, since both enter the same rotational DOF of the
+        same load vector. Crossing the station, the sagging-positive internal
+        moment therefore jumps by exactly `-M`, which is the identity
+        `support_reaction` reports and tests/test_beam_math.py pins at every
+        station.
+
+        Until 2026-10-04 the presentation layer negated this value AT x = 0
+        ONLY -- a rule arrived at by trying a left-end, a right-end and a
+        fixed-fixed beam and keeping what matched the M(x) diagram. What that
+        produced was the internal moment at the support rather than the
+        support's couple, and at an interior fixed support it was the internal
+        moment on the LEFT side specifically, with nothing to say so (R-3).
+        Use `support_reaction` for anything shown to a user.
+        """
         i = self.idx_of[round(x, 9)]
         return self.R[2 * i], self.R[2 * i + 1]
+
+    def support_reaction(self, x):
+        """Everything there is to report about the support at station x.
+
+            Fy       vertical reaction, + up
+            M        the couple the support applies, + counter-clockwise
+            M_left   internal moment just left of the station  (sagging +)
+            M_right  internal moment just right of it          (sagging +)
+
+        `M == M_left - M_right` at every station, which is what makes the
+        couple well defined without a positional special case. The two
+        internal moments are reported separately because at an interior
+        support they genuinely differ, and a designer reading a fixed end
+        wants the one on the beam side -- the hogging moment the section has
+        to carry -- not the couple.
+        """
+        Fy, M = self.reaction_at(x)
+        return {'Fy': Fy, 'M': M,
+                'M_left': self.moment_at(x, side='left'),
+                'M_right': self.moment_at(x, side='right')}
 
     def _V_M_at(self, x, side='right'):
         eps = 1e-7
         xx = x - eps if side == 'left' else x + eps
-        xx = max(0.0, min(self.model.L, xx))
+        # Clamped at the right end only. Just LEFT of the beam's left end is
+        # outside the beam, where nothing is carried, and clamping xx up to 0
+        # made a side='left' query at x = 0 return the value just AFTER the
+        # support at that node instead of zero -- which is exactly what made
+        # the reaction moment there look as though it needed negating (R-3).
+        xx = min(self.model.L, xx)
 
         V = 0.0
         M = 0.0
@@ -869,13 +902,21 @@ def export_beam_excel(state, path, result=None, model=None):
         wr.cell(row=1, column=1, value='BEAM RESULTS').font = Font(bold=True, size=11, color='1F4E79')
 
         row_r = 3
+        wr.cell(row=row_r, column=1, value='Support')
+        wr.cell(row=row_r, column=2, value='Ry_kN (+up)')
+        wr.cell(row=row_r, column=3, value='M_kNm (couple, +CCW)')
+        wr.cell(row=row_r, column=4, value='M_left_kNm (internal)')
+        wr.cell(row=row_r, column=5, value='M_right_kNm (internal)')
+        row_r += 1
         for s in model.supports:
-            Fy, Mr = result.reaction_at(s['x'])
-            if s['x'] < 1e-9:
-                Mr = -Mr
+            # No sign heuristic here either: the couple is the couple at every
+            # station, and the internal moments are reported beside it (R-3).
+            react = result.support_reaction(s['x'])
             wr.cell(row=row_r, column=1, value=f"x={s['x']:.3f} ({s['type']})")
-            wr.cell(row=row_r, column=2, value='Ry_kN'); wr.cell(row=row_r, column=3, value=Fy / 1e3)
-            wr.cell(row=row_r, column=4, value='M_kNm'); wr.cell(row=row_r, column=5, value=Mr / 1e3)
+            wr.cell(row=row_r, column=2, value=react['Fy'] / 1e3)
+            wr.cell(row=row_r, column=3, value=react['M'] / 1e3)
+            wr.cell(row=row_r, column=4, value=react['M_left'] / 1e3)
+            wr.cell(row=row_r, column=5, value=react['M_right'] / 1e3)
             row_r += 1
 
         diag = result.sample_diagram(n_per_element=25)
@@ -1064,7 +1105,14 @@ class BeamApp(tk.Frame):
         tb = tk.Frame(self, bg='#ebebea')
         tb.pack(fill='x', padx=6, pady=(6, 0))
         tk.Label(tb, text=f'Beam length ({units.label("length")}):', bg='#ebebea', font=('Helvetica', 11)).pack(side='left', padx=(4, 2))
-        self.len_var = tk.DoubleVar(value=self._shown('x', self.length))
+        # Every Variable in this tab names its master explicitly. Without
+        # one, tkinter binds it to its module-global default root, which is
+        # the same interpreter as this widget in the running app -- but not
+        # where several roots exist, and then an Entry writes into one
+        # interpreter's copy of the variable while .get() reads another's.
+        # Found 2026-10-04: the non-uniform load dialog read stale values
+        # under the test suite for exactly this reason (R-4/R-9).
+        self.len_var = tk.DoubleVar(master=self, value=self._shown('x', self.length))
         tk.Entry(tb, textvariable=self.len_var, width=7, font=('Helvetica', 11)).pack(side='left')
         tk.Button(tb, text='Set length', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica', 11), command=self._set_length).pack(side='left', padx=4)
@@ -1113,7 +1161,7 @@ class BeamApp(tk.Frame):
         diag_hdr.pack(fill='x')
         tk.Label(diag_hdr, text='Diagrams — shear V, moment M, deflection (run ▶ Analyze)', bg='#f5f5f3',
                  font=('Helvetica', 9, 'bold'), fg='#777').pack(side='left')
-        self.reverse_bmd_var = tk.BooleanVar(value=False)
+        self.reverse_bmd_var = tk.BooleanVar(master=self, value=False)
         tk.Checkbutton(diag_hdr, text='Reverse BMD (sagging down / hogging up)',
                        variable=self.reverse_bmd_var, bg='#f5f5f3', font=('Helvetica', 8),
                        command=self._draw_diagrams).pack(side='left', padx=(14, 0))
@@ -1187,11 +1235,14 @@ class BeamApp(tk.Frame):
 
         tk.Label(panel, text='NON-UNIFORM DISTRIBUTED LOADS', bg='#f0f0ee',
                  font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
-        tk.Label(panel, text='q(x) in kN/m (+down), over a sub-domain [x₁,x₂] (m)', bg='#f0f0ee',
-                 font=('Helvetica', 8), fg='#777').pack(anchor='w', padx=8)
+        self._ndl_hint = tk.Label(panel, text=self._ndl_hint_text(), bg='#f0f0ee',
+                                  font=('Helvetica', 8), fg='#777',
+                                  justify='left')
+        self._ndl_hint.pack(anchor='w', padx=8)
         self.ndl_tree = ttk.Treeview(panel, columns=('expr', 'x1', 'x2'), show='headings', height=3)
-        for c, w, lbl in [('expr', 130, 'q(x)'), ('x1', 45, 'x₁'), ('x2', 45, 'x₂')]:
-            self.ndl_tree.heading(c, text=lbl); self.ndl_tree.column(c, width=w)
+        for c, w in [('expr', 130, ), ('x1', 55, ), ('x2', 55, )]:
+            self.ndl_tree.column(c, width=w)
+        self._label_ndl_columns()
         self.ndl_tree.pack(fill='x', padx=8)
         ndf = tk.Frame(panel, bg='#f0f0ee'); ndf.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(ndf, text='Add', command=self._add_nonuniform_load).pack(side='left', padx=2)
@@ -1215,7 +1266,7 @@ class BeamApp(tk.Frame):
             lb = tk.Label(sec, text=label, bg='#f0f0ee', font=('Helvetica', 9))
             lb.grid(row=i, column=0, sticky='w', pady=1)
             self._sec_labels[key] = lb
-            v = tk.DoubleVar(value=self._sec_shown(key, self.profile[key]))
+            v = tk.DoubleVar(master=sec, value=self._sec_shown(key, self.profile[key]))
             self.sec_vars[key] = v
             tk.Entry(sec, textvariable=v, width=8, font=('Helvetica', 9)).grid(row=i, column=1, pady=1, padx=4)
 
@@ -1274,6 +1325,9 @@ class BeamApp(tk.Frame):
         self.pl_tree.heading('P', text=f'P ({self._u("P")})')
         self.mm_tree.heading('x', text=f'x ({self._u("x")})')
         self.mm_tree.heading('M', text=f'M ({self._u("M")})')
+        self._label_ndl_columns()
+        if getattr(self, '_ndl_hint', None) is not None:
+            self._ndl_hint.config(text=self._ndl_hint_text())
         self._refresh_tables()
         if self.result is not None:
             self._show_results()
@@ -1307,10 +1361,9 @@ class BeamApp(tk.Frame):
         except Exception:
             # The raw text, so the message can quote what was actually
             # typed. Read through this tab's interpreter first and the
-            # variable's own second: the tab's variables are built without a
-            # master, so they belong to tkinter's default root, which is the
-            # same object in the running app but not necessarily under a test
-            # suite that creates several.
+            # variable's own second -- these agree now that every Variable
+            # here names its master, and the fallback costs two lines against
+            # the day one does not.
             raw = ''
             for interp in (self, getattr(var, '_root', None)):
                 try:
@@ -1446,6 +1499,29 @@ class BeamApp(tk.Frame):
         win.wait_window()
         return choice['value']
 
+    def _ndl_hint_text(self):
+        """What a q(x) expression is written in, said in so many words.
+
+        The expression is stored verbatim, so its units CANNOT follow the
+        Units selector: if they did, switching convention would silently
+        change the load -- the one property units.py exists to guarantee can
+        never happen (see its module docstring). So it is always in the app's
+        storage units, and the tab says so whichever convention is selected,
+        exactly as the Arch tab's own q(x) dialog does. The sub-domain is an
+        ordinary pair of stations and does follow the selector, like every
+        other station in this tab.
+        """
+        return (f"q(x) in {units.STORAGE.label('line_load')} (+down), with x "
+                f"and L in {units.STORAGE.label('length')} \u2014 these do not "
+                f"follow the Units selector,\nbecause the expression is stored "
+                f"as written. Its sub-domain [x\u2081,x\u2082] is in "
+                f"{self._u('x')}.")
+
+    def _label_ndl_columns(self):
+        self.ndl_tree.heading('expr', text='q(x)')
+        self.ndl_tree.heading('x1', text=f'x\u2081 ({self._u("x")})')
+        self.ndl_tree.heading('x2', text=f'x\u2082 ({self._u("x")})')
+
     def _refresh_tables(self):
         for tree, rows, cols in [
             (self.sup_tree, self.supports, ('x', 'type')),
@@ -1474,7 +1550,9 @@ class BeamApp(tk.Frame):
         vars_ = {}
         for i, (key, label, default) in enumerate(fields):
             tk.Label(win, text=label, bg='#f0f0ee').grid(row=i, column=0, sticky='w', padx=8, pady=4)
-            v = tk.DoubleVar(value=default) if not isinstance(default, str) else tk.StringVar(value=default)
+            v = (tk.DoubleVar(master=win, value=default)
+                 if not isinstance(default, str)
+                 else tk.StringVar(master=win, value=default))
             vars_[key] = v
             if isinstance(default, str):
                 cb = ttk.Combobox(win, textvariable=v, values=['pin', 'roller', 'fixed', 'guided'],
@@ -1518,17 +1596,30 @@ class BeamApp(tk.Frame):
         """
         if not r:
             return False
+        # The same tolerance BeamModel._on_beam uses, and for the same reason
+        # doubled here: a station at the beam's own end does not survive a
+        # round trip through a non-metric convention exactly. 6 m written as
+        # 19.68503937007874 ft converts back to 6.000000000000001 m, so an
+        # exact comparison REFUSED a load at the far end of the beam with
+        # "19.69 is not on the beam, which spans 0 to 6" (found 2026-10-04
+        # while fixing R-4). Anything inside the tolerance is snapped onto the
+        # end, so the stored model -- and the workbook written from it -- holds
+        # a clean 6.0 rather than that 1-in-10^16 overshoot.
+        tol = 1e-9 * max(1.0, abs(self.length))
         for k in keys:
             x = r.get(k)
             if x is None:
                 continue
-            if not (0.0 <= x <= self.length):
+            if not (-tol <= x <= self.length + tol):
                 messagebox.showwarning(
                     'Off the beam',
-                    f'{k} = {x:g} m is not on the beam, which spans 0 to '
-                    f'{self.length:g} m.\n\nNothing was added. Move it onto the '
+                    f"{k} = {self._shown('x', x):g} {self._u('x')} is not on "
+                    f"the beam, which spans 0 to "
+                    f"{self._shown('x', self.length):g} {self._u('x')}."
+                    f'\n\nNothing was added. Move it onto the '
                     f'beam, or set the beam length first.')
                 return False
+            r[k] = min(max(x, 0.0), self.length)
         return True
 
     def _add_support(self):
@@ -1572,20 +1663,28 @@ class BeamApp(tk.Frame):
     def _add_nonuniform_load(self):
         win = tk.Toplevel(self); win.title('Add non-uniform distributed load'); win.grab_set()
         win.configure(bg='#f0f0ee')
-        tk.Label(win, text='q(x) in kN/m, +down  (vars: x, L; ^ or ** = power):', bg='#f0f0ee',
+        # The expression is in STORAGE units and says so, in both
+        # conventions -- see _ndl_hint_text for why it cannot follow the
+        # selector. The sub-domain is an ordinary pair of stations and does.
+        tk.Label(win, text=f'q(x) in {units.STORAGE.label("line_load")}, +down, '
+                           f'with x and L in {units.STORAGE.label("length")}'
+                           f'  (^ or ** = power):',
+                 bg='#f0f0ee',
                  font=('Helvetica', 9)).grid(row=0, column=0, columnspan=2, sticky='w', padx=8, pady=(8, 2))
-        expr_var = tk.StringVar(value='10*sin(pi*x/L)')
+        expr_var = tk.StringVar(master=win, value='10*sin(pi*x/L)')
         tk.Entry(win, textvariable=expr_var, width=28, font=('Helvetica', 9)).grid(
             row=1, column=0, columnspan=2, sticky='we', padx=8, pady=2)
 
-        tk.Label(win, text='x₁ (m):', bg='#f0f0ee', font=('Helvetica', 9)).grid(
+        tk.Label(win, text=f'x\u2081 ({self._u("x")}):', bg='#f0f0ee',
+                 font=('Helvetica', 9)).grid(
             row=2, column=0, sticky='w', padx=8, pady=4)
-        x1_var = tk.DoubleVar(value=0.0)
+        x1_var = tk.DoubleVar(master=win, value=self._shown('x1', 0.0))
         tk.Entry(win, textvariable=x1_var, width=10).grid(row=2, column=1, padx=8, pady=4)
 
-        tk.Label(win, text='x₂ (m):', bg='#f0f0ee', font=('Helvetica', 9)).grid(
+        tk.Label(win, text=f'x\u2082 ({self._u("x")}):', bg='#f0f0ee',
+                 font=('Helvetica', 9)).grid(
             row=3, column=0, sticky='w', padx=8, pady=4)
-        x2_var = tk.DoubleVar(value=self.length)
+        x2_var = tk.DoubleVar(master=win, value=self._shown('x2', self.length))
         tk.Entry(win, textvariable=x2_var, width=10).grid(row=3, column=1, padx=8, pady=4)
 
         result = {}
@@ -1593,15 +1692,25 @@ class BeamApp(tk.Frame):
         def ok():
             expr = expr_var.get().strip()
             try:
-                x1_ = self._num(x1_var, 'x\u2081')
-                x2_ = self._num(x2_var, 'x\u2082')
+                x1_ = self._stored('x1', self._num(x1_var, 'x\u2081'))
+                x2_ = self._stored('x2', self._num(x2_var, 'x\u2082'))
             except ValueError as e:
                 messagebox.showwarning('Add non-uniform distributed load',
                                        str(e))
                 return
+            # The same check every other load type got in the B-5 fix. This
+            # one skipped it, and _analyze then CLAMPED the domain instead:
+            # a load entered over 0-99 m on a 6 m beam quietly became a load
+            # over 0-6 m (R-4).
+            domain = {'x\u2081': x1_, 'x\u2082': x2_}
+            if not self._on_beam(domain, 'x\u2081', 'x\u2082'):
+                return
+            x1_, x2_ = domain['x\u2081'], domain['x\u2082']
+            if x2_ < x1_:               # entered right to left
+                x1_, x2_ = x2_, x1_
             try:
                 ctx = {'L': self._typed_length()}
-                x_mid = (min(x1_, x2_) + max(x1_, x2_)) / 2
+                x_mid = (x1_ + x2_) / 2
                 make_shape_fn(expr, ctx)(x_mid)   # validate it compiles & evaluates
             except Exception as e:
                 messagebox.showerror('Invalid expression', str(e)); return
@@ -1815,15 +1924,16 @@ class BeamApp(tk.Frame):
             for d in self.nonuniform_loads:
                 ctx = {'L': self.length}
                 qfn = make_shape_fn(d['expr'], ctx)
-                x1 = max(0.0, min(self.length, d['x1']))
-                x2 = max(0.0, min(self.length, d['x2']))
-                if x2 < x1:
-                    x1, x2 = x2, x1
 
                 def scaled_fn(x, _qfn=qfn):
-                    return _qfn(x) * 1e3   # kN/m -> N/m
+                    return _qfn(x) * 1e3   # storage kN/m -> SI N/m
 
-                m.add_nonuniform_load(scaled_fn, x1, x2)
+                # No clamping. The domain is validated when it is entered and
+                # again by _model_problems for a model that arrived from a
+                # workbook, so anything reaching here is on the beam; add_
+                # nonuniform_load normalises a reversed pair and refuses the
+                # rest rather than silently trimming it (R-4).
+                m.add_nonuniform_load(scaled_fn, d['x1'], d['x2'])
 
             self.result = m.solve()
             self.model = m
@@ -1846,25 +1956,31 @@ class BeamApp(tk.Frame):
         sigma_kncm2 = (abs(Mmax) * c_m / I_m4) * 1e-7
         tau_kncm2 = (abs(Vmax) / A_m2) * 1e-7
 
-        lines = ['REACTIONS']
+        # r.support_reaction / the diagram are in SI; the model's own state is
+        # in STORAGE units. Both are written in the convention the user picked,
+        # which is the only thing the selector changes.
+        fu, mu = units.label('force'), units.label('moment')
+        lines = ['REACTIONS   (Ry: + up.   M: the couple the support applies,',
+                 '             + counter-clockwise.)']
         for s in m.supports:
-            Fy, Mr = r.reaction_at(s['x'])
-            if s['x'] < 1e-9:
-                # The leftmost node's rotational-DOF residual comes out with
-                # the opposite sign from the sagging-positive convention used
-                # by the M(x) diagram at that same station (a direct-
-                # stiffness-method artifact of it always being the "a-side"
-                # of its adjacent element) — negate here so this value is
-                # directly comparable to the moment diagram.
-                Mr = -Mr
-            # r.reaction_at / the diagram are in SI; the model's own state is
-            # in STORAGE units. Both are written in the convention the user
-            # picked, which is the only thing the selector changes.
+            react = r.support_reaction(s['x'])
             lines.append(
                 f"  x={self._shown('x', s['x']):.2f} {self._u('x')} "
                 f"({s['type']:<7}): "
-                f"Ry={units.from_si('force', Fy):+8.2f} {units.label('force')}   "
-                f"M={units.from_si('moment', Mr):+8.2f} {units.label('moment')}")
+                f"Ry={units.from_si('force', react['Fy']):+8.2f} {fu}   "
+                f"M={units.from_si('moment', react['M']):+8.2f} {mu}")
+            # Only where the support restrains rotation: elsewhere the couple
+            # is zero and the internal moment runs through unbroken, so the
+            # two extra numbers would say nothing. Where it does, they are
+            # what a designer actually reads off -- the hogging moment the
+            # section carries on each side -- and at an interior support they
+            # differ, which one column could never show (R-3).
+            if 'theta' in BeamModel.SUPPORT_DOF.get(s['type'], ()):
+                lines.append(
+                    f"      internal M: just left "
+                    f"{units.from_si('moment', react['M_left']):+8.2f}, "
+                    f"just right "
+                    f"{units.from_si('moment', react['M_right']):+8.2f} {mu}")
         lines += ['',
                   f"Max |V|  = {units.from_si('force', abs(Vmax)):8.2f} {units.label('force')}",
                   f"Max |M|  = {units.from_si('moment', abs(Mmax)):8.2f} {units.label('moment')}",
@@ -2070,7 +2186,8 @@ class BeamApp(tk.Frame):
             for i in range(0, len(tops), step):
                 xx, yy = tops[i]
                 c.create_line(xx, yy, xx, y0, arrow='last', fill=self.CDLOAD)
-            label = (f"q(x) = {d['expr']}" if 'expr' in d
+            label = (f"q(x) = {d['expr']} {units.STORAGE.label('line_load')}"
+                     if 'expr' in d
                      else f"{self._shown('w1', d['w1']):.1f}→"
                           f"{self._shown('w2', d['w2']):.1f} {self._u('w1')}")
             load_labels.append(c.create_text(

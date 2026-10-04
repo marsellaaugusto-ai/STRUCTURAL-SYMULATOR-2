@@ -552,3 +552,139 @@ def test_a_valid_tiny_beam_is_not_caught_by_the_new_guards():
     m.add_support(0.05, 'roller')
     m.add_dload(0.0, 0.05, 1.0, 1.0)
     assert m.solve().equilibrium()['ok']
+
+
+# ------------------------------------- what a reaction moment IS (R-3)
+#
+# reaction_at() returns the raw rotational-DOF residual, and the tab negated
+# it AT x = 0 ONLY, a rule arrived at by trying a left-end, a right-end and a
+# fixed-fixed beam and keeping what matched the M(x) diagram. It does not
+# generalise: at an interior fixed support the printed number was the internal
+# moment on the support's LEFT side, not the couple the support applies, and a
+# station with different internal moments either side has no single "the
+# moment" to print at all.
+#
+# The residual is in fact the support's couple, counter-clockwise positive --
+# the same convention as an applied moment -- which is provable rather than
+# asserted: crossing a support, the sagging-positive internal moment jumps by
+# exactly minus that couple. That identity is the test, and it holds at every
+# station without a positional special case.
+
+REACTION_MODELS = {
+    'ss_udl': (lambda m: (m.add_support(0, 'pin'), m.add_support(L, 'roller'),
+                          m.add_dload(0, L, W, W)), L),
+    'cantilever_left': (lambda m: (m.add_support(0, 'fixed'),
+                                   m.add_point_load(L, P)), L),
+    'cantilever_right': (lambda m: (m.add_support(L, 'fixed'),
+                                    m.add_point_load(0.0, P)), L),
+    'fixed_fixed': (lambda m: (m.add_support(0, 'fixed'), m.add_support(L, 'fixed'),
+                               m.add_dload(0, L, W, W)), L),
+    'propped': (lambda m: (m.add_support(0, 'fixed'), m.add_support(L, 'roller'),
+                           m.add_dload(0, L, W, W)), L),
+    'interior_fixed': (lambda m: (m.add_support(L / 2, 'fixed'),
+                                  m.add_point_load(0.0, P)), L),
+    'guided_end': (lambda m: (m.add_support(0, 'fixed'), m.add_support(L, 'guided'),
+                              m.add_dload(0, L, W, W)), L),
+    'two_span': (lambda m: (m.add_support(0, 'pin'), m.add_support(L, 'roller'),
+                            m.add_support(2 * L, 'roller'),
+                            m.add_dload(0, 2 * L, W, W)), 2 * L),
+}
+
+
+@pytest.mark.parametrize('name', sorted(REACTION_MODELS))
+def test_a_reaction_moment_is_the_jump_in_the_internal_moment(name):
+    """The identity that replaces the sign heuristic, at every station."""
+    build, length = REACTION_MODELS[name]
+    r = _solve(build, length=length)
+    for sx in r.support_stations:
+        react = r.support_reaction(sx)
+        jump = react['M_left'] - react['M_right']
+        scale = max(abs(react['M']), abs(jump), 1e3)
+        assert abs(react['M'] - jump) < 1e-6 * scale, (name, sx, react)
+
+
+def test_the_internal_moment_left_of_the_left_end_is_zero():
+    """Nothing is carried outside the beam. A query at x = 0 with side='left'
+    used to come back with the value just AFTER the support at that node, which
+    is precisely what made the reaction moment there look like it needed
+    negating."""
+    r = _solve(lambda m: (m.add_support(0, 'fixed'), m.add_point_load(L, P)))
+    assert abs(r.moment_at(0.0, 'left')) < 1e-9 * P * L
+    assert abs(r.shear_at(0.0, 'left')) < 1e-9 * P
+    assert abs(r.moment_at(L, 'right')) < 1e-9 * P * L
+
+
+def test_a_fixed_end_reports_the_hogging_moment_on_the_beam_side():
+    """What a designer reads off a cantilever: the root moment is -PL, and it
+    is on the beam side of the support whichever end the support is at."""
+    left = _solve(lambda m: (m.add_support(0, 'fixed'), m.add_point_load(L, P)))
+    right = _solve(lambda m: (m.add_support(L, 'fixed'), m.add_point_load(0.0, P)))
+    assert _rel(left.support_reaction(0.0)['M_right'], -P * L) < STATICS_TOL
+    assert _rel(right.support_reaction(L)['M_left'], -P * L) < STATICS_TOL
+    # ... and the couples the two supports apply are mirror images
+    assert _rel(left.support_reaction(0.0)['M'],
+                -right.support_reaction(L)['M']) < STATICS_TOL
+
+
+def test_fixed_fixed_couples_are_equal_and_opposite():
+    """A symmetric beam's two end COUPLES are anti-symmetric while its two end
+    internal moments are equal -- the distinction the old single column could
+    not express."""
+    r = _solve(lambda m: (m.add_support(0, 'fixed'), m.add_support(L, 'fixed'),
+                          m.add_dload(0, L, W, W)))
+    a, b = r.support_reaction(0.0), r.support_reaction(L)
+    assert _rel(a['M'], W * L * L / 12) < STATICS_TOL
+    assert _rel(b['M'], -W * L * L / 12) < STATICS_TOL
+    assert _rel(a['M_right'], -W * L * L / 12) < STATICS_TOL
+    assert _rel(b['M_left'], -W * L * L / 12) < STATICS_TOL
+
+
+def test_an_interior_fixed_support_reports_both_sides():
+    """The case the old single column could not express: a fixed support at
+    midspan with load on one cantilever only.
+
+    The cantilever reaches LEFT from the support, so taking moments about the
+    support for that segment, the tip load P (downward, at a distance L/2 to
+    the left) contributes +P*L/2 counter-clockwise and the support's couple
+    must be -P*L/2 to balance it. The internal moment is -P*L/2 on the loaded
+    side and zero on the other, so there is no single 'the' moment here --
+    which is the point."""
+    r = _solve(lambda m: (m.add_support(L / 2, 'fixed'), m.add_point_load(0.0, P)))
+    react = r.support_reaction(L / 2)
+    assert _rel(react['Fy'], P) < STATICS_TOL
+    assert _rel(react['M'], -P * L / 2) < STATICS_TOL
+    assert _rel(react['M_left'], -P * L / 2) < STATICS_TOL
+    assert abs(react['M_right']) < STATICS_TOL * P * L
+
+
+def test_a_pin_applies_no_couple():
+    r = _solve(lambda m: (m.add_support(0, 'pin'), m.add_support(L, 'roller'),
+                          m.add_dload(0, L, W, W)))
+    for sx in (0.0, L):
+        react = r.support_reaction(sx)
+        assert abs(react['M']) < 1e-9 * W * L * L
+        assert abs(react['M_left'] - react['M_right']) < 1e-9 * W * L * L
+
+
+def test_a_guided_support_applies_a_couple_but_no_force():
+    r = _solve(lambda m: (m.add_support(0, 'fixed'), m.add_support(L, 'guided'),
+                          m.add_dload(0, L, W, W)))
+    react = r.support_reaction(L)
+    assert abs(react['Fy']) < 1e-9 * W * L
+    assert abs(react['M']) > 0.1 * W * L * L / 6
+
+
+def test_the_couples_close_the_global_moment_balance():
+    """The independent confirmation that the convention is right: equilibrium()
+    sums these couples as counter-clockwise couples about x = 0, and it
+    balances to machine precision on every model here."""
+    for name, (build, length) in REACTION_MODELS.items():
+        eq = _solve(build, length=length).equilibrium()
+        assert eq['ok'], name
+
+
+def test_support_reaction_and_reaction_at_agree_on_the_force():
+    r = _solve(lambda m: (m.add_support(0, 'pin'), m.add_support(L, 'roller'),
+                          m.add_dload(0, L, W, W)))
+    for sx in (0.0, L):
+        assert r.support_reaction(sx)['Fy'] == r.reaction_at(sx)[0]

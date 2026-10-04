@@ -92,12 +92,12 @@ def _type_into(app, var, text):
     what an Entry widget does when someone types in it -- a DoubleVar whose box
     holds "abc" is a real state the tab has to survive, not an invented one.
 
-    It also goes through the variable's OWN interpreter. The tab builds its
-    variables without a `master`, so they bind to `tkinter._default_root`,
-    which in a suite that creates many roots is not necessarily the one
-    `app.tk` refers to; writing through `app.tk.globalsetvar` set a variable
-    the tab never read, and these tests passed alone and failed in the full
-    suite.
+    It also goes through the variable's OWN interpreter, which is the only
+    reliable way: writing through `app.tk.globalsetvar` set a variable the tab
+    never read back when the tab's variables had no `master` and so belonged to
+    tkinter's default root, and these tests passed alone and failed in the full
+    suite. The tab names its masters now, but going through the variable keeps
+    that irrelevant.
     """
     var.set(text)
 

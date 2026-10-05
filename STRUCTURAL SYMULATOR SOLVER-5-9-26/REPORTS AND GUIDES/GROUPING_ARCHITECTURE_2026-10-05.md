@@ -1,6 +1,7 @@
 # Element grouping: data architecture and object model
 
-**Date** 2026-10-05 · **Code** `apps/stereo/scene/` · **Tests** `tests/test_scene_graph.py` (58) + `tests/test_scene_persistence.py` (57)
+**Date** 2026-10-05 · **Code** `apps/stereo/scene/`, `stereo_scene_bridge.py`, `stereo_app_scene.py`
+**Tests** `test_scene_graph.py` (58) + `test_scene_persistence.py` (64) + `test_scene_integration.py` (25) = 147
 
 ## Originality
 
@@ -428,19 +429,21 @@ disconnect the structure somewhere the user cannot see.
 Nothing has to be rewritten at once. `stereo_groups.py` is untouched and
 keeps working.
 
-1. **Done (this change).** `apps/stereo/scene/` plus 58 tests, imported by
-   nothing. The existing suite still passes (605 tests).
-2. **Read path.** Build a graph from the current `(nodes, members, groups)`
+1. **Done.** `apps/stereo/scene/` plus its tests, imported by nothing.
+2. **Done — see section 10.** The read path: the tab builds a graph from its
+   own model, carries it in the workbook, and answers a question the flat
+   model cannot be asked.
+3. **Write path.** Build a graph from the current `(nodes, members, groups)`
    and hand old code `BakedModel.legacy_groups(root)` — the records every
    report, Excel sheet and summary already reads, with disjoint leaf sets
    that still add up to the model (the one check that catches a mis-assigned
    rod). Both paths run side by side; a test asserts they agree.
-3. **Write path.** Move the group panel, the move/rotate/mirror keys and
+4. **Write path (next).** Move the group panel, the move/rotate/mirror keys and
    the lock rules onto graph operations. `move_plan` / `group_move_plan` /
    `geometry_violations` get much smaller: moving a group is one
    `apply_local`, and a shared joint between two groups is visible in
    `shared_nodes` before the move rather than deduced after it.
-4. **Instancing in the UI.** "Make component" (`make_definition`),
+5. **Instancing in the UI.** "Make component" (`make_definition`),
    "make unique" (`make_unique`), and the instance-count warning from
    `edit_in_place`. `stereo_autogroup` becomes a *definition* detector:
    congruent pieces it already finds can be promoted to one definition
@@ -613,3 +616,86 @@ is opened; that **sharing** survives, since a file that loses it loads as a
 model that looks identical and behaves differently the moment someone edits
 a component; that a loaded model still solves through `stereo_math.analyze`;
 and thirteen separate ways of being a broken file.
+
+---
+
+## 10. Wiring it into the Stereo tab
+
+Two modules, both additive. With no Scene sheet in a workbook, every path
+behaves exactly as it did.
+
+```
+stereo_scene_bridge.py   flat model <-> graph. Tk-free, so the conversion is
+                         tested without a window.
+stereo_app_scene.py      StereoSceneMixin: the tab's use of it.
+```
+
+### The document is derived, never mirrored
+
+`_scene_document()` builds a fresh graph from the current model every time it
+is asked. `self.groups` is assigned in **eleven places across five modules** —
+import, merge, paste, undo, example load, generate, the group panel — and a
+stored document kept in step with all eleven would be wrong the first time
+one was missed, and wrong **silently**, because a stale graph still bakes.
+Building it on demand cannot go stale. Models here are thousands of rods, and
+the conversion is a few milliseconds.
+
+### What the conversion adds, and what it cannot
+
+A flat model has no local frames, so `graph_from_model` **introduces** them,
+one per group at the centroid of that group's own rods — the pivot convention
+`stereo_transform` already uses, so a group rotated through the graph turns in
+place exactly as the arrow keys turn a selection today. `localize=False` gives
+identity frames instead, which round-trips bit for bit.
+
+What it **cannot** add is sharing: two identical trusses in a flat model are
+two sets of rods, and nothing in the file says they are one part. The graph
+cannot invent that — but `content_digest` can recognise it after the fact,
+which is what the **Repeated parts** button reports.
+
+### The member order changes, and that is reported
+
+A bake orders members by **tree position**, so a grouped rod comes before an
+ungrouped one whatever their original indices: a conversion renumbers the
+member list. Reports, Excel sheets and saved comparisons all name members by
+index, so a renumbering that is not reported points them at the wrong rods.
+Each rod therefore remembers the index it came from
+(`MEMBER_INDEX_KEY`), `model_from_graph` strips that key back off (so the
+solver gets the dict it always did) and returns the map — which is exactly
+what `stereo_groups.remap_members` takes.
+
+This is also what makes the Scene sheet safe to read back: groups are
+re-attached to rods by the index they came from, never by position. A
+workbook whose two sheets disagree about how many rods there are has been
+edited by hand, and is **refused** rather than half-applied.
+
+### The three seams
+
+| where | what changed |
+|---|---|
+| `StereoApp` | one more mixin in the list |
+| `stereo_reports.export_excel` | a `scene=` parameter beside `groups=`, `lifts=`, `compare=`. Writes the **Scene** sheet. Failing to write it never fails the export — the rest of the workbook is the deliverable |
+| `_import_excel` | reads a Scene sheet when the workbook has one; falls back to the Groups sheet, unchanged, when it does not |
+
+Plus three buttons in the Groups panel, under *More group tools*, beside the
+checks that were already there: **Repeated parts**, **Save scene…**,
+**Open scene…**.
+
+### What is deliberately NOT done
+
+The flat `(nodes, members, groups)` triple is **still the model**. Nothing in
+this step edits it, and no group operation is rerouted through the graph.
+Rerouting the lock rules and the move plans is a change to *behaviour*; this
+step is not, and mixing the two would make a regression impossible to
+attribute. That is step 4 above.
+
+### Verification
+
+The conversion is held to changing nothing, on **real generated models** —
+the tab's own geometry generators, grouped by the tab's own auto-grouper,
+including a case with 37 nested groups — comparing every rod's position,
+every section key, every group's membership and every support. The wiring
+itself is driven through a real `StereoApp`, the way
+`tests/test_excel_roundtrip.py` argues for: a hand-written state dict encodes
+what the model shape was the day the test was written and drifts silently,
+while the tab's own methods are the ones the buttons call.

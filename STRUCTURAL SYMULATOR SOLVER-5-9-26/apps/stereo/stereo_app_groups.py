@@ -206,6 +206,21 @@ class StereoGroupsMixin:
         tk.Button(chk, text='Do the totals add up?', font=('Helvetica', 8),
                   command=self._group_reconcile
                   ).pack(side='left', expand=True, fill='x', padx=(3, 0))
+        # Next to the other two group checks, because it answers the same
+        # kind of question about the model as a whole -- and one the flat
+        # model could not be asked at all until the scene graph was there
+        # to compare groups by shape (see stereo_app_scene).
+        scn = tk.Frame(more, bg=BG)
+        scn.pack(fill='x', padx=6, pady=(2, 2))
+        tk.Button(scn, text='Repeated parts', font=('Helvetica', 8),
+                  command=self._group_repeated_parts
+                  ).pack(side='left', expand=True, fill='x')
+        tk.Button(scn, text='Save scene…', font=('Helvetica', 8),
+                  command=self._save_scene_file
+                  ).pack(side='left', expand=True, fill='x', padx=(3, 0))
+        tk.Button(scn, text='Open scene…', font=('Helvetica', 8),
+                  command=self._open_scene_file
+                  ).pack(side='left', expand=True, fill='x', padx=(3, 0))
         rep = tk.Frame(more, bg=BG)
         rep.pack(fill='x', padx=6, pady=(2, 6))
         tk.Button(rep, text='PDF of groups…', font=('Helvetica', 8, 'bold'),

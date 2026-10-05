@@ -397,7 +397,8 @@ DEFAULT_MAX_CALC_MEMBERS = 40
 
 def export_excel(nodes, members, loads, supports, results, path, checks=None,
                   meta=None, max_calc_members=DEFAULT_MAX_CALC_MEMBERS,
-                  profiles=None, groups=None, lifts=None, compare=None):
+                  profiles=None, groups=None, lifts=None, compare=None,
+                  scene=None):
     """Write a workbook with Nodes, Members, Loads, Supports, Results (if
     `results` is not None), Member Checks (if `checks` is not None) and a
     machine-parseable Model sheet. `meta` is an optional dict of free-text
@@ -415,6 +416,14 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
 
     `compare` -- {'iterations', 'table', 'best'} from stereo_compare --
     adds the "Compare" sheet: each slot's lift, iteration by iteration.
+
+    `scene` (an apps.stereo.scene SceneDocument) adds the "Scene" sheet: the
+    model as a nested graph, with each group's own frame and the named
+    joints the supports and loads sit on. The Groups sheet stays as it was
+    -- it is the editable one, and the one every existing workbook has --
+    so a reader that knows nothing about scenes is unaffected. Failing to
+    write the Scene sheet never fails the export: the rest of the workbook
+    is the deliverable.
 
     `max_calc_members` caps the Member Calculations sheet to the N most
     critical members (sorted by utilization desc), and defaults to
@@ -1011,6 +1020,17 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
         _sge.write_groups_sheet(wb, groups, members, checks=checks)
 
     # ── Model sheet (machine-parseable round-trip) ───────────────────────────
+    if scene is not None:
+        try:
+            from apps.stereo.scene import write_scene_sheet
+            write_scene_sheet(wb, scene)
+        except Exception:                             # noqa: BLE001
+            # An addition to the workbook, never a reason to lose it. The
+            # one case worth naming is a model whose metadata is too big for
+            # a spreadsheet cell -- the scene codec refuses rather than
+            # truncating, and the .scene.json format has no such limit.
+            pass
+
     _write_model_sheet(wb, nodes, members, loads, supports, meta,
                        results=results, checks=checks, profiles=profiles)
 

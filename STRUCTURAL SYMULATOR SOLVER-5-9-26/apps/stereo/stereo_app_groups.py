@@ -206,6 +206,25 @@ class StereoGroupsMixin:
         tk.Button(chk, text='Do the totals add up?', font=('Helvetica', 8),
                   command=self._group_reconcile
                   ).pack(side='left', expand=True, fill='x', padx=(3, 0))
+        # Next to the other two group checks, because it answers the same
+        # kind of question about the model as a whole -- and one the flat
+        # model could not be asked at all until the scene graph was there
+        # to compare groups by shape (see stereo_app_scene).
+        # TWO rows, not three buttons in one: three asked for 311 px of a
+        # 300 px panel, and Tk clips the overflow in silence rather than
+        # complaining (which is what
+        # test_no_panel_asks_for_more_width_than_the_panel_has is for).
+        tk.Button(more, text='Repeated parts', font=('Helvetica', 8),
+                  command=self._group_repeated_parts
+                  ).pack(fill='x', padx=6, pady=(2, 0))
+        scn = tk.Frame(more, bg=BG)
+        scn.pack(fill='x', padx=6, pady=(3, 2))
+        tk.Button(scn, text='Save scene…', font=('Helvetica', 8),
+                  command=self._save_scene_file
+                  ).pack(side='left', expand=True, fill='x')
+        tk.Button(scn, text='Open scene…', font=('Helvetica', 8),
+                  command=self._open_scene_file
+                  ).pack(side='left', expand=True, fill='x', padx=(3, 0))
         rep = tk.Frame(more, bg=BG)
         rep.pack(fill='x', padx=6, pady=(2, 6))
         tk.Button(rep, text='PDF of groups…', font=('Helvetica', 8, 'bold'),

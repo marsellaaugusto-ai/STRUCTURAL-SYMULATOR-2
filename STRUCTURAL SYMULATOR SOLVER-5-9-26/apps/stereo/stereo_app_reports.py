@@ -203,7 +203,8 @@ class StereoReportsMixin:
                             meta=self._excel_meta(),
                             profiles=self.profiles, groups=self.groups,
                             lifts=self._lift_export(),
-                            compare=self._compare_export())
+                            compare=self._compare_export(),
+                            scene=self._scene_for_export())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return
@@ -256,6 +257,15 @@ class StereoReportsMixin:
         # The old model's groups cannot stay: a group holds member INDICES,
         # and these are different rods. The workbook's own come in instead.
         self._drop_groups()
+        # A Scene sheet, when the workbook has one, is the richer record:
+        # it carries the nesting AND each group's own frame, and it was
+        # written from this same model, so its rods are matched by the index
+        # they came from rather than by position. No Scene sheet -- every
+        # workbook written before this existed -- and the Groups sheet is
+        # read exactly as it always was.
+        scene_groups = self._groups_from_scene_sheet(path, members)
+        if scene_groups is not None:
+            groups = scene_groups
         if groups:
             self.groups = groups
             self._refresh_group_list()

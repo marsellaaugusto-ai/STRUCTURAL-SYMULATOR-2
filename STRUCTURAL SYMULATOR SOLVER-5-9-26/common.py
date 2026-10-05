@@ -1360,6 +1360,16 @@ class AppShell(tk.Frame):
         self.lower = tk.Frame(self.work_outer, bg=bg)
         self._lower_shown = False
 
+        # Until the user drags the sash, the panel is allowed to yield to a
+        # narrow window (see `auto_fit_panel`). The moment they drag it, the
+        # width is theirs and nothing takes it back. A ButtonRelease bound on
+        # the PanedWindow itself can only come from its sash: a child's
+        # events do not reach it, because the PanedWindow is not in the
+        # child's bindtags.
+        self._user_sash = False
+        self._panel_base = panel_width
+        self.body.bind('<ButtonRelease-1>', self._note_sash_drag, add='+')
+
     # -- the optional lower (diagram) pane ------------------------------------
     def show_lower(self, height=None):
         """Reveal the pane under the drawing, building nothing. The caller
@@ -1396,16 +1406,53 @@ class AppShell(tk.Frame):
         except Exception:
             return 0
 
-    def set_panel_width(self, width):
-        """Move the sash. Used by the tab's own 'fit the panel to its
-        content' call at startup; after that the width is the user's."""
+    def _note_sash_drag(self, _event=None):
+        self._user_sash = True
+
+    def user_set_the_width(self):
+        return self._user_sash
+
+    def set_panel_width(self, width, remember=False):
+        """Move the sash.
+
+        `remember=True` also adopts this as the panel's preferred width --
+        what the tab measured from its own content at startup. After that
+        `auto_fit_panel` may go narrower on a small window, but never wider
+        than this.
+        """
         try:
             width = max(self.PANEL_MIN, int(width))
+            if remember:
+                self._panel_base = width
+            if abs(self.panel.winfo_width() - width) <= 1:
+                return
             self.body.paneconfigure(self.panel, width=width)
             self.update_idletasks()
             self.body.sash_place(0, width, 0)
         except Exception:
             pass
+
+    def auto_fit_panel(self, window_width, max_share=0.34):
+        """Let the panel give ground on a small window -- until the user
+        says otherwise.
+
+        A fixed panel width is wrong twice over. Too wide, and on a 900 px
+        laptop the drawing and whatever else the tab puts beside it are
+        squeezed until controls start dropping off the bottom of their
+        column (measured on the Arch tab: 45 controls mapped at 1600 px, 40
+        at 900 px, once the panel stopped yielding). Too narrow, and a
+        2560 px monitor wastes half its width.
+
+        So: the panel asks for what its content needs, shrinks when the
+        window cannot afford that, and stops doing either the moment the
+        user drags the sash -- at which point the number is theirs and this
+        is a no-op forever after.
+        """
+        if self._user_sash or window_width <= 1:
+            return
+        want = min(self._panel_base,
+                   max(self.PANEL_MIN, int(window_width * max_share)))
+        self.set_panel_width(want)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

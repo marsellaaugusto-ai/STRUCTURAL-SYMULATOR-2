@@ -146,7 +146,48 @@ def _measure(root, host):
 
 
 @pytest.mark.parametrize('which', sorted(TABS))
-def test_the_right_panel_never_disappears(which):
+def test_the_control_panel_is_on_the_left_in_every_tab(which):
+    """Self-similarity. These three put the panel on the right while Stereo
+    put its sidebar on the left and called that the house convention; a
+    student who learned one tab had to relearn the next. They all share
+    common.AppShell now."""
+    root, host, app = _make(which)
+    try:
+        root.geometry('1366x900+0+0')
+        _settle(root)
+        panel_right_edge = (app.panel_outer.winfo_rootx()
+                            + app.panel_outer.winfo_width())
+        assert app.panel_outer.winfo_rootx() - root.winfo_rootx() < 60, (
+            '%s: the panel does not start at the left edge' % which)
+        assert panel_right_edge < root.winfo_rootx() + root.winfo_width() / 2, (
+            '%s: the panel is not in the left half of the window' % which)
+    finally:
+        root.destroy()
+        gc.collect()
+
+
+@pytest.mark.parametrize('which', sorted(TABS))
+def test_the_panel_width_follows_the_sash(which):
+    """It is behind a draggable divider in every tab, for the reason
+    perforated_beam_app gave when it did this first: a fixed width "cannot
+    be right for everyone -- the tab is used at 1280 and at 2560"."""
+    root, host, app = _make(which)
+    try:
+        root.geometry('1500x900+0+0')
+        _settle(root)
+        before = app.panel_outer.winfo_width()
+        app.shell.body.sash_place(0, before + 140, 0)
+        _settle(root)
+        assert app.panel_outer.winfo_width() > before + 90, (
+            '%s: dragging the sash did not widen the panel (%d -> %d)'
+            % (which, before, app.panel_outer.winfo_width()))
+    finally:
+        root.destroy()
+        gc.collect()
+
+
+@pytest.mark.parametrize('which', sorted(TABS))
+def test_the_control_panel_never_disappears(which):
     """THE T-1 bug. The panel used to be packed after the expanding content,
     so below ~850 px Tk gave it nothing and it was unmapped entirely -- with
     the analysis controls inside it."""

@@ -326,25 +326,34 @@ class CableWebApp(UnitsMixin, tk.Frame):
     # ------------------------------------------------------------------
     def _build_ui(self):
         self._build_toolbar()
-        body = tk.Frame(self, bg=BG)
+        # Both sidebars sit in a PanedWindow, so their widths are DRAGGED
+        # rather than chosen from a breakpoint table. This tab keeps its two
+        # panels -- the structure tree on the left and the inspector on the
+        # right are different jobs and merging them would be a redesign, not
+        # a layout change -- but the width of each is now the user's, which
+        # is the property every other tab gained with common.AppShell.
+        body = tk.PanedWindow(self, orient='horizontal', bg='#d8d8d4',
+                              sashwidth=7, sashrelief='raised', sashpad=0,
+                              borderwidth=0, opaqueresize=False)
         body.pack(fill='both', expand=True)
+        self._body_paned = body
+        self._user_sash = False
+        body.bind('<ButtonRelease-1>', self._note_sash_drag, add='+')
         self.bind('<Configure>', lambda e: self._update_responsive_sidebars(), add='+')
 
-        # Pack fixed-width sidebars first and the expanding canvas last. This
-        # preserves the sidebar widths on desktop windows; packing the expanding
-        # canvas before the right sidebar caused the right panel to collapse.
-        self.right = tk.Frame(body, width=285, bg=PANEL_BG)
-        self.right.pack_propagate(False)
-        self.right.pack(side='right', fill='y')
-        self._build_inspector(self.right)
-
-        self.left = tk.Frame(body, width=190, bg=PANEL_BG)
-        self.left.pack_propagate(False)
-        self.left.pack(side='left', fill='y')
+        self.left = tk.Frame(body, bg=PANEL_BG)
         self._build_object_tree(self.left)
 
         center = tk.Frame(body, bg='white')
-        center.pack(side='left', fill='both', expand=True)
+
+        self.right = tk.Frame(body, bg=PANEL_BG)
+        self._build_inspector(self.right)
+
+        # Added in screen order, so the sash indices match what the user
+        # sees: sash 0 is the left divider, sash 1 the right.
+        body.add(self.left, minsize=120, width=190, stretch='never')
+        body.add(center, minsize=320, stretch='always')
+        body.add(self.right, minsize=150, width=285, stretch='never')
         self.zc = ZoomCanvas(center, width=INIT_CW, height=INIT_CH, bg='white')
 
         # ── tension / thrust diagram pane ────────────────────────────────
@@ -1142,23 +1151,40 @@ class CableWebApp(UnitsMixin, tk.Frame):
         self._toolbar_relayout_pending = True
         self.after_idle(self._relayout_toolbar)
 
+    #: What each sidebar asks for when there is room, and the least it will
+    #: accept when there is not. The old version of this was a five-row
+    #: breakpoint table that shrank both panels by a fixed percentage at
+    #: each step -- which on the Truss tab's equivalent pushed buttons past
+    #: the right edge, reachable only by scrolling sideways to find the
+    #: control you were already looking at.
+    SIDEBAR_WANT = (190, 285)
+    SIDEBAR_MIN = (120, 150)
+
+    def _note_sash_drag(self, _event=None):
+        """Once either divider has been dragged, both widths are the
+        user's and nothing takes them back."""
+        self._user_sash = True
+
     def _update_responsive_sidebars(self):
+        """Give the sidebars what they want when the window can afford it,
+        and no more than a third of the window each when it cannot --
+        unless the user has dragged a sash, in which case this does
+        nothing at all."""
         try:
+            if getattr(self, '_user_sash', False):
+                return
             width = max(self.winfo_width(), 1)
-            if width >= 1200:
-                lw, rw = 190, 285
-            elif width >= 1000:
-                lw, rw = 175, 255
-            elif width >= 850:
-                lw, rw = 155, 235
-            elif width >= 720:
-                lw, rw = 135, 215
-            else:
-                lw, rw = 120, 195
-            self.left.configure(width=lw)
-            self.right.configure(width=rw)
-            # Body uses a three-column grid, so sidebars retain their widths
-            # while the center canvas receives all remaining desktop space.
+            if width <= 1:
+                return
+            lw = max(self.SIDEBAR_MIN[0],
+                     min(self.SIDEBAR_WANT[0], int(width * 0.16)))
+            rw = max(self.SIDEBAR_MIN[1],
+                     min(self.SIDEBAR_WANT[1], int(width * 0.24)))
+            body = self._body_paned
+            if abs(self.left.winfo_width() - lw) > 2:
+                body.paneconfigure(self.left, width=lw)
+            if abs(self.right.winfo_width() - rw) > 2:
+                body.paneconfigure(self.right, width=rw)
         except Exception:
             pass
 

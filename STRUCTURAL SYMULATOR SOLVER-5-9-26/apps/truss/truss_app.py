@@ -376,7 +376,9 @@ class TrussApp(UnitsMixin):
         # leave the width alone -- it belongs to whoever drags the sash.
         self.panel_outer.fit_to_content(max_width=460)
         self.shell.after_idle(
-            lambda: self.shell.set_panel_width(self.panel_outer.base_width))
+            lambda: self.shell.set_panel_width(self.panel_outer.base_width,
+                                               remember=True))
+        root.bind('<Configure>', self._on_root_configure, add='+')
 
         # ── diagram pane (shown after analysis, in the shell's lower pane) ───
         self.diag_outer = self.shell.lower
@@ -428,6 +430,16 @@ class TrussApp(UnitsMixin):
 
         self._refresh_tool_buttons()
         self._refresh_undo_buttons()
+
+    def _on_root_configure(self, _event=None):
+        """Let the panel yield on a narrow window until the user drags the
+        sash; see AppShell.auto_fit_panel. It used to call
+        ScrollPanel.apply_responsive_width on every <Configure>, which is
+        the right answer only while nobody can set the width themselves."""
+        try:
+            self.shell.auto_fit_panel(self.root.winfo_width())
+        except Exception:
+            pass
 
     # -- toolbar helpers ------------------------------------------------------
     def _menu_button(self, parent, text, items, fg='#333333'):

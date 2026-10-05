@@ -14,7 +14,7 @@ import units
 from common import (
     _ensure_openpyxl,
     PANEL_W, INIT_CW, INIT_CH, INIT_DH,
-    ScrollPanel, WrapBar,
+    ScrollPanel, WrapBar, AppShell,
     _beam_gauss_solve, _GAUSS5_NODES, _GAUSS5_WEIGHTS,
     _nice_ticks, _find_diagram_maxima, make_shape_fn,
     draw_moment_arrow, LoadScale, declutter_text,
@@ -768,8 +768,13 @@ class BeamApp(tk.Frame):
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
-        tb = tk.Frame(self, bg='#ebebea')
-        tb.pack(fill='x', padx=6, pady=(6, 0))
+        # Shared layout -- see common.AppShell. The control panel moves from
+        # the right to the LEFT, behind a draggable sash, because six tabs
+        # had drifted into four different arrangements of the same three
+        # things and a student who learned one had to relearn the next.
+        self.shell = AppShell(self, panel_width=PANEL_W + 105)
+        self.shell.pack(fill='both', expand=True)
+        tb = self.shell.toolbar
         tk.Label(tb, text=f'Beam length ({units.label("length")}):', bg='#ebebea', font=('Helvetica', 11)).pack(side='left', padx=(4, 2))
         self.len_var = tk.DoubleVar(value=self._shown('x', self.length))
         tk.Entry(tb, textvariable=self.len_var, width=7, font=('Helvetica', 11)).pack(side='left')
@@ -784,32 +789,23 @@ class BeamApp(tk.Frame):
                   font=('Helvetica', 11), command=self._load_example_continuous).pack(side='left', padx=2)
         tk.Button(tb, text='Clear', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica', 11), command=self._clear_all).pack(side='left', padx=2)
+        # ANALYZE before OUT. Every tab's toolbar now reads in the same
+        # order -- TOOLS, EDIT, VIEW, ANALYZE, OUT -- so a student who has
+        # learned where things are in one tab has learned the others.
+        tk.Frame(tb, width=1, bg='#ccc').pack(side='left', fill='y', padx=6, pady=3)
+        tk.Button(tb, text='▶ Analyze', relief='flat', bd=0, padx=10, pady=4,
+                  bg='#1a6bbd', fg='white', font=('Helvetica', 11, 'bold'),
+                  command=self._analyze).pack(side='left', padx=2)
         tk.Frame(tb, width=1, bg='#ccc').pack(side='left', fill='y', padx=6, pady=3)
         tk.Button(tb, text='Export Excel', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica', 11), fg='#1a6bbd', command=self._export_excel).pack(side='left', padx=2)
         tk.Button(tb, text='Import Excel', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica', 11), fg='#1a6bbd', command=self._import_excel).pack(side='left', padx=2)
-        tk.Frame(tb, width=1, bg='#ccc').pack(side='left', fill='y', padx=6, pady=3)
-        tk.Button(tb, text='▶ Analyze', relief='flat', bd=0, padx=10, pady=4,
-                  bg='#1a6bbd', fg='white', font=('Helvetica', 11, 'bold'),
-                  command=self._analyze).pack(side='left', padx=2)
 
-        main = tk.Frame(self, bg='#f5f5f3')
-        main.pack(fill='both', expand=True, padx=6, pady=6)
-
-        # Right panel FIRST, expanding content SECOND. Tk's pack hands each
-        # slave a parcel in packing order, so the previous order (content
-        # first, expand=True) left the panel whatever the content did not
-        # want -- which at narrow widths was nothing, and the panel was
-        # unmapped entirely with no scrollbar and no error. ScrollPanel also
-        # scrolls horizontally, so a row wider than the panel stays reachable
-        # instead of being clipped mid-widget.
-        self.panel_outer = ScrollPanel(main, width=PANEL_W + 105, bg='#f0f0ee',
-                                        bd=1, relief='solid')
-        self.panel_outer.pack(side='right', fill='y', padx=(6, 0))
-
-        left = tk.Frame(main, bg='#f5f5f3')
-        left.pack(side='left', fill='both', expand=True)
+        # Kept under its old name: several places call `_sync()` on it, and
+        # the layout tests reach for it by this name.
+        self.panel_outer = self.shell.panel
+        left = self.shell.work
 
         tk.Label(left, text='Beam schematic', bg='#f5f5f3', font=('Helvetica', 9, 'bold'), fg='#777').pack(anchor='w')
         self.schem = tk.Canvas(left, bg='white', height=160, bd=1, relief='solid', highlightthickness=0)
@@ -829,9 +825,12 @@ class BeamApp(tk.Frame):
         self.diag_canvas.bind('<Configure>', lambda e: self._draw_diagrams())
 
         self._build_panel(self.panel_outer.interior)
-        # Adopt whatever width the panel's own content needs, so nothing
-        # starts life behind the horizontal scrollbar.
-        self.panel_outer.fit_to_content()
+        # Open at whatever the content needs, once; after that the width
+        # belongs to whoever drags the sash.
+        self.panel_outer.fit_to_content(max_width=460)
+        self.shell.after_idle(
+            lambda: self.shell.set_panel_width(self.panel_outer.base_width,
+                                               remember=True))
 
         # The toolbar was one long row of pack(side='left') calls, so its tail
         # ran off the right edge. WrapBar flows those same widgets across as
@@ -844,12 +843,10 @@ class BeamApp(tk.Frame):
         self.after_idle(lambda: self._on_root_configure(None))
 
     def _on_root_configure(self, _event=None):
-        """Resize the right panel to match the window. Content that no longer
-        fits stays reachable through ScrollPanel's horizontal scrollbar, so
-        this can never hide a control -- unlike the previous fixed-width
-        panel, which was simply dropped."""
+        """Let the panel yield on a narrow window until the user drags the
+        sash; see AppShell.auto_fit_panel."""
         try:
-            self.panel_outer.apply_responsive_width(self.winfo_width())
+            self.shell.auto_fit_panel(self.winfo_width())
         except Exception:
             pass
 

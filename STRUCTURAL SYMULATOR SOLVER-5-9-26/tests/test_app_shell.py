@@ -235,3 +235,53 @@ def test_set_open_to_the_current_state_is_a_no_op(root):
     sec.on_toggle(lambda s: seen.append(s.is_open()))
     sec.set_open(True)
     assert seen == []
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Who owns the panel width
+# ═════════════════════════════════════════════════════════════════════════════
+def test_the_panel_yields_on_a_narrow_window_before_anyone_drags(root):
+    """Measured on the Arch tab: with the panel refusing to give ground, 45
+    controls were mapped at 1600 px and 40 at 900 px, because the panel, a
+    400 px schematic and the middle column could not all fit."""
+    sh = _shell(root, panel_width=460)
+    sh.set_panel_width(460, remember=True)
+    _settle(root)
+    assert abs(sh.panel.winfo_width() - 460) <= 4
+
+    sh.auto_fit_panel(900)
+    _settle(root)
+    narrowed = sh.panel.winfo_width()
+    assert narrowed < 460, 'the panel did not yield on a 900 px window'
+    assert narrowed >= 120
+
+
+def test_it_never_grows_past_what_the_content_asked_for(root):
+    sh = _shell(root, panel_width=300)
+    sh.set_panel_width(300, remember=True)
+    _settle(root)
+    sh.auto_fit_panel(2560)
+    _settle(root)
+    assert abs(sh.panel.winfo_width() - 300) <= 4, (
+        'a wide monitor must not stretch the panel past its content')
+
+
+def test_once_the_user_drags_the_sash_the_width_is_theirs(root):
+    """The whole point of a draggable divider. A <Configure> handler that
+    kept resetting it would take the setting straight back."""
+    sh = _shell(root, panel_width=440)
+    sh.set_panel_width(440, remember=True)
+    _settle(root)
+
+    assert not sh.user_set_the_width()
+    sh.body.sash_place(0, 240, 0)
+    sh.body.event_generate('<ButtonRelease-1>')
+    _settle(root)
+    assert sh.user_set_the_width()
+
+    chosen = sh.panel.winfo_width()
+    sh.auto_fit_panel(900)      # would have narrowed it before
+    sh.auto_fit_panel(2560)     # and would have widened it back
+    _settle(root)
+    assert abs(sh.panel.winfo_width() - chosen) <= 4, (
+        'auto-fit overrode a width the user had chosen')

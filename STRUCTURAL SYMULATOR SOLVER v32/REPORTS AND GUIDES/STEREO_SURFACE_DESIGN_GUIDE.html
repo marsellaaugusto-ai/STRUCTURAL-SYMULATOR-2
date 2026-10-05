@@ -1,0 +1,637 @@
+<title>Laying a Grid on a Surface</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+<style>
+  :root{
+    --paper:#f6f7f9;
+    --plate:#ffffff;
+    --surface:#eef1f4;
+    --ink:#1e2429;
+    --ink-2:#4c565f;
+    --ink-3:#77838d;
+    --rule:#ccd3da;
+    --rule-soft:#e2e7ec;
+    --ring:#1a6bbd;      /* the rings in every plate */
+    --rib:#c0561f;       /* the ribs, and anything that goes wrong */
+    --summit:#a8861a;    /* the summit stars */
+    --pole:#7b2fa8;      /* the pole marker */
+    --ring-wash:#e8f0f9;
+    --rib-wash:#fbeee7;
+
+    --measure:34rem;
+    --plate-max:1100px;
+    --step:clamp(1.05rem,0.98rem + 0.3vw,1.16rem);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#14181c;
+      --plate:#ffffff;
+      --surface:#1c2228;
+      --ink:#e6ebef;
+      --ink-2:#aab6c0;
+      --ink-3:#8593a0;
+      --rule:#343d46;
+      --rule-soft:#262e35;
+      --ring:#6fa9e2;
+      --rib:#e58a52;
+      --summit:#d4b23f;
+      --pole:#b67ede;
+      --ring-wash:#1b2630;
+      --rib-wash:#2b2119;
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#14181c;
+    --plate:#ffffff;
+    --surface:#1c2228;
+    --ink:#e6ebef;
+    --ink-2:#aab6c0;
+    --ink-3:#8593a0;
+    --rule:#343d46;
+    --rule-soft:#262e35;
+    --ring:#6fa9e2;
+    --rib:#e58a52;
+    --summit:#d4b23f;
+    --pole:#b67ede;
+    --ring-wash:#1b2630;
+    --rib-wash:#2b2119;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:"Source Serif 4",Georgia,"Times New Roman",serif;
+    font-size:var(--step);
+    line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{
+    max-width:var(--plate-max);
+    margin:0 auto;
+    padding-inline:clamp(18px,4vw,40px);
+    padding-block:0 72px;
+  }
+  .col{max-width:var(--measure)}
+
+  h1,h2,h3,.eyebrow,.key,.stepno,.fieldtable th,.pill{
+    font-family:"IBM Plex Sans Condensed",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  }
+  code,kbd,.mono,.expr,.fieldtable td:first-child,.cap-num{
+    font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+
+  /* ─ masthead ─ */
+  header.mast{
+    border-bottom:2px solid var(--ink);
+    padding-block:clamp(40px,7vw,72px) 22px;
+    display:grid;gap:20px;
+  }
+  .eyebrow{
+    font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--ink-3);font-weight:600;margin:0;
+  }
+  h1{
+    font-size:clamp(2.3rem,1.6rem + 3.2vw,4rem);
+    line-height:1.02;font-weight:700;margin:0;
+    text-wrap:balance;letter-spacing:-.015em;
+  }
+  .standfirst{
+    max-width:var(--measure);margin:0;color:var(--ink-2);
+    font-size:clamp(1.08rem,1rem + .35vw,1.28rem);line-height:1.5;
+  }
+
+  /* the drawing key — the same four colours every plate uses */
+  .key{
+    display:flex;flex-wrap:wrap;gap:8px 26px;
+    font-size:.74rem;letter-spacing:.09em;text-transform:uppercase;
+    font-weight:600;color:var(--ink-2);margin:0;padding:0;list-style:none;
+  }
+  .key li{display:flex;align-items:center;gap:8px}
+  .swatch{width:26px;height:3px;border-radius:2px;flex:none}
+  .swatch.dot{width:10px;height:10px;border-radius:50%}
+  .swatch.star{width:11px;height:11px;border-radius:2px;transform:rotate(45deg)}
+
+  /* ─ sections ─ */
+  section{padding-block:clamp(42px,6vw,68px)}
+  section + section{border-top:1px solid var(--rule-soft)}
+  h2{
+    font-size:clamp(1.55rem,1.2rem + 1.5vw,2.25rem);
+    line-height:1.12;margin:0 0 .5em;font-weight:700;text-wrap:balance;
+    letter-spacing:-.01em;
+  }
+  h3{
+    font-size:1.13rem;margin:2.1em 0 .45em;font-weight:600;
+    letter-spacing:.005em;
+  }
+  h3:first-child{margin-top:0}
+  p{margin:0 0 1.05em}
+  p:last-child{margin-bottom:0}
+  a{color:var(--ring);text-decoration-thickness:1px;text-underline-offset:2px}
+  strong{font-weight:600}
+  em.term{font-style:normal;font-weight:600;color:var(--ink)}
+
+  .lede{font-size:1.1em;color:var(--ink-2)}
+
+  /* ─ plates ─ */
+  figure{margin:34px 0 0}
+  figure img{
+    display:block;width:100%;max-width:100%;height:auto;
+    background:var(--plate);
+    border:1px solid var(--rule);
+    border-radius:2px;
+  }
+  figcaption{
+    margin-top:10px;max-width:var(--measure);
+    font-size:.88rem;line-height:1.5;color:var(--ink-2);
+  }
+  .cap-num{
+    color:var(--ink-3);font-size:.78rem;letter-spacing:.06em;
+    text-transform:uppercase;margin-right:.5em;font-weight:600;
+  }
+
+  /* ─ the numbered build sequence (a real sequence, hence numbers) ─ */
+  ol.steps{list-style:none;margin:28px 0 0;padding:0;display:grid;gap:26px}
+  ol.steps > li{display:grid;grid-template-columns:2.6rem 1fr;gap:16px;align-items:start}
+  .stepno{
+    font-variant-numeric:tabular-nums;font-weight:700;font-size:1.05rem;
+    color:var(--ring);border-top:2px solid var(--ring);padding-top:6px;
+  }
+  ol.steps h3{margin:0 0 .3em;font-size:1.05rem}
+  ol.steps p{margin:0 0 .5em;font-size:.97rem;line-height:1.55}
+
+  /* ─ field table: wizard control → what to type ─ */
+  .tablewrap{overflow-x:auto;margin-top:26px;
+    border:1px solid var(--rule);border-radius:2px;background:var(--surface)}
+  table.fieldtable{border-collapse:collapse;width:100%;min-width:520px;font-size:.9rem}
+  .fieldtable th{
+    text-align:left;font-size:.7rem;letter-spacing:.11em;text-transform:uppercase;
+    color:var(--ink-3);font-weight:600;padding:11px 14px;
+    border-bottom:1px solid var(--rule);white-space:nowrap;
+  }
+  .fieldtable td{padding:11px 14px;border-bottom:1px solid var(--rule-soft);
+    vertical-align:top;color:var(--ink-2);line-height:1.45}
+  .fieldtable tr:last-child td{border-bottom:none}
+  .fieldtable td:first-child{color:var(--ink);white-space:nowrap;font-size:.84rem}
+
+  .expr{
+    background:var(--ring-wash);color:var(--ink);
+    padding:.12em .42em;border-radius:2px;font-size:.87em;
+  }
+
+  /* ─ callouts ─ */
+  .note{
+    margin:28px 0 0;padding:16px 18px;border-left:3px solid var(--ring);
+    background:var(--ring-wash);border-radius:0 2px 2px 0;
+    font-size:.95rem;line-height:1.55;max-width:var(--measure);
+  }
+  .note.warn{border-left-color:var(--rib);background:var(--rib-wash)}
+  .note p{margin:0 0 .6em}
+  .note .pill{
+    display:inline-block;font-size:.66rem;letter-spacing:.12em;text-transform:uppercase;
+    font-weight:700;color:var(--ring);margin-bottom:.4em;
+  }
+  .note.warn .pill{color:var(--rib)}
+
+  /* ─ the three answers to the many-summit problem ─ */
+  .options{display:grid;gap:1px;margin-top:28px;background:var(--rule);
+    border:1px solid var(--rule);border-radius:2px;overflow:hidden}
+  @media (min-width:720px){.options{grid-template-columns:repeat(3,1fr)}}
+  .options > div{background:var(--paper);padding:18px 18px 20px}
+  .options h3{margin:0 0 .35em;font-size:1rem}
+  .options p{font-size:.92rem;line-height:1.5;margin:0 0 .5em;color:var(--ink-2)}
+  .verdict{
+    font-family:"IBM Plex Sans Condensed",sans-serif;font-size:.72rem;
+    letter-spacing:.1em;text-transform:uppercase;font-weight:700;margin:0;
+  }
+  .yes{color:var(--ring)} .maybe{color:var(--summit)} .no{color:var(--rib)}
+
+  /* ─ questions back to you ─ */
+  ol.qs{margin:26px 0 0;padding:0;list-style:none;counter-reset:q;display:grid;gap:20px}
+  ol.qs > li{
+    counter-increment:q;padding-left:2.4rem;position:relative;max-width:var(--measure);
+  }
+  ol.qs > li::before{
+    content:"Q" counter(q);position:absolute;left:0;top:.18em;
+    font-family:"IBM Plex Sans Condensed",sans-serif;font-weight:700;font-size:.82rem;
+    letter-spacing:.06em;color:var(--rib);
+  }
+  ol.qs strong{display:block;margin-bottom:.15em;color:var(--ink)}
+  ol.qs p{font-size:.95rem;color:var(--ink-2);margin:0}
+
+  footer{
+    border-top:2px solid var(--ink);padding-block:22px 0;margin-top:20px;
+    font-size:.84rem;color:var(--ink-3);
+    display:flex;flex-wrap:wrap;gap:8px 28px;
+  }
+  footer .mono{font-size:.8rem}
+
+  @media (prefers-reduced-motion:no-preference){
+    a{transition:color .15s ease}
+  }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">Stereo tab · surface design</p>
+  <h1>Laying a Grid on a Surface</h1>
+  <p class="standfirst">How to build a space truss between two surfaces you define yourself — and
+  what to do when the surface has more than one summit, which is where a polar grid stops
+  working.</p>
+  <ul class="key">
+    <li><span class="swatch" style="background:var(--ring)"></span>rings / hoops</li>
+    <li><span class="swatch" style="background:var(--rib)"></span>ribs / meridians</li>
+    <li><span class="swatch dot" style="background:var(--pole)"></span>the pole</li>
+    <li><span class="swatch star" style="background:var(--summit)"></span>a summit</li>
+  </ul>
+</header>
+
+<section>
+  <div class="col">
+    <h2>Part 1 — Two surfaces, step by step</h2>
+    <p class="lede">A space truss is two layers and the webs between them. The Custom Surface
+    Wizard can build that two ways, and the difference is the whole design.</p>
+    <p>The quick way is <span class="expr">module = 3d</span>: you define <em class="term">one</em>
+    surface and the app makes the second by pushing every node a fixed distance along the local
+    normal. That is a shell of constant thickness. It is correct, it is fast, and it gives you no
+    say in the one variable that matters most in a truss — the depth.</p>
+    <p>The design way is <strong>Two surfaces</strong>: you define the top and the bottom
+    independently, and the truss depth becomes whatever the gap between them is at each point.
+    Deep at midspan where the moment is, shallow at the springing where it isn't.</p>
+  </div>
+
+  <figure>
+    <img src="stereo_surface_design_figures/diag_two_surface_depth.png" alt="Two sections through the same roof. On the left a constant normal offset gives 1.20 m of depth at midspan and near the edge alike. On the right two independent surfaces give 3.00 m at midspan falling to 2.04 m near the edge.">
+    <figcaption><span class="cap-num">Plate 1</span>The same top surface, two ways of getting a
+    bottom one. The constant offset hands you one number for the whole shell. Two surfaces make
+    the depth a function of position — here 3.00 m at midspan falling to 2.04 m near the edge,
+    which is roughly where the bending wants it. How far it can taper is set by the domain's
+    <em>corners</em>, not its edges — see the warning below.</figcaption>
+  </figure>
+
+  <ol class="steps col">
+    <li><span class="stepno">01</span><div>
+      <h3>Write the top surface</h3>
+      <p>Open <strong>Custom Surface Wizard</strong>, pick <strong>Two surfaces (top +
+      bottom)</strong>, and type the top as a height field —
+      <span class="expr">4 - 0.020*(x^2 + y^2)</span> is the shallow dome in the plates. Use the
+      keypad if you want the real glyphs; it inserts the ASCII the parser reads.</p>
+    </div></li>
+    <li><span class="stepno">02</span><div>
+      <h3>Write the bottom surface — flatter, not parallel</h3>
+      <p><span class="expr">1.0 - 0.0035*(x^2 + y^2)</span>. The rule of thumb: give the bottom
+      a smaller curvature coefficient than the top. The two then converge towards the edges and
+      open in the middle, which is the depth profile you want. Make them
+      <em class="term">equal</em> and you have re-invented the constant offset. Make the
+      difference too big and they cross — which the app now refuses outright, for the reason in
+      the warning below.</p>
+    </div></li>
+    <li><span class="stepno">03</span><div>
+      <h3>Set the domain — where on the (x, y) plane you are sampling</h3>
+      <p>The domain is a window on the parameter plane, not on the structure. Cartesian
+      <span class="expr">p: -8 to 8</span>, <span class="expr">q: -8 to 8</span> takes a 16 × 16 m
+      square out of a surface that is defined everywhere. This is the step people skip: the
+      expression makes an infinite surface, the domain is what makes it a building.</p>
+    </div></li>
+    <li><span class="stepno">04</span><div>
+      <h3>Set n1 and n2 — the module size</h3>
+      <p>The module is the domain span divided by the division count. 16 m over
+      <span class="expr">n1 = 12</span> is a 1.33 m module. Pick the module first, then work back
+      to the count; that is how the grid ends up at a buildable dimension instead of an arbitrary
+      one.</p>
+    </div></li>
+    <li><span class="stepno">05</span><div>
+      <h3>Pick the pattern</h3>
+      <p><strong>Square</strong> for an orthogonal grid, <strong>Diagonal</strong> for both
+      diagonals in every cell, <strong>Isometric</strong> for a true 60° equilateral lattice. On a
+      single-layer surface only Isometric is fully triangulated on its own — the other two rely on
+      the web layer for stiffness.</p>
+    </div></li>
+    <li><span class="stepno">06</span><div>
+      <h3>Generate, then Analyze</h3>
+      <p>Supports are pinned around the boundary automatically. The area load defaults to
+      2.0 kN/m² down, spread by each node's real tributary area.</p>
+    </div></li>
+  </ol>
+
+  <figure>
+    <img src="stereo_surface_design_figures/fig_two_surface.png" alt="Six views: the top surface alone, the bottom surface alone, the two joined as a double layer, the same in elevation, the pair on a polar domain, and the solved model coloured red for tension and blue for compression.">
+    <figcaption><span class="cap-num">Plate 2</span>The sequence in the app. Note step 3 in
+    elevation: the webs are tall in the middle and shallow at the edge, which is the whole reason
+    for defining two surfaces rather than one.</figcaption>
+  </figure>
+
+  <figure>
+    <img src="stereo_surface_design_figures/diag_crossing.png" alt="Three panels. Two plan views of the same square domain shaded by the gap between the two layers: the first goes negative in red at all four corners, the second stays positive everywhere. A section along the diagonal shows the crossed pair dipping below the flat bottom layer past a radius of 6.93 m, while the corner of the square sits at 8.49 m.">
+    <figcaption><span class="cap-num">Plate 3</span>The trap, and it caught the example shipped
+    with the app. A dish that reaches the flat bottom layer at r&nbsp;=&nbsp;6.93 is comfortably
+    clear all the way along each <em>edge</em> of the square −6…6 — and 2.00&nbsp;m through it at
+    every <em>corner</em>, which sits 8.49&nbsp;m out. The red region is where the top layer is
+    underneath the bottom one and every web is inverted.</figcaption>
+  </figure>
+
+  <div class="note warn">
+    <p class="pill">The two surfaces must not meet inside the domain</p>
+    <p>Where they meet, the web joining them has zero length — a member with no direction, which
+    is not a structure. Past where they cross, the surface you called "top" is underneath: the
+    webs are inverted and one layer's chords pass through the other's. The result is not slightly
+    wrong, it is inside out.</p>
+    <p>This is easy to do by accident because the domain is usually a rectangle and the surfaces
+    are usually radial, so the corners reach 41% further than the edges. <strong>Generate now
+    refuses a crossed pair</strong> and names the point where they meet, so you can decide whether
+    to shrink the domain or change an expression. It samples three times finer than the mesh
+    lattice, so a crossing that dips between two nodes is still caught.</p>
+  </div>
+
+  <div class="note">
+    <p class="pill">The starting point</p>
+    <p>Both surfaces are sampled over <strong>one</strong> domain. Node (i, j) on the top and node
+    (i, j) on the bottom are the two ends of the same web. So the domain is not a property of
+    either surface — it is the thing that puts them in correspondence, and it is the real starting
+    point of the mesh.</p>
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>Part 2 — Choosing the domain</h2>
+    <p class="lede">Two coordinate systems, and the choice is not cosmetic: it decides what the
+    modules look like and where the singular point of the grid goes.</p>
+
+    <h3>Cartesian</h3>
+    <p><span class="expr">p</span> and <span class="expr">q</span> <em class="term">are</em> the
+    surface's own x and y. The lattice is a rectangle of rows and columns, every module the same
+    size, and there is no special point anywhere on it. A rectangular building plan wants this.</p>
+
+    <h3>Polar</h3>
+    <p><span class="expr">p</span> is read as a radius and <span class="expr">q</span> as an angle,
+    so the lattice becomes rings and ribs about a centre. A circular plan wants this — and a
+    circular plan is usually a dome, which is the case where the polar grid does something
+    Cartesian cannot: the rings run <em class="term">along</em> the surface's contours and the ribs
+    run straight down its fall.</p>
+    <p>That is worth saying precisely, because it is the whole argument for polar and it is only
+    true under one condition. The pole has to be on the summit.</p>
+  </div>
+
+  <div class="tablewrap col" style="max-width:none">
+    <table class="fieldtable">
+      <thead><tr><th>Wizard field</th><th>Cartesian</th><th>Polar</th></tr></thead>
+      <tbody>
+        <tr><td>p range</td><td>x from … to …</td><td>radius, r<sub>min</sub> to r<sub>max</sub></td></tr>
+        <tr><td>q range</td><td>y from … to …</td><td>angle in radians; 0 to 2π closes the seam</td></tr>
+        <tr><td>n1</td><td>columns across x</td><td>rings out from the pole</td></tr>
+        <tr><td>n2</td><td>rows across y</td><td>ribs around the circle</td></tr>
+        <tr><td>pole at</td><td>not used</td><td>where the centre sits on the parameter plane</td></tr>
+        <tr><td>Full circle</td><td>not used</td><td>sets q to 0…2π and welds j = n2 back to j = 0</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note warn">
+    <p class="pill">Set r<sub>min</sub> above zero</p>
+    <p>A polar domain starting at exactly 0 puts every rib's inner end on one point. Use a small
+    positive radius (0.01 m in the plates) and you get a tiny closing ring instead of a
+    <em class="term">n2</em>-way joint no fabricator would thank you for.</p>
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>Part 3 — The pole problem</h2>
+    <p class="lede">This is the question you asked, and I think it is the most interesting one in
+    the tab. Here is what I understand the problem to be.</p>
+    <p>A polar grid has exactly one <em class="term">pole</em>, and a pole is a singular point of
+    the parameterisation: every rib meets there, and the modules around it are wedges rather than
+    quadrilaterals. Everywhere else the grid is regular. So a polar domain is a chart with one
+    special point, and the design question is where that point belongs.</p>
+    <p>Your instinct — that the pole should be at the apex — is right, and here is why in terms of
+    the geometry rather than intuition. Put the pole on the summit of a surface of revolution and
+    every ring is a contour line: every node on a ring sits at the same height, every module on
+    that ring is congruent to its neighbours, and every rib is the line of steepest descent. Move
+    the pole off the summit and none of those three things holds.</p>
+  </div>
+
+  <figure>
+    <img src="stereo_surface_design_figures/diag_pole_one_summit.png" alt="Two plan diagrams of the same dome with its contour lines. On the left the polar lattice is centred at the parameter origin, well away from the summit, and its rings cross the contours at varying angles. On the right the lattice is centred on the summit and the rings sit exactly on the contours.">
+    <figcaption><span class="cap-num">Plate 4</span>The same surface, the same domain settings,
+    only the pole moved. Grey lines are the surface's own contours. Left: the rings cut across
+    them at an angle that changes as they go round, so the modules on one ring are all different
+    sizes and no rib is the fall line. Right: the rings <em>are</em> the contours.</figcaption>
+  </figure>
+
+  <figure>
+    <img src="fig_pole_3d.png" alt="Two 3D views of a dome meshed with a polar grid. In the first the grid is a lopsided slice of the dome; in the second it is a symmetrical cap whose apex node sits at the top.">
+    <figcaption><span class="cap-num">Plate 5</span>The same comparison in the app. Left, with the
+    pole at the parameter origin, the grid never even reaches the summit — its highest node is at
+    z = 2.571 on a surface that peaks at 3.000. Right, with the pole on the summit, the apex node
+    <em>is</em> the summit.</figcaption>
+  </figure>
+
+  <div class="col">
+    <h3>This was a defect, and it is fixed</h3>
+    <p>Until this round the pole was hard-wired to the parameter origin — there was no control for
+    it at all. A surface written as <span class="expr">3 - 0.1*((x-4)^2 + (y-4)^2)</span> has its
+    summit at (4, 4), and the polar grid was laid out about (0, 0) regardless. Plate 5, left, is
+    what that produced. The wizard now has a <strong>pole at</strong> field, and a
+    <strong>Find the summit(s)</strong> button that puts the pole on the highest point it can
+    find.</p>
+
+    <h3>And then your harder question: what if there are many apexes?</h3>
+    <p>This is the part that has no single right answer, so let me state the problem exactly as I
+    understand it, and then give you what I think are the three real options.</p>
+    <p>A sinusoidal roof — <span class="expr">1.2*sin(0.7x)*sin(0.7y)</span> over an 18 × 18 m
+    field — has eight local summits inside that window, eight hollows, and a saddle between every
+    adjacent pair. One polar grid has one pole. So the pole can be put on at most one of the eight,
+    and for the other seven the grid is doing exactly what Plate 4, left, shows: rings crossing
+    contours at a changing angle, modules of a dozen different shapes, no rib along any fall
+    line.</p>
+    <p>Worse than that, actually. With the pole at the origin of that particular surface it lands
+    on a <em class="term">saddle</em>, which is not a summit at all — so it serves none of the
+    eight, not even one.</p>
+  </div>
+
+  <figure>
+    <img src="stereo_surface_design_figures/diag_pole_many_summits.png" alt="Three plan diagrams over the contours of a sinusoidal surface with eight summits. First: one polar lattice centred at the origin, which lands on a saddle. Second: a Cartesian lattice, uniform everywhere. Third: eight small polar patches, one centred on each summit.">
+    <figcaption><span class="cap-num">Plate 6</span>The many-summit problem and its three answers.
+    Stars mark the summits the app found. Left, the single polar grid: the pole sits in a saddle
+    and not one summit is served. Centre, a Cartesian lattice: no pole to misplace. Right, one
+    polar patch per summit — right about each hump, but the valleys between them are now the
+    problem.</figcaption>
+  </figure>
+
+  <div class="options">
+    <div>
+      <p class="verdict yes">Works today</p>
+      <h3>Drop the polar domain</h3>
+      <p>A Cartesian or isometric lattice has no pole, so it cannot put one in the wrong place.
+      Every module is the same size and shape wherever the summits happen to be. You lose the
+      contour-following rings, which on a multi-summit surface you were never going to get
+      anyway.</p>
+      <p>This is what I would actually do for a sinusoidal roof.</p>
+    </div>
+    <div>
+      <p class="verdict maybe">Works today, with care</p>
+      <h3>One patch per summit</h3>
+      <p>Run the wizard once per hump, each time with the pole on that hump and
+      r<sub>max</sub> stopping at the surrounding valley. Each patch is then a proper polar grid
+      for its own dome.</p>
+      <p>What the app does <em>not</em> do yet is stitch them: you would get eight separate
+      meshes, and joining them along the valleys is manual work in the Module Editor.</p>
+    </div>
+    <div>
+      <p class="verdict no">Not built</p>
+      <h3>A conformal / geodesic chart</h3>
+      <p>The rigorous answer: parameterise the whole surface at once so the modules follow the
+      principal curvature directions everywhere, with the summits and saddles falling out as the
+      chart's own singular points.</p>
+      <p>This is a real piece of work — a curvature tensor field, a cross-field solve, then a
+      quad-meshing pass. It is what commercial mesh generators do, and it is not a small
+      addition.</p>
+    </div>
+  </div>
+
+  <figure>
+    <img src="stereo_surface_design_figures/fig_wavy.png" alt="Four meshes of the same sinusoidal roof: polar with the pole at the origin, polar centred on one hump, a Cartesian square lattice, and an isometric lattice.">
+    <figcaption><span class="cap-num">Plate 7</span>The same sinusoidal roof, four ways. The two
+    lower meshes have no pole at all, and are the honest answer for a surface like this; the lower
+    right is the isometric lattice, whose modules are equilateral triangles throughout.</figcaption>
+  </figure>
+
+  <div class="note col">
+    <p class="pill">What the app tells you now</p>
+    <p><strong>Find the summit(s)</strong> does not just move the pole — it counts. One summit and
+    it says so and sits the pole on it. Several and it says how many it found, puts the pole on the
+    highest, and warns that one polar grid cannot be centred on that many, naming the two ways out.
+    A surface that only rises towards its own edge (a ramp, a single-curvature vault) reports
+    <em class="term">no</em> summit rather than sending the pole to a corner.</p>
+    <p>The count is the useful output. It turns "which domain should I use?" from a guess into a
+    reading.</p>
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>Part 4 — What else changed this round</h2>
+    <p class="lede">Four things you asked for, each with the same standard of evidence.</p>
+
+    <h3>Loads with a size and a direction</h3>
+    <p>Point loads already took any vector on any number of selected nodes, but nobody quotes a
+    load as three resolved components. There is now a <strong>P</strong> box and a direction —
+    six presets or a typed vector — that resolves into the Fx / Fy / Fz fields rather than becoming
+    a second place a load can live.</p>
+    <p>The area load is new work. It takes a law (uniform, a linear ramp along a chosen axis, or a
+    typed <span class="expr">q(x, y, z)</span> expression), a direction, and a scope — the whole
+    roof, or just the selected nodes, so half a roof can carry a drift while the other half does
+    not. An expression that will not compile says so in the panel instead of silently loading
+    nothing.</p>
+  </div>
+
+  <figure>
+    <img src="stereo_surface_design_figures/diag_area_loads.png" alt="Four plan views of the same 8-by-8 grid, each dot sized and coloured by the load at that node. Uniform: all equal. Linear gradient: growing left to right. Expression: a checkerboard of peaks. Scope: only the right-hand half loaded.">
+    <figcaption><span class="cap-num">Plate 8</span>What each law actually puts on each node. The
+    3D view draws every load arrow at one glyph scale, so these are the real numbers instead. Note
+    the last panel: 32 loaded nodes, not 64 — nodes outside the scope get no entry at all rather
+    than a zero one, which is what lets a second load case be layered on top of them.</figcaption>
+  </figure>
+
+  <div class="col">
+    <h3>The base module is a reference again</h3>
+    <p>You were right that this was wrong. The Module Editor was showing whichever cell happened to
+    sit first in the dominant role of the <em class="term">current</em> mesh — so nudging one node,
+    or bolting a beam onto one edge, could redefine what the panel called the base module. A
+    reference that moves when its subject moves is not a reference.</p>
+    <p>It is now derived from the mesh as generated and frozen there. The list opens on it, the
+    measured modules sit beside it as their own entries, and the edit actions refuse it (its node
+    numbers are its own; it has nothing to propagate to). Two further things fell out of doing it
+    properly: the module is expressed in its own local frame, so a dome panel reads upright instead
+    of tipped over at whatever latitude it sat at — and a single-layer surface grid now shows a
+    <strong>flat</strong> module, because that is what its module is. The curvature belongs to the
+    surface, not to the plate.</p>
+  </div>
+
+  <figure>
+    <img src="stereo_surface_design_figures/fig_modules.png" alt="Four module-editor views: the half-octahedron base module of a double-layer grid, the same base unchanged after a beam was added, a measured variant listed separately, and the flat triangular base module of a single-layer shell.">
+    <figcaption><span class="cap-num">Plate 9</span>Top left is the grid's theoretical module.
+    Top right is the same reference after a reinforcement beam was added — unchanged, which is the
+    point. Bottom left is what the beam actually introduced, now listed as a measured module
+    instead of able to take the title. Bottom right is a single-layer shell's base module: a flat
+    element.</figcaption>
+  </figure>
+
+  <div class="col">
+    <h3>A plain vertical column</h3>
+    <p>Every column style ended in the same capital fan, which is right for spreading a reaction
+    into a space truss and wrong for a grid that really does land on individual posts. The plain
+    strut drops one post from each selected node to its own foundation — no head, no fan — and is
+    the one style the panel's three-node rule does not apply to.</p>
+  </div>
+
+  <figure>
+    <img src="stereo_surface_design_figures/fig_columns.png" alt="Four column types under the same flat grid: a plain vertical strut, a single shaft with a capital fan, a latticed four-chord column, and a tripod.">
+    <figcaption><span class="cap-num">Plate 10</span>The new plain strut (top left) beside three of
+    the capital styles. It concentrates its whole reaction on one joint — which is exactly why the
+    other three exist.</figcaption>
+  </figure>
+
+  <div class="col">
+    <h3>The shipped example crossed its own bottom layer</h3>
+    <p>Worth stating plainly because it is the fault Plate 3 is about, and it was in the app, not
+    just in a draft of this page. <strong>Two-surface truss: dish over flat plane</strong> used
+    <span class="expr">3(1 − (x/6)² − (y/6)²) + 1</span> over a flat plane on the square −6…6. That
+    dish reaches the plane at r&nbsp;=&nbsp;6.93 and the square's corners are at 8.49, so the
+    example was 2.00&nbsp;m inside out at all four of them, with the webs there inverted.</p>
+    <p>The dish is now written over a 12&nbsp;m half-width, which keeps it 2.50&nbsp;m clear at
+    every corner while the depth still varies from 4.00&nbsp;m over the centre — which is the
+    point of the example. And <span class="expr">custom_surface_between</span> now refuses any
+    crossed pair rather than building it, so this class of mistake cannot ship again.</p>
+
+    <h3>A units bug the audit turned up</h3>
+    <p>You asked me to check the moment maths and the colour spectra. The maths is right: a rigid
+    cantilever of length L under a tip load P reads exactly P·L at its fixed end, matching the
+    reaction axis for axis in all three orientations. That is a test now rather than a claim.</p>
+    <p>What the audit did find is that every colourbar hard-coded kN, kN·m and mm. Four of the five
+    conventions are SI and differ only in which sub-unit is customary, so it never showed — but
+    AISC is a different system, and under it the tables beside the legend said kip while the legend
+    said kN, with kN numbers under it. Fixed, along with the same fault in the click-to-inspect
+    readout and the Member Report.</p>
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>What I need from you</h2>
+    <p class="lede">The multi-summit question is a design decision, not a bug, so it is yours to
+    make. These are the four things I would need to build any of it.</p>
+
+    <ol class="qs">
+      <li><strong>Is the sinusoid a real case for you, or a thought experiment?</strong>
+        <p>If you are actually designing a multi-humped roof I would build the patch-stitching. If
+        it was a way of probing where the polar idea breaks, the summit census plus Cartesian and
+        isometric already covers you and I would spend the effort elsewhere.</p></li>
+      <li><strong>If patches: how should they meet at the valleys?</strong>
+        <p>Three honest options — patches that share a boundary ring exactly (constrains the module
+        size of every patch to match), patches that stop short and are joined by a Cartesian
+        "gasket" strip, or patches that simply overlap and get welded by proximity. The first is the
+        cleanest structurally, the third the easiest to use.</p></li>
+      <li><strong>Should the pole be draggable on the canvas?</strong>
+        <p>Right now it is two numbers and a button. Clicking a point on the plan view to place it —
+        with the summits drawn as markers to snap to — would be a better tool, but it is a bigger
+        piece of UI. Worth it?</p></li>
+      <li><strong>Should the summit census appear outside the wizard?</strong>
+        <p>It would be a genuinely useful read on <em>any</em> loaded model — "this shell has 3
+        summits, 2 hollows and 4 saddles" tells you a lot about where it wants to be supported. But
+        it belongs in a different panel than the one that builds surfaces.</p></li>
+    </ol>
+  </div>
+</section>
+
+<footer>
+  <span>Stereo tab · surface design guide</span>
+  <span class="mono">branch claude/stereo-structure-calculator-lqgosu</span>
+  <span class="mono">2 097 tests passing</span>
+</footer>
+
+</div>

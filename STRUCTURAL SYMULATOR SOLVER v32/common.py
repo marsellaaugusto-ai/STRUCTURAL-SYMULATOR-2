@@ -1,0 +1,1888 @@
+"""
+common.py — shared foundation for the structural simulator.
+
+Imports, global constants (colors, grid/canvas scale), environment-check
+helpers (_ensure_openpyxl / _ensure_scipy / _ensure_matplotlib), generic
+numeric utilities reused by more than one structural module
+(_beam_gauss_solve, the shared 5-point Gauss-Legendre quadrature nodes,
+_nice_ticks, _find_diagram_maxima, make_shape_fn, the moment-arrow glyph
+helpers), and the ZoomCanvas pan/zoom widget.
+
+Nothing in this file depends on truss_app / beam_app / arch_app / cable_app
+-- it is the one module every other module imports FROM, never the reverse.
+"""
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import math, os, sys, time
+
+import units
+
+# NumPy is imported LAZILY, inside `_beam_gauss_solve` -- the one function
+# in this file that uses it. Read that function's docstring first: it warns
+# against silently reverting the numpy solve to interpreted-Python
+# elimination, and this is NOT that. The solve is untouched and every caller
+# still gets numpy; only the import moved.
+#
+# Why it moved: this module is imported by EVERY tab, so an unconditional
+# top-level `import numpy` means one unavailable dependency takes the whole
+# application down -- including the Perforated Beam tab, which never calls
+# `_beam_gauss_solve` and whose maths is stdlib-only by MANIFESTO s2. That
+# happened for real on 2026-09-09: a Windows Application Control policy
+# blocked numpy's _multiarray_umath DLL and no tab would start, not even the
+# ones that do not use it. A tab that needs numpy now fails when it SOLVES,
+# with a message naming numpy, instead of at import time on behalf of tabs
+# that do not.
+#
+# 2026-09-09, second pass: the same import also sat at the top of
+# `apps/cable_web/cable_web_math.py`, so the Cable Web tab still took the
+# whole app down. Rather than write the same guard a second time -- MANIFESTO
+# s3j, the same sub-problem solved in two places drifts -- the raise lives
+# here, in `_require_numpy`, and both callers go through it.
+
+
+def _require_numpy(note=''):
+    """Return numpy, importing it on first use.
+
+    Raises a message that names the package and what it is for, instead of
+    letting an ImportError from module-import time surface somewhere
+    unrelated. `note` adds a caller-specific line, since what a reader should
+    do about it differs by tab. Cached, so a machine without numpy pays one
+    failed import rather than one per solve.
+    """
+    global _np
+    if _np is None:
+        try:
+            import numpy as _numpy
+        except ImportError as exc:                  # pragma: no cover
+            raise ImportError(
+                'This solver needs NumPy, which could not be imported: '
+                f'{exc}. Install it with "pip install numpy". If NumPy IS '
+                'installed, a security policy may be blocking its compiled '
+                'extension -- on Windows check Smart App Control under '
+                'Windows Security > App & browser control.'
+                + (' ' + note if note else '')
+            ) from exc
+        _np = _numpy
+    return _np
+
+
+_np = None
+
+
+# ── optional libraries: present or not, never installed behind the user ─────
+# These helpers used to run "pip install" from inside the app the first time
+# a library was missing. A shipped product must not: it reaches the network
+# and changes the customer's Python without asking, it can hang the window
+# for minutes, and it fails silently behind a firewall. Now they only say
+# whether the library is importable, and every caller already tells the user
+# what to install when it is not (requirements.txt lists them all).
+def _importable(*modules):
+    import importlib
+    try:
+        for m in modules:
+            importlib.import_module(m)
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_openpyxl():
+    """Excel import and export."""
+    return _importable('openpyxl')
+
+
+def _ensure_scipy():
+    """SciPy is NOT optional for Cable Web, despite the name of the code path
+    that uses it.
+
+    `cable_web_math.solve_analysis`'s bounded least-squares step is described
+    in the source as a "fallback" behind the Newton/LM seeds, which reads as
+    optional. Measured 2026-09-04 across both built-in examples and eight
+    hand-built topologies: the Newton/LM seeds reach the 1e-9 tolerance on
+    NO multi-cable network at all -- every converged web in the whole test
+    run came from scipy.optimize.least_squares. A single cable between two
+    supports still solves without it, which is exactly why a missing SciPy
+    presents as an intermittent physics failure rather than as a missing
+    dependency. See REPORTS AND GUIDES/CABLE_WEB_DIAGNOSIS_2026-09-04.md.
+    """
+    return _importable('scipy.optimize')
+
+
+def _ensure_matplotlib():
+    """PDF reports and the equation images in the guides."""
+    return _importable('matplotlib', 'PIL')
+
+def render_math(tex, fontsize=13, color='#1a1a1a', dpi=200):
+    """
+    Renders a math string in matplotlib's mathtext (a LaTeX-lookalike typesetter
+    built into matplotlib — no separate TeX/LaTeX installation required) to a
+    Tk-displayable PhotoImage. `tex` must be wrapped in $...$.
+    Returns None if matplotlib/Pillow aren't available, so callers can fall
+    back to a plain-text rendering instead.
+    """
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import io
+        from PIL import Image, ImageTk
+        fig = plt.figure(figsize=(0.1, 0.1))
+        fig.patch.set_alpha(0.0)
+        t = fig.text(0, 0, tex, fontsize=fontsize, color=color)
+        fig.canvas.draw()
+        bbox = t.get_window_extent()
+        w, h = bbox.width/fig.dpi, bbox.height/fig.dpi
+        fig.set_size_inches(w+0.05, h+0.05)
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=dpi, transparent=True,
+                    bbox_inches='tight', pad_inches=0.02)
+        plt.close(fig)
+        buf.seek(0)
+        img = Image.open(buf).convert('RGBA')
+        return ImageTk.PhotoImage(img)
+    except Exception:
+        return None
+
+# ── layout ────────────────────────────────────────────────────────────────────
+SNAP      = 24          # px per grid cell at zoom=1  (1 cell = 1 m)
+PX_PER_M  = SNAP
+PANEL_W   = 235
+INIT_CW   = 860         # initial truss canvas width
+INIT_CH   = 440         # initial truss canvas height
+INIT_DH   = 260         # initial diagram canvas height (three bands: T, H, V)
+INIT_FD   = 340         # initial funicular-diagram pane height
+
+# Default cable self-weight, N/m. Deliberately nonzero: a cable with neither
+# self-weight nor an applied load has no unique equilibrium, so before this a
+# freshly drawn cable could not be analysed at all. 1 kN/m is a realistic
+# heavy cable and reads as "1.000 kN/m" in the inspector. The field itself
+# stays in N/m -- relabelling it would reinterpret every saved model by 1000x.
+DEFAULT_SELF_WEIGHT = 1000.0
+
+# ── colours ───────────────────────────────────────────────────────────────────
+CT  = "#e24b4a"         # tension
+CC  = "#378add"         # compression
+CZ  = "#888888"         # zero / unanalysed
+CD  = "#1D9E75"         # deformed
+CN  = "#333333"         # node
+CS  = "#EF9F27"         # selected / rod-start
+CL  = "#D85A30"         # load arrow
+CSP = "#555555"         # support
+CG  = "#e8e8e8"         # grid
+CG_MINOR = "#dcdcdc"    # grid — first finer LOD subdivision (dots)
+CG_MICRO = "#ececec"    # grid — second finer LOD subdivision (dots)
+CV  = "#7F77DD"         # shear diagram
+CM  = "#D85A30"         # moment diagram
+CMOM = CM                 # moment annotation/arc (legacy alias used by TrussApp)
+CR  = "#6A1B9A"         # reaction arrow -- deliberately NOT a green.
+                        # It was #2ecc71 against CD's #1D9E75 for the
+                        # deformed shape: two greens, four rows apart in
+                        # the Truss legend, meaning two unrelated things.
+                        # Nothing else on a truss canvas is purple.
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Geometry helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+def snap(v):
+    return round(v / SNAP) * SNAP
+
+def _beam_gauss_solve(A, b):
+    """Dense linear solve for the small (per-beam / per-cable-mini-solve)
+    systems used throughout this project.
+
+    Backed by numpy.linalg.solve (LAPACK's partial-pivoted LU) instead of
+    the original interpreted-Python Gaussian elimination -- same algorithm
+    family, same input/output contract, just a compiled backend. Preserves
+    the original's safety behaviour of returning None for a
+    singular/unreliable system (checked here via the actual solution
+    residual, since a compiled LU solve doesn't expose the elimination's
+    intermediate pivots the way the hand-written version did) rather than
+    silently handing back a numerically meaningless "solution".
+
+    RESTORED 2026-09-05. This is MANIFESTO Phase 1, and the version of the
+    app this tree was merged from had reverted it to the hand-rolled
+    interpreted-Python elimination (and dropped `import numpy as np` with
+    it). That revert is invisible in normal use -- same answers, no error --
+    but it is a measured ~40% slowdown on the cable-web test suite and ~33%
+    wall-clock on the one UI case big enough to show it, and it applies to
+    EVERY tab, since all five call this one function. See
+    CABLE_WEB_DIAGNOSIS_2026-09-04.md and the note in sec 3t of
+    MANIFESTO.md about silent reverts of shared code.
+    """
+    n = len(b)
+    if n == 0:
+        return []
+    np = _require_numpy('(The Perforated Beam tab does not use this '
+                        'function and works without it.)')
+    Anp = np.asarray(A, dtype=float)
+    bnp = np.asarray(b, dtype=float)
+    try:
+        x = np.linalg.solve(Anp, bnp)
+    except np.linalg.LinAlgError:
+        return None
+    if not np.all(np.isfinite(x)):
+        return None
+    residual = Anp @ x - bnp
+    scale = max(1.0, float(np.max(np.abs(bnp))))
+    if np.max(np.abs(residual)) > 1e-8 * scale:
+        return None
+    return x.tolist()
+
+_GAUSS5_NODES = (0.0, 0.5384693101056831, -0.5384693101056831,
+                  0.9061798459386640, -0.9061798459386640)
+_GAUSS5_WEIGHTS = (0.5688888888888889, 0.4786286704993665, 0.4786286704993665,
+                    0.2369268850561891, 0.2369268850561891)
+
+def _nice_ticks(vmin, vmax, target_count=6):
+    """Returns a list of evenly-spaced 'nice' (1-2-5 x 10^k) tick values
+    spanning at least [vmin, vmax] -- the same convention used by most
+    plotting libraries, so a diagram's gridlines land on easy-to-read
+    values (0, 5, 10, ... or 0, 20, 40, ...) instead of awkward fractions."""
+    if vmax <= vmin:
+        vmax = vmin + 1.0
+    span = vmax - vmin
+    raw_step = span / max(target_count, 1)
+    if raw_step <= 0:
+        return [vmin, vmax]
+    mag = 10 ** math.floor(math.log10(raw_step))
+    norm = raw_step / mag
+    if norm < 1.5:
+        nice = 1
+    elif norm < 3:
+        nice = 2
+    elif norm < 7:
+        nice = 5
+    else:
+        nice = 10
+    step = nice * mag
+    start = math.floor(vmin / step) * step
+    ticks = []
+    v = start
+    while v <= vmax + step * 1e-6:
+        if v >= vmin - step * 1e-6:
+            ticks.append(round(v, 10))
+        v += step
+    return ticks
+
+
+def _find_diagram_maxima(xs, ys, tol_rel=1e-3):
+    """Finds every x-location where |ys| attains the diagram's maximum
+    value, within a small relative tolerance -- so genuinely tied peaks
+    (e.g. symmetric supports, symmetric loading) are ALL reported, not just
+    the first one encountered. Adjacent/nearby samples belonging to the same
+    peak (including the two twin samples straddling a jump discontinuity)
+    are grouped into a single representative location, so a plateau or a
+    discontinuity doesn't get reported as many separate "ties".
+
+    Returns (locations, maxabs) where locations is a sorted list of x values.
+    """
+    if not ys:
+        return [], 0.0
+    absitems = [abs(v) for v in ys]
+    maxabs = max(absitems)
+    if maxabs < 1e-12:
+        return [], 0.0
+    tol = tol_rel * maxabs
+    hits = [i for i, v in enumerate(absitems) if v >= maxabs - tol]
+    if not hits:
+        return [], maxabs
+    groups = [[hits[0]]]
+    for idx in hits[1:]:
+        if idx - groups[-1][-1] <= 2:
+            groups[-1].append(idx)
+        else:
+            groups.append([idx])
+    locations = []
+    for g in groups:
+        best_idx = max(g, key=lambda i: absitems[i])
+        locations.append(xs[best_idx])
+    return locations, maxabs
+
+
+def make_shape_fn(expr, ctx):
+    """
+    Compiles a user-supplied 'y = f(x)' expression string into a callable.
+    `ctx` is a dict of extra names allowed in the expression (e.g. L, f for
+    span/rise). Only math-module names, names in ctx, and 'x' are permitted —
+    no builtins — so this is safe for a local desktop tool.
+    '^' is accepted as a power operator (translated to Python's '**') since
+    that's the more familiar notation for most users writing math by hand.
+    """
+    expr = expr.replace('^', '**')
+
+    # Accept common mathematical implicit multiplication, e.g.
+    #   4 (x+1)  -> 4*(x+1)
+    #   2x       -> 2*x
+    #   x(x+1)   -> x*(x+1)
+    # without breaking function calls such as sin(x).  Python's eval() does
+    # not understand implicit multiplication, while users naturally write
+    # expressions in conventional mathematical notation.
+    import re
+    expr = re.sub(r'(?<=[0-9\)])\s*(?=[A-Za-z_(])', '*', expr)
+    expr = re.sub(r'(?<=[A-Za-z_])\s+(?=[0-9(])', '*', expr)
+
+    code = compile(expr, '<arch shape>', 'eval')
+    math_names = {k for k in dir(math) if not k.startswith('_')}
+    allowed = set(ctx.keys()) | {'x', 'xc'} | math_names
+    for name in code.co_names:
+        if name not in allowed:
+            raise ValueError(f"Unknown name in shape expression: '{name}'")
+    math_ns = {k: getattr(math, k) for k in math_names}
+
+    def fn(x):
+        local = dict(ctx)
+        local.update(math_ns)
+        local['x'] = x
+        # xc is the span-centered coordinate: -L/2 ... +L/2.
+        # Keeping x as the global 0 ... L coordinate preserves compatibility.
+        if 'L' in ctx:
+            local['xc'] = x - float(ctx['L']) / 2.0
+        else:
+            local['xc'] = x
+        value = eval(code, {'__builtins__': {}}, local)
+        if isinstance(value, complex):
+            if abs(value.imag) > 1e-10 * max(1.0, abs(value.real)):
+                raise ValueError(f'Expression became non-real at x={x:g}. Check the domain or use xc=x-L/2 for centered equations.')
+            value = value.real
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError(f'Expression is not finite at x={x:g}. Move the integration domain away from the singularity.')
+        return value
+    return fn
+
+def moment_arrow_points(cx, cy, r, ccw, n=24, sweep_deg=300.0, start_deg=100.0):
+    """Pure geometry for a curved-arrow "applied moment" glyph, in SCREEN
+    coordinates (y increases downward, as in a Tkinter canvas).
+
+    Returns a flat list [x0, y0, x1, y1, ...] tracing an arc of `sweep_deg`
+    degrees around (cx, cy) at radius r, ending at the point where an
+    arrowhead should be drawn. Feed this straight into
+    `canvas.create_line(*pts, arrow='last', ...)` -- Tk computes the
+    arrowhead direction from the final segment, so the arrow naturally
+    points along the curve.
+
+    `ccw=True` traces the arc counterclockwise as the user actually SEES
+    it on screen; `ccw=False` traces it clockwise. This is the one place
+    that has to account for screen y being flipped relative to standard
+    math convention -- callers just say which rotational sense they want
+    and get the visually-correct arc back.
+    """
+    sign = 1.0 if ccw else -1.0
+    pts = []
+    for i in range(n + 1):
+        theta = math.radians(start_deg + sign * sweep_deg * (i / n))
+        x = cx + r * math.cos(theta)
+        y = cy - r * math.sin(theta)  # flip: makes increasing theta = visually CCW on screen
+        pts.extend([x, y])
+    return pts
+
+
+def draw_moment_arrow(canvas, cx, cy, r, ccw, color, width=2, arrowshape=(8, 10, 3)):
+    """Draws a circular-arrow glyph for an applied/reaction moment at
+    (cx, cy) with the given screen radius, oriented per the sign
+    convention the caller has already resolved into `ccw` (True = CCW,
+    False = CW -- e.g. `ccw = (M >= 0)` for a "+M = CCW" convention).
+    Returns the canvas item id."""
+    pts = moment_arrow_points(cx, cy, r, ccw)
+    return canvas.create_line(*pts, fill=color, width=width, arrow='last',
+                               arrowshape=arrowshape, capstyle='round', joinstyle='round')
+
+
+DECLUTTER_MAX_ITEMS = 80   # see declutter_text's own docstring for why
+
+
+def declutter_text(canvas, item_ids, step=14, max_passes=8, top_margin=2):
+    """Nudge overlapping canvas TEXT items apart, upwards, in place.
+
+    Load labels are placed relative to the thing they annotate, so two of them
+    collide whenever two loads happen to sit at the same station -- a moment at
+    x = 9 under a distributed load centred on x = 9 draws one label straight
+    through the other. Rather than invent a placement rule per label type, this
+    lifts whichever item is drawn later until nothing overlaps.
+
+    Later items move, earlier ones stay put, so the reading order of a diagram
+    is preserved: the first label placed keeps the position its own geometry
+    asked for. An item is never lifted above `top_margin`, so decluttering
+    cannot push a label off the canvas -- on a pane too short to separate them
+    the labels stay overlapped, which is visible, rather than disappearing,
+    which is not.
+
+    Each pairwise comparison costs a real canvas.bbox() round-trip into the
+    Tk/Tcl bridge, so the all-pairs loop below is fine for the handful of load
+    labels this was designed for but becomes ruinously expensive on a dense
+    mesh's node/member labels -- a 221-node grid is ~24k pairs per pass, times
+    up to max_passes, i.e. hundreds of thousands of round-trips, observed to
+    take minutes under a loaded display server. Past DECLUTTER_MAX_ITEMS this
+    is skipped entirely and the labels are left exactly where they were drawn
+    (the same "stays overlapped rather than disappearing" degrade mode the
+    function already falls back to when it runs out of vertical room).
+    """
+    ids = [i for i in item_ids if canvas.type(i) == 'text']
+    if len(ids) > DECLUTTER_MAX_ITEMS:
+        return
+    for _ in range(max_passes):
+        moved = False
+        boxes = {}
+        for i in ids:
+            b = canvas.bbox(i)
+            if b:
+                boxes[i] = b
+        live = [i for i in ids if i in boxes]
+        for a in range(len(live)):
+            for b in range(a + 1, len(live)):
+                ia, ib = live[a], live[b]
+                A, B = boxes.get(ia), boxes.get(ib)
+                if not A or not B:
+                    continue
+                overlap_x = min(A[2], B[2]) - max(A[0], B[0])
+                overlap_y = min(A[3], B[3]) - max(A[1], B[1])
+                if overlap_x > 2 and overlap_y > 2:
+                    if B[1] - step < top_margin:
+                        continue           # no room left; leave it visible
+                    canvas.move(ib, 0, -step)
+                    nb = canvas.bbox(ib)
+                    if nb:
+                        boxes[ib] = nb
+                    moved = True
+        if not moved:
+            break
+
+
+class LoadScale:
+    """Relative, compressed glyph sizing for the loads in one diagram.
+
+    Every load is drawn RELATIVE to the largest of its own kind currently on
+    the model -- never at a fixed size, and never in linear proportion.
+
+    Why not linear. A model routinely carries loads two or three orders of
+    magnitude apart. Drawn 1:1, either the small load collapses to a stub too
+    short to see or the large one runs off the canvas; there is no scale factor
+    that avoids both. A square-root compression (`gamma=0.5`) keeps the
+    ordering and a clearly visible ratio while bounding both ends. Measured
+    against the default band, a 2:1 force ratio draws about 1.44:1 -- visibly
+    different at a glance -- a 10:1 ratio about 2.7:1, and a 1000:1 ratio about
+    4.7:1, with the smallest glyph still 10 px so it never vanishes.
+
+    Why each kind of load gets its own scale. Point loads are a force (kN),
+    distributed loads are a force per unit length (kN/m), and applied moments
+    are a moment (kN*m). These are different physical quantities and there is
+    no honest linear scale between them. Sharing one would also break a
+    property that matters more: two distributed loads of EQUAL INTENSITY must
+    draw at equal height whatever length each covers, and they only do so when
+    the distributed family is normalised against an intensity of its own.
+    So each family is normalised separately and mapped into the same pixel
+    band, which makes the families visually comparable without pretending kN
+    and kN/m are the same thing.
+
+    `px_min` is a floor, not zero: a load of negligible magnitude beside a
+    dominant one still has to be visible as a load, and a zero ordinate at the
+    end of a triangular load still has to show where the load starts.
+    """
+
+    def __init__(self, vmax, px_min, px_max, gamma=0.70):
+        self.vmax = abs(vmax or 0.0)
+        self.px_min = float(px_min)
+        self.px_max = float(px_max)
+        self.gamma = gamma
+
+    @classmethod
+    def of(cls, values, px_min, px_max, gamma=0.70):
+        """Build a scale from every magnitude of one family present."""
+        vals = [abs(v) for v in values if v is not None]
+        return cls(max(vals, default=0.0), px_min, px_max, gamma)
+
+    @property
+    def is_flat(self):
+        """True when there is nothing to compare against, so every glyph in
+        this family draws at full size rather than at the floor."""
+        return self.vmax <= 1e-12
+
+    def __call__(self, v):
+        """Glyph size in px for a load of magnitude `v` (sign ignored)."""
+        if self.is_flat:
+            return self.px_max
+        frac = min(1.0, abs(v) / self.vmax) ** self.gamma
+        return self.px_min + (self.px_max - self.px_min) * frac
+
+
+class ZoomCanvas(tk.Frame):
+    """
+    A tk.Canvas wrapped with:
+      - mouse-wheel zoom  (Ctrl+wheel or plain wheel)
+      - middle-button press + drag pan
+      - world ↔ screen coordinate transform helpers
+    The caller draws everything in 'world' coordinates and calls
+    w2s(wx,wy) to convert to screen before creating canvas items.
+    """
+    MIN_ZOOM = 0.15
+    MAX_ZOOM = 8.0
+
+    def __init__(self, master, zoom=1.0, **kw):
+        bg = kw.pop('bg', 'white')
+        super().__init__(master, bg=bg)
+        self.zoom   = zoom
+        self.pan_x  = 0.0      # world origin offset in pixels at zoom=1
+        self.pan_y  = 0.0
+        self._drag  = None
+
+        self.canvas = tk.Canvas(self, bg=bg, **kw)
+        self.canvas.pack(fill='both', expand=True)
+
+        # scroll / zoom bindings
+        self.canvas.bind('<MouseWheel>',      self._on_wheel)
+        self.canvas.bind('<Button-4>',        self._on_wheel)   # Linux
+        self.canvas.bind('<Button-5>',        self._on_wheel)   # Linux
+        # Navigation is intentionally simple and CAD-like:
+        #   wheel over the canvas = zoom
+        #   press mouse wheel + drag = pan
+        # Do not bind these globally; keeping them local to the canvas prevents
+        # toolbar/property widgets from accidentally changing the view.
+        self.canvas.bind('<ButtonPress-2>',   self._pan_start)
+        self.canvas.bind('<B2-Motion>',       self._pan_move)
+        self.canvas.bind('<ButtonRelease-2>', self._pan_end)
+
+    # ── coordinate transforms ─────────────────────────────────────────────────
+    def w2s(self, wx, wy):
+        """world → screen"""
+        sx = (wx + self.pan_x) * self.zoom
+        sy = (wy + self.pan_y) * self.zoom
+        return sx, sy
+
+    def s2w(self, sx, sy):
+        """screen → world"""
+        wx = sx / self.zoom - self.pan_x
+        wy = sy / self.zoom - self.pan_y
+        return wx, wy
+
+    # ── wheel ─────────────────────────────────────────────────────────────────
+    def _on_wheel(self, event):
+        # Zoom is intentionally restricted to genuine wheel events occurring
+        # over this canvas. Some desktop/window-manager combinations can
+        # deliver wheel notifications while focus is changing between toolbar
+        # controls and the canvas; those must never alter the view.
+        if getattr(event, 'widget', None) is not self.canvas:
+            return 'break'
+        if event.num not in (4, 5) and not getattr(event, 'delta', 0):
+            return 'break'
+        try:
+            x, y = event.x, event.y
+            w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+            if not (0 <= x <= w and 0 <= y <= h):
+                return 'break'
+        except Exception:
+            return 'break'
+        if event.num == 4 or event.delta > 0:
+            factor = 1.15
+        else:
+            factor = 1/1.15
+        new_zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, self.zoom * factor))
+        if new_zoom == self.zoom: return
+
+        # keep mouse position fixed in world space
+        sx, sy = event.x, event.y
+        wx, wy = self.s2w(sx, sy)
+        self.zoom   = new_zoom
+        # recalculate pan so wx,wy maps back to sx,sy
+        self.pan_x  = sx/self.zoom - wx
+        self.pan_y  = sy/self.zoom - wy
+        self._on_zoom_changed()
+        return 'break'
+
+    # ── pan ───────────────────────────────────────────────────────────────────
+    def _pan_start(self, event):
+        # Middle mouse is the dedicated pan command.  Capture the starting
+        # pointer position and the current world offset; no model-selection
+        # command is invoked by this gesture.
+        self._drag = (event.x, event.y, self.pan_x, self.pan_y)
+        try:
+            self.canvas.configure(cursor='fleur')
+        except tk.TclError:
+            pass
+        return 'break'
+
+    def _pan_move(self, event):
+        if self._drag is None: return 'break'
+        x0,y0,px0,py0 = self._drag
+        self.pan_x = px0 + (event.x-x0)/self.zoom
+        self.pan_y = py0 + (event.y-y0)/self.zoom
+        self._on_zoom_changed()
+        return 'break'
+
+    def _pan_end(self, event):
+        self._drag = None
+        try:
+            self.canvas.configure(cursor='')
+        except tk.TclError:
+            pass
+        return 'break'
+
+    def _on_zoom_changed(self):
+        """Override in subclass or bind externally."""
+        pass
+
+    def zoom_by(self, factor, center=None):
+        """Zoom by *factor* around a screen point, defaulting to canvas center.
+
+        This is a public command for UI buttons/keyboard shortcuts; it does
+        not change the existing mouse-wheel behavior.
+        """
+        try:
+            factor = float(factor)
+        except Exception:
+            return
+        if factor <= 0:
+            return
+        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if center is None:
+            sx, sy = w / 2.0, h / 2.0
+        else:
+            sx, sy = center
+        wx, wy = self.s2w(sx, sy)
+        new_zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, self.zoom * factor))
+        if abs(new_zoom - self.zoom) < 1e-15:
+            return
+        self.zoom = new_zoom
+        self.pan_x = sx / self.zoom - wx
+        self.pan_y = sy / self.zoom - wy
+        self._on_zoom_changed()
+
+    def zoom_in(self):
+        self.zoom_by(1.25)
+
+    def zoom_out(self):
+        self.zoom_by(1.0 / 1.25)
+
+    def reset_view(self):
+        self.zoom  = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+        self._on_zoom_changed()
+
+    def fit_to_bbox(self, x0, y0, x1, y1, margin=40):
+        """Zoom and pan so the world rectangle (x0,y0)-(x1,y1) fills the
+        canvas, with `margin` pixels of air around it.
+
+        `reset_view` returns to zoom 1 / pan 0, which is the ORIGIN, not the
+        model. Array a few nodes onto a guide at x = 60 m and the structure
+        leaves the screen with no way back except guessing at pan -- and on
+        a laptop trackpad with no middle button there is no pan at all. Every
+        drawing tool has a Fit; this is the one piece it needs.
+
+        Returns True when it moved the view, False when there was nothing to
+        fit (an empty model, or a degenerate box).
+        """
+        try:
+            x0, y0, x1, y1 = float(x0), float(y0), float(x1), float(y1)
+        except Exception:
+            return False
+        if x1 < x0:
+            x0, x1 = x1, x0
+        if y1 < y0:
+            y0, y1 = y1, y0
+        w = max(self.canvas.winfo_width(), 1)
+        h = max(self.canvas.winfo_height(), 1)
+        avail_w = max(w - 2 * margin, 1)
+        avail_h = max(h - 2 * margin, 1)
+        # A single node, or a perfectly horizontal truss, has zero extent in
+        # one axis. Give that axis a nominal span rather than dividing by it.
+        span_x = max(x1 - x0, 1e-9)
+        span_y = max(y1 - y0, 1e-9)
+        z = min(avail_w / span_x, avail_h / span_y)
+        if not (z > 0) or z != z:          # 0, negative or NaN
+            return False
+        z = max(self.MIN_ZOOM, min(self.MAX_ZOOM, z))
+        self.zoom = z
+        # Centre the box: the world midpoint must land on the canvas midpoint.
+        self.pan_x = (w / 2.0) / z - (x0 + x1) / 2.0
+        self.pan_y = (h / 2.0) / z - (y0 + y1) / 2.0
+        self._on_zoom_changed()
+        return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Responsive layout helpers
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Every tab in this project built the same two things by hand: a single-row
+# toolbar, and a fixed-width right-hand sidebar packed AFTER the expanding
+# canvas. Both fail the same way as the window narrows -- the toolbar's tail
+# runs off the right edge, and the sidebar is squeezed to zero width and
+# unmapped entirely, taking the Analyze button with it (measured on the Truss
+# tab, 2026-09-05: at 800 px the whole right panel was gone).
+#
+# Cable Web solved the toolbar half first and paid for it three separate
+# times -- see MANIFESTO sec 3c (a cached layout decision that locked in a
+# wrong answer), sec 3d (grid() shares column widths across rows, so it is
+# the wrong tool for a flow layout) and sec 3e (a pack(in_=...) anchor frame
+# paints over the very widgets it positions unless you lower() it). Those
+# three lessons are baked into FlowBar below.
+#
+# They live HERE, not in a tab, because the same sub-problem solved in two
+# places will drift until it is actually the same code (MANIFESTO sec 3j).
+
+
+class FlowBar:
+    """Wrap a bar of control GROUPS onto as many rows as the current width
+    needs, instead of letting the tail run off the right edge.
+
+    Usage:
+        bar = tk.Frame(parent, bg='#ebebea'); bar.pack(fill='x')
+        flow = FlowBar(bar)
+        g = flow.group()                       # a new group frame, registered
+        tk.Button(g, text='Analyze', ...)      # build into it normally
+        flow.add(some_frame_built_elsewhere)   # or register an existing one
+        flow.start()                           # bind <Configure>, first layout
+
+    A "group" is a set of controls that should stay together on one row (a
+    tool palette, one labelled entry plus its button, ...). Groups wrap as
+    units; a group too wide for the bar on its own wraps internally.
+
+    `on_relayout` runs after every relayout -- use it for anything else that
+    depends on the current width (e.g. resizing a sidebar to match).
+    """
+
+    def __init__(self, bar, on_relayout=None, group_gap=6, item_pad=2):
+        self.bar = bar
+        self.groups = []
+        self.on_relayout = on_relayout
+        self.group_gap = group_gap
+        self.item_pad = item_pad
+        self._pending = False
+        self._running = False
+
+    # -- construction ---------------------------------------------------------
+    def group(self, **kw):
+        """Create, register and return a new group frame."""
+        kw.setdefault('bg', self.bar.cget('bg'))
+        g = tk.Frame(self.bar, **kw)
+        self.groups.append(g)
+        return g
+
+    def add(self, frame):
+        """Register a group frame that was built elsewhere."""
+        self.groups.append(frame)
+        return frame
+
+    def separator(self, color='#ccc', height=20):
+        """A thin vertical rule as its own group, so it wraps with the flow
+        instead of stranding itself at the end of a row."""
+        g = self.group()
+        tk.Frame(g, width=1, height=height, bg=color).pack(padx=4, pady=3)
+        return g
+
+    def start(self):
+        """Bind the bar's <Configure> and perform the first layout."""
+        self.bar.bind('<Configure>', self._schedule, add='+')
+        self.bar.after_idle(self.relayout)
+
+    # -- layout ---------------------------------------------------------------
+    def _schedule(self, _event=None):
+        if self._pending:
+            return
+        self._pending = True
+        try:
+            # A TIMER, deliberately, not after_idle. A relayout repacks the
+            # bar, which fires <Configure>, which lands back here -- so an
+            # idle-queued relayout re-enqueues itself from inside whatever
+            # drained the queue. ScrollPanel.fit_to_content() calls
+            # update_idletasks(), and that call does not return until the idle
+            # queue is empty, so the two together never terminated: building
+            # the Beam tab after the Truss tab hung the app forever at 100%
+            # CPU before the window ever appeared. (It needed the toplevel to
+            # have no explicit geometry -- as main.py starts it -- so the
+            # bar's width never settled and the cycle had no fixed point.)
+            # A timer callback is not idle work, so update_idletasks() can
+            # always drain, while the relayout still follows the resize within
+            # one frame. Note this adds NO width cache: caching on width is
+            # what locked in a wrong layout before (MANIFESTO sec 3c), and
+            # that bug must not come back. Do not "simplify" this to
+            # after_idle.
+            self.bar.after(16, self.relayout)
+        except Exception:
+            self._pending = False
+
+    def relayout(self):
+        # Responsive layout must be re-entrant safe. Changing pack geometry
+        # generates <Configure> events; never let those recursively rebuild
+        # the bar while it is already being rebuilt.
+        try:
+            if not self.bar.winfo_exists():
+                return
+        except Exception:
+            return
+        if self._running:
+            return
+        self._pending = False
+        self._running = True
+        try:
+            available = max(1, self.bar.winfo_width() - 10)
+            # NOTE: deliberately NOT cached on `available`. A cache keyed only
+            # on "the width did not change" once locked in a WRONG layout
+            # here: the first call (from after_idle, before the window's
+            # geometry had stabilised) read a transient width, computed a
+            # layout from it, and cached it -- so a later, legitimate
+            # <Configure> reporting the same FINAL width hit the cache and
+            # never recomputed, leaving groups placed off-screen indefinitely.
+            # MANIFESTO sec 3c. Recomputing costs <1 ms for a few dozen
+            # widgets, so the cache bought nothing and cost that bug class.
+            live = []
+            for g in self.groups:
+                try:
+                    if g.winfo_exists():
+                        live.append(g)
+                except Exception:
+                    pass
+            self.groups = live
+
+            # 1. Lay out each group's own children, wrapping internally only
+            #    if the group alone is wider than the bar. Each group's
+            #    effective width is recorded here in `group_width` rather
+            #    than re-read from winfo_reqwidth() in step 2 below: pack()
+            #    only SCHEDULES Tk's geometry recomputation, it does not run
+            #    it, so querying reqwidth() on a group _wrap_children just
+            #    finished re-packing (destroying its old internal rows and
+            #    creating new ones) can observe a transient ~1px placeholder
+            #    from between the two -- which corrupted step 2's row-wrap
+            #    decision for exactly that group on exactly that pass,
+            #    changing how many rows the bar needs, which resizes the
+            #    canvas below it, which fires ANOTHER <Configure> that
+            #    schedules ANOTHER relayout: observed in practice as the
+            #    bar's width cycling through a fixed set of values forever
+            #    instead of settling. (An earlier fix forced the recompute
+            #    with a mid-relayout bar.update_idletasks() call instead --
+            #    that resolved the oscillation too, but it flushes Tk's
+            #    whole pending-idle queue from inside an already-running
+            #    relayout, which can silently run and discard a second
+            #    relayout call queued by an earlier _schedule() before this
+            #    one's own reentrancy guard was reached, dropping a pass
+            #    that was needed to fully map every control -- reproduced as
+            #    test_truss_layout.py's widest-window case losing 8 controls.
+            #    Recording each group's already-known width sidesteps the
+            #    stale read directly, with no extra Tk event processing.)
+            group_width = {}
+            for g in self.groups:
+                for w in list(g.winfo_children()):
+                    if getattr(w, '_is_wrap_row', False):
+                        w.destroy()
+                children = [w for w in g.winfo_children()
+                            if not getattr(w, '_is_wrap_row', False)]
+                for child in children:
+                    child.pack_forget()
+                    child.grid_forget()
+                req = sum(max(ch.winfo_reqwidth(), 1) + 2 * self.item_pad
+                          for ch in children)
+                if req > available:
+                    group_width[g] = self._wrap_children(g, available, self.item_pad)
+                else:
+                    for child in children:
+                        child.pack(side='left', padx=self.item_pad, pady=3)
+                    group_width[g] = req
+
+            # 2. Lay the groups out left-to-right, wrapping whole groups onto
+            #    new ROWS. One Frame per row, packed top-to-bottom -- NOT
+            #    grid(row=, column=) on the bar: Tk's grid shares each
+            #    column's width across every row of the same parent, so a
+            #    wide group in row 1 silently pushes a narrow group sharing
+            #    that column in row 0 off the visible bar. MANIFESTO sec 3d.
+            for w in list(self.bar.winfo_children()):
+                if getattr(w, '_is_flow_row', False):
+                    w.destroy()
+            for g in self.groups:
+                g.pack_forget()
+                g.grid_forget()
+            rows = [[]]
+            used = 0
+            for g in self.groups:
+                req = max(group_width.get(g, 1), 1)
+                if used and used + self.group_gap + req > available:
+                    rows.append([])
+                    used = 0
+                rows[-1].append(g)
+                used += req + self.group_gap
+            for row_groups in rows:
+                row_frame = tk.Frame(self.bar, bg=self.bar.cget('bg'))
+                row_frame._is_flow_row = True
+                row_frame.pack(side='top', fill='x', anchor='w', pady=1)
+                # See _wrap_children: this anchor frame must be pushed BEHIND
+                # the (true-sibling) groups it positions, or it paints over
+                # them and the bar renders blank. MANIFESTO sec 3e.
+                row_frame.lower()
+                for g in row_groups:
+                    g.pack(in_=row_frame, side='left', padx=0)
+
+            if self.on_relayout is not None:
+                self.on_relayout()
+        finally:
+            self._running = False
+
+    @staticmethod
+    def _wrap_children(group, available, pad):
+        """Lay out one group's own children left-to-right, wrapping to an
+        internal second/third row only if the group's content alone does not
+        fit `available`. One Frame per internal row + pack -- see relayout's
+        note on why grid() is the wrong tool here (MANIFESTO sec 3d).
+        """
+        for w in list(group.winfo_children()):
+            if getattr(w, '_is_wrap_row', False):
+                w.destroy()
+        children = [w for w in group.winfo_children()
+                    if not getattr(w, '_is_wrap_row', False)]
+        for child in children:
+            child.pack_forget()
+            child.grid_forget()
+        rows = [[]]
+        row_widths = [0]
+        used = 0
+        for child in children:
+            req = max(child.winfo_reqwidth(), 1)
+            if used and used + pad + req > available:
+                rows.append([])
+                row_widths.append(0)
+                used = 0
+            rows[-1].append(child)
+            used += req + pad
+            row_widths[-1] = used
+        for row_children in rows:
+            row_frame = tk.Frame(group, bg=group.cget('bg'))
+            row_frame._is_wrap_row = True
+            row_frame.pack(side='top', anchor='w')
+            # row_frame is a geometric anchor only: pack(in_=...) does NOT
+            # reparent the buttons, they stay true siblings of row_frame under
+            # `group`. Tk stacks true siblings by creation time, so this
+            # freshly-created frame would paint OVER the (older) buttons it is
+            # meant merely to position, hiding them completely while every one
+            # of them still reports itself correctly mapped. MANIFESTO sec 3e.
+            row_frame.lower()
+            for child in row_children:
+                child.pack(in_=row_frame, side='left', padx=pad, pady=2)
+        # The group's own effective width, once stacked into these rows, is
+        # its WIDEST row -- returned so relayout() can use this already-known
+        # value instead of re-reading winfo_reqwidth() (see relayout's own
+        # note on why that reread is unsafe immediately after this repack).
+        return max(row_widths)
+
+
+class ScrollPanel(tk.Frame):
+    """A fixed-width side panel whose content stays reachable at every window
+    width: it scrolls in BOTH axes, and it is never squeezed out of existence
+    by an expanding sibling canvas.
+
+    Build into `.interior`, exactly as you would into a plain panel Frame::
+
+        panel = ScrollPanel(main, width=PANEL_W)
+        panel.pack(side='right', fill='y')     # BEFORE the expanding canvas
+        self._build_panel(panel.interior)
+
+    Two failure modes this exists to prevent, both measured on the Truss tab:
+
+    1. **The panel disappears.** Tk's pack allocates a parcel per slave *in
+       packing order*. A panel packed AFTER an expand=True canvas gets
+       whatever the canvas left over -- which at narrow widths is nothing, so
+       the panel is unmapped entirely and every control in it (including
+       Analyze) becomes unreachable, with no scrollbar and no warning. Pack
+       this panel BEFORE the expanding canvas. Cable Web hit and documented
+       the same ordering trap in its own `_build_ui`.
+
+    2. **The panel's content is clipped.** Pinning the scrolled interior to
+       exactly the panel width means any row wider than the panel (a slider
+       next to its label, a two-button row) is cut off mid-widget with no way
+       to reach it. Here the interior keeps its natural requested width and a
+       horizontal scrollbar appears only when it exceeds the visible width.
+    """
+
+    #: Largest share of the window the panel may take. Below this the panel
+    #: keeps its full content width; above it, the panel yields to the
+    #: drawing canvas and the horizontal scrollbar covers the difference.
+    MAX_WINDOW_SHARE = 0.45
+    MAX_GROW = 1.3
+
+    def __init__(self, master, width=PANEL_W, bg='#f0f0ee', **kw):
+        super().__init__(master, width=width, bg=bg, **kw)
+        self.base_width = width
+        self.pack_propagate(False)
+        self.grid_propagate(False)
+        self._syncing = False
+        self._last_toplevel_w = None
+        self._tl_pending = False
+        # When the panel last actually changed its own width. See
+        # _apply_toplevel_width: a panel sized as a SHARE of the window,
+        # inside a window that sizes itself to fit its content, is a circular
+        # constraint, and it does not always have a fixed point.
+        self._tl_applied_at = []
+
+        self.vsb = tk.Scrollbar(self, orient='vertical')
+        self.hsb = tk.Scrollbar(self, orient='horizontal')
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, width=width,
+                                yscrollcommand=self.vsb.set,
+                                xscrollcommand=self.hsb.set)
+        self.vsb.configure(command=self.canvas.yview)
+        self.hsb.configure(command=self.canvas.xview)
+        # grid, not pack, for these three: the horizontal scrollbar appears
+        # and disappears with need, and a pack()ed latecomer is allocated
+        # AFTER the expand=True canvas has already taken the whole cavity --
+        # so it silently gets zero height and never shows. (Measured while
+        # building this: hsb reported _hsb_shown=True with a correct
+        # scrollregion and was still invisible.) That is the same packing-
+        # order trap this class exists to prevent, one level down; grid's
+        # row/column weights are immune to it. This is a fixed 2x2 frame,
+        # not a flow layout, so MANIFESTO sec 3d does not apply.
+        self.canvas.grid(row=0, column=0, sticky='nsew')
+        self.vsb.grid(row=0, column=1, sticky='ns')
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        self._hsb_shown = False
+
+        self.interior = tk.Frame(self.canvas, bg=bg)
+        self._win = self.canvas.create_window((0, 0), window=self.interior,
+                                              anchor='nw')
+        self.interior.bind('<Configure>', self._sync)
+        self.canvas.bind('<Configure>', self._sync)
+
+        # Same wheel idiom as every other panel in this project (Beam, Arch,
+        # Cable, Perforated Beam): bind_all while the pointer is over the
+        # panel, so the wheel scrolls the panel rather than whatever happens
+        # to hold focus, released again on <Leave>.
+        self.canvas.bind('<Enter>', lambda e: self.canvas.bind_all(
+            '<MouseWheel>', self._on_wheel))
+        self.canvas.bind('<Leave>', lambda e: self.canvas.unbind_all(
+            '<MouseWheel>'))
+
+    # -- scrolling ------------------------------------------------------------
+    def _on_wheel(self, event):
+        # Shift+wheel scrolls horizontally -- the usual convention, and the
+        # only way to reach clipped content on a device with no h-wheel.
+        try:
+            if event.state & 0x0001:
+                self.canvas.xview_scroll(int(-1 * (event.delta / 120)), 'units')
+            elif self.interior.winfo_reqheight() > self.canvas.winfo_height():
+                # nothing to scroll when it all fits
+                self.canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+        except Exception:
+            pass
+
+    def _sync(self, _event=None):
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            req_w = max(self.interior.winfo_reqwidth(), 1)
+            req_h = max(self.interior.winfo_reqheight(), 1)
+            view_w = max(self.canvas.winfo_width(), 1)
+            win_w = max(req_w, view_w)
+            self.canvas.itemconfigure(self._win, width=win_w)
+            need_h = req_w > view_w + 1
+            if need_h and not self._hsb_shown:
+                self.hsb.grid(row=1, column=0, sticky='ew')
+                self._hsb_shown = True
+            elif not need_h and self._hsb_shown:
+                self.hsb.grid_remove()
+                self._hsb_shown = False
+            # Never shorter than the view. A scroll region smaller than the
+            # window lets Tk scroll it anyway -- the wheel pushed a short
+            # panel down off its own top and left an empty band above it,
+            # with nothing up there to scroll to. At least the view's height,
+            # the region fits exactly and the content stays pinned to the top.
+            view_h = max(self.canvas.winfo_height(), 1)
+            region_h = max(req_h, view_h)
+            self.canvas.configure(scrollregion=(0, 0, win_w, region_h))
+            if req_h <= view_h:
+                self.canvas.yview_moveto(0.0)
+        except Exception:
+            pass
+        finally:
+            self._syncing = False
+
+    def _on_toplevel_resize(self, event=None):
+        """Re-fit this panel when the WINDOW is resized -- on a timer.
+
+        Two traps here, both of which hung the app at 100% CPU before any
+        window appeared:
+
+        1. This is bound on the TOPLEVEL, and every widget's bindtags include
+           its toplevel, so a <Configure> binding there fires for EVERY
+           descendant's resize, not just the window's own. Hence the widget
+           guard below.
+        2. Even restricted to the toplevel's own Configure, the work cannot be
+           done inline. Setting this panel's width changes the toplevel's
+           REQUESTED size, which resizes the toplevel, which fires Configure
+           again -- with a different width every time while the window is
+           still growing to fit its content, so no "width unchanged" cache can
+           break it. Meanwhile fit_to_content() is inside update_idletasks(),
+           which does not return until the idle queue is empty. Six tabs call
+           fit_to_content, so six of these handlers fed that queue.
+
+        A timer callback is not idle work, so update_idletasks() can always
+        drain and the resize still lands within one frame. Same reasoning as
+        FlowBar._schedule above; do not inline this.
+        """
+        try:
+            top = self.winfo_toplevel()
+            if event is not None and getattr(event, 'widget', None) is not top:
+                return
+            if self._tl_pending:
+                return
+            self._tl_pending = True
+            self.after(16, self._apply_toplevel_width)
+        except Exception:
+            self._tl_pending = False
+
+    # A panel may change its own width at most this many times in this many
+    # seconds. Past that it is oscillating, not tracking, and it stops.
+    RESIZE_BURST = 8
+    RESIZE_BURST_SECONDS = 1.0
+
+    def _apply_toplevel_width(self):
+        """The body of _on_toplevel_resize, off the idle queue.
+
+        The width guard below is NOT enough on its own, and the reason is
+        worth stating because it cost an afternoon twice. This panel takes a
+        SHARE of the window's width, and the window sizes itself to fit its
+        content -- which includes this panel. Widening the panel widens the
+        window, which raises the share, which widens the panel. That is a
+        circular constraint, and it has no fixed point whenever the panels
+        are what the window is sizing itself around: the window then cycles
+        (measured: 1549 -> 1370 -> 1442 -> 1370 -> 1474 -> 1571 ...) and each
+        pass through it is a fresh, DIFFERENT window width, so
+        `_last_toplevel_w == win_w` never fires and the loop runs forever at
+        100% CPU. It is not the same bug as the <Configure> re-entry the
+        docstring above describes; that one is fixed, this one sits under it.
+
+        Whether a given model lands in the stable or the unstable regime
+        depends on how wide the panels' content happens to be, so ANY change
+        to any tab's panel can tip it over -- adding one group box to the
+        Stereo add-ons panel is what exposed it. Hence a rate limit rather
+        than a cleverer predicate: a panel that has changed its own width
+        RESIZE_BURST times within RESIZE_BURST_SECONDS is cycling, and it
+        stops and keeps the width it has. A real user resize comes long after
+        that window has lapsed, so tracking still works.
+        """
+        self._tl_pending = False
+        try:
+            if not self.winfo_exists():
+                return
+            win_w = self.winfo_toplevel().winfo_width()
+            if win_w < 2:
+                return
+            if self._last_toplevel_w == win_w:
+                return
+            self._last_toplevel_w = win_w
+            share = max(120, int(win_w * self.MAX_WINDOW_SHARE))
+            w = min(int(self.base_width * self.MAX_GROW), share)
+            if int(self.cget('width')) == w:
+                return
+            now = time.monotonic()
+            self._tl_applied_at = [t for t in self._tl_applied_at
+                                   if now - t < self.RESIZE_BURST_SECONDS]
+            if len(self._tl_applied_at) >= self.RESIZE_BURST:
+                return          # cycling: keep the width we have
+            self._tl_applied_at.append(now)
+            self.configure(width=w)
+            self.canvas.configure(width=w)
+            self._sync()
+        except Exception:
+            pass
+
+    # -- sizing ---------------------------------------------------------------
+    def fit_to_content(self, max_width=None):
+        """Grow the panel so its content's natural width fits, and adopt that
+        as the new base width for `apply_responsive_width`.
+
+        Call this once, right after building into `.interior`. It is what
+        keeps this class from quietly regressing: a later change that adds a
+        slightly wider row widens the panel to suit instead of pushing that
+        row under the horizontal scrollbar where nobody looks for it. The cap
+        stops one runaway widget from eating the drawing canvas -- past it,
+        the horizontal scrollbar takes over as intended.
+        """
+        try:
+            self.update_idletasks()
+            need = self.interior.winfo_reqwidth() + self.vsb.winfo_reqwidth()
+            cap = max_width if max_width is not None else int(self.base_width * 1.6)
+            w = max(self.base_width, min(need, cap))
+            self.base_width = w
+            self.configure(width=w)
+            self.canvas.configure(width=w)
+            self._sync()
+            try:
+                self.winfo_toplevel().bind(
+                    '<Configure>', self._on_toplevel_resize, add='+')
+            except Exception:
+                pass
+            return w
+        except Exception:
+            return self.base_width
+
+    # -- responsive width -----------------------------------------------------
+    def apply_responsive_width(self, window_width):
+        """Set the panel width from the containing window's width.
+
+        Two rules, no breakpoint table:
+
+        * never wider than its content needs (`base_width`, which
+          `fit_to_content` set from the content itself), and
+        * never more than `MAX_WINDOW_SHARE` of the window.
+
+        The first is what a scaled-by-breakpoint sidebar gets wrong. Cable
+        Web's `_update_responsive_sidebars` shrinks its panels by a fixed
+        percentage at each step, which on this panel pushed Analyze, Set
+        Pinned and Clear UDL 12-20 px past the right edge on a 700 px window
+        -- reachable only by scrolling sideways to find the button you were
+        already looking at. Shrinking below the content buys canvas width at
+        exactly the price the content is worth; so shrink only once the panel
+        would otherwise dominate a small window, and let the horizontal
+        scrollbar cover that last case rather than every case.
+        """
+        w = self.base_width
+        if window_width > 1:
+            w = min(w, max(120, int(window_width * self.MAX_WINDOW_SHARE)))
+        try:
+            if int(self.cget('width')) != w:
+                self.configure(width=w)
+                self.canvas.configure(width=w)
+                self._sync()
+        except Exception:
+            pass
+        return w
+
+
+class WrapBar:
+    """Flow the direct children of an EXISTING single-row bar across as many
+    rows as the current width needs, without restructuring how that bar was
+    built.
+
+    `FlowBar` is the better tool when you are writing the bar: it keeps
+    related controls together as groups, so a wrap never splits a labelled
+    entry from its button. But three tabs already had a toolbar built as one
+    long run of `.pack(side='left')` calls, and rewriting each into groups is
+    a large diff with nothing to show for it beyond nicer wrap points. This
+    adopts such a bar as-is:
+
+        bar = tk.Frame(...); bar.pack(fill='x')
+        ...   # existing tk.Button(bar, ...).pack(side='left') calls, untouched
+        self.toolbar_wrap = WrapBar(bar)
+        self.toolbar_wrap.start()
+
+    It reuses FlowBar's own row-wrapping, so it inherits the same three
+    lessons (MANIFESTO 3c/3d/3e): no cached layout decision, one Frame per
+    row rather than a shared-column grid, and `.lower()` on every anchor
+    frame so it does not paint over the widgets it positions.
+    """
+
+    def __init__(self, bar, on_relayout=None, item_pad=2):
+        self.bar = bar
+        self.on_relayout = on_relayout
+        self.item_pad = item_pad
+        self._pending = False
+        self._running = False
+
+    def start(self):
+        self.bar.bind('<Configure>', self._schedule, add='+')
+        self.bar.after_idle(self.relayout)
+
+    def _schedule(self, _event=None):
+        if self._pending:
+            return
+        self._pending = True
+        try:
+            # A TIMER, deliberately, not after_idle. A relayout repacks the
+            # bar, which fires <Configure>, which lands back here -- so an
+            # idle-queued relayout re-enqueues itself from inside whatever
+            # drained the queue. ScrollPanel.fit_to_content() calls
+            # update_idletasks(), and that call does not return until the idle
+            # queue is empty, so the two together never terminated: building
+            # the Beam tab after the Truss tab hung the app forever at 100%
+            # CPU before the window ever appeared. (It needed the toplevel to
+            # have no explicit geometry -- as main.py starts it -- so the
+            # bar's width never settled and the cycle had no fixed point.)
+            # A timer callback is not idle work, so update_idletasks() can
+            # always drain, while the relayout still follows the resize within
+            # one frame. Note this adds NO width cache: caching on width is
+            # what locked in a wrong layout before (MANIFESTO sec 3c), and
+            # that bug must not come back. Do not "simplify" this to
+            # after_idle.
+            self.bar.after(16, self.relayout)
+        except Exception:
+            self._pending = False
+
+    def relayout(self):
+        try:
+            if not self.bar.winfo_exists():
+                return
+        except Exception:
+            return
+        if self._running:
+            return
+        self._pending = False
+        self._running = True
+        try:
+            available = max(1, self.bar.winfo_width() - 10)
+            FlowBar._wrap_children(self.bar, available, self.item_pad)
+            if self.on_relayout is not None:
+                self.on_relayout()
+        finally:
+            self._running = False
+
+
+class CollapsibleSection(tk.Frame):
+    """A LabelFrame whose title bar folds the contents away.
+
+    Drop-in for `tk.LabelFrame` with one difference: children go into
+    `.body`, not into the section itself::
+
+        sec = CollapsibleSection(panel, text='Plates', open=False)
+        sec.pack(fill='x', padx=8, pady=4)
+        tk.Label(sec.body, text='...').pack()
+
+    WHY THIS EXISTS. The Truss panel had nine LabelFrames open at all times
+    and the Analyze button underneath them, so the control that runs the
+    analysis was roughly 900 px down a 235 px-wide scrolling column. Four of
+    those nine (construction geometry, arrays, plates with its gusset bolt
+    grid, rod families) are advanced work that an architecture student --
+    this app's actual audience -- does not touch for weeks.
+
+    Folding is NOT hiding. The section keeps its place in the panel and its
+    title stays readable, so the control is still discoverable; only its
+    fields are out of the way. That distinction is what
+    `tests/test_truss_layout.py` asserts on: a widget inside a folded
+    section is *available*, while a widget pushed off the panel edge is
+    lost. Collapsing must never be a way to make that test pass.
+    """
+
+    #: Shown before the title. Unicode triangles, not images: the rest of
+    #: this project draws its glyphs the same way (see the ruler and the
+    #: diagram-pane hints) and it keeps the widget dependency-free.
+    MARK_OPEN = '▾'      # ▾
+    MARK_SHUT = '▸'      # ▸
+
+    def __init__(self, master, text='', open=True, bg='#f0f0ee',
+                 font=('Helvetica', 10, 'bold'), fg='#333333',
+                 padx=6, pady=4, **kw):
+        super().__init__(master, bg=bg, bd=1, relief='solid', **kw)
+        self._bg = bg
+        self._title = text
+        self._open = bool(open)
+        self._on_toggle = None
+
+        self.header = tk.Frame(self, bg=bg, cursor='hand2')
+        self.header.pack(fill='x')
+        self.title_label = tk.Label(self.header, bg=bg, fg=fg, font=font,
+                                    anchor='w', padx=4, pady=2)
+        self.title_label.pack(side='left', fill='x', expand=True)
+
+        self.body = tk.Frame(self, bg=bg, padx=padx, pady=pady)
+        if self._open:
+            self.body.pack(fill='both', expand=True)
+
+        # Bound on the header AND the label: clicking the text is the
+        # obvious gesture, clicking the strip beside it is the forgiving one.
+        for w in (self.header, self.title_label):
+            w.bind('<Button-1>', self._click)
+        self._sync_title()
+
+    # -- state ----------------------------------------------------------------
+    def _click(self, _event=None):
+        self.toggle()
+        return 'break'
+
+    def _sync_title(self):
+        mark = self.MARK_OPEN if self._open else self.MARK_SHUT
+        self.title_label.configure(text=f'{mark}  {self._title}')
+
+    def toggle(self):
+        self.set_open(not self._open)
+
+    def set_open(self, flag):
+        flag = bool(flag)
+        if flag == self._open:
+            return
+        self._open = flag
+        if flag:
+            self.body.pack(fill='both', expand=True)
+        else:
+            self.body.pack_forget()
+        self._sync_title()
+        if self._on_toggle is not None:
+            try:
+                self._on_toggle(self)
+            except Exception:
+                pass
+
+    def is_open(self):
+        return self._open
+
+    def on_toggle(self, fn):
+        """Run `fn(section)` after every fold/unfold -- used by the panel to
+        re-measure its scrollregion once the section's height has changed."""
+        self._on_toggle = fn
+        return self
+
+    # -- compatibility --------------------------------------------------------
+    def configure(self, cnf=None, **kw):
+        """Accept `text=` like a LabelFrame, so a caller that retitles a
+        section ('Load on node 3') does not have to know it is not one."""
+        if 'text' in kw:
+            self._title = kw.pop('text')
+            self._sync_title()
+        if cnf is None and not kw:
+            return super().configure()
+        return super().configure(cnf, **kw)
+
+    config = configure
+
+
+class AppShell(tk.Frame):
+    """The layout every tab shares: toolbar on top, control panel on the
+    LEFT behind a draggable divider, drawing filling the rest, an optional
+    diagram pane under it behind a second divider, status bar at the bottom.
+
+        shell = AppShell(tab, panel_width=340)
+        shell.pack(fill='both', expand=True)
+        flow = FlowBar(shell.toolbar)          # build the toolbar as usual
+        self._build_panel(shell.panel.interior)
+        self.zc = ZoomCanvas(shell.work); self.zc.pack(fill='both', expand=True)
+        shell.set_status('Ready.')
+
+    WHY THIS EXISTS. Before it, six tabs used four different arrangements:
+    Truss/Beam/Arch/Cable put the panel on the right at a fixed width (235 px
+    in Truss, 340 in the others, for strictly more content), Cable Web used
+    two fixed panels, Stereo put its sidebar on the left under a comment
+    claiming that was "the rest of the app's left-panel convention", and only
+    Perforated Beam let the user drag the divider. A student who learned one
+    tab had to relearn the next.
+
+    Two of those were already right and are what this generalises:
+
+    * **Left panel** -- `apps/stereo/stereo_app.py`. Reading order runs
+      left to right, so the controls that produce the drawing belong before
+      it, not after it.
+    * **Draggable width** -- `apps/perforated_beam/perforated_beam_app.py`,
+      whose own comment says it best: a fixed width "cannot be right for
+      everyone -- the tab is used at 1280 and at 2560 -- so the width became
+      the user's to set".
+
+    The panel is a `ScrollPanel`, so everything that class guarantees still
+    holds inside the pane: content wider than the panel scrolls rather than
+    being clipped, and the panel can never be squeezed out of existence by
+    the canvas. What changes is who decides the width. Do NOT also call
+    `panel.apply_responsive_width()` on a panel inside a shell: the sash is
+    the user's, and a <Configure> handler that resets it every time the
+    window moves would take it back.
+    """
+
+    #: Narrowest the user may drag the panel. Below this the panel is a
+    #: scrollbar and nothing else, which is worse than useless -- but it is
+    #: deliberately reachable, because dragging the panel down to a sliver to
+    #: look at a wide truss and then dragging it back is a real workflow.
+    PANEL_MIN = 120
+    #: Narrowest the drawing may become. The drawing is the point of every
+    #: tab in this app; it never goes away to make room for controls.
+    WORK_MIN = 260
+    #: Shortest the diagram pane may be dragged before it is simply closed.
+    DIAG_MIN = 90
+
+    def __init__(self, master, panel_width=PANEL_W + 105, bg='#f5f5f3',
+                 panel_bg='#f0f0ee', toolbar_bg='#ebebea', status=True, **kw):
+        super().__init__(master, bg=bg, **kw)
+        self._bg = bg
+
+        self.toolbar = tk.Frame(self, bg=toolbar_bg)
+        self.toolbar.pack(fill='x', padx=6, pady=(6, 0))
+
+        # Status bar packed BEFORE the body even though it is drawn last.
+        # Tk's pack hands each slave a parcel in packing order, so a status
+        # bar packed after an expand=True body is the first thing to be
+        # starved when the window shrinks -- the same trap ScrollPanel's
+        # docstring describes one level up. side='bottom' plus early packing
+        # is what keeps it pinned.
+        self.status_var = tk.StringVar(value='')
+        self.status_label = None
+        if status:
+            self.status_label = tk.Label(
+                self, textvariable=self.status_var, anchor='w',
+                bg=toolbar_bg, font=('Helvetica', 10), relief='flat',
+                padx=8, pady=3)
+            self.status_label.pack(side='bottom', fill='x', padx=6, pady=(4, 6))
+
+        self.body = tk.PanedWindow(self, orient='horizontal', bg='#d8d8d4',
+                                   sashwidth=7, sashrelief='raised', sashpad=0,
+                                   borderwidth=0, opaqueresize=False)
+        self.body.pack(fill='both', expand=True, padx=6, pady=(6, 0))
+
+        self.panel = ScrollPanel(self.body, width=panel_width, bg=panel_bg,
+                                 bd=1, relief='solid')
+        self.body.add(self.panel, minsize=self.PANEL_MIN, width=panel_width,
+                      stretch='never')
+
+        # Everything right of the sash. A second, VERTICAL PanedWindow so the
+        # diagram pane gets its own draggable divider: a fixed 260 px diagram
+        # band plus a wrapped toolbar left the Truss drawing about 240 px tall
+        # on a 768 px laptop, and the drawing is the thing being taught with.
+        self.work_outer = tk.PanedWindow(self.body, orient='vertical',
+                                         bg='#d8d8d4', sashwidth=7,
+                                         sashrelief='raised', sashpad=0,
+                                         borderwidth=0, opaqueresize=False)
+        self.body.add(self.work_outer, minsize=self.WORK_MIN, stretch='always')
+
+        self.work = tk.Frame(self.work_outer, bg=bg)
+        self.work_outer.add(self.work, minsize=self.WORK_MIN, stretch='always')
+
+        self.lower = tk.Frame(self.work_outer, bg=bg)
+        self._lower_shown = False
+
+        # Until the user drags the sash, the panel is allowed to yield to a
+        # narrow window (see `auto_fit_panel`). The moment they drag it, the
+        # width is theirs and nothing takes it back. A ButtonRelease bound on
+        # the PanedWindow itself can only come from its sash: a child's
+        # events do not reach it, because the PanedWindow is not in the
+        # child's bindtags.
+        self._user_sash = False
+        self._panel_base = panel_width
+        self.body.bind('<ButtonRelease-1>', self._note_sash_drag, add='+')
+
+    # -- the optional lower (diagram) pane ------------------------------------
+    def show_lower(self, height=None):
+        """Reveal the pane under the drawing, building nothing. The caller
+        owns `.lower` and keeps its contents between shows."""
+        if self._lower_shown:
+            return
+        kw = {'minsize': self.DIAG_MIN, 'stretch': 'never'}
+        if height:
+            kw['height'] = height
+        self.work_outer.add(self.lower, **kw)
+        self._lower_shown = True
+
+    def hide_lower(self):
+        if not self._lower_shown:
+            return
+        try:
+            self.work_outer.forget(self.lower)
+        except Exception:
+            pass
+        self._lower_shown = False
+
+    def lower_visible(self):
+        return self._lower_shown
+
+    # -- status ---------------------------------------------------------------
+    def set_status(self, text):
+        self.status_var.set(text)
+
+    # -- panel width ----------------------------------------------------------
+    def panel_width(self):
+        """Current width of the panel pane, in pixels."""
+        try:
+            return int(self.panel.winfo_width())
+        except Exception:
+            return 0
+
+    def _note_sash_drag(self, _event=None):
+        self._user_sash = True
+
+    def user_set_the_width(self):
+        return self._user_sash
+
+    def set_panel_width(self, width, remember=False):
+        """Move the sash.
+
+        `remember=True` also adopts this as the panel's preferred width --
+        what the tab measured from its own content at startup. After that
+        `auto_fit_panel` may go narrower on a small window, but never wider
+        than this.
+        """
+        try:
+            width = max(self.PANEL_MIN, int(width))
+            if remember:
+                self._panel_base = width
+            if abs(self.panel.winfo_width() - width) <= 1:
+                return
+            self.body.paneconfigure(self.panel, width=width)
+            self.update_idletasks()
+            self.body.sash_place(0, width, 0)
+        except Exception:
+            pass
+
+    def auto_fit_panel(self, window_width, max_share=0.34):
+        """Let the panel give ground on a small window -- until the user
+        says otherwise.
+
+        A fixed panel width is wrong twice over. Too wide, and on a 900 px
+        laptop the drawing and whatever else the tab puts beside it are
+        squeezed until controls start dropping off the bottom of their
+        column (measured on the Arch tab: 45 controls mapped at 1600 px, 40
+        at 900 px, once the panel stopped yielding). Too narrow, and a
+        2560 px monitor wastes half its width.
+
+        So: the panel asks for what its content needs, shrinks when the
+        window cannot afford that, and stops doing either the moment the
+        user drags the sash -- at which point the number is theirs and this
+        is a no-op forever after.
+        """
+        if self._user_sash or window_width <= 1:
+            return
+        want = min(self._panel_base,
+                   max(self.PANEL_MIN, int(window_width * max_share)))
+        self.set_panel_width(want)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+class UnitsMixin:
+    """Show a tab's numbers in the unit convention chosen above the notebook.
+
+    The Beam tab was wired to `units.py` by hand first. Doing that five more
+    times would mean six copies of the same four ideas, which is exactly how
+    two tabs end up disagreeing about what a kip is (MANIFESTO s3j). So the
+    machinery lives here and each tab supplies only what is genuinely its own:
+    which of its fields are which physical quantity, and what to repaint.
+
+    A tab mixes this in, calls `init_units(repaint=...)` once its widgets
+    exist, and then:
+
+        self.unit_label(lb, lambda: f'E ({self.u("modulus")}):')
+        self.unit_var(self.mat_E, 'modulus')
+        text = self.fmt('force', N, digits=2)
+
+    -- the property this must never break -----------------------------------
+    Switching conventions is PRESENTATION ONLY. It converts on the way to a
+    label and back from an entry box; it must never rewrite the tab's model.
+    Registered *entry variables* are inputs -- a value about to be applied, not
+    the model itself -- so they are converted in place and rounded for
+    legibility. The model is re-read and repainted from storage instead, which
+    is why `init_units` takes a repaint callback rather than trying to convert
+    stored state.
+
+    -- storage is not uniform across the tabs -------------------------------
+    `STORAGE_UNITS` says what THIS tab holds its numbers in. It defaults to
+    `units.STORAGE` (kN, m, cm2, cm4, GPa, kN/cm2), which is what the Beam,
+    Arch and Cable tabs use, but the Truss tab has always held plate yield in
+    MPa and plate thickness in mm. Declaring the difference is safer than
+    changing either tab's storage, which would silently reinterpret every
+    model already saved.
+    """
+
+    STORAGE_UNITS = units.STORAGE
+
+    # field name -> quantity, so one table refresh converts every column
+    # without a per-column special case. Fields that are not numbers (a
+    # support type, a q(x) expression, a name) map to None and pass through.
+    _FIELD_Q = {}
+
+    # Significant figures kept when an entry box is rewritten in a new
+    # convention. Six is far beyond any meaningful input precision -- a
+    # modulus is not known to one part in a million -- and stops a switch to
+    # AISC from turning "10" into "32.808398950131235".
+    UNIT_ENTRY_SIGFIGS = 6
+
+    # -- setup --------------------------------------------------------------
+    def init_units(self, repaint=None):
+        """Start following the selector. `repaint` is called after every
+        switch, once labels and entry variables have been updated, and is
+        where a tab redraws its results text, tables and diagrams."""
+        self._unit_labels = []
+        self._unit_vars = []
+        self._unit_shown_in = units.current()
+        self._unit_repaint = repaint
+        self._units_listener = units.on_change(self._units_changed)
+        return self._units_listener
+
+    def stop_units(self):
+        """Detach from the selector. Tabs are never destroyed in the running
+        app, but the tests build and tear down hundreds of them, and a
+        listener holding a dead widget would be called forever."""
+        fn = getattr(self, '_units_listener', None)
+        if fn is not None:
+            units.off_change(fn)
+            self._units_listener = None
+
+    # -- the four things a tab asks for -------------------------------------
+    def u(self, quantity):
+        """The label the current convention writes this quantity in."""
+        return units.label(quantity)
+
+    def show(self, quantity, stored):
+        """A value as this tab stores it -> the number to show the user."""
+        if isinstance(stored, bool) or not isinstance(stored, (int, float)):
+            return stored
+        return units.current().from_si(
+            quantity, self.STORAGE_UNITS.to_si(quantity, stored))
+
+    def store(self, quantity, shown):
+        """The inverse of `show`, for a number the user typed."""
+        if isinstance(shown, bool) or not isinstance(shown, (int, float)):
+            return shown
+        return self.STORAGE_UNITS.from_si(
+            quantity, units.current().to_si(quantity, shown))
+
+    def fmt(self, quantity, stored, digits=2, with_label=True, sign=False,
+            width=0):
+        """Format a STORED value in the current convention, e.g. '12.50 kN'."""
+        spec = f'{"+" if sign else ""}{width or ""}.{digits}f'
+        text = format(self.show(quantity, stored), spec)
+        return f'{text} {self.u(quantity)}' if with_label else text
+
+    # -- the same three, keyed by model field name --------------------------
+    def _shown(self, field, stored):
+        q = self._FIELD_Q.get(field)
+        return stored if q is None else self.show(q, stored)
+
+    def _stored(self, field, shown):
+        q = self._FIELD_Q.get(field)
+        return shown if q is None else self.store(q, shown)
+
+    def _u(self, field):
+        q = self._FIELD_Q.get(field)
+        return units.label(q) if q else ''
+
+    # -- registration -------------------------------------------------------
+    def unit_label(self, widget, build, option='text'):
+        """Register a widget whose text names a unit, and paint it now.
+
+        `build` is called with no arguments and returns the full text, so the
+        wording stays next to the widget it belongs to instead of being
+        reassembled from fragments inside the repaint routine.
+        """
+        self._unit_labels.append((widget, build, option))
+        try:
+            widget.config(**{option: build()})
+        except tk.TclError:
+            pass
+        return widget
+
+    def unit_var(self, var, quantity, digits=None):
+        """Register a Tk entry variable holding a value in STORAGE units.
+
+        The variable then SHOWS the value in whatever convention is selected,
+        while the mixin keeps the exact storage figure. Read it back with
+        `unit_value(var)` and write it with `set_unit_value(var, ...)`; both
+        deal in storage units, so nothing that feeds a solver has to know a
+        convention was ever chosen.
+        """
+        rec = {'var': var, 'q': quantity, 'digits': digits,
+               'stored': self._var_get(var), 'shown': None}
+        self._unit_vars.append(rec)
+        self._paint_var(rec)
+        return var
+
+    def unit_value(self, var, default=0.0):
+        """The STORAGE value behind a registered box.
+
+        Exactly the figure last put there if the box has not been edited, and
+        the typed number converted out of the displayed convention if it has.
+        Going through the record rather than through `store(var.get())` is
+        what stops a switch to AISC and back from turning 20 m into
+        20.00000064 m: the displayed number is rounded to stay readable, so it
+        can never be the authoritative copy.
+        """
+        rec = self._unit_rec(var)
+        if rec is None:
+            v = self._var_get(var)
+            return default if v is None else v
+        self._sync_var(rec)
+        return default if rec['stored'] is None else rec['stored']
+
+    def set_unit_value(self, var, stored):
+        """Put a STORAGE value into a registered box, written in the current
+        convention."""
+        rec = self._unit_rec(var)
+        if rec is None:
+            var.set(stored)
+            return
+        rec['stored'] = stored
+        self._paint_var(rec)
+
+    # -- repainting ---------------------------------------------------------
+    def _units_alive(self):
+        """Whether this tab still exists. Most tabs ARE widgets; the Truss tab
+        is a plain object that owns a root, so ask whichever of the two can
+        answer and assume alive if neither can."""
+        for owner in (self, getattr(self, 'root', None), getattr(self, 'master', None)):
+            exists = getattr(owner, 'winfo_exists', None)
+            if exists is not None:
+                try:
+                    return bool(exists())
+                except Exception:
+                    return False
+        return True
+
+    def _units_changed(self, system):
+        if not self._units_alive():
+            self.stop_units()
+            return
+        # Adopt anything the user typed BEFORE the convention changes, since
+        # what they typed was written in the old one.
+        for rec in list(self._unit_vars):
+            self._sync_var(rec)
+        self._unit_shown_in = system
+        for rec in list(self._unit_vars):
+            self._paint_var(rec)
+        for widget, build, option in list(self._unit_labels):
+            try:
+                if widget.winfo_exists():
+                    widget.config(**{option: build()})
+            except tk.TclError:
+                pass
+        if self._unit_repaint is not None:
+            self._unit_repaint()
+
+    # -- small helpers ------------------------------------------------------
+    def _unit_rec(self, var):
+        for rec in getattr(self, '_unit_vars', ()):
+            if rec['var'] is var:
+                return rec
+        return None
+
+    def _sync_var(self, rec):
+        """Adopt what the box says, if it differs from what we last wrote
+        there. The number is read in the convention it was DISPLAYED in, which
+        is not necessarily the one now selected."""
+        now = self._var_get(rec['var'])
+        if now is None:                      # half-typed; keep what we have
+            return
+        written = rec['shown']
+        if isinstance(written, str):
+            try:
+                written = float(written)
+            except ValueError:
+                written = None
+        if written is None or now != written:
+            was = getattr(self, '_unit_shown_in', None) or units.current()
+            rec['stored'] = self.STORAGE_UNITS.from_si(
+                rec['q'], was.to_si(rec['q'], now))
+
+    def _paint_var(self, rec):
+        if rec['stored'] is None:
+            return
+        rec['shown'] = self._set_rounded(
+            rec['var'], self.show(rec['q'], rec['stored']), rec['digits'])
+
+    @staticmethod
+    def _var_get(var):
+        """A Tk variable's value, or None if the box holds something that is
+        not a number yet. A user mid-keystroke must not be able to make the
+        unit selector raise."""
+        try:
+            return float(var.get())
+        except (tk.TclError, ValueError, TypeError):
+            return None
+
+    def _set_rounded(self, var, value, digits=None):
+        """Write a legible version of `value` and return what was written, so
+        a later edit can be told apart from our own rounding.
+
+        A StringVar gets a `%g` STRING, not a float: those boxes are the ones
+        where blank means "not set", and writing 1350.0 where the user had
+        typed 1350 is a visible change for no reason.
+        """
+        try:
+            if digits is not None:
+                shown = round(value, digits)
+            else:
+                shown = float('%.*g' % (self.UNIT_ENTRY_SIGFIGS, value))
+            if isinstance(var, tk.StringVar):
+                text = '%g' % shown
+                var.set(text)
+                return text
+            var.set(shown)
+            return shown
+        except (tk.TclError, ValueError, OverflowError):
+            return None

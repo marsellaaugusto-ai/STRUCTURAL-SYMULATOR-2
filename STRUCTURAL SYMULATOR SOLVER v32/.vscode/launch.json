@@ -1,0 +1,43 @@
+{
+  // How to run the app from VS Code.
+  //
+  // "cwd" is the point of this file. main.py, common.py and apps/ import
+  // each other by package path and must be run with THIS folder as the
+  // working directory; VS Code's plain Run button uses the workspace root,
+  // which is the wrong folder whenever the repository (rather than the app
+  // folder) is what was opened.
+  //
+  // If F5 still fails on an import, the interpreter is wrong, not the
+  // folder: Ctrl+Shift+P -> "Python: Select Interpreter", then run the
+  // "Install requirements" task.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Structural Simulator (app folder open)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Structural Simulator (repository root open)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/STRUCTURAL SYMULATOR SOLVER-5-9-26/main.py",
+      "cwd": "${workspaceFolder}/STRUCTURAL SYMULATOR SOLVER-5-9-26",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Environment doctor",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/doctor.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}

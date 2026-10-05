@@ -1,0 +1,13 @@
+{
+  // Run and test from the app folder, not from whatever the workspace
+  // root happens to be -- the package imports depend on it.
+  "python.terminal.executeInFileDir": false,
+  "python.analysis.extraPaths": ["."],
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": ["tests"],
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true
+  }
+}

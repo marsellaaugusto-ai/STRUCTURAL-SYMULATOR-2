@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 420" width="100%" role="img">
+<rect width="1080" height="420" fill="#ffffff"/>
+<rect x="0.0" y="0.0" width="1080.0" height="420.0" rx="0.0" fill="#ffffff"/>
+<text x="24.00" y="30.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="700" >THE CASE STAGE 1 HAS TO REPRODUCE</text>
+<text x="24.00" y="48.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="11.5" fill="#1e2429" text-anchor="start" font-weight="700" >Rigidly supported spherical dome · Mekjavić &amp; Pičulin (2010), Table 1</text>
+<text x="24.00" y="78.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="700" >A · the dome, in section</text>
+<polygon points="85.6,192.3 88.5,190.8 91.4,189.3 94.3,187.9 97.2,186.5 100.1,185.1 103.1,183.8 106.0,182.5 109.0,181.3 112.0,180.1 115.0,178.9 118.1,177.7 121.1,176.6 124.2,175.6 127.2,174.5 130.3,173.5 133.4,172.6 136.5,171.7 139.6,170.8 142.8,170.0 145.9,169.2 149.0,168.4 152.2,167.7 155.4,167.0 158.5,166.3 161.7,165.7 164.9,165.2 168.1,164.6 171.3,164.1 174.5,163.7 177.7,163.3 180.9,162.9 184.1,162.6 187.4,162.3 190.6,162.0 193.8,161.8 197.1,161.6 200.3,161.5 203.5,161.4 206.8,161.3 210.0,161.3 213.2,161.3 216.5,161.4 219.7,161.5 222.9,161.6 226.2,161.8 229.4,162.0 232.6,162.3 235.9,162.6 239.1,162.9 242.3,163.3 245.5,163.7 248.7,164.1 251.9,164.6 255.1,165.2 258.3,165.7 261.5,166.3 264.6,167.0 267.8,167.7 271.0,168.4 274.1,169.2 277.2,170.0 280.4,170.8 283.5,171.7 286.6,172.6 289.7,173.5 292.8,174.5 295.8,175.6 298.9,176.6 301.9,177.7 305.0,178.9 308.0,180.1 311.0,181.3 314.0,182.5 316.9,183.8 319.9,185.1 322.8,186.5 325.7,187.9 328.6,189.3 331.5,190.8 334.4,192.3 334.4,199.8 331.5,198.3 328.6,196.8 325.7,195.4 322.8,194.0 319.9,192.7 316.9,191.3 314.0,190.0 311.0,188.8 308.0,187.6 305.0,186.4 301.9,185.3 298.9,184.1 295.8,183.1 292.8,182.0 289.7,181.1 286.6,180.1 283.5,179.2 280.4,178.3 277.2,177.5 274.1,176.7 271.0,175.9 267.8,175.2 264.6,174.5 261.5,173.8 258.3,173.2 255.1,172.7 251.9,172.1 248.7,171.6 245.5,171.2 242.3,170.8 239.1,170.4 235.9,170.1 232.6,169.8 229.4,169.5 226.2,169.3 222.9,169.1 219.7,169.0 216.5,168.9 213.2,168.8 210.0,168.8 206.8,168.8 203.5,168.9 200.3,169.0 197.1,169.1 193.8,169.3 190.6,169.5 187.4,169.8 184.1,170.1 180.9,170.4 177.7,170.8 174.5,171.2 171.3,171.6 168.1,172.1 164.9,172.7 161.7,173.2 158.5,173.8 155.4,174.5 152.2,175.2 149.0,175.9 145.9,176.7 142.8,177.5 139.6,178.3 136.5,179.2 133.4,180.1 130.3,181.1 127.2,182.0 124.2,183.1 121.1,184.1 118.1,185.3 115.0,186.4 112.0,187.6 109.0,188.8 106.0,190.0 103.1,191.3 100.1,192.7 97.2,194.0 94.3,195.4 91.4,196.8 88.5,198.3 85.6,199.8" fill="#c6d3de" stroke="#46535e" stroke-width="0.9"/>
+<polyline points="85.6,196.1 87.2,195.2 88.8,194.4 90.4,193.6 92.0,192.7 93.7,191.9 95.3,191.2 96.9,190.4 98.6,189.6 100.2,188.9 101.9,188.1 103.5,187.4 105.2,186.7 106.8,185.9 108.5,185.2 110.2,184.6 111.9,183.9 113.6,183.2 115.2,182.6 116.9,181.9 118.6,181.3" fill="none" stroke="#c0561f" stroke-width="5" stroke-opacity="0.30"/>
+<polyline points="334.4,196.1 332.8,195.2 331.2,194.4 329.6,193.6 328.0,192.7 326.3,191.9 324.7,191.2 323.1,190.4 321.4,189.6 319.8,188.9 318.1,188.1 316.5,187.4 314.8,186.7 313.2,185.9 311.5,185.2 309.8,184.6 308.1,183.9 306.4,183.2 304.8,182.6 303.1,181.9 301.4,181.3" fill="none" stroke="#c0561f" stroke-width="5" stroke-opacity="0.30"/>
+<polygon points="85.6,199.8 78.6,211.8 92.6,211.8" fill="#2f6ea8"/>
+<line x1="76.6" y1="211.8" x2="72.6" y2="217.8" stroke="#2f6ea8" stroke-width="1.00" stroke-linecap="butt"/>
+<line x1="81.1" y1="211.8" x2="77.1" y2="217.8" stroke="#2f6ea8" stroke-width="1.00" stroke-linecap="butt"/>
+<line x1="85.6" y1="211.8" x2="81.6" y2="217.8" stroke="#2f6ea8" stroke-width="1.00" stroke-linecap="butt"/>
+<line x1="90.1" y1="211.8" x2="86.1" y2="217.8" stroke="#2f6ea8" stroke-width="1.00" stroke-linecap="butt"/>
+<line x1="94.6" y1="211.8" x2="90.6" y2="217.8" stroke="#2f6ea8" stroke-width="1.00" stroke-linecap="butt"/>
+<polygon points="334.4,199.8 327.4,211.8 341.4,211.8" fill="#2f6ea8"/>
+<line x1="325.4" y1="211.8" x2="321.4" y2="217.8" stroke="#2f6ea8" stroke-width="1.00" stroke-linecap="butt"/>
+<line x1="329.9" y1="211.8" x2="325.9" y2="217.8" stroke="#2f6ea8" stroke-width="1.00" stroke-linecap="butt"/>
+<line x1="334.4" y1="211.8" x2="330.4" y2="217.8" stroke="#2f6ea8" stroke-width="1.00" stroke-linecap="butt"/>
+<line x1="338.9" y1="211.8" x2="334.9" y2="217.8" stroke="#2f6ea8" stroke-width="1.00" stroke-linecap="butt"/>
+<line x1="343.4" y1="211.8" x2="339.4" y2="217.8" stroke="#2f6ea8" stroke-width="1.00" stroke-linecap="butt"/>
+<line x1="85.6" y1="230.1" x2="334.4" y2="230.1" stroke="#1a6bbd" stroke-width="1.00" stroke-linecap="butt"/>
+<text x="210.00" y="246.05" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1a6bbd" text-anchor="middle" font-weight="400" >2 r₀ = 26.98 m</text>
+<text x="24.00" y="276.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >r = 28.80 m · α = 28° · t = 10.2 cm · ν = 1/6</text>
+<text x="24.00" y="292.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >q = 4.31 kN/m² (2.55 dead + 1.76 live)</text>
+<text x="24.00" y="308.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >E = 32 GPa · C30/37 · bottom edge fully fixed</text>
+<text x="24.00" y="330.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >quad4 mesh, refined 6 014 → 12 028 elements until</text>
+<text x="24.00" y="344.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >the forces stopped moving.</text>
+<text x="24.00" y="366.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >thickness drawn ×8; everything else to scale.</text>
+<text x="348.00" y="176.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#c0561f" text-anchor="start" font-weight="400" >bending lives</text>
+<text x="348.00" y="188.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#c0561f" text-anchor="start" font-weight="400" >in these bands</text>
+<text x="452.00" y="78.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="700" >B · why the edge needs its own mesh</text>
+<text x="452.00" y="96.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >the edge disturbance decays as e^(−βψ), with β = [3(1−ν²)]^¼ √(r/t) = 22.0,</text>
+<text x="452.00" y="109.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >so it is spent 7.8° from the edge — 3.9 m of a 14.1 m meridian.</text>
+<rect x="452.0" y="134.0" width="248.0" height="162.0" rx="0.0" fill="#ffffff" stroke="#ccd3da" stroke-width="1.00"/>
+<line x1="452.0" y1="296.0" x2="700.0" y2="296.0" stroke="#e2e7ec" stroke-width="0.70" stroke-linecap="butt"/>
+<text x="447.00" y="299.40" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="end" font-weight="400" >-70</text>
+<line x1="452.0" y1="272.9" x2="700.0" y2="272.9" stroke="#e2e7ec" stroke-width="0.70" stroke-linecap="butt"/>
+<text x="447.00" y="276.26" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="end" font-weight="400" >-60</text>
+<line x1="452.0" y1="249.7" x2="700.0" y2="249.7" stroke="#e2e7ec" stroke-width="0.70" stroke-linecap="butt"/>
+<text x="447.00" y="253.11" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="end" font-weight="400" >-50</text>
+<line x1="452.0" y1="226.6" x2="700.0" y2="226.6" stroke="#e2e7ec" stroke-width="0.70" stroke-linecap="butt"/>
+<text x="447.00" y="229.97" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="end" font-weight="400" >-40</text>
+<line x1="452.0" y1="203.4" x2="700.0" y2="203.4" stroke="#e2e7ec" stroke-width="0.70" stroke-linecap="butt"/>
+<text x="447.00" y="206.83" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="end" font-weight="400" >-30</text>
+<line x1="452.0" y1="180.3" x2="700.0" y2="180.3" stroke="#e2e7ec" stroke-width="0.70" stroke-linecap="butt"/>
+<text x="447.00" y="183.69" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="end" font-weight="400" >-20</text>
+<line x1="452.0" y1="157.1" x2="700.0" y2="157.1" stroke="#e2e7ec" stroke-width="0.70" stroke-linecap="butt"/>
+<text x="447.00" y="160.54" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="end" font-weight="400" >-10</text>
+<line x1="452.0" y1="134.0" x2="700.0" y2="134.0" stroke="#e2e7ec" stroke-width="0.70" stroke-linecap="butt"/>
+<text x="447.00" y="137.40" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="end" font-weight="400" >0</text>
+<text x="422.00" y="215.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="middle" font-weight="400" >kN/m</text>
+<line x1="452.0" y1="296.0" x2="452.0" y2="300.0" stroke="#ccd3da" stroke-width="0.80" stroke-linecap="butt"/>
+<text x="452.00" y="311.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="middle" font-weight="400" >0°</text>
+<line x1="514.0" y1="296.0" x2="514.0" y2="300.0" stroke="#ccd3da" stroke-width="0.80" stroke-linecap="butt"/>
+<text x="514.00" y="311.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="middle" font-weight="400" >7°</text>
+<line x1="576.0" y1="296.0" x2="576.0" y2="300.0" stroke="#ccd3da" stroke-width="0.80" stroke-linecap="butt"/>
+<text x="576.00" y="311.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="middle" font-weight="400" >14°</text>
+<line x1="638.0" y1="296.0" x2="638.0" y2="300.0" stroke="#ccd3da" stroke-width="0.80" stroke-linecap="butt"/>
+<text x="638.00" y="311.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="middle" font-weight="400" >21°</text>
+<line x1="700.0" y1="296.0" x2="700.0" y2="300.0" stroke="#ccd3da" stroke-width="0.80" stroke-linecap="butt"/>
+<text x="700.00" y="311.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="8.6" fill="#77838d" text-anchor="middle" font-weight="400" >28°</text>
+<text x="576.00" y="326.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="middle" font-weight="400" >ψ, from the edge to the apex</text>
+<rect x="452.0" y="134.0" width="69.3" height="162.0" rx="0.0" fill="#c0561f" fill-opacity="0.10"/>
+<text x="526.33" y="148.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.0" fill="#c0561f" text-anchor="start" font-weight="400" >the last 7.8°</text>
+<polyline points="452.0,286.6 456.1,286.3 460.3,286.0 464.4,285.7 468.5,285.4 472.7,285.1 476.8,284.8 480.9,284.5 485.1,284.3 489.2,284.0 493.3,283.8 497.5,283.5 501.6,283.3 505.7,283.0 509.9,282.8 514.0,282.6 518.1,282.3 522.3,282.1 526.4,281.9 530.5,281.7 534.7,281.5 538.8,281.3 542.9,281.1 547.1,280.9 551.2,280.8 555.3,280.6 559.5,280.4 563.6,280.3 567.7,280.1 571.9,279.9 576.0,279.8 580.1,279.7 584.3,279.5 588.4,279.4 592.5,279.3 596.7,279.1 600.8,279.0 604.9,278.9 609.1,278.8 613.2,278.7 617.3,278.6 621.5,278.5 625.6,278.4 629.7,278.3 633.9,278.2 638.0,278.2 642.1,278.1 646.3,278.0 650.4,278.0 654.5,277.9 658.7,277.9 662.8,277.8 666.9,277.8 671.1,277.8 675.2,277.7 679.3,277.7 683.5,277.7 687.6,277.7 691.7,277.6 695.9,277.6 700.0,277.6" fill="none" stroke="#1a6bbd" stroke-width="1.6"/>
+<text x="696.00" y="270.63" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1a6bbd" text-anchor="end" font-weight="700" >Nφ</text>
+<polyline points="452.0,235.1 456.1,236.5 460.3,237.9 464.4,239.2 468.5,240.5 472.7,241.8 476.8,243.1 480.9,244.4 485.1,245.6 489.2,246.8 493.3,248.0 497.5,249.2 501.6,250.3 505.7,251.4 509.9,252.5 514.0,253.6 518.1,254.7 522.3,255.7 526.4,256.7 530.5,257.7 534.7,258.6 538.8,259.6 542.9,260.5 547.1,261.4 551.2,262.2 555.3,263.1 559.5,263.9 563.6,264.7 567.7,265.5 571.9,266.2 576.0,266.9 580.1,267.6 584.3,268.3 588.4,269.0 592.5,269.6 596.7,270.2 600.8,270.8 604.9,271.3 609.1,271.9 613.2,272.4 617.3,272.9 621.5,273.3 625.6,273.8 629.7,274.2 633.9,274.6 638.0,275.0 642.1,275.3 646.3,275.6 650.4,275.9 654.5,276.2 658.7,276.4 662.8,276.7 666.9,276.9 671.1,277.1 675.2,277.2 679.3,277.3 683.5,277.4 687.6,277.5 691.7,277.6 695.9,277.6 700.0,277.6" fill="none" stroke="#7b2fa8" stroke-width="1.6"/>
+<text x="696.00" y="270.63" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#7b2fa8" text-anchor="end" font-weight="700" >Nθ</text>
+<circle cx="452.0" cy="279.8" r="3.4" fill="#ffffff" stroke="#1a6bbd" stroke-width="1.8"/>
+<circle cx="700.0" cy="278.9" r="3.4" fill="#ffffff" stroke="#1a6bbd" stroke-width="1.8"/>
+<circle cx="452.0" cy="158.3" r="3.4" fill="#ffffff" stroke="#7b2fa8" stroke-width="1.8"/>
+<circle cx="700.0" cy="278.6" r="3.4" fill="#ffffff" stroke="#7b2fa8" stroke-width="1.8"/>
+<line x1="454.0" y1="235.1" x2="454.0" y2="158.3" stroke="#7b2fa8" stroke-width="1.00" stroke-linecap="butt" stroke-dasharray="3 3"/>
+<text x="531.71" y="184.91" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.0" fill="#7b2fa8" text-anchor="start" font-weight="400" >membrane theory is out</text>
+<text x="531.71" y="196.91" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.0" fill="#7b2fa8" text-anchor="start" font-weight="400" >by 33 kN/m at the edge</text>
+<text x="452.00" y="344.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >lines: the closed-form membrane solution.  circles: the paper’s</text>
+<text x="452.00" y="357.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >finite-element values, fine mesh.  The gap at ψ = 0 is the whole</text>
+<text x="452.00" y="370.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#77838d" text-anchor="start" font-weight="400" >reason a shell tab needs a mesh that is finer at its edges.</text>
+<text x="726.00" y="78.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="700" >C · the numbers to hit</text>
+<text x="726.00" y="106.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" ></text>
+<text x="760.00" y="106.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" >at</text>
+<text x="844.00" y="106.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" >membrane</text>
+<text x="922.00" y="106.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" >Geckeler</text>
+<text x="1000.00" y="106.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" >FEA fine</text>
+<line x1="726.0" y1="112.0" x2="1046.0" y2="112.0" stroke="#ccd3da" stroke-width="1.00" stroke-linecap="butt"/>
+<text x="726.00" y="128.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="700" >Nφ</text>
+<text x="760.00" y="128.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >0° (edge)</text>
+<text x="886.00" y="128.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−65.67</text>
+<text x="964.00" y="128.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−62.60</text>
+<text x="1042.00" y="128.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−63.00</text>
+<rect x="722.0" y="135.0" width="328.0" height="18.0" rx="0.0" fill="#c0561f" fill-opacity="0.10"/>
+<text x="726.00" y="147.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="700" >Nθ</text>
+<text x="760.00" y="147.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >0° (edge)</text>
+<text x="886.00" y="147.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−43.78</text>
+<text x="964.00" y="147.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−11.38</text>
+<text x="1042.00" y="147.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−10.51</text>
+<text x="726.00" y="166.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="700" >Mφ</text>
+<text x="760.00" y="166.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >0° (edge)</text>
+<text x="886.00" y="166.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >0</text>
+<text x="964.00" y="166.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−1.16</text>
+<text x="1042.00" y="166.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−1.18</text>
+<text x="726.00" y="185.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="700" >Nφ</text>
+<text x="760.00" y="185.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >28° (apex)</text>
+<text x="886.00" y="185.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−62.02</text>
+<text x="964.00" y="185.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−62.02</text>
+<text x="1042.00" y="185.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−62.60</text>
+<text x="726.00" y="204.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="700" >Nθ</text>
+<text x="760.00" y="204.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >28° (apex)</text>
+<text x="886.00" y="204.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−62.02</text>
+<text x="964.00" y="204.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−62.02</text>
+<text x="1042.00" y="204.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >−62.50</text>
+<text x="726.00" y="223.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="700" >Mφ</text>
+<text x="760.00" y="223.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >28° (apex)</text>
+<text x="886.00" y="223.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >0</text>
+<text x="964.00" y="223.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >0</text>
+<text x="1042.00" y="223.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#1e2429" text-anchor="end" font-weight="400" >0.04</text>
+<text x="726.00" y="256.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.0" fill="#77838d" text-anchor="start" font-weight="400" >N in kN/m, M in kNm/m.</text>
+<rect x="726.0" y="268.0" width="320.0" height="92.0" rx="2.0" fill="#f2f7fb" stroke="#1a6bbd" stroke-width="1.00"/>
+<text x="738.00" y="288.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#124a80" text-anchor="start" font-weight="700" >This is the acceptance test for Stage 1.</text>
+<text x="738.00" y="307.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >Published numbers, an analytic solution beside</text>
+<text x="738.00" y="321.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >them, and a mesh study that converged at 12 028</text>
+<text x="738.00" y="335.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >elements. If the element cannot hit this, nothing</text>
+<text x="738.00" y="349.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >built on top of it is worth drawing.</text>
+</svg>

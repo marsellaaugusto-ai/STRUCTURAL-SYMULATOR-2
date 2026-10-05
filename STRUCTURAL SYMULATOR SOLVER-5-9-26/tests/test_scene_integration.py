@@ -293,6 +293,24 @@ def app(tk_root):
     tab.destroy()
 
 
+def test_the_new_mixin_overrides_nothing_the_tab_already_had():
+    """A mixin that redefines an existing method is a silent swap: whichever
+    comes first in the MRO wins, and the loser's callers keep working until
+    the order changes. This module had exactly that -- its own _set_status,
+    shadowed by the shell's -- and it was harmless right up until it would
+    not have been."""
+    from apps.stereo.stereo_app_scene import StereoSceneMixin
+    mine = {n for n in vars(StereoSceneMixin) if not n.startswith('__')}
+    clashes = {}
+    for base in StereoApp.__mro__:
+        if base in (StereoSceneMixin, StereoApp, object):
+            continue
+        hit = mine & {n for n in vars(base) if not n.startswith('__')}
+        if hit:
+            clashes[base.__name__] = sorted(hit)
+    assert clashes == {}, clashes
+
+
 def test_the_tab_builds_a_document_from_its_own_model(app):
     app.groups = ag.auto_groups(app.nodes, app.members)
     doc = app._scene_document()

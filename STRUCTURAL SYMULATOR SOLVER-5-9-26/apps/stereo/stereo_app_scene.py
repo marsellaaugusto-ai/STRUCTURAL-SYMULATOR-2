@@ -16,6 +16,12 @@ What the tab gains, and what it does NOT change.
   operations) is deliberately a separate step, because rerouting the lock
   rules and the move plans is a change to behaviour, and this one is not.
 
+The status bar is the shell's own `_set_status(text, kind)` -- NOT redefined
+here. An earlier draft of this module had its own, which the shell's shadowed
+because StereoShellMixin comes first in the MRO: harmless that day, and a
+trap the day the order changed, when this one would have silently replaced
+the real status bar and stopped colouring it.
+
 THE DOCUMENT IS DERIVED, NEVER MIRRORED. `_scene_document()` builds a fresh
 graph from the current model every time it is asked. `self.groups` is
 assigned in eleven places across five modules -- import, merge, paste, undo,
@@ -57,17 +63,9 @@ class StereoSceneMixin:
         try:
             return self._scene_document()
         except Exception as exc:                      # noqa: BLE001
-            self._set_status('Exported without the Scene sheet: %s' % exc)
+            self._set_status('Exported without the Scene sheet: %s' % exc,
+                             kind='error')
             return None
-
-    def _set_status(self, text):
-        """The status bar, when there is one. Printed when there is not, so
-        this module stays usable from a test without a window."""
-        var = getattr(self, 'status', None)
-        if var is not None and hasattr(var, 'set'):
-            var.set(text)
-        else:
-            print(text)
 
     # ── the Scene sheet, on the way in ─────────────────────────────────────
 
@@ -104,7 +102,7 @@ class StereoSceneMixin:
         # its subgroups; it is still a real branch of the tree, so it stays.
         if warnings:
             self._set_status('Scene sheet read with %d note(s): %s'
-                             % (len(warnings), warnings[0]))
+                             % (len(warnings), warnings[0]), kind='error')
         return groups
 
     # ── a scene file of its own ────────────────────────────────────────────
@@ -124,7 +122,8 @@ class StereoSceneMixin:
         except Exception as exc:                      # noqa: BLE001
             messagebox.showerror('Save scene', str(exc))
             return
-        self._set_status('Scene saved to %s' % os.path.basename(path))
+        self._set_status('Scene saved to %s' % os.path.basename(path),
+                         kind='ok')
 
     def _open_scene_file(self):
         from apps.stereo.scene import SUFFIX, load_json
@@ -171,7 +170,7 @@ class StereoSceneMixin:
                 'The scene opened, with %d thing(s) to know about:\n\n  %s'
                 % (len(notes), '\n  '.join(notes[:8])))
         self._set_status('Scene opened: %d rods, %d groups'
-                         % (len(members), len(groups)))
+                         % (len(members), len(groups)), kind='ok')
 
     # ── what the flat model could not be asked ─────────────────────────────
 

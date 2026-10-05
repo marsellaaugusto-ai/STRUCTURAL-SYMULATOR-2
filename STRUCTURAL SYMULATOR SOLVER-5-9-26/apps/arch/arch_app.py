@@ -1246,6 +1246,7 @@ class ArchApp(UnitsMixin, tk.Frame):
         self._draw_schematic()
 
     def _clear_all(self):
+        self.document_name = None          # a new drawing
         self.point_loads = []
         self.distributed_loads = []
         self.result = None; self.model = None
@@ -1276,7 +1277,7 @@ class ArchApp(UnitsMixin, tk.Frame):
         if not _ensure_openpyxl():
             messagebox.showerror(
                 'Missing library',
-                'Could not install openpyxl automatically.\n\n'
+                'Excel import and export need the openpyxl library, which is not installed.\n\n'
                 'Please open a terminal and run:\n'
                 '    pip install openpyxl\n'
                 'then try again.')
@@ -1304,7 +1305,7 @@ class ArchApp(UnitsMixin, tk.Frame):
         if not _ensure_openpyxl():
             messagebox.showerror(
                 'Missing library',
-                'Could not install openpyxl automatically.\n\n'
+                'Excel import and export need the openpyxl library, which is not installed.\n\n'
                 'Please open a terminal and run:\n'
                 '    pip install openpyxl\n'
                 'then try again.')
@@ -1320,6 +1321,7 @@ class ArchApp(UnitsMixin, tk.Frame):
             messagebox.showerror('Import failed', str(e)); return
 
         self._clear_all()
+        self.document_name = os.path.basename(path)  # the window title names it
         self.span = st['span']; self.rise = st['rise']
         self.set_unit_value(self.span_var, st['span'])
         self.set_unit_value(self.rise_var, st['rise'])

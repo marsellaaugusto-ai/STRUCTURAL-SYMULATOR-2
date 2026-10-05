@@ -1148,6 +1148,7 @@ class BeamApp(tk.Frame):
         self._draw_schematic()
 
     def _clear_all(self):
+        self.document_name = None          # a new drawing
         self.supports = []; self.point_loads = []; self.moments = []; self.dloads = []
         self.nonuniform_loads = []
         self.result = None; self.model = None
@@ -1170,7 +1171,7 @@ class BeamApp(tk.Frame):
         if not _ensure_openpyxl():
             messagebox.showerror(
                 'Missing library',
-                'Could not install openpyxl automatically.\n\n'
+                'Excel import and export need the openpyxl library, which is not installed.\n\n'
                 'Please open a terminal and run:\n'
                 '    pip install openpyxl\n'
                 'then try again.')
@@ -1198,7 +1199,7 @@ class BeamApp(tk.Frame):
         if not _ensure_openpyxl():
             messagebox.showerror(
                 'Missing library',
-                'Could not install openpyxl automatically.\n\n'
+                'Excel import and export need the openpyxl library, which is not installed.\n\n'
                 'Please open a terminal and run:\n'
                 '    pip install openpyxl\n'
                 'then try again.')
@@ -1214,6 +1215,7 @@ class BeamApp(tk.Frame):
             messagebox.showerror('Import failed', str(e)); return
 
         self._clear_all()
+        self.document_name = os.path.basename(path)  # the window title names it
         self.length = st['length']; self.len_var.set(self._shown('x', st['length']))
         self.supports = st['supports']
         self.point_loads = st['point_loads']

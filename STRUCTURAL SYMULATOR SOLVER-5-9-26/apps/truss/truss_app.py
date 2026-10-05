@@ -79,8 +79,13 @@ from .truss_math import (analyze, compute_diagrams, find_zero_crossings, plate_n
                           compute_fiber_stress, compute_node_design_actions)
 from .truss_reports import export_excel, import_excel_model
 from . import truss_plates, truss_guides
+from .truss_app_learn import TrussLearnMixin
+from .truss_app_design import TrussDesignMixin
+from .truss_app_play import TrussPlayMixin
+from .truss_app_buckling import TrussBucklingMixin
 
-class TrussApp(UnitsMixin):
+class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
+               TrussBucklingMixin, UnitsMixin):
     # This tab does NOT store stress the way the others do. Plate yield and
     # electrode strength have always been typed in MPa here, while the Beam
     # tab holds allowable stresses in kN/cm2. Declaring the difference is
@@ -185,9 +190,11 @@ class TrussApp(UnitsMixin):
         tk.Button(model_g, text='Example', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica',11),
                   command=self._load_example)
-        tk.Button(model_g, text='Example: Vierendeel', relief='flat', bd=0, padx=8, pady=4,
+        # The library holds nine trusses with a lesson each (the Vierendeel
+        # girder among them); "Example" stays as the one-click Warren truss.
+        tk.Button(model_g, text='Examples…', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica',11),
-                  command=self._load_example_vierendeel)
+                  command=self._open_examples)
         tk.Button(model_g, text='Clear', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica',11),
                   command=self._clear_all)
@@ -235,12 +242,18 @@ class TrussApp(UnitsMixin):
         tk.Button(io_g, text='Import Excel', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica',11), fg='#1a6bbd',
                   command=self._import_excel)
+        tk.Button(io_g, text='Export PDF', relief='flat', bd=0, padx=8, pady=4,
+                  font=('Helvetica',11), fg='#1a6bbd',
+                  command=self._export_pdf_report)
         tk.Button(io_g, text='Node Force Vectors', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica',11), fg='#1a6bbd',
                   command=self._show_node_vectors_report)
         tk.Button(io_g, text='Rod Calculations', relief='flat', bd=0, padx=8, pady=4,
                   font=('Helvetica',11), fg='#1a6bbd',
                   command=self._show_rod_calculations_report)
+
+        self.toolbar_flow.separator()
+        self._build_learn_toolbar()
 
         # ── main paned area ───────────────────────────────────────────────────
         main = tk.Frame(root, bg='#f5f5f3')
@@ -343,6 +356,7 @@ class TrussApp(UnitsMixin):
         # Same FlowBar treatment as the toolbar: at 900 px this row used to
         # lose Pick ref and both Place node buttons off the right edge.
         cad = tk.Frame(root, bg='#dde3ec', bd=1, relief='solid')
+        self.cad_bar = cad
         cad.pack(fill='x', padx=6, pady=(2,0))
         self.cad_flow = FlowBar(cad, item_pad=1)
 
@@ -435,9 +449,10 @@ class TrussApp(UnitsMixin):
 
         # ── status bar ────────────────────────────────────────────────────────
         self.status_var = tk.StringVar(value='Select "Node" and click canvas to start.')
-        tk.Label(root, textvariable=self.status_var, anchor='w',
+        self.status_bar = tk.Label(root, textvariable=self.status_var, anchor='w',
                  bg='#ebebea', font=('Helvetica',10),
-                 relief='flat', padx=8, pady=3).pack(fill='x', padx=6, pady=(4,6))
+                 relief='flat', padx=8, pady=3)
+        self.status_bar.pack(fill='x', padx=6, pady=(4,6))
 
         # Start the two flow bars only now that every group exists, and give
         # the right panel its width from the same <Configure> that drives
@@ -449,6 +464,9 @@ class TrussApp(UnitsMixin):
         root.after_idle(lambda: self._on_root_configure(None))
 
         self._refresh_tool_buttons()
+        self._init_learn(self.panel_outer.interior)
+        self._init_design(self.panel_outer.interior)
+        self._init_play(self.panel_outer.interior, after=self._design_rows[-1])
 
     def _on_root_configure(self, _event=None):
         """Resize the right panel to match the window. Content that no longer
@@ -465,13 +483,10 @@ class TrussApp(UnitsMixin):
         mf = tk.LabelFrame(panel, text='Assumed material (all rods)', bg='#f0f0ee',
                            font=('Helvetica',10,'bold'), padx=6, pady=4)
         mf.pack(fill='x', padx=8, pady=(8,4))
-        tk.Label(mf, text='E and A below are only auxiliary inputs required to '
-                          'run the stiffness solver — the output you want is '
-                          'the pure axial force N (kN) per rod, which you then '
-                          'use to size the real material and cross-section '
-                          'yourself. I only matters for rods set to "Rigid" '
-                          '(see Selection below) — Vierendeel-style members '
-                          'that also carry shear V and moment M.',
+        # Was a nine-line paragraph; the two facts a student needs fit in two.
+        tk.Label(mf, text='E and A only let the solver run: the result is the '
+                          'axial force N in each rod. I is used by rigid '
+                          '(Vierendeel) rods only.',
                  bg='#f0f0ee', fg='#666', font=('Helvetica',8),
                  justify='left', wraplength=PANEL_W-55).grid(
                      row=0, column=0, columnspan=2, sticky='w', pady=(0,4))
@@ -2644,9 +2659,11 @@ class TrussApp(UnitsMixin):
     #  Load / support panel actions
     # ══════════════════════════════════════════════════════════════════════════
     def _apply_load(self):
-        self._push_undo('apply load')
         ids = self.pending_load
-        if not ids: return
+        if not ids:
+            self.status_var.set('Pick a node with the Load tool first.')
+            return
+        self._push_undo('apply load')
         fx = self.unit_value(self.led_fx)
         fy = self.unit_value(self.led_fy)
         for ni in ids:
@@ -2657,15 +2674,20 @@ class TrussApp(UnitsMixin):
         self.status_var.set(f'Load applied to {len(ids)} node(s): Fx={fx} Fy={fy} kN')
 
     def _remove_load(self):
-        self._push_undo('remove load')
         ids = self.pending_load
+        if not ids:
+            self.status_var.set('Pick a node with the Load tool first.')
+            return
+        self._push_undo('remove load')
         self.loads=[l for l in self.loads if l['node'] not in ids]
         self.results=None; self.diagrams=None; self.load_frame.pack_forget(); self._draw(); self._draw_diagrams_only()
 
     def _apply_support(self):
-        self._push_undo('apply support')
         ids = self.pending_sup
-        if not ids: return
+        if not ids:
+            self.status_var.set('Pick a node with the Support tool first.')
+            return
+        self._push_undo('apply support')
         stype=self.sup_type.get()
         for ni in ids:
             idx=next((i for i,s in enumerate(self.supports) if s['node']==ni),-1)
@@ -2675,8 +2697,11 @@ class TrussApp(UnitsMixin):
         self.status_var.set(f'Support "{stype}" applied to {len(ids)} node(s)')
 
     def _remove_support(self):
-        self._push_undo('remove support')
         ids = self.pending_sup
+        if not ids:
+            self.status_var.set('Pick a node with the Support tool first.')
+            return
+        self._push_undo('remove support')
         self.supports=[s for s in self.supports if s['node'] not in ids]
         self.results=None; self.diagrams=None; self.sup_frame.pack_forget(); self._draw(); self._draw_diagrams_only()
 
@@ -2850,8 +2875,9 @@ class TrussApp(UnitsMixin):
             for name in sorted(self.profiles.keys()):
                 p = self.profiles[name]
                 n_members = sum(1 for r in self.rods if r.get('profile','Default')==name)
+                sec = (f'{p["catalog"]}, ' if p.get('catalog') else '')
                 lb.insert('end',
-                          f'{name}   (E={self.fmt("modulus", p["E"])}, '
+                          f'{name}   ({sec}E={self.fmt("modulus", p["E"])}, '
                           f'A={self.fmt("area", p["A"])}, '
                           f'I={self.fmt("inertia", p.get("I", 8000.0))}, '
                           f'{n_members} rod(s))')
@@ -2888,7 +2914,22 @@ class TrussApp(UnitsMixin):
             name = name_var.get().strip()
             if not name:
                 messagebox.showwarning('Rod family', 'Name cannot be empty.'); return
-            self.profiles[name] = {'E': e_var.get(), 'A': a_var.get(), 'I': i_var.get()}
+            old = self.profiles.get(name) or {}
+            new = {'E': e_var.get(), 'A': a_var.get(), 'I': i_var.get()}
+            # The steel grade is the material, kept whatever the size; the
+            # catalogue section (r, depth, name) only while A and I are still
+            # its own -- a radius of gyration left beside a new A would make
+            # the buckling check unsafe.
+            for k in ('Fy', 'Fu', 'material'):
+                if k in old:
+                    new[k] = old[k]
+            same = (abs(old.get('A', -1) - new['A']) < 1e-9 and
+                    abs(old.get('I', -1) - new['I']) < 1e-9)
+            if same:
+                for k in ('r_gyr', 'c_cm', 'catalog'):
+                    if k in old:
+                        new[k] = old[k]
+            self.profiles[name] = new
             for r in self.rods:
                 if r.get('profile','Default') == name:
                     r['E'] = e_var.get(); r['A'] = a_var.get(); r['I'] = i_var.get()
@@ -2919,6 +2960,11 @@ class TrussApp(UnitsMixin):
         tk.Button(btnfr, text='New / Save profile', bg='#1a6bbd', fg='white',
                   font=('Helvetica',9,'bold'), relief='flat',
                   command=save_profile).pack(side='left', padx=2)
+        tk.Button(btnfr, text='Steel section…', relief='flat',
+                  font=('Helvetica',9),
+                  command=lambda: self._pick_steel_section(
+                      name_var.get().strip() or 'Default',
+                      on_done=refresh_list)).pack(side='left', padx=2)
         tk.Button(btnfr, text='Delete profile', relief='flat',
                   font=('Helvetica',9), command=delete_profile).pack(side='left', padx=2)
         tk.Button(win, text='Close', relief='flat', bg='#1a6bbd', fg='white',
@@ -2951,26 +2997,47 @@ class TrussApp(UnitsMixin):
     # ══════════════════════════════════════════════════════════════════════════
     #  Analysis
     # ══════════════════════════════════════════════════════════════════════════
-    def _run_analysis(self):
+    def _run_analysis(self, quiet=False):
+        """Solve and show the results. `quiet` is the Live / sandbox path:
+        no dialog boxes and no animation, only the status line."""
+        warn = (lambda *a: None) if quiet else messagebox.showwarning
         if len(self.nodes)<2:
-            messagebox.showwarning('Truss','Need ≥ 2 nodes.'); return
+            warn('Truss','Need ≥ 2 nodes.'); return
         if len(self.rods)<1:
-            messagebox.showwarning('Truss','Need ≥ 1 rod.'); return
-        if len(self.supports)<1:
-            messagebox.showwarning('Truss','Need ≥ 1 support.'); return
+            warn('Truss','Need ≥ 1 rod.'); return
+        supports = self._active_supports()
+        if len(supports)<1:
+            warn('Truss', 'Need ≥ 1 support.' if not self.supports else
+                 'Every support is switched off -- right-click one to bring '
+                 'it back.')
+            return
 
-        res, err = analyze(self.nodes, self.rods, self.loads, self.supports,
+        self._stop_mechanism()
+        loads = self._design_loads()          # + self-weight, x Load %
+        rods = self._design_rods()            # span loads x Load %
+        res, err = analyze(self.nodes, rods, loads, supports,
                             self.plates)
         if err:
-            messagebox.showerror('Analysis failed', err)
-            self.res_var.set(f'Failed: {err}'); return
+            why = None
+            if err.startswith('Singular'):
+                # Say WHERE it is a mechanism, and draw it moving.
+                why = self._show_mechanism(quiet=quiet)
+            if not quiet:
+                messagebox.showerror('Analysis failed',
+                                     err + ('\n\n' + why if why else ''))
+            self.res_var.set(f'Failed: {err}')
+            self.status_var.set('Analysis failed — ' + (why or err))
+            return
 
         self.results  = res
-        self.diagrams = compute_diagrams(self.nodes, self.rods, self.loads, res)
+        self.diagrams = compute_diagrams(self.nodes, rods, loads, res)
+        self._compute_design(res)
         self.plate_checks = truss_plates.check_all(self.nodes, self.rods,
                                                     self.plates, res)
 
         self._show_analysis_text()
+        design_note = self._design_summary()
+        self._score_summary()
         self._show_plate_checks()
 
         self.show_deform.set(True)
@@ -2979,9 +3046,21 @@ class TrussApp(UnitsMixin):
         rr = res['rod_res']
         n_t=sum(1 for r in rr if r['force']>0.01)
         n_c=sum(1 for r in rr if r['force']<-0.01)
-        self.status_var.set(
-            f'Done — {n_t} tension, {n_c} compression. '
-            f'Reactions and diagrams shown. Scroll/zoom both canvases freely.')
+        n_z=len(rr)-n_t-n_c
+        loaded = bool(self.loads) or self.self_weight.get() or any(
+            r.get('udl') or r.get('point_loads') for r in self.rods)
+        if not loaded:
+            self.status_var.set(
+                'Done — but no loads are applied, so every rod force is zero. '
+                'Add one with the Load tool, then ▶ Analyze again.')
+        else:
+            zero = (f', {n_z} carry no force (dashed)' if n_z else '')
+            off = (f' {len(self.disabled_supports)} support(s) switched off.'
+                   if self.disabled_supports else '')
+            self.status_var.set(
+                f'{"Live: " if quiet else "Done — "}{n_t} tension, '
+                f'{n_c} compression{zero}{self._load_note()}.{off}{design_note} '
+                f'Reactions and diagrams shown. Scroll/zoom both canvases freely.')
         if self.selected_nodes or self.selected_rods: self._show_sel()
 
     def _show_analysis_text(self):
@@ -3016,10 +3095,12 @@ class TrussApp(UnitsMixin):
             if r.get('conn') == 'rigid':
                 self.rod_res_text.insert('end',
                     f'Rod {i:2d} [rigid]: N={f_(f):+7.2f} [{k}]  V={f_(r["V"]):+7.2f}  '
-                    f'Ma={m_(r["Ma"]):+7.2f}  Mb={m_(r["Mb"]):+7.2f} {MOM}\n')
+                    f'Ma={m_(r["Ma"]):+7.2f}  Mb={m_(r["Mb"]):+7.2f} {MOM}'
+                    f'{self._util_tag(i)}\n')
             else:
                 self.rod_res_text.insert('end',
-                                          f'Rod {i:2d}: {f_(f):+8.2f} {F} [{k}]\n')
+                                          f'Rod {i:2d}: {f_(f):+8.2f} {F} [{k}]'
+                                          f'{self._util_tag(i)}\n')
         self.rod_res_text.configure(state='disabled')
         self.rod_res_frame.pack(fill='x', padx=8, pady=4)
 
@@ -3143,7 +3224,7 @@ class TrussApp(UnitsMixin):
     #  Drawing — truss canvas  (everything in WORLD coords → w2s before draw)
     # ══════════════════════════════════════════════════════════════════════════
     def _draw_adaptive_grid(self, c, w2s, z, W, H):
-        """Adaptive / level-of-detail grid, AutoCAD-style:
+        """Adaptive / level-of-detail grid:
           - MAJOR lines at a "nice" (1-2-5-10-20-50-...) world spacing,
             re-chosen every redraw so their on-screen spacing stays close to
             a fixed target regardless of zoom (no clutter when zoomed out,
@@ -3151,8 +3232,7 @@ class TrussApp(UnitsMixin):
           - Below that, one or two recursively finer levels of grid POINTS
             (not full lines, to avoid visual clutter) fade in once their
             on-screen spacing would actually be legible -- so as you zoom
-            in, smaller subdivisions of the grid unit progressively appear,
-            exactly like AutoCAD's adaptive grid.
+            in, smaller subdivisions of the grid unit progressively appear.
         """
         base_px = SNAP   # 1 world metre, in px at zoom=1
         sx0, sy0 = w2s(0, 0)
@@ -3210,10 +3290,13 @@ class TrussApp(UnitsMixin):
         c.delete('all')
         W  = c.winfo_width()  or INIT_CW
         H  = c.winfo_height() or INIT_CH
+        # (priority, x, y, text, colour, tag): placed last, so no two
+        # numbers are ever drawn over one another (see _place_labels).
+        label_queue = []
 
         # adaptive / level-of-detail grid: "nice" (1-2-5) major spacing that
         # re-normalizes to stay legible at any zoom, plus recursively finer
-        # grid-point subdivisions that fade in as you zoom in (AutoCAD-style)
+        # grid-point subdivisions that fade in as you zoom in
         self._draw_adaptive_grid(c, w2s, z, W, H)
 
         # Guides first of all: they are references, and must never sit on
@@ -3284,12 +3367,20 @@ class TrussApp(UnitsMixin):
             na,nb = self.nodes[rod['a']],self.nodes[rod['b']]
             res   = self.results['rod_res'][i] if self.results else None
             color = CZ; lw = 2.5
+            zero = False
             if res:
                 f=res['force']
                 if   f> 0.01: color=CT; lw=2+min(5,abs(f)/8)
                 elif f<-0.01: color=CC; lw=2+min(5,abs(f)/8)
+                else: zero = True
+            if zero and self.hide_zero.get():
+                continue
+            color = self._rod_draw_color(i, color)
             sx0,sy0=w2s(na[0],na[1]); sx1,sy1=w2s(nb[0],nb[1])
-            c.create_line(sx0,sy0,sx1,sy1,fill=color,width=lw)
+            # A rod that carries nothing is dashed, so the load path reads
+            # at a glance -- grey alone looked like "not analysed yet".
+            c.create_line(sx0,sy0,sx1,sy1,fill=color,width=lw,
+                          dash=(6, 4) if zero else ())
 
             if rod.get('conn') == 'rigid':
                 ddx0=sx1-sx0; ddy0=sy1-sy0
@@ -3347,16 +3438,22 @@ class TrussApp(UnitsMixin):
             Lr=math.hypot(ddx,ddy) or 1
             px,py=-ddy/Lr,ddx/Lr
             off=11
-            c.create_text(mx+px*off,my+py*off,text=str(i),fill='white',
-                           font=('Helvetica',9,'bold'))
-            c.create_text(mx+px*off,my+py*off,text=str(i),
-                           fill=color if color!=CZ else '#555',
-                           font=('Helvetica',8,'bold'))
+            # Once solved, the rod's axial force sits beside its number --
+            # the one result a truss is about, readable without opening a
+            # report.  The sign follows the legend: + tension, - compression.
+            lbl = str(i)
+            if res:
+                lbl = '%d: %+.1f' % (i, self.show('force', res['force']))
+            label_queue.append((1.0 + (abs(res['force']) if res else 0.0),
+                                mx+px*off, my+py*off, lbl,
+                                color if color!=CZ else '#555', 'rod_label'))
 
         # supports
         for s in self.supports:
             n=self.nodes[s['node']]; sx,sy=w2s(n[0],n[1])
             self._draw_support(c,sx,sy,s['type'],z)
+            if s['node'] in self.disabled_supports:
+                self._draw_disabled_support(c, sx, sy)
 
         # Load and reaction arrows are sized RELATIVE to the largest of their
         # own kind on the model -- see common.LoadScale. Both were a flat 44 px
@@ -3393,8 +3490,7 @@ class TrussApp(UnitsMixin):
             r    = 9 if (is_sel or is_start) else 6      # constant on-screen size
             fill = CS if (is_sel or is_start) else CN
             c.create_oval(sx-r,sy-r,sx+r,sy+r,fill=fill,outline='#aaa',width=1)
-            c.create_text(sx,sy-r-4,text=str(i),fill='#555',
-                           font=('Helvetica',9))
+            label_queue.append((1e12, sx, sy-r-4, str(i), '#555', 'node_label'))
             if is_pload:
                 c.create_oval(sx-13,sy-13,sx+13,sy+13,outline=CL,width=2,dash=(3,2))
             if is_psup:
@@ -3557,10 +3653,49 @@ class TrussApp(UnitsMixin):
                            text=f'{wmm:.2f} × {hmm:.2f} m',
                            fill=CS, font=('Helvetica', 8, 'bold'))
 
+        self._place_labels(c, label_queue, W, H)
+
+        if self.results is not None:
+            self._draw_force_key(c, H)
+
         # zoom hint
         c.create_text(6,6,anchor='nw',
                        text=f'zoom {self.zc.zoom:.2f}×  |  scroll=zoom  mid-drag=pan',
                        fill='#aaa',font=('Helvetica',8))
+
+        if getattr(self, '_mech', None) is not None:
+            self._draw_mechanism()      # the redraw above wiped the overlay
+        self._refresh_learn()
+
+    def _draw_force_key(self, c, H):
+        """Bottom-left key for a solved model, so the colours and the
+        numbers on the rods explain themselves."""
+        x, y = 10, H - 12
+        # The analysis draws this and THEN opens the diagram pane, which
+        # shrinks the canvas: keep the key pinned to the bottom edge.
+        self._force_key_y = y
+        if not getattr(self, '_force_key_bound', False):
+            self._force_key_bound = True
+
+            def follow(e, c=c):
+                y0 = getattr(self, '_force_key_y', None)
+                if y0 is None or not c.find_withtag('force_key'):
+                    return
+                c.move('force_key', 0, (e.height - 12) - y0)
+                self._force_key_y = e.height - 12
+            c.bind('<Configure>', follow, add='+')
+        F = self.u('force')
+        items = ((CT, 'tension (+)'), (CC, 'compression (\u2212)'),
+                 (CZ, 'zero'))
+        for col, txt in items:
+            c.create_line(x, y, x + 20, y, fill=col, width=4,
+                          tags=('force_key',))
+            t = c.create_text(x + 25, y, text=txt, anchor='w', fill='#555',
+                              font=('Helvetica', 8), tags=('force_key',))
+            x = c.bbox(t)[2] + 12
+        c.create_text(x, y, anchor='w', fill='#888', font=('Helvetica', 8),
+                      text='rod labels: number: axial force N (%s)' % F,
+                      tags=('force_key',))
 
     def _show_plate_checks(self):
         """Write the plate checks into the panel. A panel's shear-buckling
@@ -3755,8 +3890,11 @@ class TrussApp(UnitsMixin):
     #  Diagram canvas
     # ══════════════════════════════════════════════════════════════════════════
     def _show_diagrams(self):
+        # Just above the status bar.  Not "before the root's last child":
+        # once a report window is open that child is a Toplevel, which is
+        # not packed, and Tk refused the whole call.
         self.diag_outer.pack(fill='x', padx=6, pady=(2,0),
-                             before=self.root.winfo_children()[-1])
+                             before=self.status_bar)
         self._draw_diagrams_only()
 
     def _draw_vierendeel_diagram(self):
@@ -4096,14 +4234,30 @@ class TrussApp(UnitsMixin):
         # locations are calculated from the rod INDEX only, never from node
         # coordinates, member midpoint, or member orientation.  This makes
         # coincident/parallel rods impossible to overlay.
-        LEFT = 88.0
+        rod_res_all = self.results.get('rod_res', []) if self.results else []
+        n_max = max((abs(r.get('force', 0.0)) for r in rod_res_all),
+                    default=0.0)
+
+        def bends_of(diag):
+            vs, ms = diag.get('V', []), diag.get('M', [])
+            return max((abs(v) for v in list(vs) + list(ms)),
+                       default=0.0) > 1e-9
+
+        # A classic truss (every rod pinned, loads only at nodes) has no
+        # shear or bending anywhere: it gets one compact signed bar per rod
+        # -- the whole story on one screen -- instead of a tall row of empty
+        # V/M boxes per rod.
+        any_bends = any(bends_of(d) for d in self.diagrams)
+        LEFT = 128.0
+        N_W = 150.0 if any_bends else 520.0
         PANEL_W = 330.0
         PANEL_GAP = 88.0
-        ROW_H = 128.0
-        ROW_GAP = 46.0
-        TOP = 42.0
-        x_v0 = LEFT
-        x_m0 = LEFT + PANEL_W + PANEL_GAP
+        ROW_H = 128.0 if any_bends else 24.0
+        ROW_GAP = 46.0 if any_bends else 6.0
+        TOP = 42.0 if any_bends else 58.0
+        x_n0 = LEFT
+        x_v0 = LEFT + N_W + PANEL_GAP
+        x_m0 = x_v0 + PANEL_W + PANEL_GAP
 
         def text(wx, wy, value, color='#444', bold=False, anchor='center'):
             sx, sy = w2s(wx, wy)
@@ -4123,7 +4277,8 @@ class TrussApp(UnitsMixin):
             a1 = w2s(x0 + PANEL_W, zero_y)
             dc.create_line(a0[0], a0[1], a1[0], a1[1], fill='#bbbbbb')
             text(x0 + PANEL_W/2, y0 - 13, title, color, bold=True)
-            text(x0 - 9, y0 + ROW_H/2, f'{max_abs:.2f}', color, anchor='e')
+            # The largest value is already written at its peak; a second copy
+            # here sat at zero_y, exactly on top of the "0".
             text(x0 - 9, zero_y, '0', '#777', anchor='e')
 
             points = []
@@ -4146,27 +4301,79 @@ class TrussApp(UnitsMixin):
                     text(x0 + frac*PANEL_W, zero_y - peak*amplitude - (10 if peak >= 0 else -10),
                          f'{peak:.2f}', color, bold=True)
 
-        text(LEFT, 12, 'Ordered rod diagrams — one row per member', '#555', bold=True, anchor='w')
-        rod_res_list = self.results.get('rod_res', []) if self.results else []
+        def axial_panel(x0, y0, force):
+            """N is constant along a rod, so its diagram is one signed bar:
+            compression to the left of zero, tension to the right, both
+            against the largest |N| in the model."""
+            mid_x = x0 + N_W/2
+            mid_y = y0 + ROW_H/2
+            col = CT if force > 0.01 else (CC if force < -0.01 else CZ)
+            frac = abs(force) / n_max if n_max > 1e-12 else 0.0
+            reach = frac * (N_W/2 - 8) * (1 if force >= 0 else -1)
+            hh = min(14.0, ROW_H*0.35)
+            if any_bends:
+                p0 = w2s(x0, y0)
+                p1 = w2s(x0 + N_W, y0 + ROW_H)
+                dc.create_rectangle(p0[0], p0[1], p1[0], p1[1],
+                                    outline='#dddddd')
+                text(mid_x, y0 - 13,
+                     f'Axial force N ({self.u("force")})', '#555', bold=True)
+            if abs(reach) > 0:
+                b0 = w2s(min(mid_x, mid_x + reach), mid_y - hh)
+                b1 = w2s(max(mid_x, mid_x + reach), mid_y + hh)
+                dc.create_rectangle(b0[0], b0[1], b1[0], b1[1], fill=col,
+                                    outline='')
+            a0 = w2s(mid_x, (mid_y - hh - 4) if any_bends else y0 - 2)
+            a1 = w2s(mid_x, (mid_y + hh + 4) if any_bends else y0 + ROW_H + 2)
+            dc.create_line(a0[0], a0[1], a1[0], a1[1], fill='#999999')
+            word = ('tension' if force > 0.01 else
+                    'compression' if force < -0.01 else 'zero force')
+            label = f'{self.show("force", force):+.2f}  {word}'
+            if any_bends:
+                text(mid_x, mid_y + 30, label, col, bold=True)
+            else:
+                text(x0 + N_W + 12, mid_y, label, col, bold=True, anchor='w')
+
+        if any_bends:
+            text(LEFT, 12, 'Ordered rod diagrams — one row per member', '#555', bold=True, anchor='w')
+        else:
+            F = self.u('force')
+            text(LEFT, 12, f'Axial force N in every rod ({F})', '#555',
+                 bold=True, anchor='w')
+            text(LEFT, 28, 'Every rod is pinned and loaded only at its nodes, '
+                 'so none carries shear or bending: the axial force is the '
+                 'whole result.', '#888', anchor='w')
+            text(LEFT + N_W/4, 44, '← compression', CC, bold=True)
+            text(LEFT + 3*N_W/4, 44, 'tension →', CT, bold=True)
+        rod_res_list = rod_res_all
         for i, diag in enumerate(self.diagrams):
             y0 = TOP + i * (ROW_H + ROW_GAP)
             length_m = diag.get('Lm', 1.0) or 1.0
             rr = rod_res_list[i] if i < len(rod_res_list) else None
             is_rigid = bool(rr) and rr.get('conn', 'pin') == 'rigid'
+            axial_panel(x_n0, y0, rr.get('force', 0.0) if rr else 0.0)
+            if not any_bends:
+                text(LEFT - 12, y0 + ROW_H/2, f'Rod {i}', '#333', bold=True, anchor='e')
+                continue
             # A flat zero line here has two very different causes -- a pin
             # rod that structurally cannot carry bending at all, versus a
             # rigid rod that happens to have solved to ~zero moment. Label
             # which one this is so a flat line is never ambiguous.
-            kind_lbl = 'rigid — M\u22480' if is_rigid else 'pin — no bending'
+            kind_lbl = 'rigid joints' if is_rigid else 'pinned ends'
             text(LEFT - 12, y0 + ROW_H/2 - 8, f'Rod {i}', '#333', bold=True, anchor='e')
             text(LEFT - 12, y0 + ROW_H/2 + 8, kind_lbl, '#999', bold=False, anchor='e')
-            panel(i, x_v0, y0, diag.get('V', []), diag.get('xs', []), length_m,
-                  CV, f'Shear V ({self.u("force")})')
-            panel(i, x_m0, y0, diag.get('M', []), diag.get('xs', []), length_m,
-                  CM, f'Moment M ({self.u("moment")})')
-
-        dc.create_text(6, 6, anchor='nw', text='scroll=zoom  mid-drag=pan',
-                       fill='#aaa', font=('Helvetica', 8))
+            if bends_of(diag):
+                panel(i, x_v0, y0, diag.get('V', []), diag.get('xs', []), length_m,
+                      CV, f'Shear V ({self.u("force")})')
+                panel(i, x_m0, y0, diag.get('M', []), diag.get('xs', []), length_m,
+                      CM, f'Moment M ({self.u("moment")})')
+            else:
+                # Two empty boxes taught nothing: say why they would be empty.
+                why = ('no shear or bending: pinned at both ends and loaded '
+                       'only at its nodes, so it carries axial force alone'
+                       if not is_rigid else
+                       'shear and moment solve to ~0 for this rod')
+                text(x_v0, y0 + ROW_H/2, why, '#888', anchor='w')
 
     # ══════════════════════════════════════════════════════════════════════════
     #  On-screen reports  (Excel export/import is further down, at
@@ -4686,11 +4893,11 @@ class TrussApp(UnitsMixin):
         if not self.results:
             messagebox.showwarning('Export',
                 'Run the analysis first before exporting.'); return
-        # install openpyxl automatically if it is missing
+        # openpyxl is needed here, and is never installed behind the user
         if not _ensure_openpyxl():
             messagebox.showerror(
                 'Missing library',
-                'Could not install openpyxl automatically.\n\n'
+                'Excel import and export need the openpyxl library, which is not installed.\n\n'
                 'Please open a terminal and run:\n'
                 '    pip install openpyxl\n'
                 'then try again.')
@@ -4720,7 +4927,7 @@ class TrussApp(UnitsMixin):
         if not _ensure_openpyxl():
             messagebox.showerror(
                 'Missing library',
-                'Could not install openpyxl automatically.\n\n'
+                'Excel import and export need the openpyxl library, which is not installed.\n\n'
                 'Please open a terminal and run:\n'
                 '    pip install openpyxl\n'
                 'then try again.')
@@ -4736,6 +4943,7 @@ class TrussApp(UnitsMixin):
             messagebox.showerror('Import failed', str(e)); return
 
         self._clear_all()
+        self.document_name = os.path.basename(path)  # the window title names it
         self.nodes = [list(n) for n in nodes]
         self.rods = rods
         self.loads = loads
@@ -4812,6 +5020,7 @@ class TrussApp(UnitsMixin):
     def _clear_all(self, push_undo=True):
         if push_undo:
             self._push_undo('clear all')
+        self.document_name = None          # a new drawing: "Truss drawing"
         self.nodes=[];self.rods=[];self.loads=[];self.supports=[]
         self.plates=[];self.plate_checks=[]
         self.guides=[]
@@ -4828,4 +5037,6 @@ class TrussApp(UnitsMixin):
         self.diag_zc.canvas.delete('all')
         if hasattr(self, '_refresh_profile_combo'): self._refresh_profile_combo()
         self._show_sel();self._draw()
+        if hasattr(self, '_forget_example'):
+            self._forget_example()
         self.status_var.set('Cleared. Start with the Node tool.')

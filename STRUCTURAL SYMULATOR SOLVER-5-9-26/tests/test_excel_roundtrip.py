@@ -350,6 +350,8 @@ UNITLESS_OK = {
     # expressions and categories
     'shape', 'expr', 'shape_expr', 'measure', 'direction', 'udl_global',
     'params', 'family', 'set_by', 'flip', 'branch', 'pts_m',
+    # the name of a catalogue section and of its steel grade (Truss families)
+    'catalog', 'material',
     # dimensionless counts
     'bolt_rows', 'bolt_cols', 'weld_lines', 'n_elem', 'n_elems',
 }

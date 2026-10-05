@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 520" width="100%" role="img">
+<rect width="1080" height="520" fill="#ffffff"/>
+<rect x="0.0" y="0.0" width="1080.0" height="520.0" rx="0.0" fill="#ffffff"/>
+<rect x="24.0" y="24.0" width="316.0" height="470.0" rx="3.0" fill="#eef1f4" stroke="#ccd3da" stroke-width="1.00"/>
+<text x="36.00" y="44.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="700" letter-spacing="0.9">THICKNESS</text>
+<line x1="36.0" y1="52.0" x2="328.0" y2="52.0" stroke="#e2e7ec" stroke-width="1.00" stroke-linecap="butt"/>
+<rect x="36.0" y="71.0" width="292.0" height="67.0" rx="2.0" fill="#ffffff" stroke="#ccd3da" stroke-width="1.00" fill-opacity="0.55"/>
+<rect x="44.0" y="64.0" width="55.2" height="14.0" rx="0.0" fill="#eef1f4"/>
+<text x="48.00" y="75.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="700" >The slab</text>
+<circle cx="54.0" cy="88.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
+<circle cx="54.0" cy="88.0" r="2.6" fill="#1e2429"/>
+<text x="65.00" y="91.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Reinforced concrete — CIRSOC 201</text>
+<circle cx="54.0" cy="106.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
+<text x="65.00" y="109.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#1e2429" text-anchor="start" font-weight="400" >Steel — CIRSOC 301</text>
+<text x="54.00" y="128.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#4c565f" text-anchor="start" font-weight="400" >class</text>
+<rect x="94.0" y="118.0" width="66.0" height="16.0" rx="1.0" fill="#ffffff" stroke="#aab4bd" stroke-width="1.00"/>
+<text x="100.00" y="128.50" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" >C30/37</text>
+<text x="170.00" y="128.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#4c565f" text-anchor="start" font-weight="400" >base t</text>
+<rect x="218.0" y="118.0" width="54.0" height="16.0" rx="1.0" fill="#ffffff" stroke="#aab4bd" stroke-width="1.00"/>
+<text x="224.00" y="128.50" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" >100</text>
+<text x="276.00" y="128.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.6" fill="#77838d" text-anchor="start" font-weight="400" >mm</text>
+<rect x="36.0" y="155.0" width="292.0" height="109.0" rx="2.0" fill="#ffffff" stroke="#ccd3da" stroke-width="1.00" fill-opacity="0.55"/>
+<rect x="44.0" y="148.0" width="167.3" height="14.0" rx="0.0" fill="#eef1f4"/>
+<text x="48.00" y="159.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="700" >Thicken automatically where</text>
+<circle cx="54.0" cy="172.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
+<circle cx="54.0" cy="172.0" r="2.6" fill="#1e2429"/>
+<text x="65.00" y="175.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >punching at a support governs</text>
+<circle cx="54.0" cy="190.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
+<text x="65.00" y="193.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >principal tension exceeds fₑₜₘ</text>
+<circle cx="54.0" cy="208.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
+<text x="65.00" y="211.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >the bars the moments need will not fit</text>
+<circle cx="54.0" cy="226.0" r="5" fill="#fff" stroke="#8c979f" stroke-width="1"/>
+<text x="65.00" y="229.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >utilisation exceeds a target</text>
+<text x="54.00" y="252.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.0" fill="#77838d" text-anchor="start" font-weight="400" >the first is what the reference study used</text>
+<rect x="36.0" y="281.0" width="292.0" height="69.0" rx="2.0" fill="#ffffff" stroke="#ccd3da" stroke-width="1.00" fill-opacity="0.55"/>
+<rect x="44.0" y="274.0" width="120.1" height="14.0" rx="0.0" fill="#eef1f4"/>
+<text x="48.00" y="285.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="700" >Within these limits</text>
+<text x="54.00" y="308.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#4c565f" text-anchor="start" font-weight="400" >min t</text>
+<rect x="94.0" y="298.0" width="46.0" height="16.0" rx="1.0" fill="#ffffff" stroke="#aab4bd" stroke-width="1.00"/>
+<text x="100.00" y="308.50" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" >100</text>
+<text x="144.00" y="308.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >mm</text>
+<text x="194.00" y="308.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#4c565f" text-anchor="start" font-weight="400" >max t</text>
+<rect x="234.0" y="298.0" width="46.0" height="16.0" rx="1.0" fill="#ffffff" stroke="#aab4bd" stroke-width="1.00"/>
+<text x="240.00" y="308.50" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" >400</text>
+<text x="284.00" y="308.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >mm</text>
+<text x="54.00" y="336.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#4c565f" text-anchor="start" font-weight="400" >step</text>
+<rect x="94.0" y="326.0" width="46.0" height="16.0" rx="1.0" fill="#ffffff" stroke="#aab4bd" stroke-width="1.00"/>
+<text x="100.00" y="336.50" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" >25</text>
+<text x="144.00" y="336.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >mm</text>
+<text x="194.00" y="336.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.8" fill="#4c565f" text-anchor="start" font-weight="400" >smooth over</text>
+<rect x="264.0" y="326.0" width="40.0" height="16.0" rx="1.0" fill="#ffffff" stroke="#aab4bd" stroke-width="1.00"/>
+<text x="270.00" y="336.50" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="400" >1.0</text>
+<text x="308.00" y="336.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#77838d" text-anchor="start" font-weight="400" >m</text>
+<rect x="36.0" y="360.0" width="292.0" height="24.0" rx="2.0" fill="#dce9f6" stroke="#1a6bbd" stroke-width="1.00"/>
+<text x="182.00" y="375.60" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#124a80" text-anchor="middle" font-weight="700" >Run the thickening</text>
+<rect x="36.0" y="401.0" width="292.0" height="81.0" rx="2.0" fill="#ffffff" stroke="#ccd3da" stroke-width="1.00" fill-opacity="0.55"/>
+<rect x="44.0" y="394.0" width="72.9" height="14.0" rx="0.0" fill="#eef1f4"/>
+<text x="48.00" y="405.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#1e2429" text-anchor="start" font-weight="700" >What it did</text>
+<text x="54.00" y="418.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >pass 1 — raised 84 of 1 024 elements</text>
+<text x="54.00" y="433.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >pass 2 — raised 11</text>
+<text x="54.00" y="448.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#2f6f4a" text-anchor="start" font-weight="400" >pass 3 — raised none. Converged.</text>
+<text x="54.00" y="463.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="700" >t now 100–325 mm  ·  concrete +6.2%  ·  steel −38%</text>
+<text x="372.00" y="42.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="700" >THE MODE HOLDS THREE LEVERS, NOT ONE</text>
+<rect x="372.0" y="54.0" width="216.0" height="72.0" rx="3.0" fill="#f4f7fa" stroke="#ccd3da" stroke-width="1.00"/>
+<text x="384.00" y="74.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="700" >1 · where the material goes</text>
+<text x="384.00" y="90.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#4c565f" text-anchor="start" font-weight="400" >a distributed thickness instead of </text>
+<text x="384.00" y="102.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#4c565f" text-anchor="start" font-weight="400" >one t — thickest at the supports </text>
+<rect x="604.0" y="54.0" width="216.0" height="72.0" rx="3.0" fill="#f4f7fa" stroke="#ccd3da" stroke-width="1.00"/>
+<text x="616.00" y="74.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="700" >2 · the edge beam</text>
+<text x="616.00" y="90.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#4c565f" text-anchor="start" font-weight="400" >its depth, and whether that depth </text>
+<text x="616.00" y="102.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#4c565f" text-anchor="start" font-weight="400" >varies from apex to support </text>
+<rect x="836.0" y="54.0" width="216.0" height="72.0" rx="3.0" fill="#f4f7fa" stroke="#ccd3da" stroke-width="1.00"/>
+<text x="848.00" y="74.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#1e2429" text-anchor="start" font-weight="700" >3 · the concrete class</text>
+<text x="848.00" y="90.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#4c565f" text-anchor="start" font-weight="400" >a stronger mix buys stiffness, and </text>
+<text x="848.00" y="102.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.2" fill="#4c565f" text-anchor="start" font-weight="400" >stiffness buys back deflection </text>
+<text x="372.00" y="152.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="10.0" fill="#77838d" text-anchor="start" font-weight="700" >AND PRINTS THE COMPARISON THEY MAKE</text>
+<text x="372.00" y="176.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" >design</text>
+<text x="468.00" y="176.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" >thickness</text>
+<text x="568.00" y="176.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" >edge beam</text>
+<text x="668.00" y="176.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" >class</text>
+<text x="740.00" y="176.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" >σₜ max</text>
+<text x="808.00" y="176.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" >Δ max</text>
+<text x="880.00" y="176.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" >Δ / L</text>
+<text x="952.00" y="176.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" >As top / bot</text>
+<text x="1048.00" y="176.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="8.6" fill="#77838d" text-anchor="start" font-weight="700" >verdict</text>
+<line x1="372.0" y1="183.0" x2="1056.0" y2="183.0" stroke="#ccd3da" stroke-width="1.00" stroke-linecap="butt"/>
+<text x="372.00" y="202.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#c0561f" text-anchor="start" font-weight="700" >1  as built</text>
+<text x="468.00" y="202.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >uniform 89</text>
+<text x="568.00" y="202.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >20 × 45</text>
+<text x="668.00" y="202.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >C30/37</text>
+<text x="740.00" y="202.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#1e2429" text-anchor="start" font-weight="400" >14.44</text>
+<text x="808.00" y="202.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#1e2429" text-anchor="start" font-weight="400" >−298.9</text>
+<text x="880.00" y="202.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#1e2429" text-anchor="start" font-weight="400" >1/164</text>
+<text x="952.00" y="202.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#1e2429" text-anchor="start" font-weight="400" >32.9 / 39.6</text>
+<text x="1048.00" y="202.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#c0561f" text-anchor="start" font-weight="700" >punching fails</text>
+<text x="372.00" y="228.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="700" >2  thickened</text>
+<text x="468.00" y="228.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >distributed</text>
+<text x="568.00" y="228.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >20 × 45</text>
+<text x="668.00" y="228.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >C40/50</text>
+<text x="740.00" y="228.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#1e2429" text-anchor="start" font-weight="400" >3.89</text>
+<text x="808.00" y="228.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#1e2429" text-anchor="start" font-weight="400" >−50.3</text>
+<text x="880.00" y="228.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#1e2429" text-anchor="start" font-weight="400" >1/973</text>
+<text x="952.00" y="228.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#1e2429" text-anchor="start" font-weight="400" >20.6 / 49.8</text>
+<text x="1048.00" y="228.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#1e2429" text-anchor="start" font-weight="700" >passes</text>
+<rect x="366.0" y="241.0" width="696.0" height="22.0" rx="0.0" fill="#2f6f4a" fill-opacity="0.08"/>
+<text x="372.00" y="254.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#2f6f4a" text-anchor="start" font-weight="700" >3  + edge beam</text>
+<text x="468.00" y="254.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >distributed</text>
+<text x="568.00" y="254.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >30→70 taper</text>
+<text x="668.00" y="254.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#4c565f" text-anchor="start" font-weight="400" >C45/55</text>
+<text x="740.00" y="254.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#1e2429" text-anchor="start" font-weight="400" >2.77</text>
+<text x="808.00" y="254.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#1e2429" text-anchor="start" font-weight="400" >−36.6</text>
+<text x="880.00" y="254.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#1e2429" text-anchor="start" font-weight="400" >1/1340</text>
+<text x="952.00" y="254.00" font-family="'IBM Plex Mono',ui-monospace,Menlo,monospace" font-size="9.4" fill="#1e2429" text-anchor="start" font-weight="400" >7.3 / 13.4</text>
+<text x="1048.00" y="254.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.4" fill="#2f6f4a" text-anchor="start" font-weight="700" >best of the three</text>
+<line x1="372.0" y1="268.0" x2="1056.0" y2="268.0" stroke="#ccd3da" stroke-width="1.00" stroke-linecap="butt"/>
+<text x="372.00" y="286.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.0" fill="#77838d" text-anchor="start" font-weight="400" >mm and MPa and cm²/m, in your unit convention · σₜ is the peak principal tension, dead load · Δ/L against Isler’s 1/300</text>
+<rect x="372.0" y="330.0" width="684.0" height="158.0" rx="3.0" fill="#f7f9fb" stroke="#ccd3da" stroke-width="1.00"/>
+<text x="388.00" y="354.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="11.5" fill="#1e2429" text-anchor="start" font-weight="700" >These are real numbers, and they are the argument for the whole mode</text>
+<text x="388.00" y="376.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#4c565f" text-anchor="start" font-weight="400" >Kresge Auditorium, Mekjavić &amp; Pičulin (2010), Table 3. Distributing the same concrete — 8.9 cm everywhere, against a</text>
+<text x="388.00" y="391.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#4c565f" text-anchor="start" font-weight="400" >thickness that grows to 30 cm at the three supports — takes the peak tension from 14.4 MPa to 3.9, and the deflection</text>
+<text x="388.00" y="406.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#4c565f" text-anchor="start" font-weight="400" >from 299 mm to 50. The as-built shell sits at Δ/L = 1/164, four times worse than Isler’s 1/300 rule, and its snow case</text>
+<text x="388.00" y="421.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#4c565f" text-anchor="start" font-weight="400" >fails in punching. Design 3 reaches 1/1340 and needs a fifth of the top steel.</text>
+<text x="388.00" y="436.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#4c565f" text-anchor="start" font-weight="400" ></text>
+<text x="388.00" y="451.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >So automatic thickening is not a tidying-up step. It is the design decision the tab exists to make — which is why it gets</text>
+<text x="388.00" y="466.00" font-family="'IBM Plex Sans Condensed',-apple-system,'Segoe UI',sans-serif" font-size="9.6" fill="#1e2429" text-anchor="start" font-weight="400" >a mode, a criterion you can name, limits you can build to, a convergence report, and this table.</text>
+</svg>

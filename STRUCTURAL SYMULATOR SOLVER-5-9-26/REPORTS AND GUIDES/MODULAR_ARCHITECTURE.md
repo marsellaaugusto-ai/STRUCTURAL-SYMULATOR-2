@@ -93,7 +93,7 @@ The same math/UI split as the rest of the app applies one level deeper:
 - `profile_sketcher_math.py` owns the sketch's own data model
   (`CircleShape` / `PolygonShape`, both in absolute "world" mm: x along
   the beam axis, y measured from the section's bottom fiber upward),
-  snapping math, AutoCAD-style typed-entry parsing (`"x,y"`, `"@dx,dy"`,
+  snapping math, typed CAD coordinate entry parsing (`"x,y"`, `"@dx,dy"`,
   `"length<angle"`), simple/y-simple polygon validation (delegating to
   `perforated_beam_math.opening_polygon`'s own rules rather than
   duplicating them), JSON save/load, and the one function that matters

@@ -100,6 +100,12 @@ def truss_app():
     host = tk.Frame(root)
     host.pack(fill='both', expand=True)
     app = TrussApp(host)
+    # Measure EVERY control: the tab opens in Simple mode, which hides the
+    # power-user sections on purpose (tests/test_truss_learn.py covers that).
+    # Here the question is whether the layout can lose a control, so all of
+    # them must be on show.
+    app.advanced.set(True)
+    app._apply_mode()
     app._load_example()
     app._run_analysis()
     # Both context editors are only packed by the Load / Support tool's click
@@ -244,3 +250,78 @@ def test_panel_keeps_its_content_reachable(truss_app):
             'the horizontal scrollbar is flagged as shown but has no size; '
             'a pack()ed latecomer next to an expand=True canvas gets zero '
             'space -- it must be grid()ed')
+
+
+@pytest.mark.parametrize('report', ('_show_rod_calculations_report',
+                                    '_show_node_vectors_report'))
+def test_analysis_still_shows_diagrams_after_a_report_window_opened(
+        truss_app, report):
+    """The diagram pane was packed "before the root's last child". Once a
+    report window was open that child was a Toplevel, which is not packed,
+    and every later analysis raised TclError ("isn't packed") instead of
+    showing the diagrams."""
+    root, host, app = truss_app
+    getattr(app, report)()
+    _settle(root, 4)
+    app.diag_outer.pack_forget()
+    app._run_analysis()
+    _settle(root, 4)
+    assert app.diag_outer.winfo_manager() == 'pack'
+    order = host.pack_slaves()
+    assert order.index(app.diag_outer) == order.index(app.status_bar) - 1
+
+
+def _canvas_texts(c):
+    return [c.itemcget(i, 'text') for i in c.find_all() if c.type(i) == 'text']
+
+
+def test_pure_truss_gets_one_compact_axial_chart(truss_app):
+    """Every rod of the example is pinned and loaded at its nodes: the
+    diagram pane shows a signed N bar per rod, not empty V/M boxes."""
+    root, host, app = truss_app
+    texts = _canvas_texts(app.diag_zc.canvas)
+    assert not any(t.startswith('Shear V') for t in texts)
+    assert any(t.startswith('Axial force N in every rod') for t in texts)
+    for i, r in enumerate(app.results['rod_res']):
+        assert ('Rod %d' % i) in texts
+        assert any(t.startswith('%+.2f' % r['force']) for t in texts)
+
+
+def test_vierendeel_keeps_shear_and_moment_rows(truss_app):
+    root, host, app = truss_app
+    app._load_example_vierendeel()
+    app._run_analysis()
+    _settle(root, 4)
+    texts = _canvas_texts(app.diag_zc.canvas)
+    assert any(t.startswith('Shear V') for t in texts)
+    assert any(t.startswith('Axial force N (') for t in texts)
+
+
+def test_solved_rods_carry_their_axial_force_and_a_key(truss_app):
+    root, host, app = truss_app
+    c = app.zc.canvas
+    labels = {c.itemcget(i, 'text') for i in c.find_withtag('rod_label')}
+    for i, r in enumerate(app.results['rod_res']):
+        assert '%d: %+.1f' % (i, r['force']) in labels
+    key = c.find_withtag('force_key')
+    assert key
+    # pinned to the bottom of the canvas even after the diagram pane opened
+    assert all(abs(c.coords(k)[1] - (c.winfo_height() - 12)) < 2 for k in key)
+    # editing un-solves the model: back to bare numbers, no key
+    app.results = None
+    app._draw()
+    assert not c.find_withtag('force_key')
+    assert {c.itemcget(i, 'text') for i in c.find_withtag('rod_label')} == \
+        {str(i) for i in range(len(app.rods))}
+
+
+def test_status_bar_tells_the_truth_after_a_failed_or_unloaded_analysis(truss_app):
+    root, host, app = truss_app
+    app._load_example()
+    del app.rods[1]                       # a diagonal gone: a mechanism
+    app._run_analysis()
+    assert app.status_var.get().startswith('Analysis failed')
+    app._load_example()
+    app.loads = []
+    app._run_analysis()
+    assert 'no loads are applied' in app.status_var.get()

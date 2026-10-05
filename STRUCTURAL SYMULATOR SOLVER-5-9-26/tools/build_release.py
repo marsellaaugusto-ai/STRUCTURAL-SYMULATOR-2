@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+"""Build the two things that get handed out: the SketchUp extension (.rbz)
+and the whole-app archive (.zip).
+
+Both used to be assembled by hand, and the shipped .rbz had drifted out of
+step with sketchup_plugin/ as a result -- it was missing model_import.rb
+and xlsx_reader.rb entirely, so the extension's own "Import from Stereo…"
+command would raise LoadError the moment SketchUp loaded it. A build
+script is the fix: it reads the plugin folder, so it cannot forget a file
+that is there, and it refuses to write an archive that is missing a file
+the loader requires.
+
+    python3 tools/build_release.py            # both, into the app root
+    python3 tools/build_release.py --rbz      # just the extension
+    python3 tools/build_release.py --zip      # just the app archive
+    python3 tools/build_release.py --check    # verify, write nothing
+    python3 tools/build_release.py --customer # the archive a customer gets
+
+The customer archive is the app without what is only ours: no tests, no
+build tools, no internal reports, no plugin sources (the built .rbz is in),
+no editor settings. A LICENSE.txt at the app root ships in it when it
+exists, and THIRD_PARTY_NOTICES.txt is generated into it from the
+environment doing the build (notices.py) -- the build stops if any library
+the app uses has no licence text to pass on.
+
+An .rbz IS a zip; SketchUp's Extension Manager just wants that extension.
+Its layout is fixed: the loader .rb sits at the archive root beside a
+folder of the same name holding everything else.
+"""
+import argparse
+import os
+import sys
+import time
+import zipfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+APP = os.path.dirname(HERE)
+
+PLUGIN_DIR = os.path.join(APP, 'sketchup_plugin')
+PLUGIN_NAME = 'coordinate_coordinator_truss_app_amac'
+# The delivered archives carry the version and the moment they were built,
+# so a zip sitting in a downloads folder can be identified without opening
+# it. APP_VERSION is the ONE place the number lives -- do not spell it into a
+# filename anywhere else. The series continues the repo's own history: the
+# last numbered archive was structural_simulator_v21_moment_arrows.zip, so
+# the first dated build is v22. Bump this when you hand out a new one.
+APP_VERSION = 32
+
+
+# Written into every archive: what appinfo.py reads for the window title.
+STAMP_NAME = 'BUILD_STAMP.txt'
+
+
+def stamp_text():
+    """BUILD_STAMP.txt's contents: '31 2026-10-03' -- this version, today."""
+    return '%d %s\n' % (APP_VERSION, time.strftime('%Y-%m-%d'))
+
+
+def build_stamp():
+    """`v<APP_VERSION>_2026-09-30_0415` -- version, date, 24-hour local time.
+
+    Minutes, not seconds: two builds inside one minute are the same delivery
+    as far as anyone receiving it is concerned, and a name you can read aloud
+    is worth more than that last digit of precision.
+    """
+    return 'v%d_%s' % (APP_VERSION, time.strftime('%Y-%m-%d_%H%M'))
+
+
+def stamped(base, ext, stamp=None):
+    """`structural_simulator_app` + `.zip` -> `structural_simulator_app_<stamp>.zip`"""
+    return '%s_%s%s' % (base, stamp or build_stamp(), ext)
+
+
+# The loader inside the .rbz must keep its fixed name, and so must the folder
+# beside it; only the ARCHIVE filename is stamped. SketchUp cares about the
+# extension and the layout within, never what the file is called.
+RBZ_BASE = 'CoordinateCoordinatorTrussAppAMAC'
+RBZ_NAME = RBZ_BASE + '.rbz'      # the name inside the app archive, unstamped
+
+# Files the loader/main require by name. If one of these is not in the
+# archive the extension is broken on load, so the build fails loudly
+# instead of shipping it.
+REQUIRED_RB = (
+    f'{PLUGIN_NAME}.rb',
+    f'{PLUGIN_NAME}/main.rb',
+    f'{PLUGIN_NAME}/xlsx_writer.rb',
+    f'{PLUGIN_NAME}/xlsx_reader.rb',
+    f'{PLUGIN_NAME}/model_export.rb',
+    f'{PLUGIN_NAME}/model_import.rb',
+    f'{PLUGIN_NAME}/pick_tool.rb',
+    f'{PLUGIN_NAME}/intersections.rb',
+)
+
+# What belongs in the app archive. Everything else under the app root is
+# either generated (caches), an output someone happened to leave behind, or
+# an archive of its own.
+ZIP_BASE = 'structural_simulator_app'
+ZIP_NAME = ZIP_BASE + '.zip'     # unstamped: what the required-file check names
+ZIP_INCLUDE_DIRS = ('apps', 'tests', 'sketchup_plugin', 'tools',
+                    'REPORTS AND GUIDES',
+                    # ships deliberately: launch.json is what makes F5 run
+                    # the app from the right working directory, which is
+                    # the difference between it starting and it not. It is
+                    # therefore NOT in ZIP_SKIP_DIRS below.
+                    '.vscode')
+ZIP_INCLUDE_FILES = ('main.py', 'common.py', 'cirsoc_301.py', 'units.py',
+                     # the Shell tab's two top-level modules. shell_app.py
+                     # imports both at module scope, so leaving either out
+                     # does not degrade the Shell tab -- it stops main.py
+                     # importing at all, and the whole app fails to start
+                     # from an archive that looked complete.
+                     'formula.py', 'view3d.py',
+                     # the About box, its licence notices and the guide
+                     'about.py', 'notices.py', 'USER_GUIDE.html',
+                     # the version and date in the window title
+                     'appinfo.py',
+                     'requirements.txt', RBZ_NAME,
+                     # a real model to open straight after unpacking
+                     'wave_like_structure_1.xlsx')
+ZIP_SKIP_DIRS = {'__pycache__', '.pytest_cache', '.git', '.idea',
+                 'node_modules', '.mypy_cache', '.ruff_cache'}
+ZIP_SKIP_SUFFIX = ('.pyc', '.pyo', '.pyd', '.so', '.orig', '.rej', '.swp')
+
+
+
+CUSTOMER_ZIP_BASE = 'structural_simulator_customer'
+CUSTOMER_SKIP_DIRS = ('tests', 'tools', 'REPORTS AND GUIDES',
+                      'sketchup_plugin', '.vscode')
+CUSTOMER_EXTRA_FILES = ('LICENSE.txt',)
+# Files a customer gets from folders that are otherwise only ours: the
+# environment check the user guide tells them to run.
+CUSTOMER_KEEP = ('tools/doctor.py',)
+NOTICES_NAME = 'THIRD_PARTY_NOTICES.txt'
+
+
+def third_party_notices():
+    """The notices text for the environment running this build; stops
+    the build if any component has no licence text."""
+    sys.path.insert(0, APP)
+    try:
+        import notices
+    finally:
+        sys.path.remove(APP)
+    comps = notices.components()
+    gone = notices.missing(comps)
+    if gone:
+        raise SystemExit('no licence text found for: ' + ', '.join(gone))
+    return notices.render(comps)
+
+
+def prune_older(base, ext, keep):
+    """Delete this base's earlier stamped archives, keeping `keep`.
+
+    The working tree holds ONE app archive and one stamped extension, so the
+    folder does not silently fill with 10 MB files. Git history keeps every
+    blob that was ever committed regardless -- this keeps the directory
+    readable, it does not shrink the repository.
+    """
+    import glob as _glob
+    for old in _glob.glob(os.path.join(APP, f'{base}_v*{ext}')):
+        if os.path.abspath(old) != os.path.abspath(keep):
+            try:
+                os.remove(old)
+                print(f'  removed previous {os.path.basename(old)}')
+            except OSError as exc:
+                print(f'  could not remove {old}: {exc}')
+
+
+def plugin_files():
+    """Every file under sketchup_plugin/, as (archive_name, disk_path)."""
+    out = []
+    loader = os.path.join(PLUGIN_DIR, f'{PLUGIN_NAME}.rb')
+    if os.path.isfile(loader):
+        out.append((f'{PLUGIN_NAME}.rb', loader))
+    root = os.path.join(PLUGIN_DIR, PLUGIN_NAME)
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in ZIP_SKIP_DIRS)
+        for fn in sorted(filenames):
+            if fn.endswith(ZIP_SKIP_SUFFIX) or fn.startswith('.'):
+                continue
+            disk = os.path.join(dirpath, fn)
+            rel = os.path.relpath(disk, PLUGIN_DIR).replace(os.sep, '/')
+            out.append((rel, disk))
+    return out
+
+
+def build_rbz(dest=None, check_only=False):
+    files = plugin_files()
+    names = {n for n, _ in files}
+    missing = [r for r in REQUIRED_RB if r not in names]
+    if missing:
+        raise SystemExit('sketchup_plugin/ is missing required file(s): '
+                         + ', '.join(missing))
+
+    checked = ruby_syntax_check(files)
+
+    # `into_app` is the difference between a real build and a test building
+    # into a tmp_path. Only a real build may touch anything else in APP:
+    # prune_older and the canonical copy below are destructive, and a test
+    # that passes an explicit dest must not reach out of its own directory.
+    into_app = dest is None
+    dest = dest or os.path.join(APP, stamped(RBZ_BASE, '.rbz'))
+    if check_only:
+        print(f'rbz would hold {len(files)} file(s)'
+              + (f'; ruby -c passed on {checked}' if checked else
+                 '; ruby not installed, syntax unchecked') + ':')
+        for n, _ in files:
+            print(f'    {n}')
+        return dest, files
+
+    with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as z:
+        for name, disk in files:
+            z.write(disk, name)
+    verify_rbz(dest)
+    # The app archive carries the extension under its canonical name, and
+    # that is also the name SketchUp's documentation and every earlier report
+    # refer to, so the unstamped copy is written too. Same bytes, 22 KB.
+    if into_app:
+        canonical = os.path.join(APP, RBZ_NAME)
+        if os.path.abspath(canonical) != os.path.abspath(dest):
+            import shutil
+            shutil.copy2(dest, canonical)
+        prune_older(RBZ_BASE, '.rbz', dest)
+    print(f'{os.path.basename(dest)}: {len(files)} file(s), '
+          f'{os.path.getsize(dest):,} bytes -> {dest}')
+    return dest, files
+
+
+def ruby_syntax_check(files):
+    """`ruby -c` every .rb going into the archive, when ruby is available.
+
+    A Ruby syntax error does not surface until SketchUp tries to load the
+    extension, on someone else's machine, with nothing but a stack trace
+    to go on. Skipped silently where ruby is not installed, since that is
+    a build-host detail rather than a fault in the plugin.
+    """
+    import shutil
+    import subprocess
+    ruby = shutil.which('ruby')
+    if not ruby:
+        return None
+    bad = []
+    for name, disk in files:
+        if not name.endswith('.rb'):
+            continue
+        p = subprocess.run([ruby, '-c', disk], capture_output=True, text=True)
+        if p.returncode != 0:
+            bad.append(f'{name}: {p.stderr.strip()}')
+    if bad:
+        raise SystemExit('ruby syntax errors:\n  ' + '\n  '.join(bad))
+    return sum(1 for n, _ in files if n.endswith('.rb'))
+
+
+def verify_rbz(path):
+    """Re-open the built archive and check it against REQUIRED_RB.
+
+    Verifying the ARCHIVE rather than the list that went into it is the
+    point: that is the artefact SketchUp opens, and the last one shipped
+    was missing files nobody re-read it to notice.
+    """
+    with zipfile.ZipFile(path) as z:
+        bad = z.testzip()
+        if bad is not None:
+            raise SystemExit(f'{path}: corrupt entry {bad}')
+        names = set(z.namelist())
+        missing = [r for r in REQUIRED_RB if r not in names]
+        if missing:
+            raise SystemExit(f'{path} is missing: ' + ', '.join(missing))
+        for name in names:
+            if name.endswith('.rb'):
+                src = z.read(name).decode('utf-8')
+                if not src.strip():
+                    raise SystemExit(f'{path}: {name} is empty')
+    return True
+
+
+def app_files():
+    """Every file that belongs in the distributable app archive."""
+    out = []
+    for fn in ZIP_INCLUDE_FILES:
+        disk = os.path.join(APP, fn)
+        if os.path.isfile(disk):
+            out.append((fn, disk))
+    for d in ZIP_INCLUDE_DIRS:
+        root = os.path.join(APP, d)
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(x for x in dirnames if x not in ZIP_SKIP_DIRS)
+            for fn in sorted(filenames):
+                if fn.endswith(ZIP_SKIP_SUFFIX):
+                    continue
+                disk = os.path.join(dirpath, fn)
+                rel = os.path.relpath(disk, APP).replace(os.sep, '/')
+                out.append((rel, disk))
+    # stable order, no duplicates
+    seen, uniq = set(), []
+    for rel, disk in out:
+        if rel not in seen:
+            seen.add(rel)
+            uniq.append((rel, disk))
+    return sorted(uniq)
+
+
+def customer_files():
+    """app_files() less everything that is only ours, plus the licence
+    when it exists. (The notices are generated, not copied: build_zip.)"""
+    out = [(rel, disk) for rel, disk in app_files()
+           if (rel.split('/', 1)[0] not in CUSTOMER_SKIP_DIRS
+               or rel in CUSTOMER_KEEP)
+           and rel != NOTICES_NAME]
+    for fn in CUSTOMER_EXTRA_FILES:
+        disk = os.path.join(APP, fn)
+        if os.path.isfile(disk):
+            out.append((fn, disk))
+    return sorted(set(out))
+
+
+def build_zip(dest=None, check_only=False, customer=False):
+    files = customer_files() if customer else app_files()
+    names = {n for n, _ in files}
+    # Every module main.py imports transitively at startup, so a missing
+    # one fails the BUILD rather than the user's first launch. This list is
+    # why formula.py and view3d.py are caught now: they were absent from
+    # ZIP_INCLUDE_FILES when the Shell tab was merged in, and the archive
+    # would have unpacked cleanly and then refused to start.
+    for must in ('main.py', 'common.py', 'units.py', 'cirsoc_301.py',
+                 'formula.py', 'view3d.py', 'about.py', 'notices.py',
+                 'appinfo.py',
+                 'apps/stereo/stereo_app.py', 'apps/stereo/stereo_reports.py',
+                 'apps/stereo/stereo_app_inspector.py',
+                 'apps/shell/shell_app.py', 'apps/shell/shell_model.py',
+                 RBZ_NAME):
+        if must not in names:
+            raise SystemExit(f'app archive would be missing {must}')
+
+    into_app = dest is None
+    base = CUSTOMER_ZIP_BASE if customer else ZIP_BASE
+    dest = dest or os.path.join(APP, stamped(base, '.zip'))
+    notices_text = third_party_notices() if customer else None
+    if check_only:
+        print(f'zip would hold {len(files)} file(s) -> '
+              f'{os.path.basename(dest)}')
+        return dest, files
+
+    root = os.path.basename(APP)
+    with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as z:
+        for rel, disk in files:
+            z.write(disk, f'{root}/{rel}')
+        if notices_text is not None:
+            z.writestr(f'{root}/{NOTICES_NAME}', notices_text)
+        # the version and date the window title shows (appinfo.py)
+        z.writestr(f'{root}/{STAMP_NAME}', stamp_text())
+    with zipfile.ZipFile(dest) as z:
+        bad = z.testzip()
+        if bad is not None:
+            raise SystemExit(f'{dest}: corrupt entry {bad}')
+    if into_app:
+        prune_older(base, '.zip', dest)
+    print(f'{os.path.basename(dest)}: {len(files)} file(s), '
+          f'{os.path.getsize(dest):,} bytes -> {dest}')
+    return dest, files
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--rbz', action='store_true', help='build only the .rbz')
+    ap.add_argument('--zip', action='store_true', help='build only the .zip')
+    ap.add_argument('--check', action='store_true',
+                    help='list what would be built, write nothing')
+    ap.add_argument('--customer', action='store_true',
+                    help='build only the customer archive (no tests, tools '
+                         'or internal reports)')
+    args = ap.parse_args(argv)
+    if args.customer:
+        build_rbz(check_only=args.check)
+        build_zip(check_only=args.check, customer=True)
+        return 0
+
+    do_rbz = args.rbz or not args.zip
+    do_zip = args.zip or not args.rbz
+    if do_rbz:
+        build_rbz(check_only=args.check)
+    if do_zip:
+        # the archive carries the extension, so build that first
+        build_zip(check_only=args.check)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -13,7 +13,7 @@ Nothing in this file depends on truss_app / beam_app / arch_app / cable_app
 """
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-import math, os, sys, subprocess
+import math, os, sys, time
 
 import units
 
@@ -69,22 +69,28 @@ def _require_numpy(note=''):
 _np = None
 
 
-def _ensure_openpyxl():
+# ── optional libraries: present or not, never installed behind the user ─────
+# These helpers used to run "pip install" from inside the app the first time
+# a library was missing. A shipped product must not: it reaches the network
+# and changes the customer's Python without asking, it can hang the window
+# for minutes, and it fails silently behind a firewall. Now they only say
+# whether the library is importable, and every caller already tells the user
+# what to install when it is not (requirements.txt lists them all).
+def _importable(*modules):
+    import importlib
     try:
-        import openpyxl
-        return True
-    except ImportError:
-        pass
-    try:
-        subprocess.check_call(
-            [sys.executable, '-m', 'pip', 'install', 'openpyxl', '--quiet'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        import openpyxl
+        for m in modules:
+            importlib.import_module(m)
         return True
     except Exception:
         return False
 
-# ── auto-install scipy if missing (cable-web network solver) ──────────────────
+
+def _ensure_openpyxl():
+    """Excel import and export."""
+    return _importable('openpyxl')
+
+
 def _ensure_scipy():
     """SciPy is NOT optional for Cable Web, despite the name of the code path
     that uses it.
@@ -99,35 +105,12 @@ def _ensure_scipy():
     presents as an intermittent physics failure rather than as a missing
     dependency. See REPORTS AND GUIDES/CABLE_WEB_DIAGNOSIS_2026-09-04.md.
     """
-    try:
-        import scipy.optimize
-        return True
-    except ImportError:
-        pass
-    try:
-        subprocess.check_call(
-            [sys.executable, '-m', 'pip', 'install', 'scipy', '--quiet'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        import scipy.optimize
-        return True
-    except Exception:
-        return False
+    return _importable('scipy.optimize')
 
-# ── auto-install matplotlib+Pillow if missing (LaTeX-style equation images) ──
+
 def _ensure_matplotlib():
-    try:
-        import matplotlib, PIL
-        return True
-    except ImportError:
-        pass
-    try:
-        subprocess.check_call(
-            [sys.executable, '-m', 'pip', 'install', 'matplotlib', 'pillow', '--quiet'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        import matplotlib, PIL
-        return True
-    except Exception:
-        return False
+    """PDF reports and the equation images in the guides."""
+    return _importable('matplotlib', 'PIL')
 
 def render_math(tex, fontsize=13, color='#1a1a1a', dpi=200):
     """
@@ -402,6 +385,9 @@ def draw_moment_arrow(canvas, cx, cy, r, ccw, color, width=2, arrowshape=(8, 10,
                                arrowshape=arrowshape, capstyle='round', joinstyle='round')
 
 
+DECLUTTER_MAX_ITEMS = 80   # see declutter_text's own docstring for why
+
+
 def declutter_text(canvas, item_ids, step=14, max_passes=8, top_margin=2):
     """Nudge overlapping canvas TEXT items apart, upwards, in place.
 
@@ -417,8 +403,20 @@ def declutter_text(canvas, item_ids, step=14, max_passes=8, top_margin=2):
     cannot push a label off the canvas -- on a pane too short to separate them
     the labels stay overlapped, which is visible, rather than disappearing,
     which is not.
+
+    Each pairwise comparison costs a real canvas.bbox() round-trip into the
+    Tk/Tcl bridge, so the all-pairs loop below is fine for the handful of load
+    labels this was designed for but becomes ruinously expensive on a dense
+    mesh's node/member labels -- a 221-node grid is ~24k pairs per pass, times
+    up to max_passes, i.e. hundreds of thousands of round-trips, observed to
+    take minutes under a loaded display server. Past DECLUTTER_MAX_ITEMS this
+    is skipped entirely and the labels are left exactly where they were drawn
+    (the same "stays overlapped rather than disappearing" degrade mode the
+    function already falls back to when it runs out of vertical room).
     """
     ids = [i for i in item_ids if canvas.type(i) == 'text']
+    if len(ids) > DECLUTTER_MAX_ITEMS:
+        return
     for _ in range(max_passes):
         moved = False
         boxes = {}
@@ -740,7 +738,23 @@ class FlowBar:
             return
         self._pending = True
         try:
-            self.bar.after_idle(self.relayout)
+            # A TIMER, deliberately, not after_idle. A relayout repacks the
+            # bar, which fires <Configure>, which lands back here -- so an
+            # idle-queued relayout re-enqueues itself from inside whatever
+            # drained the queue. ScrollPanel.fit_to_content() calls
+            # update_idletasks(), and that call does not return until the idle
+            # queue is empty, so the two together never terminated: building
+            # the Beam tab after the Truss tab hung the app forever at 100%
+            # CPU before the window ever appeared. (It needed the toplevel to
+            # have no explicit geometry -- as main.py starts it -- so the
+            # bar's width never settled and the cycle had no fixed point.)
+            # A timer callback is not idle work, so update_idletasks() can
+            # always drain, while the relayout still follows the resize within
+            # one frame. Note this adds NO width cache: caching on width is
+            # what locked in a wrong layout before (MANIFESTO sec 3c), and
+            # that bug must not come back. Do not "simplify" this to
+            # after_idle.
+            self.bar.after(16, self.relayout)
         except Exception:
             self._pending = False
 
@@ -778,7 +792,31 @@ class FlowBar:
             self.groups = live
 
             # 1. Lay out each group's own children, wrapping internally only
-            #    if the group alone is wider than the bar.
+            #    if the group alone is wider than the bar. Each group's
+            #    effective width is recorded here in `group_width` rather
+            #    than re-read from winfo_reqwidth() in step 2 below: pack()
+            #    only SCHEDULES Tk's geometry recomputation, it does not run
+            #    it, so querying reqwidth() on a group _wrap_children just
+            #    finished re-packing (destroying its old internal rows and
+            #    creating new ones) can observe a transient ~1px placeholder
+            #    from between the two -- which corrupted step 2's row-wrap
+            #    decision for exactly that group on exactly that pass,
+            #    changing how many rows the bar needs, which resizes the
+            #    canvas below it, which fires ANOTHER <Configure> that
+            #    schedules ANOTHER relayout: observed in practice as the
+            #    bar's width cycling through a fixed set of values forever
+            #    instead of settling. (An earlier fix forced the recompute
+            #    with a mid-relayout bar.update_idletasks() call instead --
+            #    that resolved the oscillation too, but it flushes Tk's
+            #    whole pending-idle queue from inside an already-running
+            #    relayout, which can silently run and discard a second
+            #    relayout call queued by an earlier _schedule() before this
+            #    one's own reentrancy guard was reached, dropping a pass
+            #    that was needed to fully map every control -- reproduced as
+            #    test_truss_layout.py's widest-window case losing 8 controls.
+            #    Recording each group's already-known width sidesteps the
+            #    stale read directly, with no extra Tk event processing.)
+            group_width = {}
             for g in self.groups:
                 for w in list(g.winfo_children()):
                     if getattr(w, '_is_wrap_row', False):
@@ -791,10 +829,11 @@ class FlowBar:
                 req = sum(max(ch.winfo_reqwidth(), 1) + 2 * self.item_pad
                           for ch in children)
                 if req > available:
-                    self._wrap_children(g, available, self.item_pad)
+                    group_width[g] = self._wrap_children(g, available, self.item_pad)
                 else:
                     for child in children:
                         child.pack(side='left', padx=self.item_pad, pady=3)
+                    group_width[g] = req
 
             # 2. Lay the groups out left-to-right, wrapping whole groups onto
             #    new ROWS. One Frame per row, packed top-to-bottom -- NOT
@@ -811,7 +850,7 @@ class FlowBar:
             rows = [[]]
             used = 0
             for g in self.groups:
-                req = max(g.winfo_reqwidth(), 1)
+                req = max(group_width.get(g, 1), 1)
                 if used and used + self.group_gap + req > available:
                     rows.append([])
                     used = 0
@@ -849,14 +888,17 @@ class FlowBar:
             child.pack_forget()
             child.grid_forget()
         rows = [[]]
+        row_widths = [0]
         used = 0
         for child in children:
             req = max(child.winfo_reqwidth(), 1)
             if used and used + pad + req > available:
                 rows.append([])
+                row_widths.append(0)
                 used = 0
             rows[-1].append(child)
             used += req + pad
+            row_widths[-1] = used
         for row_children in rows:
             row_frame = tk.Frame(group, bg=group.cget('bg'))
             row_frame._is_wrap_row = True
@@ -870,6 +912,11 @@ class FlowBar:
             row_frame.lower()
             for child in row_children:
                 child.pack(in_=row_frame, side='left', padx=pad, pady=2)
+        # The group's own effective width, once stacked into these rows, is
+        # its WIDEST row -- returned so relayout() can use this already-known
+        # value instead of re-reading winfo_reqwidth() (see relayout's own
+        # note on why that reread is unsafe immediately after this repack).
+        return max(row_widths)
 
 
 class ScrollPanel(tk.Frame):
@@ -904,6 +951,7 @@ class ScrollPanel(tk.Frame):
     #: keeps its full content width; above it, the panel yields to the
     #: drawing canvas and the horizontal scrollbar covers the difference.
     MAX_WINDOW_SHARE = 0.45
+    MAX_GROW = 1.3
 
     def __init__(self, master, width=PANEL_W, bg='#f0f0ee', **kw):
         super().__init__(master, width=width, bg=bg, **kw)
@@ -911,6 +959,13 @@ class ScrollPanel(tk.Frame):
         self.pack_propagate(False)
         self.grid_propagate(False)
         self._syncing = False
+        self._last_toplevel_w = None
+        self._tl_pending = False
+        # When the panel last actually changed its own width. See
+        # _apply_toplevel_width: a panel sized as a SHARE of the window,
+        # inside a window that sizes itself to fit its content, is a circular
+        # constraint, and it does not always have a fixed point.
+        self._tl_applied_at = []
 
         self.vsb = tk.Scrollbar(self, orient='vertical')
         self.hsb = tk.Scrollbar(self, orient='horizontal')
@@ -956,25 +1011,22 @@ class ScrollPanel(tk.Frame):
         try:
             if event.state & 0x0001:
                 self.canvas.xview_scroll(int(-1 * (event.delta / 120)), 'units')
-            else:
+            elif self.interior.winfo_reqheight() > self.canvas.winfo_height():
+                # nothing to scroll when it all fits
                 self.canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
         except Exception:
             pass
 
     def _sync(self, _event=None):
-        # Packing/unpacking the horizontal scrollbar changes the canvas size,
-        # which fires <Configure>, which re-enters here. Guard it.
         if self._syncing:
             return
         self._syncing = True
         try:
             req_w = max(self.interior.winfo_reqwidth(), 1)
+            req_h = max(self.interior.winfo_reqheight(), 1)
             view_w = max(self.canvas.winfo_width(), 1)
-            # Stretch the interior to fill the panel when it is narrower than
-            # the view (so fill='x' children still span the panel), but never
-            # squeeze it below its natural width -- that is what clipped the
-            # wrapped help text and the slider rows before.
-            self.canvas.itemconfigure(self._win, width=max(req_w, view_w))
+            win_w = max(req_w, view_w)
+            self.canvas.itemconfigure(self._win, width=win_w)
             need_h = req_w > view_w + 1
             if need_h and not self._hsb_shown:
                 self.hsb.grid(row=1, column=0, sticky='ew')
@@ -982,13 +1034,110 @@ class ScrollPanel(tk.Frame):
             elif not need_h and self._hsb_shown:
                 self.hsb.grid_remove()
                 self._hsb_shown = False
-            bbox = self.canvas.bbox('all')
-            if bbox:
-                self.canvas.configure(scrollregion=bbox)
+            # Never shorter than the view. A scroll region smaller than the
+            # window lets Tk scroll it anyway -- the wheel pushed a short
+            # panel down off its own top and left an empty band above it,
+            # with nothing up there to scroll to. At least the view's height,
+            # the region fits exactly and the content stays pinned to the top.
+            view_h = max(self.canvas.winfo_height(), 1)
+            region_h = max(req_h, view_h)
+            self.canvas.configure(scrollregion=(0, 0, win_w, region_h))
+            if req_h <= view_h:
+                self.canvas.yview_moveto(0.0)
         except Exception:
             pass
         finally:
             self._syncing = False
+
+    def _on_toplevel_resize(self, event=None):
+        """Re-fit this panel when the WINDOW is resized -- on a timer.
+
+        Two traps here, both of which hung the app at 100% CPU before any
+        window appeared:
+
+        1. This is bound on the TOPLEVEL, and every widget's bindtags include
+           its toplevel, so a <Configure> binding there fires for EVERY
+           descendant's resize, not just the window's own. Hence the widget
+           guard below.
+        2. Even restricted to the toplevel's own Configure, the work cannot be
+           done inline. Setting this panel's width changes the toplevel's
+           REQUESTED size, which resizes the toplevel, which fires Configure
+           again -- with a different width every time while the window is
+           still growing to fit its content, so no "width unchanged" cache can
+           break it. Meanwhile fit_to_content() is inside update_idletasks(),
+           which does not return until the idle queue is empty. Six tabs call
+           fit_to_content, so six of these handlers fed that queue.
+
+        A timer callback is not idle work, so update_idletasks() can always
+        drain and the resize still lands within one frame. Same reasoning as
+        FlowBar._schedule above; do not inline this.
+        """
+        try:
+            top = self.winfo_toplevel()
+            if event is not None and getattr(event, 'widget', None) is not top:
+                return
+            if self._tl_pending:
+                return
+            self._tl_pending = True
+            self.after(16, self._apply_toplevel_width)
+        except Exception:
+            self._tl_pending = False
+
+    # A panel may change its own width at most this many times in this many
+    # seconds. Past that it is oscillating, not tracking, and it stops.
+    RESIZE_BURST = 8
+    RESIZE_BURST_SECONDS = 1.0
+
+    def _apply_toplevel_width(self):
+        """The body of _on_toplevel_resize, off the idle queue.
+
+        The width guard below is NOT enough on its own, and the reason is
+        worth stating because it cost an afternoon twice. This panel takes a
+        SHARE of the window's width, and the window sizes itself to fit its
+        content -- which includes this panel. Widening the panel widens the
+        window, which raises the share, which widens the panel. That is a
+        circular constraint, and it has no fixed point whenever the panels
+        are what the window is sizing itself around: the window then cycles
+        (measured: 1549 -> 1370 -> 1442 -> 1370 -> 1474 -> 1571 ...) and each
+        pass through it is a fresh, DIFFERENT window width, so
+        `_last_toplevel_w == win_w` never fires and the loop runs forever at
+        100% CPU. It is not the same bug as the <Configure> re-entry the
+        docstring above describes; that one is fixed, this one sits under it.
+
+        Whether a given model lands in the stable or the unstable regime
+        depends on how wide the panels' content happens to be, so ANY change
+        to any tab's panel can tip it over -- adding one group box to the
+        Stereo add-ons panel is what exposed it. Hence a rate limit rather
+        than a cleverer predicate: a panel that has changed its own width
+        RESIZE_BURST times within RESIZE_BURST_SECONDS is cycling, and it
+        stops and keeps the width it has. A real user resize comes long after
+        that window has lapsed, so tracking still works.
+        """
+        self._tl_pending = False
+        try:
+            if not self.winfo_exists():
+                return
+            win_w = self.winfo_toplevel().winfo_width()
+            if win_w < 2:
+                return
+            if self._last_toplevel_w == win_w:
+                return
+            self._last_toplevel_w = win_w
+            share = max(120, int(win_w * self.MAX_WINDOW_SHARE))
+            w = min(int(self.base_width * self.MAX_GROW), share)
+            if int(self.cget('width')) == w:
+                return
+            now = time.monotonic()
+            self._tl_applied_at = [t for t in self._tl_applied_at
+                                   if now - t < self.RESIZE_BURST_SECONDS]
+            if len(self._tl_applied_at) >= self.RESIZE_BURST:
+                return          # cycling: keep the width we have
+            self._tl_applied_at.append(now)
+            self.configure(width=w)
+            self.canvas.configure(width=w)
+            self._sync()
+        except Exception:
+            pass
 
     # -- sizing ---------------------------------------------------------------
     def fit_to_content(self, max_width=None):
@@ -1011,6 +1160,11 @@ class ScrollPanel(tk.Frame):
             self.configure(width=w)
             self.canvas.configure(width=w)
             self._sync()
+            try:
+                self.winfo_toplevel().bind(
+                    '<Configure>', self._on_toplevel_resize, add='+')
+            except Exception:
+                pass
             return w
         except Exception:
             return self.base_width
@@ -1087,7 +1241,23 @@ class WrapBar:
             return
         self._pending = True
         try:
-            self.bar.after_idle(self.relayout)
+            # A TIMER, deliberately, not after_idle. A relayout repacks the
+            # bar, which fires <Configure>, which lands back here -- so an
+            # idle-queued relayout re-enqueues itself from inside whatever
+            # drained the queue. ScrollPanel.fit_to_content() calls
+            # update_idletasks(), and that call does not return until the idle
+            # queue is empty, so the two together never terminated: building
+            # the Beam tab after the Truss tab hung the app forever at 100%
+            # CPU before the window ever appeared. (It needed the toplevel to
+            # have no explicit geometry -- as main.py starts it -- so the
+            # bar's width never settled and the cycle had no fixed point.)
+            # A timer callback is not idle work, so update_idletasks() can
+            # always drain, while the relayout still follows the resize within
+            # one frame. Note this adds NO width cache: caching on width is
+            # what locked in a wrong layout before (MANIFESTO sec 3c), and
+            # that bug must not come back. Do not "simplify" this to
+            # after_idle.
+            self.bar.after(16, self.relayout)
         except Exception:
             self._pending = False
 

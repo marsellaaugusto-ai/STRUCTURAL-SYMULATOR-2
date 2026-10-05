@@ -583,7 +583,7 @@ def _ellipse_half_length(a, b, n=4000):
 
 
 # ═════════════════════════════════════════════════════════════════════════
-#  Conic through five points  (GeoGebra's Conic[A,B,C,D,E])
+#  Conic through five points  (the general conic Ax²+Bxy+Cy²+Dx+Ey+F = 0)
 # ═════════════════════════════════════════════════════════════════════════
 #
 # Five points determine a unique conic. Every row of

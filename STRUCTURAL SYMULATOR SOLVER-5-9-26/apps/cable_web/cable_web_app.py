@@ -8,6 +8,7 @@ solution is requested those continuous user cables are discretised into
 straight solver segments.
 """
 import math
+import os
 import re
 import threading
 import queue
@@ -809,10 +810,6 @@ class CableWebApp(UnitsMixin, tk.Frame):
             'Connect': 'Connect two existing nodes with a new cable.',
             'Load': 'Add a point load, UDL, or variable distributed load to a selected cable. Loads use cable-local s coordinates.',
             'Measure': 'Measure the distance between two points in model metres.',
-            'Pan': 'Pan the canvas with left-drag. Does not edit the structural model.',
-            'Zoom +': 'Zoom in around the canvas center.',
-            'Zoom -': 'Zoom out around the canvas center.',
-            'Fit': 'Fit the current web to the visible canvas.',
             'Pan': 'Pan: click and hold the canvas, then drag to move the view. This changes only the camera, not the structure.',
             'Zoom +': 'Zoom in around the center of the canvas.',
             'Zoom -': 'Zoom out around the center of the canvas.',
@@ -3528,8 +3525,8 @@ class CableWebApp(UnitsMixin, tk.Frame):
                 'Analysis failed',
                 MissingSolverDependency(
                     'Cable Web needs SciPy to solve a network with junctions, '
-                    'and it could not be installed automatically.\n\n'
-                    'Install it yourself with:\n'
+                    'and it is not installed.\n\n'
+                    'Install it with:\n'
                     '    python -m pip install scipy'))
             return
         # This solve can legitimately take several seconds for a network
@@ -5393,6 +5390,7 @@ class CableWebApp(UnitsMixin, tk.Frame):
             self._update_reference_result(); self._refresh_tree(); self._show_empty_inspector(); self._draw()
             self.validation_var.set('Excel model imported. Validate before solving.')
             self.status_var.set(f'Excel imported: {path}')
+            self.document_name = os.path.basename(path)  # the window title names it
         except Exception as ex:
             messagebox.showerror('Excel import failed', str(ex), parent=self.winfo_toplevel())
 
@@ -5420,6 +5418,7 @@ class CableWebApp(UnitsMixin, tk.Frame):
         self.selected_items=set()
         self.next_node_id=self.next_cable_id=self.next_load_id=1
         self.validation_var.set('Model cleared.')
+        self.document_name = None          # a new drawing
         self._refresh_tree(); self._show_empty_inspector(); self._draw()
 
     def _load_example(self):

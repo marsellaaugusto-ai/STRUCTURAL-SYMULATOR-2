@@ -89,3 +89,54 @@ def test_worst_utilization_ignores_unchecked_members():
               {'checked': True, 'util': 0.9}]
     assert sc.worst_utilization(checks) == pytest.approx(0.9)
     assert sc.worst_utilization([{'checked': False, 'util': None}]) is None
+
+
+# ── the bending fallback no longer depends on the buckling radius ────────────
+
+def _S(member):
+    from apps.stereo import stereo_checks as _sk
+    return _sk.elastic_section_modulus_cm3(member)
+
+
+def test_changing_only_r_gyr_does_not_move_the_section_modulus():
+    a = dict(A=27.25, I=1845.6, r_gyr=8.23)
+    b = dict(A=27.25, I=1845.6, r_gyr=2.28)          # the same IPE, minor r
+    assert _S(a) == pytest.approx(_S(b), rel=1e-12)
+
+
+def test_the_fallback_is_a_thin_round_tube_from_I_and_A():
+    import math
+    m = dict(A=10.0, I=250.0, r_gyr=999.0)
+    assert _S(m) == pytest.approx(250.0 / math.sqrt(2.0 * 250.0 / 10.0))
+
+
+def test_the_fallback_is_conservative_for_every_i_and_channel_section():
+    """Where the radius error was biggest, a lost depth must err SAFE:
+    fallback S no larger than the real S = I/c."""
+    from apps.stereo import stereo_profiles as _sp
+    for name, sec in _sp.CATALOG.items():
+        if sec.shape not in ('I', 'C'):
+            continue
+        props = _sp.section_to_props(sec)
+        real = props['I'] / props['c_cm']
+        guess = _S(dict(A=props['A'], I=props['I'], r_gyr=props['r_gyr']))
+        assert guess <= real * (1 + 1e-9), (name, guess, real)
+
+
+def test_a_catalog_member_uses_its_real_depth_not_the_guess():
+    from apps.stereo import stereo_profiles as _sp
+    props = _sp.section_to_props(_sp.CATALOG['L 50x5'])
+    assert _S(props) == pytest.approx(props['I'] / props['c_cm'])
+
+
+def test_an_ipe_in_compression_is_now_checked_about_its_weak_axis():
+    """The fix, stated as a consequence: a 4 m IPE 200 strut is much more
+    heavily utilised than the strong-axis radius used to report."""
+    from apps.stereo import stereo_profiles as _sp
+    from apps.stereo import stereo_checks as _sk
+    sec = _sp.CATALOG['IPE 200']
+    now = dict(_sp.section_to_props(sec, _sp.STEEL_F24), K=1.0, _length_m=4.0)
+    was = dict(now, r_gyr=sec.r_x_mm / 10.0)
+    u_now = _sk.check_member(now, -150.0)['util']
+    u_was = _sk.check_member(was, -150.0)['util']
+    assert u_now > 2.0 * u_was, (u_now, u_was)

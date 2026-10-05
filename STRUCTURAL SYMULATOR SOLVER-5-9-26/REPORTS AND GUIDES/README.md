@@ -10,13 +10,29 @@ From the directory containing `main.py`:
 python main.py
 ```
 
-Tabs:
+Tabs, in notebook order:
 - Truss
 - Beam
 - Arch
 - Cable
 - Cable Web
 - Perforated Beam
+- Stereo — 3D space structures (the largest module; see the account below)
+- Shell (RC) — reinforced-concrete shells
+
+## Start here
+
+This folder holds around sixty reports accumulated over the project. Two of
+them are the current ones:
+
+| Read | For |
+|---|---|
+| `RUNNING_THE_APP.md` | it will not start, or starts and shows no window |
+| `STEREO_ROADMAP_V2_FULL_ACCOUNT_2026-09-28.md` | what was built since 2026-09-18, how the two branches were merged, what the merge broke, and every open problem |
+
+Everything else is dated and describes the state of the app on its own date.
+Where an older report and the account document disagree, the account
+document is newer and says so explicitly.
 
 ## Project layout
 

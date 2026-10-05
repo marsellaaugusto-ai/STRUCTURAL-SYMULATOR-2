@@ -3,8 +3,8 @@
 **Source:** Reglamento CIRSOC 301, *Reglamento Argentino de Estructuras de
 Acero para Edificios*, edición Julio 2018 (INTI-CIRSOC). Its own preface
 states that it adopts **ANSI/AISC 360-2010** as its basis.
-**Cross-checked against:** ANSI/AISC 360-16, and the SAP2000 *Steel Frame
-Design Manual — AISC 360-10*.
+**Cross-checked against:** ANSI/AISC 360-10 and 360-16, and hand-worked
+examples.
 
 **Status:** the resistance factors and nominal strengths are now
 implemented, in `apps/perforated_beam/cirsoc_301.py`, each with its clause

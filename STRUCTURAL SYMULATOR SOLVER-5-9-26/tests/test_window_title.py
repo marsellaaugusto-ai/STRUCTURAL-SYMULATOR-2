@@ -15,11 +15,48 @@ import appinfo   # noqa: E402
 
 def test_the_title_reads_name_version_date_and_document():
     info = (31, time.strptime('2026-10-03', '%Y-%m-%d'))
-    assert appinfo.window_title('roof.xlsx', tab='Stereo', info=info) == \
+    # edition=None is the REFERENCE build: the title reads as it always did.
+    assert appinfo.window_title('roof.xlsx', tab='Stereo', info=info,
+                                edition=None) == \
         'Structural Simulator v31 · 03/10/2026 — roof.xlsx'
     # nothing open: the app's drawing
-    assert appinfo.window_title(None, tab='Truss', info=info) == \
+    assert appinfo.window_title(None, tab='Truss', info=info,
+                                edition=None) == \
         'Structural Simulator v31 · 03/10/2026 — Truss drawing'
+
+
+def test_an_edition_sits_next_to_the_version():
+    """A window on an edited build must not read as the release it came off."""
+    info = (32, time.strptime('2026-10-05', '%Y-%m-%d'))
+    assert appinfo.window_title('roof.xlsx', tab='Stereo', info=info,
+                                edition='st01') == \
+        'Structural Simulator v32 st01 · 05/10/2026 — roof.xlsx'
+    # And left out entirely, the title is the plain one -- so the reference
+    # build is not changed by the feature existing.
+    assert appinfo.window_title('roof.xlsx', tab='Stereo', info=info,
+                                edition=None) == \
+        'Structural Simulator v32 · 05/10/2026 — roof.xlsx'
+
+
+def test_this_copy_reports_the_edition_its_release_script_names():
+    sys.path.insert(0, str(APP / 'tools'))
+    import build_release as br
+    if (APP / appinfo.STAMP_FILE).exists():
+        pytest.skip('this copy carries a build stamp')
+    assert appinfo.edition() == br.APP_EDITION
+
+
+def test_a_stamp_round_trips_through_appinfo(tmp_path, monkeypatch):
+    """What build_release writes is what appinfo reads -- including a stamp
+    with no edition, which is every stamp written before editions existed."""
+    for edition in ('st01', None):
+        monkeypatch.setattr(appinfo, 'APP_DIR', str(tmp_path))
+        monkeypatch.setattr(appinfo, '_edition', appinfo._UNREAD)
+        (tmp_path / appinfo.STAMP_FILE).write_text(appinfo.stamp_text(
+            32, time.strptime('2026-10-05', '%Y-%m-%d'), edition))
+        ver, when = appinfo.build_info()
+        assert ver == 32 and time.strftime('%Y-%m-%d', when) == '2026-10-05'
+        assert appinfo.edition() == edition
 
 
 def test_a_working_copy_reads_its_version_from_the_release_script():

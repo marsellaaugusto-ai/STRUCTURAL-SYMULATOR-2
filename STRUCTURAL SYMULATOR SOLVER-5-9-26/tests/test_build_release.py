@@ -142,8 +142,30 @@ def test_build_zip_produces_a_readable_archive_rooted_in_one_folder(tmp_path):
 def test_the_stamp_carries_version_date_and_time():
     import re
     stamp = br.build_stamp()
-    assert re.fullmatch(r'v\d+_\d{4}-\d{2}-\d{2}_\d{4}', stamp), stamp
-    assert stamp.startswith(f'v{br.APP_VERSION}_')
+    # The version token may carry an EDITION ('v32st01'), which is what tells
+    # an edited build apart from the release it came off -- the whole point
+    # of the name, so the pattern allows it rather than rejecting it.
+    assert re.fullmatch(r'v\d+[a-z]*\d*_\d{4}-\d{2}-\d{2}_\d{4}', stamp), stamp
+    assert stamp.startswith('v%d' % br.APP_VERSION)
+    assert stamp.startswith(br.version_tag() + '_')
+
+
+def test_an_edition_is_visible_in_every_archive_name():
+    """An edited build in a downloads folder must not read as the release."""
+    if not br.APP_EDITION:
+        assert br.version_tag() == 'v%d' % br.APP_VERSION
+        return
+    assert br.APP_EDITION in br.version_tag()
+    assert br.APP_EDITION in br.stamped(br.ZIP_BASE, '.zip')
+    assert br.stamp_text().split()[2] == br.APP_EDITION
+
+
+def test_the_edition_is_not_folded_into_the_version_number():
+    """APP_VERSION stays an int: the build script formats it with %d, appinfo
+    parses it with int(), and the archive series counts on it."""
+    assert isinstance(br.APP_VERSION, int)
+    assert br.APP_EDITION is None or isinstance(br.APP_EDITION, str)
+    assert int(br.stamp_text().split()[0]) == br.APP_VERSION
 
 
 def test_the_version_lives_in_exactly_one_place():

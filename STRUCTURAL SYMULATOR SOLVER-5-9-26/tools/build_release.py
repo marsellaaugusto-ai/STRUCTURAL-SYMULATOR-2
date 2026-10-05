@@ -46,24 +46,56 @@ PLUGIN_NAME = 'coordinate_coordinator_truss_app_amac'
 # the first dated build is v22. Bump this when you hand out a new one.
 APP_VERSION = 32
 
+# The EDITION: a line of work taken off a released version and still being
+# edited. None is the REFERENCE build -- the one APP_VERSION alone names, and
+# what a customer gets. A string here marks every window title and every
+# archive filename as something else, so a build in a downloads folder cannot
+# be mistaken for the release it came from.
+#
+# The form is two letters and two digits: the letters say which line of work
+# ('st' = stereo structure), the digits which iteration of it. A new line
+# starts at 01 and counts up; going back to the reference means setting this
+# to None, not deleting it, so the next edition can see what the last one was.
+#
+# It is NOT part of APP_VERSION. The version is a number -- the build script
+# formats it with %d, appinfo parses it with int(), and the archive series
+# counts on it -- and folding letters into it would break all three. The two
+# travel together and stay separate.
+APP_EDITION = 'st01'
+
 
 # Written into every archive: what appinfo.py reads for the window title.
 STAMP_NAME = 'BUILD_STAMP.txt'
 
 
 def stamp_text():
-    """BUILD_STAMP.txt's contents: '31 2026-10-03' -- this version, today."""
-    return '%d %s\n' % (APP_VERSION, time.strftime('%Y-%m-%d'))
+    """BUILD_STAMP.txt's contents: '32 2026-10-03 st01' -- version, date,
+    and the edition when there is one.
+
+    The edition is a THIRD field rather than stuck onto the first, so a
+    stamp written before editions existed still reads correctly: two fields
+    means the reference build, and appinfo splits on whitespace either way.
+    """
+    parts = ['%d' % APP_VERSION, time.strftime('%Y-%m-%d')]
+    if APP_EDITION:
+        parts.append(APP_EDITION)
+    return ' '.join(parts) + '\n'
+
+
+def version_tag():
+    """`v32` or `v32st01` -- what names this build, in one token."""
+    return 'v%d%s' % (APP_VERSION, APP_EDITION or '')
 
 
 def build_stamp():
-    """`v<APP_VERSION>_2026-09-30_0415` -- version, date, 24-hour local time.
+    """`v<APP_VERSION>[<edition>]_2026-09-30_0415` -- version, date, 24-hour
+    local time.
 
     Minutes, not seconds: two builds inside one minute are the same delivery
     as far as anyone receiving it is concerned, and a name you can read aloud
     is worth more than that last digit of precision.
     """
-    return 'v%d_%s' % (APP_VERSION, time.strftime('%Y-%m-%d_%H%M'))
+    return '%s_%s' % (version_tag(), time.strftime('%Y-%m-%d_%H%M'))
 
 
 def stamped(base, ext, stamp=None):

@@ -22,6 +22,7 @@ from common import (
     UnitsMixin,
     CT, CC, CZ, CD, CN, CS, CL, CSP, CG, CG_MINOR, CG_MICRO, CV, CM, CR, CMOM,
     _beam_gauss_solve, ZoomCanvas, FlowBar, ScrollPanel, LoadScale,
+    AppShell, CollapsibleSection,
 )
 gauss_solve = _beam_gauss_solve  # truss's analyze() historically calls this
                                   # name; both solvers are the same algorithm
@@ -144,6 +145,7 @@ class TrussApp(UnitsMixin):
         self.cad_dist       = self.unit_var(tk.DoubleVar(value=1.0), 'length')
         self.cad_angle      = tk.DoubleVar(value=0.0)
         self.ruler_active   = tk.BooleanVar(value=False)
+        self._space_pan     = False   # space held down -> drag pans
         self.ruler_start    = None   # world (wx,wy) or None
         self._mouse_wx      = 0.0   # live world cursor position
         self._mouse_wy      = 0.0
@@ -155,117 +157,159 @@ class TrussApp(UnitsMixin):
     # ══════════════════════════════════════════════════════════════════════════
     #  UI
     # ══════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════
+    #  UI
+    # ══════════════════════════════════════════════════════════════════════════
+    #
+    # LAYOUT. Everything below is placed inside a common.AppShell: toolbar on
+    # top, control panel on the LEFT behind a draggable sash, drawing filling
+    # the rest, diagram pane under it behind a second sash, status bar at the
+    # bottom. Before this the panel was on the RIGHT at a fixed 235 px -- 105
+    # narrower than Beam/Arch/Cable for strictly more content, which is what
+    # the three separate clipping fixes recorded in `_build_panel` were all
+    # chasing. The width is now the user's; see AppShell's docstring for why
+    # that is the right answer and which two tabs had already found it.
+    #
+    # TOOLBAR. Five groups in a fixed order -- TOOLS, EDIT, VIEW, ANALYZE,
+    # OUT -- modelled on the Stereo tab, which carries four groups and about
+    # eleven controls and reads as one sentence: what to build, edit it, how
+    # to look at it, get it out. The same order is meant for every tab, so a
+    # student who learns this one can already drive the next. A tab missing a
+    # group leaves the slot empty rather than reordering.
+    #
+    # Do NOT pack() straight into the toolbar: build into a FlowBar group and
+    # let the bar place it, or it is dropped from the relayout.
     def _build_ui(self):
         root = self.root
         root.configure(bg='#f5f5f3')
 
-        # ── toolbar ──────────────────────────────────────────────────────────
-        # Laid out by a FlowBar (common.py): buttons are grouped by purpose,
-        # and whole groups drop to a second/third row rather than running off
-        # the right edge. Before this the tail of the bar -- Node Force
-        # Vectors and Rod Calculations -- was already unreachable at 1600 px,
-        # and the row lost roughly one more button per 100 px below that.
-        # Do NOT pack() straight into `tb`: build into a group and let the
-        # FlowBar place it, or it will be dropped from the relayout.
-        tb = tk.Frame(root, bg='#ebebea')
-        tb.pack(fill='x', padx=6, pady=(6,0))
-        self.toolbar_flow = FlowBar(tb)
+        self.shell = AppShell(root, panel_width=PANEL_W + 105)
+        self.shell.pack(fill='both', expand=True)
+        # Every status_var.set() in this file keeps working: the tab holds the
+        # shell's own variable rather than a second one of its own.
+        self.status_var = self.shell.status_var
+        self.status_var.set('Select "Node" and click the canvas to start.')
 
+        # ── toolbar ──────────────────────────────────────────────────────────
+        self.toolbar_flow = FlowBar(self.shell.toolbar)
+
+        # -- TOOLS --
         tools_g = self.toolbar_flow.group()
         self.tool_btns = {}
-        for label, val in [('Node','node'),('Rod','rod'),('Support','support'),
-                            ('Load','load'),('Select','select')]:
+        for label, val, tip in [
+                ('Node', 'node', 'Place joints. Click the canvas; the point snaps to the grid.'),
+                ('Rod', 'rod', 'Connect two joints with a member. Click the first, then the second.'),
+                ('Support', 'support', 'Hold a joint down. Click it, then choose the support type in the panel.'),
+                ('Load', 'load', 'Push or pull a joint. Click it, then set Fx/Fy in the panel.'),
+                ('Select', 'select', 'Inspect and edit. Click, shift-click or drag a box; Delete removes.'),
+                ('Pan', 'pan', 'Drag the canvas with the left mouse button to move the view. '
+                               'The middle button still pans from any tool -- this is here '
+                               'because most laptop trackpads do not have one.')]:
             b = tk.Button(tools_g, text=label, width=7, relief='flat', bd=0,
-                          padx=8, pady=4, font=('Helvetica',11),
+                          padx=8, pady=4, font=('Helvetica', 11),
                           command=lambda v=val: self._set_tool(v))
             self.tool_btns[val] = b
+            self._bind_widget_tooltip(b, tip)
 
+        # -- EDIT --
         self.toolbar_flow.separator()
-        model_g = self.toolbar_flow.group()
-        tk.Button(model_g, text='Example', relief='flat', bd=0, padx=8, pady=4,
-                  font=('Helvetica',11),
-                  command=self._load_example)
-        tk.Button(model_g, text='Example: Vierendeel', relief='flat', bd=0, padx=8, pady=4,
-                  font=('Helvetica',11),
-                  command=self._load_example_vierendeel)
-        tk.Button(model_g, text='Clear', relief='flat', bd=0, padx=8, pady=4,
-                  font=('Helvetica',11),
-                  command=self._clear_all)
-        tk.Button(model_g, text='Reset view', relief='flat', bd=0, padx=8, pady=4,
-                  font=('Helvetica',11),
-                  command=self._reset_view)
+        edit_g = self.toolbar_flow.group()
+        self.undo_btn = tk.Button(edit_g, text='↶', relief='flat', bd=0,
+                                  padx=9, pady=4, font=('Helvetica', 13),
+                                  command=self._undo)
+        self.redo_btn = tk.Button(edit_g, text='↷', relief='flat', bd=0,
+                                  padx=9, pady=4, font=('Helvetica', 13),
+                                  command=self._redo)
+        # Undo has existed here since the arrays landed, with readable labels
+        # on every entry, and had no button at all -- only Ctrl+Z. Beginners
+        # experiment far more freely when they can see the way back.
+        self._bind_widget_tooltip(self.undo_btn, 'Undo the last change  (Ctrl+Z)')
+        self._bind_widget_tooltip(self.redo_btn, 'Redo  (Ctrl+Y or Ctrl+Shift+Z)')
+        self._menu_button(edit_g, 'Examples ▾', [
+            ('Warren truss — how triangles carry load', self._load_example),
+            ('Vierendeel girder — carrying load with no diagonals',
+             self._load_example_vierendeel),
+        ])
+        tk.Button(edit_g, text='Clear', relief='flat', bd=0, padx=8, pady=4,
+                  font=('Helvetica', 11), command=self._clear_all)
 
+        # -- VIEW --
         self.toolbar_flow.separator()
         view_g = self.toolbar_flow.group()
-        self.show_deform = tk.BooleanVar(value=False)
-        tk.Checkbutton(view_g, text='Show deformed', variable=self.show_deform,
-                       bg='#ebebea', font=('Helvetica',11),
-                       command=self._draw)
-        self.show_contraflexure = tk.BooleanVar(value=True)
-        cf_chk = tk.Checkbutton(view_g, text='\u25cb inflection pts', variable=self.show_contraflexure,
-                       bg='#ebebea', font=('Helvetica',10), fg='#555',
-                       command=self._draw)
-        self._bind_widget_tooltip(cf_chk,
-            'Marks points of contraflexure (M = 0) on the deformed shape, '
-            'where the bending curvature reverses. Only shown while '
-            '"Show deformed" is also on.')
-        self.show_node_moments = tk.BooleanVar(value=False)
-        nm_chk = tk.Checkbutton(view_g, text='M@nodes', variable=self.show_node_moments,
-                       bg='#ebebea', font=('Helvetica',10), fg='#555',
-                       command=self._draw)
-        self._bind_widget_tooltip(nm_chk,
-            'Shows the largest individual rod end-moment at each rigid '
-            'joint (the moment the connection actually has to be designed '
-            'for) as a small label next to the node. Off by default so '
-            'plain pin-jointed trusses -- where this is always zero -- '
-            'stay uncluttered.')
-        tk.Label(view_g, text='Scale:', bg='#ebebea', font=('Helvetica',11))
-        self.def_scale = tk.IntVar(value=50)
-        tk.Scale(view_g, from_=1, to=300, orient='horizontal',
-                 variable=self.def_scale, length=90, showvalue=True,
-                 bg='#ebebea', bd=0, highlightthickness=0, relief='flat',
-                 font=('Helvetica',9),
-                 command=lambda _: self._draw())
+        fit_btn = tk.Button(view_g, text='Fit', relief='flat', bd=0, padx=8, pady=4,
+                            font=('Helvetica', 11), command=self._fit_view)
+        self._bind_widget_tooltip(fit_btn,
+            'Zoom and centre so the whole model fits on screen. "Reset view" '
+            'goes back to the ORIGIN, which is not the same thing once you '
+            'have built away from it.')
+        tk.Button(view_g, text='Reset view', relief='flat', bd=0, padx=8, pady=4,
+                  font=('Helvetica', 11), command=self._reset_view)
 
+        self.show_deform = tk.BooleanVar(value=False)
+        self.show_contraflexure = tk.BooleanVar(value=True)
+        self.show_node_moments = tk.BooleanVar(value=False)
+        self.show_guides = tk.BooleanVar(value=True)
+        self._menu_button(view_g, 'View ▾', [
+            ('check', 'Deformed shape', self.show_deform, self._draw),
+            ('check', '○ Inflection points (M = 0)',
+             self.show_contraflexure, self._draw),
+            ('check', 'Moment at rigid joints', self.show_node_moments, self._draw),
+            ('sep',),
+            ('check', 'Construction guides', self.show_guides, self._draw),
+        ])
+
+        # -- ANALYZE --
+        self.toolbar_flow.separator()
+        run_g = self.toolbar_flow.group()
+        self.analyze_btn_bar = tk.Button(
+            run_g, text='▶  Analyze', bg='#1a6bbd', fg='white',
+            activebackground='#15559a', activeforeground='white',
+            font=('Helvetica', 11, 'bold'), relief='flat', bd=0, padx=12, pady=4,
+            command=self._run_analysis)
+        self._bind_widget_tooltip(self.analyze_btn_bar,
+            'Solve the structure. The same button sits at the top of the '
+            'panel; it is in both places because it is the one control that '
+            'must never need scrolling to reach.')
+
+        # -- OUT --
         self.toolbar_flow.separator()
         io_g = self.toolbar_flow.group()
-        tk.Button(io_g, text='Export Excel', relief='flat', bd=0, padx=8, pady=4,
-                  font=('Helvetica',11), fg='#1a6bbd',
-                  command=self._export_excel)
-        tk.Button(io_g, text='Import Excel', relief='flat', bd=0, padx=8, pady=4,
-                  font=('Helvetica',11), fg='#1a6bbd',
-                  command=self._import_excel)
-        tk.Button(io_g, text='Node Force Vectors', relief='flat', bd=0, padx=8, pady=4,
-                  font=('Helvetica',11), fg='#1a6bbd',
-                  command=self._show_node_vectors_report)
-        tk.Button(io_g, text='Rod Calculations', relief='flat', bd=0, padx=8, pady=4,
-                  font=('Helvetica',11), fg='#1a6bbd',
-                  command=self._show_rod_calculations_report)
+        self._menu_button(io_g, 'Report ▾', [
+            ('Node force vectors…', self._show_node_vectors_report),
+            ('Show me the working (rod calculations)…',
+             self._show_rod_calculations_report),
+        ], fg='#1a6bbd')
+        self._menu_button(io_g, 'Excel ▾', [
+            ('Export model and results…', self._export_excel),
+            ('Import model…', self._import_excel),
+        ], fg='#1a6bbd')
 
-        # ── main paned area ───────────────────────────────────────────────────
-        main = tk.Frame(root, bg='#f5f5f3')
-        main.pack(fill='both', expand=True, padx=6, pady=(6,0))
+        # ── control panel (LEFT, behind the sash) ────────────────────────────
+        # Kept under its old name: `_sync()` is called on it from several
+        # places that have nothing to do with layout.
+        self.panel_outer = self.shell.panel
+        self._build_panel(self.panel_outer.interior)
+        self._sync_guide_fields()
+        self._refresh_guide_list()
 
-        # Right panel FIRST, expanding canvas SECOND. Tk's pack hands each
-        # slave a parcel in packing order, so the old order (canvas first,
-        # expand=True) left the panel whatever the canvas did not want --
-        # which below ~850 px was nothing at all: the entire right panel,
-        # Analyze button included, was unmapped with no scrollbar and no
-        # warning (measured 2026-09-05: 42 of 61 controls mapped at 1000 px,
-        # 17 at 800 px). Cable Web's `_build_ui` carries the same note after
-        # hitting this independently. ScrollPanel additionally scrolls
-        # horizontally, so rows wider than the panel (the UDL rotation
-        # slider, the paired buttons) stay reachable instead of being
-        # clipped mid-widget as they were even at 1600 px.
-        self.panel_outer = ScrollPanel(main, width=PANEL_W, bg='#f0f0ee',
-                                       bd=1, relief='solid')
-        self.panel_outer.pack(side='right', fill='y', padx=(6,0))
+        # ── CAD precision bar, folded away by default ────────────────────────
+        # Professional-grade coordinate entry that an architecture student
+        # will not touch for weeks, and it cost two to three permanent rows
+        # of a crowded window. It is one click away rather than always there.
+        self.cad_wrap = CollapsibleSection(
+            self.shell.work, text='Precision input  (coordinates, polar, ruler)',
+            open=False, bg='#dde3ec', font=('Helvetica', 9, 'bold'), fg='#2c3e57',
+            padx=2, pady=2)
+        self.cad_wrap.pack(fill='x', pady=(0, 4))
+        cad = self.cad_wrap.body
+        self.cad_flow = FlowBar(cad, item_pad=1)
+        self._build_cad_bar(cad)
 
-        # truss zoom canvas
-        self.zc = ZoomCanvas(main, bg='white', bd=1, relief='solid',
+        # ── truss zoom canvas ────────────────────────────────────────────────
+        self.zc = ZoomCanvas(self.shell.work, bg='white', bd=1, relief='solid',
                              highlightthickness=0, cursor='crosshair')
         self.zc._on_zoom_changed = self._draw
-        self.zc.pack(side='left', fill='both', expand=True)
+        self.zc.pack(fill='both', expand=True)
         c = self.zc.canvas
         c.configure(width=INIT_CW, height=INIT_CH)
         c.bind('<ButtonPress-1>',   self._on_press)
@@ -279,37 +323,45 @@ class TrussApp(UnitsMixin):
         # Bound on the TAB, not just the canvas, so the shortcuts work
         # wherever focus happens to be -- except inside a text field, which
         # _typing_in_a_field excludes.
+        #
+        # Ctrl+X used to be REDO here. Every other application an architecture
+        # student has ever used binds it to Cut, so pressing it expecting to
+        # cut silently re-applied an edit they had just undone. Redo is now on
+        # the two standard shortcuts and Ctrl+X is left alone.
         for seq, fn in (('<Control-z>', self._undo), ('<Control-Z>', self._undo),
-                        ('<Control-x>', self._redo), ('<Control-X>', self._redo),
+                        ('<Control-y>', self._redo), ('<Control-Y>', self._redo),
+                        ('<Control-Shift-Z>', self._redo),
                         ('<Control-c>', self._copy_selection),
                         ('<Control-C>', self._copy_selection),
                         ('<Control-v>', self._paste_clipboard),
-                        ('<Control-V>', self._paste_clipboard)):
+                        ('<Control-V>', self._paste_clipboard),
+                        ('<Control-s>', self._export_excel),
+                        ('<Control-S>', self._export_excel)):
             root.bind_all(seq, self._guard_shortcut(fn), add='+')
         c.bind('<Motion>',     self._on_motion)
         c.bind('<Leave>',      self._on_leave)
+        # Space-drag pans from any tool, the CAD convention, for the same
+        # reason the Pan tool exists: no middle button on most trackpads.
+        c.bind('<KeyPress-space>', self._space_pan_on)
+        c.bind('<KeyRelease-space>', self._space_pan_off)
         c.focus_set()
 
-        self._build_panel(self.panel_outer.interior)
-        self._sync_guide_fields()
-        self._refresh_guide_list()
-        # Adopt whatever width the panel's own content needs, so no control
-        # starts life behind the horizontal scrollbar.
-        self.panel_outer.fit_to_content()
+        # Open the panel at whatever its own content needs, once, and then
+        # leave the width alone -- it belongs to whoever drags the sash.
+        self.panel_outer.fit_to_content(max_width=460)
+        self.shell.after_idle(
+            lambda: self.shell.set_panel_width(self.panel_outer.base_width))
 
-        # ── diagram pane (shown after analysis) ───────────────────────────────
-        self.diag_outer = tk.Frame(root, bg='#f5f5f3')
-        # Third bar, same FlowBar treatment as the toolbar and the CAD row:
-        # below ~900 px the mode radios, the silhouette caption and the zoom
-        # hint used to be drawn over one another in this one strip.
+        # ── diagram pane (shown after analysis, in the shell's lower pane) ───
+        self.diag_outer = self.shell.lower
         diag_hdr = tk.Frame(self.diag_outer, bg='#f5f5f3')
-        diag_hdr.pack(fill='x', pady=(0,2))
+        diag_hdr.pack(fill='x', pady=(0, 2))
         self.diag_flow = FlowBar(diag_hdr, item_pad=1)
         title_g = self.diag_flow.group(bg='#f5f5f3')
         tk.Label(title_g, text='Diagrams', bg='#f5f5f3',
-                 font=('Helvetica',9,'bold'), fg='#777')
+                 font=('Helvetica', 9, 'bold'), fg='#777')
         modes_g = self.diag_flow.group(bg='#f5f5f3')
-        self.diagram_mode = tk.StringVar(value='truss')
+        self.diagram_mode = tk.StringVar(value='axial')
         # Switching between modes resets the diagram canvas's zoom/pan
         # rather than reusing _draw_diagrams_only directly: each mode uses
         # a differently-shaped "world" layout (per-rod panel grid vs.
@@ -317,35 +369,132 @@ class TrussApp(UnitsMixin):
         # tuned for one mode into another would show something oddly
         # scaled/off-screen. reset_view() already redraws afterward (it's
         # wired to diag_zc's _on_zoom_changed below).
-        tk.Radiobutton(modes_g, text='Truss diagrams', variable=self.diagram_mode,
-                       value='truss', bg='#f5f5f3', font=('Helvetica',9),
-                       command=lambda: self.diag_zc.reset_view())
-        tk.Radiobutton(modes_g, text='Vierendeel diagram', variable=self.diagram_mode,
-                       value='vierendeel', bg='#f5f5f3', font=('Helvetica',9),
-                       command=lambda: self.diag_zc.reset_view())
-        tk.Radiobutton(modes_g, text='Compression/Tension fibers', variable=self.diagram_mode,
-                       value='fiber', bg='#f5f5f3', font=('Helvetica',9),
-                       command=lambda: self.diag_zc.reset_view())
+        self._diag_mode_touched = False
+        for text, value in (('Member forces N', 'axial'),
+                            ('Shear & moment', 'truss'),
+                            ('Vierendeel diagram', 'vierendeel'),
+                            ('Compression/Tension fibers', 'fiber')):
+            tk.Radiobutton(modes_g, text=text, variable=self.diagram_mode,
+                           value=value, bg='#f5f5f3', font=('Helvetica', 9),
+                           command=self._on_diagram_mode_picked)
         hint_g = self.diag_flow.group(bg='#f5f5f3')
-        tk.Label(hint_g, text='(shear silhouette left, moment silhouette right — rigid rods only)',
-                 bg='#f5f5f3', fg='#999', font=('Helvetica',8))
-        tk.Label(hint_g, text='🔍 scroll to zoom, middle-drag to pan',
-                 bg='#f5f5f3', fg='#aaa', font=('Helvetica',8))
+        # The caption follows the mode. It used to describe the Vierendeel
+        # silhouettes and stay on screen in all the other modes too.
+        self.diag_hint_var = tk.StringVar(value='')
+        tk.Label(hint_g, textvariable=self.diag_hint_var,
+                 bg='#f5f5f3', fg='#999', font=('Helvetica', 8))
+        tk.Label(hint_g, text='\U0001f50d scroll to zoom, middle-drag to pan',
+                 bg='#f5f5f3', fg='#aaa', font=('Helvetica', 8))
         self.diag_flow.start()
-        # paned so diagram area can be resized
         self.diag_zc = ZoomCanvas(self.diag_outer, bg='#fafaf8',
                                   bd=1, relief='solid', highlightthickness=0)
         self.diag_zc._on_zoom_changed = self._draw_diagrams_only
         self.diag_zc.canvas.configure(height=INIT_DH)
         self.diag_zc.pack(fill='both', expand=True)
 
-        # ── CAD precision panel ──────────────────────────────────────────────
-        # Same FlowBar treatment as the toolbar: at 900 px this row used to
-        # lose Pick ref and both Place node buttons off the right edge.
-        cad = tk.Frame(root, bg='#dde3ec', bd=1, relief='solid')
-        cad.pack(fill='x', padx=6, pady=(2,0))
-        self.cad_flow = FlowBar(cad, item_pad=1)
+        # polar reference node index
+        self._polar_ref_node = None
+        self._picking_ref    = False
 
+        # Start the flow bars only now that every group exists.
+        self.toolbar_flow.start()
+        self.cad_flow.start()
+
+        self._refresh_tool_buttons()
+        self._refresh_undo_buttons()
+
+    # -- toolbar helpers ------------------------------------------------------
+    def _menu_button(self, parent, text, items, fg='#333333'):
+        """A toolbar button that drops a short menu.
+
+        Twelve of this bar's buttons were variations on three questions --
+        which example to load, what to show on the drawing, which report to
+        open. As separate buttons they wrapped the bar to three rows and made
+        a beginner read fifteen labels to find Analyze. As three menus they
+        read as three.
+
+        `items` entries are ('label', command), ('check', label, var, command)
+        or ('sep',).
+        """
+        mb = tk.Menubutton(parent, text=text, relief='flat', bd=0,
+                           padx=8, pady=4, font=('Helvetica', 11),
+                           bg='#ebebea', fg=fg, activebackground='#dcdcda')
+        menu = tk.Menu(mb, tearoff=0, font=('Helvetica', 10))
+        mb.configure(menu=menu)
+        for item in items:
+            if item[0] == 'sep':
+                menu.add_separator()
+            elif item[0] == 'check':
+                _, label, var, cmd = item
+                menu.add_checkbutton(label=label, variable=var, command=cmd)
+            else:
+                label, cmd = item
+                menu.add_command(label=label, command=cmd)
+        return mb
+
+    def _refresh_undo_buttons(self):
+        """Grey the arrows when there is nothing behind or ahead, and put the
+        label of what they would do in their tooltip."""
+        for btn, stack, word, keys in (
+                (getattr(self, 'undo_btn', None), self._undo_stack, 'Undo', 'Ctrl+Z'),
+                (getattr(self, 'redo_btn', None), self._redo_stack, 'Redo',
+                 'Ctrl+Y or Ctrl+Shift+Z')):
+            if btn is None:
+                continue
+            try:
+                if stack:
+                    label = stack[-1][0]
+                    btn.configure(state='normal', fg='#333333')
+                    self._bind_widget_tooltip(
+                        btn, f'{word}: {label}  ({keys})' if label
+                        else f'{word}  ({keys})')
+                else:
+                    btn.configure(state='disabled', fg='#aaaaaa')
+                    self._bind_widget_tooltip(btn, f'Nothing to {word.lower()}')
+            except Exception:
+                pass
+
+    # -- pan ------------------------------------------------------------------
+    def _space_pan_on(self, _event=None):
+        if self._space_pan:
+            return
+        self._space_pan = True
+        try:
+            self.zc.canvas.configure(cursor='fleur')
+        except Exception:
+            pass
+
+    def _space_pan_off(self, _event=None):
+        self._space_pan = False
+        try:
+            self.zc.canvas.configure(
+                cursor='fleur' if self.tool.get() == 'pan' else 'crosshair')
+        except Exception:
+            pass
+
+    def _fit_view(self):
+        """Zoom and centre on everything there is -- structure first, guides
+        too when there is no structure yet."""
+        xs, ys = [], []
+        for (nx, ny) in self.nodes:
+            xs.append(nx); ys.append(ny)
+        if not xs:
+            for gd in self.guides:
+                for (px, py) in (truss_guides.sample(gd) or []):
+                    xs.append(px); ys.append(py)
+        if not xs:
+            self.zc.reset_view()
+            self.status_var.set('Nothing to fit yet — place a joint first.')
+            self._draw()
+            return
+        pad = 1.2 * PX_PER_M
+        self.zc.fit_to_bbox(min(xs) - pad, min(ys) - pad,
+                            max(xs) + pad, max(ys) + pad, margin=46)
+        self._draw()
+        self.status_var.set('View fitted to the model.')
+
+    # -- the CAD precision bar (built into the folded section) ---------------
+    def _build_cad_bar(self, cad):
         # --- snap options ---
         snap_f = self.cad_flow.group(bg='#dde3ec')
         tk.Label(snap_f, text='SNAP:', bg='#dde3ec',
@@ -358,7 +507,7 @@ class TrussApp(UnitsMixin):
                        command=self._draw).pack(side='left')
         tk.Checkbutton(snap_f, text='Curve', variable=self.snap_curve,
                        bg='#dde3ec', font=('Helvetica',9),
-                       command=self._draw)
+                       command=self._draw).pack(side='left')
         tk.Checkbutton(snap_f, text='Angle', variable=self.snap_angle,
                        bg='#dde3ec', font=('Helvetica',9),
                        command=self._draw).pack(side='left')
@@ -429,38 +578,55 @@ class TrussApp(UnitsMixin):
         tk.Label(cursor_f, textvariable=self.cursor_var, bg='#dde3ec',
                  font=('Courier',9), fg='#333')
 
-        # polar reference node index
-        self._polar_ref_node = None
-        self._picking_ref    = False
-
-        # ── status bar ────────────────────────────────────────────────────────
-        self.status_var = tk.StringVar(value='Select "Node" and click canvas to start.')
-        tk.Label(root, textvariable=self.status_var, anchor='w',
-                 bg='#ebebea', font=('Helvetica',10),
-                 relief='flat', padx=8, pady=3).pack(fill='x', padx=6, pady=(4,6))
-
-        # Start the two flow bars only now that every group exists, and give
-        # the right panel its width from the same <Configure> that drives
-        # them, so panel width and toolbar wrapping never disagree about how
-        # wide the window currently is.
-        self.toolbar_flow.start()
-        self.cad_flow.start()
-        root.bind('<Configure>', self._on_root_configure, add='+')
-        root.after_idle(lambda: self._on_root_configure(None))
-
-        self._refresh_tool_buttons()
-
-    def _on_root_configure(self, _event=None):
-        """Resize the right panel to match the window. Content that no longer
-        fits the narrowed panel stays reachable through ScrollPanel's own
-        horizontal scrollbar, so this can never hide a control -- unlike the
-        previous fixed-width panel, which was simply dropped."""
-        try:
-            self.panel_outer.apply_responsive_width(self.root.winfo_width())
-        except Exception:
-            pass
-
     def _build_panel(self, panel):
+        # ── RUN + RESULTS, pinned at the top ─────────────────────────────────
+        # This used to be the THIRTEENTH block down, under material,
+        # selection, connection type, two load editors, construction
+        # geometry, arrays, plates with its gusset bolt grid, and rod
+        # families -- roughly 900 px of scrolling in a 235 px column to reach
+        # the button that runs the analysis, and more scrolling to see what
+        # it produced. For the audience this app is actually for, that is the
+        # first thing they need and the last thing they could find.
+        self.analyze_btn = tk.Button(
+            panel, text='\u25b6  Analyze structure', bg='#9e9e9e', fg='white',
+            activebackground='#15559a', activeforeground='white',
+            font=('Helvetica', 11, 'bold'), relief='flat', pady=6,
+            command=self._run_analysis)
+        self.analyze_btn.pack(fill='x', padx=8, pady=(8, 2))
+
+        self.res_var = tk.StringVar(value='')
+        tk.Label(panel, textvariable=self.res_var, bg='#f0f0ee',
+                 font=('Helvetica', 10), justify='left',
+                 wraplength=PANEL_W - 20).pack(fill='x', padx=12, pady=2)
+
+        # Deformation scale sits with the results, not in the toolbar: it
+        # does nothing until there is a deformed shape to scale.
+        self.def_scale = tk.IntVar(value=50)
+        self.def_row = tk.Frame(panel, bg='#f0f0ee')
+        self.def_row.pack(fill='x', padx=10, pady=(0, 2))
+        tk.Label(self.def_row, text='Deflection \u00d7', bg='#f0f0ee',
+                 font=('Helvetica', 9)).pack(side='left', padx=(0, 2))
+        tk.Scale(self.def_row, from_=1, to=300, orient='horizontal',
+                 variable=self.def_scale, showvalue=True,
+                 bg='#f0f0ee', bd=0, highlightthickness=0, relief='flat',
+                 font=('Helvetica', 8),
+                 command=lambda _: self._draw()).pack(side='left', fill='x',
+                                                      expand=True)
+
+        self.rod_res_frame = tk.LabelFrame(panel, text='Rod forces', bg='#f0f0ee',
+                                           font=('Helvetica',10,'bold'), padx=4, pady=4)
+        self.rod_res_text = tk.Text(self.rod_res_frame, width=22, height=7,
+                                    relief='flat', bg='#f0f0ee',
+                                    font=('Courier',9), state='disabled')
+        self.rod_res_text.pack(fill='both')
+
+        self.rxn_frame = tk.LabelFrame(panel, text='Support reactions', bg='#f0f0ee',
+                                       font=('Helvetica',10,'bold'), padx=4, pady=4)
+        self.rxn_text  = tk.Text(self.rxn_frame, width=22, height=5,
+                                  relief='flat', bg='#f0f0ee',
+                                  font=('Courier',9), state='disabled')
+        self.rxn_text.pack(fill='both')
+
         # material
         mf = tk.LabelFrame(panel, text='Assumed material (all rods)', bg='#f0f0ee',
                            font=('Helvetica',10,'bold'), padx=6, pady=4)
@@ -523,10 +689,27 @@ class TrussApp(UnitsMixin):
                                        font=('Helvetica',10,'bold'), padx=6, pady=4)
         tk.Label(self.sup_frame, text='Type:', bg='#f0f0ee',
                  font=('Helvetica',10)).grid(row=0,column=0,sticky='w')
+        # The VALUE stays 'pin'/'rollerX'/... -- every saved model and every
+        # exported workbook uses those keys. Only the words on screen change:
+        # 'rollerX' is not a word, and nothing in it says whether X is the
+        # direction the support slides or the direction it holds.
         self.sup_type = tk.StringVar(value='pin')
-        ttk.Combobox(self.sup_frame, textvariable=self.sup_type, width=12,
-                     values=['pin','rollerX','rollerY','fixed'], state='readonly',
-                     font=('Helvetica',10)).grid(row=0,column=1,padx=4)
+        self.sup_type_shown = tk.StringVar(
+            value=self.SUPPORT_SHORT['pin'])
+        sup_box = ttk.Combobox(
+            self.sup_frame, textvariable=self.sup_type_shown, width=16,
+            values=[self.SUPPORT_SHORT[k]
+                    for k in ('pin', 'rollerX', 'rollerY', 'fixed')],
+            state='readonly', font=('Helvetica', 10))
+        sup_box.grid(row=0, column=1, padx=4)
+
+        def _on_sup_pick(_e=None):
+            shown = self.sup_type_shown.get()
+            for key, label in self.SUPPORT_SHORT.items():
+                if label == shown:
+                    self.sup_type.set(key)
+                    break
+        sup_box.bind('<<ComboboxSelected>>', _on_sup_pick)
         tk.Button(self.sup_frame, text='Apply support', bg='#1a6bbd', fg='white',
                   font=('Helvetica',10,'bold'), relief='flat',
                   command=self._apply_support).grid(row=1,column=0,columnspan=2,
@@ -665,10 +848,11 @@ class TrussApp(UnitsMixin):
                   command=self._clear_point_loads).pack(side='left', fill='x', expand=True, padx=(2,0))
 
         # construction geometry (guides) — drawing aids, never structure
-        self.guide_frame = tk.LabelFrame(panel, text='Construction geometry',
-                                          bg='#f0f0ee', font=('Helvetica',10,'bold'),
-                                          padx=6, pady=4)
-        self.guide_frame.pack(fill='x', padx=8, pady=4)
+        self.guide_sec = CollapsibleSection(
+            panel, text='Construction geometry', open=False, bg='#f0f0ee')
+        self.guide_sec.pack(fill='x', padx=8, pady=4)
+        self.guide_sec.on_toggle(self._on_section_toggled)
+        self.guide_frame = self.guide_sec.body
         tk.Label(self.guide_frame,
                  text='Guides are drawing aids only: never analysed, never '
                       'members. Build onto them with the arrays below.',
@@ -787,16 +971,13 @@ class TrussApp(UnitsMixin):
                                       font=('Helvetica',8), exportselection=False)
         self.guide_list.pack(fill='x', pady=(3,0))
         self.guide_list.bind('<<ListboxSelect>>', self._on_guide_list_select)
-        self.show_guides = tk.BooleanVar(value=True)
-        tk.Checkbutton(self.guide_frame, text='Show guides', variable=self.show_guides,
-                       bg='#f0f0ee', font=('Helvetica',8),
-                       command=self._draw).pack(anchor='w')
 
         # arrays
-        self.array_frame = tk.LabelFrame(panel, text='Arrays', bg='#f0f0ee',
-                                          font=('Helvetica',10,'bold'),
-                                          padx=6, pady=4)
-        self.array_frame.pack(fill='x', padx=8, pady=4)
+        self.array_sec = CollapsibleSection(
+            panel, text='Arrays', open=False, bg='#f0f0ee')
+        self.array_sec.pack(fill='x', padx=8, pady=4)
+        self.array_sec.on_toggle(self._on_section_toggled)
+        self.array_frame = self.array_sec.body
 
         tk.Label(self.array_frame, text='PATH — along a guide', bg='#f0f0ee',
                  font=('Helvetica',8,'bold')).pack(anchor='w')
@@ -877,10 +1058,11 @@ class TrussApp(UnitsMixin):
                   font=('Helvetica',9), command=self._array_polar).pack(fill='x', pady=(2,0))
 
         # plates — a gusset at a joint, or a shear panel filling a bay
-        self.plate_frame = tk.LabelFrame(panel, text='Plates', bg='#f0f0ee',
-                                          font=('Helvetica',10,'bold'),
-                                          padx=6, pady=4)
-        self.plate_frame.pack(fill='x', padx=8, pady=4)
+        self.plate_sec = CollapsibleSection(
+            panel, text='Plates and connections', open=False, bg='#f0f0ee')
+        self.plate_sec.pack(fill='x', padx=8, pady=4)
+        self.plate_sec.on_toggle(self._on_section_toggled)
+        self.plate_frame = self.plate_sec.body
         tk.Label(self.plate_frame,
                  text='Shear panel = plate filling a bay, welded all round. It '
                       'stiffens the model. Gusset = plate at one joint; it is '
@@ -1009,9 +1191,11 @@ class TrussApp(UnitsMixin):
         self.plate_res_text.pack(fill='both')
 
         # rod family / profile management
-        self.family_frame = tk.LabelFrame(panel, text='Rod family / profile', bg='#f0f0ee',
-                                          font=('Helvetica',10,'bold'), padx=6, pady=4)
-        self.family_frame.pack(fill='x', padx=8, pady=4)
+        self.family_sec = CollapsibleSection(
+            panel, text='Rod family / profile', open=False, bg='#f0f0ee')
+        self.family_sec.pack(fill='x', padx=8, pady=4)
+        self.family_sec.on_toggle(self._on_section_toggled)
+        self.family_frame = self.family_sec.body
         tk.Label(self.family_frame, text='Profile:', bg='#f0f0ee',
                  font=('Helvetica',10)).grid(row=0,column=0,sticky='w')
         self.family_combo = ttk.Combobox(self.family_frame, textvariable=self.active_profile,
@@ -1030,30 +1214,6 @@ class TrussApp(UnitsMixin):
                   command=self._open_profile_manager).grid(
                       row=3,column=0,columnspan=2,sticky='ew',pady=2)
         self._refresh_profile_combo()
-
-        self.analyze_btn = tk.Button(panel, text='▶  Analyze structure', bg='#9e9e9e', fg='white',
-                  font=('Helvetica',11,'bold'), relief='flat', pady=6,
-                  command=self._run_analysis)
-        self.analyze_btn.pack(fill='x', padx=8, pady=(6,2))
-
-        self.res_var = tk.StringVar(value='')
-        tk.Label(panel, textvariable=self.res_var, bg='#f0f0ee',
-                 font=('Helvetica',10), justify='left',
-                 wraplength=PANEL_W-20).pack(fill='x', padx=12, pady=2)
-
-        self.rod_res_frame = tk.LabelFrame(panel, text='Rod forces', bg='#f0f0ee',
-                                           font=('Helvetica',10,'bold'), padx=4, pady=4)
-        self.rod_res_text = tk.Text(self.rod_res_frame, width=22, height=7,
-                                    relief='flat', bg='#f0f0ee',
-                                    font=('Courier',9), state='disabled')
-        self.rod_res_text.pack(fill='both')
-
-        self.rxn_frame = tk.LabelFrame(panel, text='Support reactions', bg='#f0f0ee',
-                                       font=('Helvetica',10,'bold'), padx=4, pady=4)
-        self.rxn_text  = tk.Text(self.rxn_frame, width=22, height=5,
-                                  relief='flat', bg='#f0f0ee',
-                                  font=('Courier',9), state='disabled')
-        self.rxn_text.pack(fill='both')
 
         # legend
         lf = tk.Frame(panel, bg='#f0f0ee')
@@ -1221,6 +1381,16 @@ class TrussApp(UnitsMixin):
             self.conic_status.set('0 of 5 points picked')
             self.status_var.set('Five-point pick cancelled.')
             self._draw()
+
+    def _on_section_toggled(self, _section=None):
+        """A folded section changes the panel's height, and the scrolled
+        panel has to be told: without this the scrollregion keeps the taller
+        measurement and the panel scrolls past its own end."""
+        try:
+            self.panel_outer.interior.update_idletasks()
+            self.panel_outer._sync()
+        except Exception:
+            pass
 
     def _on_guide_list_select(self, _event=None):
         """Picking a guide in the list selects it on the canvas too, so its
@@ -1680,6 +1850,7 @@ class TrussApp(UnitsMixin):
         # does: you cannot redo forward into a future you have just diverged
         # from.
         self._redo_stack.clear()
+        self._refresh_undo_buttons()
 
     def _undo(self, _event=None):
         if not self._undo_stack:
@@ -1690,8 +1861,9 @@ class TrussApp(UnitsMixin):
         self._restore_snapshot(snap)
         self._refresh_profile_combo()
         self._show_sel(); self._draw(); self._draw_diagrams_only()
-        self.status_var.set('Undo%s.  (Ctrl+X redoes)'
+        self.status_var.set('Undo%s.  (Ctrl+Y redoes)'
                             % (': ' + label if label else ''))
+        self._refresh_undo_buttons()
         return 'break'
 
     def _redo(self, _event=None):
@@ -1704,6 +1876,7 @@ class TrussApp(UnitsMixin):
         self._refresh_profile_combo()
         self._show_sel(); self._draw(); self._draw_diagrams_only()
         self.status_var.set('Redo%s.' % (': ' + label if label else ''))
+        self._refresh_undo_buttons()
         return 'break'
 
     def _typing_in_a_field(self):
@@ -2196,10 +2369,15 @@ class TrussApp(UnitsMixin):
             rxn = self.results['reactions'].get(ni) if self.results else None
             nm_x, nm_y = self._world_to_metres(n[0], n[1])
             lines = [f'Node {ni}  ({nm_x:.3f}, {nm_y:.3f}) m']
-            if sup: lines.append(f'Support: {sup["type"]}')
-            if ld:  lines.append(f'Load  Fx={ld["fx"]}  Fy={ld["fy"]} kN')
-            if rxn: lines.append(f'Rx={rxn.get("rx",0):.2f}  Ry={rxn.get("ry",0):.2f} kN')
-            if res: lines.append(f'ux={res["ux"]:.3f}  uy={res["uy"]:.3f} mm')
+            F = self.u('force')
+            if sup: lines.append(f'Support: {self.support_label(sup["type"])}')
+            if ld:  lines.append(f'Load  Fx={self.show("force", ld["fx"]):g}  '
+                                 f'Fy={self.show("force", ld["fy"]):g} {F}')
+            if rxn: lines.append(f'Rx={self.show("force", rxn.get("rx",0)):.2f}  '
+                                 f'Ry={self.show("force", rxn.get("ry",0)):.2f} {F}')
+            if res: lines.append(f'ux={self.show("deflection", res["ux"]):.3f}  '
+                                 f'uy={self.show("deflection", res["uy"]):.3f} '
+                                 f'{self.u("deflection")}')
             self._tip_after = self.root.after(
                 280, lambda t='\n'.join(lines),x=sx,y=sy: self._show_tooltip(x,y,t))
             return
@@ -2226,9 +2404,11 @@ class TrussApp(UnitsMixin):
             ns, _ = self.zc.w2s(n[0], n[1])
             if math.hypot(ns-sx, _-sy) < 55:
                 mag = math.hypot(ld['fx'], ld['fy'])
+                F = self.u('force')
                 lines = [f'Load on node {ld["node"]}',
-                         f'Fx={ld["fx"]}  Fy={ld["fy"]} kN',
-                         f'|F|={mag:.2f} kN']
+                         f'Fx={self.show("force", ld["fx"]):g}  '
+                         f'Fy={self.show("force", ld["fy"]):g} {F}',
+                         f'|F|={self.show("force", mag):.2f} {F}']
                 self._tip_after = self.root.after(
                     280, lambda t='\n'.join(lines),x=sx,y=sy: self._show_tooltip(x,y,t))
                 return
@@ -2238,8 +2418,12 @@ class TrussApp(UnitsMixin):
             ns, ms = self.zc.w2s(n[0], n[1])
             if math.hypot(ns-sx, ms-sy) < 30:
                 rxn  = self.results['reactions'].get(s['node']) if self.results else None
-                lines = [f'Support on node {s["node"]}', f'Type: {s["type"]}']
-                if rxn: lines.append(f'Rx={rxn.get("rx",0):.2f}  Ry={rxn.get("ry",0):.2f} kN')
+                lines = [f'Support on node {s["node"]}',
+                         f'Type: {self.support_label(s["type"])}']
+                if rxn: lines.append(
+                    f'Rx={self.show("force", rxn.get("rx",0)):.2f}  '
+                    f'Ry={self.show("force", rxn.get("ry",0)):.2f} '
+                    f'{self.u("force")}')
                 self._tip_after = self.root.after(
                     280, lambda t='\n'.join(lines),x=sx,y=sy: self._show_tooltip(x,y,t))
                 return
@@ -2258,10 +2442,37 @@ class TrussApp(UnitsMixin):
             'support': 'Click a node, configure support in the panel',
             'load':    'Click a node, set Fx/Fy in the panel, click Apply',
             'select':  'Click nodes/rods to inspect. Delete key removes.',
+            'pan':     'Drag the canvas to move the view. Nothing is edited '
+                       'while Pan is active.',
         }
         self.status_var.set(msgs[t])
+        try:
+            self.zc.canvas.configure(
+                cursor='fleur' if t == 'pan' else 'crosshair')
+        except Exception:
+            pass
         self.load_frame.pack_forget(); self.sup_frame.pack_forget()
         self._refresh_tool_buttons(); self._draw()
+
+    #: What each support type is called on screen. The stored keys stay as
+    #: they are -- every saved model and every workbook uses them -- but
+    #: "rollerX" is not a word, and an architecture student reading it has
+    #: to guess whether X is the direction it slides or the direction it
+    #: holds. It is the direction it slides.
+    SUPPORT_LABELS = {
+        'pin':     'Pin — held both ways, free to rotate',
+        'rollerX': 'Roller — slides horizontally',
+        'rollerY': 'Roller — slides vertically',
+        'fixed':   'Fixed — held both ways, cannot rotate',
+    }
+    SUPPORT_SHORT = {
+        'pin': 'Pin', 'rollerX': 'Roller (slides \u2194)',
+        'rollerY': 'Roller (slides \u2195)', 'fixed': 'Fixed',
+    }
+
+    def support_label(self, stype, short=True):
+        table = self.SUPPORT_SHORT if short else self.SUPPORT_LABELS
+        return table.get(stype, stype)
 
     def _refresh_tool_buttons(self):
         act = self.tool.get()
@@ -2286,6 +2497,16 @@ class TrussApp(UnitsMixin):
         self._dragging_box = False
         self._box_cur = None
         t = self.tool.get()
+
+        # ── pan ───────────────────────────────────────────────────────────
+        # The Pan tool, or space held down from any tool. ZoomCanvas has
+        # always panned on the MIDDLE button, which most laptop trackpads
+        # and plenty of mice do not have at all -- on those, the view simply
+        # could not be moved. Both routes reuse ZoomCanvas's own pan so there
+        # is one implementation of it.
+        if t == 'pan' or self._space_pan:
+            self.zc._pan_start(event)
+            return
 
         # ── polar ref pick mode ───────────────────────────────────────────
         if self._picking_ref:
@@ -2410,6 +2631,9 @@ class TrussApp(UnitsMixin):
         # 'select', 'load', 'support' → decided in _on_release (click vs box-drag)
 
     def _on_drag_motion(self, event):
+        if self.tool.get() == 'pan' or self._space_pan:
+            self.zc._pan_move(event)
+            return
         if self._guide_drag:
             wx, wy = self.zc.s2w(event.x, event.y)
             self._drag_guide_to(wx, wy)
@@ -2438,6 +2662,15 @@ class TrussApp(UnitsMixin):
         self._draw()
 
     def _on_release(self, event):
+        if self.tool.get() == 'pan' or self._space_pan:
+            self.zc._pan_end(event)
+            try:
+                self.zc.canvas.configure(
+                    cursor='fleur' if (self.tool.get() == 'pan'
+                                       or self._space_pan) else 'crosshair')
+            except Exception:
+                pass
+            return
         if self._guide_drag:
             self._end_guide_drag()
             return
@@ -2654,7 +2887,10 @@ class TrussApp(UnitsMixin):
             if idx >= 0: self.loads[idx] = {'node':ni,'fx':fx,'fy':fy}
             else:        self.loads.append({'node':ni,'fx':fx,'fy':fy})
         self.results=None; self.diagrams=None; self._draw(); self._draw_diagrams_only()
-        self.status_var.set(f'Load applied to {len(ids)} node(s): Fx={fx} Fy={fy} kN')
+        self.status_var.set(
+            f'Load applied to {len(ids)} node(s): '
+            f'Fx={self.show("force", fx):g} Fy={self.show("force", fy):g} '
+            f'{self.u("force")}')
 
     def _remove_load(self):
         self._push_undo('remove load')
@@ -2793,7 +3029,9 @@ class TrussApp(UnitsMixin):
         self.results = None; self.diagrams = None
         self._draw_diagrams_only()
         self._draw(); self._show_sel()
-        msg = f'Added {P:g} kN point load at {pos:g}% from A ({angle:g}°) to {len(self.selected_rods)} rod(s).'
+        msg = (f'Added {self.show("force", P):g} {self.u("force")} point load '
+               f'at {pos:g}% from A ({angle:g}°) to '
+               f'{len(self.selected_rods)} rod(s).')
         if n_converted:
             msg += f' ({n_converted} auto-set to Rigid.)'
         self.status_var.set(msg)
@@ -2972,6 +3210,7 @@ class TrussApp(UnitsMixin):
 
         self._show_analysis_text()
         self._show_plate_checks()
+        self._pick_default_diagram_mode()
 
         self.show_deform.set(True)
         self._draw()
@@ -3065,7 +3304,8 @@ class TrussApp(UnitsMixin):
             d_ = lambda v: self.show('deflection', v)
             t.insert('end', f'Node {ni}  ({l_(n[0]//SNAP):.2f}, '
                             f'{l_(-n[1]//SNAP):.2f}) {self.u("length")}\n')
-            if sup: t.insert('end',f'Support: {sup["type"]}\n')
+            if sup: t.insert('end',
+                             f'Support: {self.support_label(sup["type"], short=False)}\n')
             if ld:  t.insert('end', f'Load Fx={f_(ld["fx"]):g} '
                                     f'Fy={f_(ld["fy"]):g} {F}\n')
             if rxn:
@@ -3087,7 +3327,8 @@ class TrussApp(UnitsMixin):
                         f'  Rod {v["rod"]:>2d} [{v["kind"]}]  '
                         f'|F|={self.show("force", v["magnitude"]):.2f} {F}  '
                         f'θ={v["angle_deg"]:.1f}°\n'
-                        f'     Fx={v["Fx"]:+.2f}  Fy={v["Fy"]:+.2f} kN\n')
+                        f'     Fx={self.show("force", v["Fx"]):+.2f}  '
+                        f'Fy={self.show("force", v["Fy"]):+.2f} {F}\n')
             t.insert('end','\n[Delete] to remove')
         elif n_sel_rods==1 and n_sel_nodes==0:
             ri=next(iter(self.selected_rods)); rod=self.rods[ri]
@@ -3200,10 +3441,15 @@ class TrussApp(UnitsMixin):
             cur_step, cur_mult = next_step, next_step / base_px
 
     def _draw(self):
-        if hasattr(self, 'analyze_btn'):
-            self.analyze_btn.configure(
-                bg='#1a6bbd' if self.results is not None else '#9e9e9e',
-                state='normal')   # always clickable — grey just means "not solved yet"
+        # Grey means "the model has changed since the last solve", never
+        # "disabled" -- both buttons stay clickable, because a beginner who
+        # cannot press Analyze has no way to find out what is wrong.
+        solved = self.results is not None
+        for name in ('analyze_btn', 'analyze_btn_bar'):
+            btn = getattr(self, name, None)
+            if btn is not None:
+                btn.configure(bg='#1a6bbd' if solved else '#9e9e9e',
+                              state='normal')
         c  = self.zc.canvas
         w2s = self.zc.w2s
         z  = self.zc.zoom
@@ -3335,7 +3581,7 @@ class TrussApp(UnitsMixin):
                               fill='#7A3E9D', width=2, arrow='last',
                               arrowshape=(6,7,2))
                 c.create_text(qx+pux*28, qy+puy*28,
-                              text=f"{pl.get('P',0):g} kN",
+                              text=self.fmt('force', pl.get('P', 0)),
                               fill='#7A3E9D', font=('Helvetica',8,'bold'))
 
             if self.selected_rods and i in self.selected_rods:
@@ -3721,7 +3967,11 @@ class TrussApp(UnitsMixin):
         else:
             c.create_oval(x-4*sc,y+23*sc,x+4*sc,y+30*sc,outline=CSP,width=1.5*sc)
             c.create_line(x-18*sc,y+31*sc,x+18*sc,y+31*sc,fill=CSP,width=1.5*sc)
-        c.create_text(x,y+36*sc,text=stype,fill='#777',font=('Helvetica',8))
+        # Name it the way the panel names it. 'rollerX' told the reader
+        # nothing about which way it slides -- which is the only thing a
+        # roller symbol is for.
+        c.create_text(x, y+36*sc, text=self.support_label(stype),
+                      fill='#777', font=('Helvetica', 8))
 
     def _draw_load(self, c, x, y, fx, fy, z=1, scale=None):
         mag=math.hypot(fx,fy)
@@ -3733,7 +3983,7 @@ class TrussApp(UnitsMixin):
         c.create_line(ox,oy,x,y,fill=CL,width=2*sc,arrow='last',
                        arrowshape=(10*sc,12*sc,4*sc))
         c.create_text(ox-ny_*14*sc,oy+nx_*14*sc,
-                       text=f'{mag:.1f}kN',fill=CL,
+                       text=self.fmt('force', mag),fill=CL,
                        font=('Helvetica',9,'bold'))
 
     def _draw_reaction(self, c, x, y, rx, ry, z=1, scale=None):
@@ -3748,15 +3998,38 @@ class TrussApp(UnitsMixin):
         c.create_line(x,y,ex,ey,fill=CR,width=2*sc,arrow='last',
                        arrowshape=(10*sc,12*sc,4*sc),dash=(4,2))
         lx=ex+ny_*14*sc; ly=ey-nx_*14*sc
-        c.create_text(lx,ly,text=f'R={mag:.1f}kN',fill=CR,
+        c.create_text(lx,ly,text='R=' + self.fmt('force', mag),fill=CR,
                        font=('Helvetica',8,'bold'))
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Diagram canvas
     # ══════════════════════════════════════════════════════════════════════════
+    def _on_diagram_mode_picked(self):
+        """Once the student has chosen a mode, stop choosing one for them."""
+        self._diag_mode_touched = True
+        self.diag_zc.reset_view()
+
+    def _pick_default_diagram_mode(self):
+        """Open the pane on the diagram this model actually has.
+
+        A pin-jointed truss has no shear and no moment, so 'Shear & moment'
+        is empty for every member of one; a Vierendeel girder carries load
+        through bending, so its moments are the whole story. Choosing by
+        what the model contains means the first thing a beginner sees after
+        their first Analyze is never a blank. Only until they pick a mode
+        themselves -- after that the choice is theirs.
+        """
+        if self._diag_mode_touched:
+            return
+        has_rigid = any(r.get('conn') == 'rigid' for r in self.rods)
+        self.diagram_mode.set('vierendeel' if has_rigid else 'axial')
+
     def _show_diagrams(self):
-        self.diag_outer.pack(fill='x', padx=6, pady=(2,0),
-                             before=self.root.winfo_children()[-1])
+        # The pane has its own draggable sash now, so a tall diagram band
+        # can be dragged back down instead of permanently costing the
+        # drawing 260 px -- on a 768 px laptop that left the model about
+        # 240 px tall, which is the wrong way round for a teaching tool.
+        self.shell.show_lower(height=INIT_DH + 30)
         self._draw_diagrams_only()
 
     def _draw_vierendeel_diagram(self):
@@ -4064,8 +4337,138 @@ class TrussApp(UnitsMixin):
             px, py = T(n[0], n[1])
             dc.create_oval(px-3, py-3, px+3, py+3, fill='#555', outline='')
 
+    #: One line under the mode radios saying what the pane is showing. It
+    #: used to be a fixed caption describing the Vierendeel silhouettes,
+    #: displayed in every mode including the two it does not describe.
+    DIAG_HINTS = {
+        'axial': 'one bar per member — length is |N|, red pulls, blue pushes',
+        'truss': 'shear V left, bending moment M right — one row per member',
+        'vierendeel': 'shear silhouette left, moment silhouette right — rigid rods only',
+        'fiber': 'stress across each member\u2019s depth — rigid rods only',
+    }
+
+    def _sync_diag_hint(self):
+        try:
+            self.diag_hint_var.set(
+                self.DIAG_HINTS.get(self.diagram_mode.get(), ''))
+        except Exception:
+            pass
+
+    def _draw_axial_diagram(self):
+        """One horizontal bar per member, length proportional to |N|, red for
+        tension and blue for compression.
+
+        WHY THIS EXISTS. A pin-jointed bar carries no shear and no moment --
+        that is the definition of one. So the Shear & moment mode, which was
+        this pane's only non-Vierendeel view, draws two empty boxes for every
+        member of a classic truss and labels each row "pin -- no bending".
+        A student loading the built-in Warren truss and pressing Analyze for
+        the first time got seven rows of empty rectangles: the app's first
+        answer to its first user was a blank. The one diagram a truss
+        actually has was the one it did not draw.
+
+        Axial force is also not in `compute_diagrams` -- it returns xs/V/M
+        only -- so this reads `rod_res` directly, the same numbers the rod
+        table and the member colours already use.
+        """
+        dc = self.diag_zc.canvas
+        w2s = self.diag_zc.w2s
+        z = self.diag_zc.zoom
+        dc.delete('all')
+        DW = dc.winfo_width() or INIT_CW
+        DH = dc.winfo_height() or INIT_DH
+
+        rr = self.results.get('rod_res', []) if self.results else []
+        if not rr:
+            dc.create_text(DW/2, DH/2,
+                           text='Run \u25b6 Analyze to see the member forces',
+                           fill='#999', font=('Helvetica', 11))
+            return
+
+        F = self.u('force')
+        forces = [float(r.get('force', 0.0)) for r in rr]
+        peak = max((abs(f) for f in forces), default=0.0)
+
+        # Fixed columns, left to right. The value labels live in their own
+        # column rather than floating off the end of a bar whose length
+        # changes with the load -- a label placed relative to the bar end
+        # walked straight through the 'Rod n' label as soon as one member
+        # carried most of the force.
+        ROW_H, TOP = 26.0, 46.0
+        ROW_X   = 0.0               # 'Rod n', left-aligned
+        VAL_C_R = 196.0             # compression values, right-aligned here
+        AXIS    = 206.0 + 140.0     # the zero line
+        HALF    = 140.0             # longest half-bar
+        VAL_T_L = AXIS + HALF + 10  # tension values, left-aligned here
+        LEFT    = ROW_X
+
+        def text(wx, wy, value, color='#444', bold=False, anchor='center',
+                 size=9):
+            sx, sy = w2s(wx, wy)
+            dc.create_text(sx, sy, text=value, fill=color, anchor=anchor,
+                           font=('Helvetica', max(7, int(size*z)),
+                                 'bold' if bold else 'normal'))
+
+        text(AXIS - 70, 26, '\u25c0  compression', CC, bold=True, anchor='center', size=8)
+        text(AXIS + 70, 26, 'tension  \u25b6', CT, bold=True, anchor='center', size=8)
+
+        bottom = TOP + len(rr) * ROW_H
+        a0 = w2s(AXIS, TOP - 8); a1 = w2s(AXIS, bottom)
+        dc.create_line(a0[0], a0[1], a1[0], a1[1], fill='#bbbbbb')
+
+        # A zero-force member is one of the first real lessons in truss
+        # analysis, and it looked identical to "not solved yet" (both CZ
+        # grey). Here it gets its own row treatment and is counted below.
+        n_zero = 0
+        for i, f in enumerate(forces):
+            y = TOP + i * ROW_H + ROW_H / 2
+            is_t = f > 0.01
+            is_c = f < -0.01
+            color = CT if is_t else (CC if is_c else CZ)
+            kind = 'T' if is_t else ('C' if is_c else '0')
+
+            text(ROW_X, y, f'Rod {i}', '#333', bold=True, anchor='w', size=9)
+
+            if peak > 1e-12 and (is_t or is_c):
+                w = abs(f) / peak * HALF
+                x0, x1 = (AXIS, AXIS + w) if is_t else (AXIS - w, AXIS)
+                p0 = w2s(x0, y - 7); p1 = w2s(x1, y + 7)
+                dc.create_rectangle(p0[0], p0[1], p1[0], p1[1],
+                                    fill=color, outline=color)
+                label = f'{self.show("force", f):+.2f} {F}  [{kind}]'
+                if is_t:
+                    text(VAL_T_L, y, label, color, bold=True, anchor='w', size=9)
+                else:
+                    text(VAL_C_R, y, label, color, bold=True, anchor='e', size=9)
+            else:
+                n_zero += 1
+                # Drawn, not omitted: a member carrying nothing is a result,
+                # and an empty row would read as a bug.
+                p0 = w2s(AXIS - 26, y - 5); p1 = w2s(AXIS + 26, y + 5)
+                dc.create_rectangle(p0[0], p0[1], p1[0], p1[1],
+                                    fill='', outline='#bbbbbb', dash=(3, 2))
+                text(VAL_T_L, y, 'zero-force member', '#8a8a8a',
+                     anchor='w', size=9)
+
+        foot = bottom + 18
+        text(ROW_X, foot,
+             f'Largest force {self.show("force", peak):.2f} {F} sets the bar length.',
+             '#777', anchor='w', size=8)
+        if n_zero:
+            text(ROW_X, foot + 13,
+                 f'{n_zero} member(s) carry no force in this load case — the '
+                 f'truss still stands without them here, but they may work in another.',
+                 '#8a8a8a', anchor='w', size=8)
+
+        dc.create_text(6, 6, anchor='nw', text='scroll=zoom  mid-drag=pan',
+                       fill='#aaa', font=('Helvetica', 8))
+
     def _draw_diagrams_only(self):
-        """Draw one shear/moment row per rod; never overlay member plots."""
+        """Draw the diagram pane in whichever mode is selected."""
+        self._sync_diag_hint()
+        if getattr(self, 'diagram_mode', None) is not None and self.diagram_mode.get() == 'axial':
+            self._draw_axial_diagram()
+            return
         if getattr(self, 'diagram_mode', None) is not None and self.diagram_mode.get() == 'vierendeel':
             self._draw_vierendeel_diagram()
             return
@@ -4458,14 +4861,17 @@ class TrussApp(UnitsMixin):
         for v in vecs:
             color = CT if v['kind']=='T' else (CC if v['kind']=='C' else CZ)
             draw_arrow(v['Fx'], v['Fy'], color,
-                      f'R{v["rod"]}\n{v["magnitude"]:.1f}kN')
+                      f'R{v["rod"]}\n' + self.fmt('force', v['magnitude']))
         if load and math.hypot(load['fx'], load['fy']) > 1e-6:
             draw_arrow(load['fx'], -load['fy'], CL,
-                      f'Load\n{math.hypot(load["fx"],load["fy"]):.1f}kN',
+                      'Load\n' + self.fmt('force',
+                                           math.hypot(load["fx"], load["fy"])),
                       dash=(3,2))
         if rxn and math.hypot(rxn.get('rx',0), rxn.get('ry',0)) > 1e-6:
             draw_arrow(rxn.get('rx',0), -rxn.get('ry',0), CR,
-                      f'Rxn\n{math.hypot(rxn.get("rx",0),rxn.get("ry",0)):.1f}kN',
+                      'Rxn\n' + self.fmt('force',
+                                          math.hypot(rxn.get("rx", 0),
+                                                     rxn.get("ry", 0))),
                       dash=(4,2))
 
         # design moment at this joint -- a circular-arrow glyph, sized/
@@ -4475,7 +4881,9 @@ class TrussApp(UnitsMixin):
             r = size*0.22
             self._draw_moment_arc(canvas, cx, cy, r, max_moment, color=CMOM, width=2.5)
             rod_tag = f' (R{max_moment_rod})' if max_moment_rod is not None else ''
-            canvas.create_text(cx, cy-r-20, text=f'M_max={max_moment:+.1f} kN\u00b7m{rod_tag}',
+            canvas.create_text(cx, cy-r-20,
+                               text='M_max=' + self.fmt('moment', max_moment,
+                                                        sign=True) + rod_tag,
                               fill=CMOM, font=('Helvetica',7,'bold'))
             if abs(net_moment) > 0.05:
                 canvas.create_text(cx, cy-r-9, text=f'\u03a3M={net_moment:+.1f} (equilib.)',
@@ -4618,14 +5026,25 @@ class TrussApp(UnitsMixin):
                      font=('Helvetica',8,'bold'), fg='#777').pack(anchor='w')
 
             cos_t, sin_t = math.cos(math.radians(theta)), math.sin(math.radians(theta))
+            # mathtext has no \text{}, and a unit label can carry a dot or a
+            # slash (kN*m, kip/ft), so units go through \mathrm with the few
+            # characters mathtext treats specially escaped.
+            def _ul(q):
+                return (self.u(q).replace('\\', '')
+                                 .replace('·', r'{\cdot}')
+                                 .replace('/', '/')
+                                 .replace(' ', r'\ '))
+            UF, UL, UM = _ul('force'), _ul('length'), _ul('moment')
+            sf = lambda v: self.show('force', v)
             eqs = [
-                rf'$L=\sqrt{{\Delta x^2+\Delta y^2}}={Lm:.3f}\ m$',
+                rf'$L=\sqrt{{\Delta x^2+\Delta y^2}}='
+                rf'{self.show("length", Lm):.3f}\ \mathrm{{{UL}}}$',
                 rf'$\theta={theta:.1f}^\circ,\ \ \cos\theta={cos_t:.3f},\ \ \sin\theta={sin_t:.3f}$',
-                rf'$N_{{{ri}}}={f:+.2f}\ kN$',
-                rf'$F_{{x,{a}}}=N\cos\theta={f*cos_t:+.2f}\ kN,\quad'
-                rf' F_{{y,{a}}}=N\sin\theta={f*sin_t:+.2f}\ kN$',
-                rf'$F_{{x,{b}}}=-N\cos\theta={-f*cos_t:+.2f}\ kN,\quad'
-                rf' F_{{y,{b}}}=-N\sin\theta={-f*sin_t:+.2f}\ kN$',
+                rf'$N_{{{ri}}}={sf(f):+.2f}\ \mathrm{{{UF}}}$',
+                rf'$F_{{x,{a}}}=N\cos\theta={sf(f*cos_t):+.2f}\ \mathrm{{{UF}}},\quad'
+                rf' F_{{y,{a}}}=N\sin\theta={sf(f*sin_t):+.2f}\ \mathrm{{{UF}}}$',
+                rf'$F_{{x,{b}}}=-N\cos\theta={sf(-f*cos_t):+.2f}\ \mathrm{{{UF}}},\quad'
+                rf' F_{{y,{b}}}=-N\sin\theta={sf(-f*sin_t):+.2f}\ \mathrm{{{UF}}}$',
             ]
             rr = self.results['rod_res'][ri]
             if rr.get('conn') == 'rigid':
@@ -4640,11 +5059,13 @@ class TrussApp(UnitsMixin):
                     Ms = self.diagrams[ri].get('M', [])
                     if Ms:
                         peak_M = max(Ms, key=abs)
+                sm_ = lambda v: self.show('moment', v)
                 eqs.append(
-                    rf'$\mathrm{{Vierendeel\ moment:}}\ \ M_{{a}}={Ma:+.2f}\ kN{{\cdot}}m,'
-                    rf'\quad M_{{b}}={Mb:+.2f}\ kN{{\cdot}}m$')
-                eqs.append(rf'$\mathrm{{Peak}}\ M(x)={peak_M:+.2f}\ kN{{\cdot}}m'
-                           rf'\ \mathrm{{along\ span}}$')
+                    rf'$\mathrm{{Vierendeel\ moment:}}\ \ '
+                    rf'M_{{a}}={sm_(Ma):+.2f}\ \mathrm{{{UM}}},'
+                    rf'\quad M_{{b}}={sm_(Mb):+.2f}\ \mathrm{{{UM}}}$')
+                eqs.append(rf'$\mathrm{{Peak}}\ M(x)={sm_(peak_M):+.2f}\ '
+                           rf'\mathrm{{{UM}}}\ \mathrm{{along\ span}}$')
             else:
                 eqs.append(r'$\mathrm{Vierendeel\ moment:}\ \ N/A\ \mathrm{-\ pinned\ connection,\ no\ bending}$')
             for eq in eqs:
@@ -4682,10 +5103,7 @@ class TrussApp(UnitsMixin):
                   font=('Helvetica',10,'bold'),
                   command=win.destroy).pack(pady=(0,10))
 
-    def _export_excel(self):
-        if not self.results:
-            messagebox.showwarning('Export',
-                'Run the analysis first before exporting.'); return
+    def _export_excel(self, _event=None):
         # install openpyxl automatically if it is missing
         if not _ensure_openpyxl():
             messagebox.showerror(
@@ -4703,16 +5121,21 @@ class TrussApp(UnitsMixin):
             defaultextension='.xlsx',
             filetypes=[('Excel workbook','*.xlsx')],
             initialfile='truss_report.xlsx',
-            title='Save Excel report')
+            title='Save Excel report' if self.results else 'Save model')
         if not path: return
         try:
             export_excel(self.nodes, self.rods, self.loads, self.supports,
                          self.results, path, profiles=self.profiles,
                          plates=self.plates, guides=self.guides)
-            self.status_var.set(f'Excel report saved → {os.path.basename(path)}')
-            messagebox.showinfo('Exported', f'Report saved to:\n{path}\n\n'
+            what = 'Excel report' if self.results else 'Model'
+            self.status_var.set(f'{what} saved → {os.path.basename(path)}')
+            extra = ('' if self.results else
+                     '\n\nThis model has not been analysed yet, so the '
+                     'workbook holds the geometry and loads only.')
+            messagebox.showinfo('Exported', f'Saved to:\n{path}\n\n'
                                 'Includes a "Model" sheet — use "Import Excel" '
-                                'to rebuild this exact truss from the file later.')
+                                'to rebuild this exact truss from the file '
+                                'later.' + extra)
         except Exception as e:
             messagebox.showerror('Export failed', str(e))
 
@@ -4824,7 +5247,7 @@ class TrussApp(UnitsMixin):
         self.plate_res_frame.pack_forget()
         self.res_var.set('')
         self.show_deform.set(False)
-        self.diag_outer.pack_forget()
+        self.shell.hide_lower()
         self.diag_zc.canvas.delete('all')
         if hasattr(self, '_refresh_profile_combo'): self._refresh_profile_combo()
         self._show_sel();self._draw()

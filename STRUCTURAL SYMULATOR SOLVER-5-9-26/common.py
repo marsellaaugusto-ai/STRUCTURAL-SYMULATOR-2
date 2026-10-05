@@ -191,7 +191,11 @@ CG_MICRO = "#ececec"    # grid — second finer LOD subdivision (dots)
 CV  = "#7F77DD"         # shear diagram
 CM  = "#D85A30"         # moment diagram
 CMOM = CM                 # moment annotation/arc (legacy alias used by TrussApp)
-CR  = "#2ecc71"         # reaction arrow
+CR  = "#6A1B9A"         # reaction arrow -- deliberately NOT a green.
+                        # It was #2ecc71 against CD's #1D9E75 for the
+                        # deformed shape: two greens, four rows apart in
+                        # the Truss legend, meaning two unrelated things.
+                        # Nothing else on a truss canvas is purple.
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -656,6 +660,46 @@ class ZoomCanvas(tk.Frame):
         self.pan_x = 0.0
         self.pan_y = 0.0
         self._on_zoom_changed()
+
+    def fit_to_bbox(self, x0, y0, x1, y1, margin=40):
+        """Zoom and pan so the world rectangle (x0,y0)-(x1,y1) fills the
+        canvas, with `margin` pixels of air around it.
+
+        `reset_view` returns to zoom 1 / pan 0, which is the ORIGIN, not the
+        model. Array a few nodes onto a guide at x = 60 m and the structure
+        leaves the screen with no way back except guessing at pan -- and on
+        a laptop trackpad with no middle button there is no pan at all. Every
+        drawing tool has a Fit; this is the one piece it needs.
+
+        Returns True when it moved the view, False when there was nothing to
+        fit (an empty model, or a degenerate box).
+        """
+        try:
+            x0, y0, x1, y1 = float(x0), float(y0), float(x1), float(y1)
+        except Exception:
+            return False
+        if x1 < x0:
+            x0, x1 = x1, x0
+        if y1 < y0:
+            y0, y1 = y1, y0
+        w = max(self.canvas.winfo_width(), 1)
+        h = max(self.canvas.winfo_height(), 1)
+        avail_w = max(w - 2 * margin, 1)
+        avail_h = max(h - 2 * margin, 1)
+        # A single node, or a perfectly horizontal truss, has zero extent in
+        # one axis. Give that axis a nominal span rather than dividing by it.
+        span_x = max(x1 - x0, 1e-9)
+        span_y = max(y1 - y0, 1e-9)
+        z = min(avail_w / span_x, avail_h / span_y)
+        if not (z > 0) or z != z:          # 0, negative or NaN
+            return False
+        z = max(self.MIN_ZOOM, min(self.MAX_ZOOM, z))
+        self.zoom = z
+        # Centre the box: the world midpoint must land on the canvas midpoint.
+        self.pan_x = (w / 2.0) / z - (x0 + x1) / 2.0
+        self.pan_y = (h / 2.0) / z - (y0 + y1) / 2.0
+        self._on_zoom_changed()
+        return True
 
 
 # ══════════════════════════════════════════════════════════════════════════════

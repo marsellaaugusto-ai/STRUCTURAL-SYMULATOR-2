@@ -150,24 +150,76 @@ def _measure(root, host):
     return mapped, unmapped, overflowing
 
 
+def _sections(app):
+    """Every CollapsibleSection in the tab, folded or not."""
+    from common import CollapsibleSection
+    found = []
+    _all_widgets(app.root, found)
+    return [w for w in found if isinstance(w, CollapsibleSection)]
+
+
+def _folded_controls(app):
+    """Controls inside a section the user has folded shut.
+
+    A folded section is NOT a lost control. It is still packed, still in its
+    place in the panel, and its title is still readable, so its contents are
+    one click away -- which is the whole difference between folding and the
+    failure this file exists to catch, where the panel was unmapped entirely
+    and the Analyze button went with it.
+
+    Counting them here is only safe because
+    `test_folding_cannot_hide_a_layout_failure` below checks the other half:
+    every folded section is itself mapped with a visible title, and opening
+    all of them brings every control back with nothing overflowing. Without
+    that, this subtraction would turn folding into a way to pass the test by
+    hiding the evidence.
+    """
+    folded = 0
+    for sec in _sections(app):
+        if sec.is_open():
+            continue
+        kids = []
+        _all_widgets(sec.body, kids)
+        folded += sum(1 for c in kids if c.winfo_class() in CONTROL_CLASSES)
+    return folded
+
+
 def _deliberately_hidden(app):
     """Controls the tab hides ON PURPOSE at the current moment, which must not
     be counted against the layout.
 
-    The Construction-geometry panel shows only the fields the chosen guide
-    kind uses -- a straight line has no radius, an arc has no expression --
-    so a handful of entries are always unpacked and CANNOT all be visible at
-    once. That is a different thing from a control the layout has lost, which
-    is what this file is guarding, so it is subtracted precisely rather than
-    the assertion being softened to a threshold.
+    Two kinds. The Construction-geometry panel shows only the fields the
+    chosen guide kind uses -- a straight line has no radius, an arc has no
+    expression -- so a handful of entries are always unpacked and CANNOT all
+    be visible at once. And the advanced panels ship folded. Both are
+    different from a control the layout has lost, which is what this file is
+    guarding, so they are subtracted precisely rather than the assertion
+    being softened to a threshold.
     """
     hidden = 0
     for key, row in getattr(app, '_guide_rows', {}).items():
         if row.winfo_manager():
             continue
+        # A row inside a folded section is already counted by
+        # _folded_controls; counting it twice would subtract more than
+        # exists and could hide a real loss.
+        if not row.winfo_ismapped() and _in_folded_section(app, row):
+            continue
         hidden += sum(1 for c in row.winfo_children()
                       if c.winfo_class() in CONTROL_CLASSES)
-    return hidden
+    return hidden + _folded_controls(app)
+
+
+def _in_folded_section(app, widget):
+    for sec in _sections(app):
+        if sec.is_open():
+            continue
+        w = widget
+        while w is not None:
+            if w is sec:
+                return True
+            w = getattr(w, 'master', None)
+    return False
 
 
 def test_no_control_is_dropped_or_pushed_off_as_the_window_narrows(truss_app):
@@ -244,3 +296,92 @@ def test_panel_keeps_its_content_reachable(truss_app):
             'the horizontal scrollbar is flagged as shown but has no size; '
             'a pack()ed latecomer next to an expand=True canvas gets zero '
             'space -- it must be grid()ed')
+
+
+def test_folding_cannot_hide_a_layout_failure(truss_app):
+    """The other half of `_folded_controls`.
+
+    Folding is allowed to take a control off screen because the section it
+    is in stays visible and one click brings it back. This asserts both of
+    those are actually true, so that subtracting folded controls from the
+    unmapped count can never become a way of passing this file by hiding
+    things instead of placing them.
+    """
+    root, host, app = truss_app
+    root.geometry('1280x950+0+0')
+    _settle(root)
+
+    sections = _sections(app)
+    assert sections, 'no collapsible sections found -- has the panel changed?'
+    folded = [s for s in sections if not s.is_open()]
+    assert folded, ('every section is open, so this guard is not testing '
+                    'anything -- the advanced panels are meant to ship folded')
+
+    # 1. A folded section is still there, and still says what it is.
+    for sec in folded:
+        assert sec.winfo_ismapped(), (
+            'a folded section is itself unmapped -- that is a lost control, '
+            'not a folded one')
+        assert sec.title_label.winfo_ismapped()
+        assert sec.title_label.cget('text').strip(), (
+            'a folded section with no readable title is undiscoverable')
+
+    hidden_while_folded = _folded_controls(app)
+    assert hidden_while_folded > 0
+
+    # 2. Opening them all brings every control back, and the panel still
+    #    places them: nothing unmapped, nothing past the window edge.
+    for sec in sections:
+        sec.set_open(True)
+    _settle(root)
+
+    assert _folded_controls(app) == 0
+    mapped_open, unmapped_open, overflowing = _measure(root, host)
+    assert unmapped_open - _deliberately_hidden(app) == 0
+    assert not overflowing, (
+        'with every section open these controls sit past the window edge: %s'
+        % ', '.join('%s (%+d px)' % t for t in overflowing))
+    assert mapped_open >= hidden_while_folded
+
+
+def test_analyze_is_reachable_without_scrolling(truss_app):
+    """Analyze used to be the thirteenth block down the panel, roughly 900 px
+    into a column shorter than that, so on any normal window the one control
+    that runs the analysis was below the fold. It now sits at the top, and
+    there is a second one in the toolbar."""
+    root, host, app = truss_app
+    for width in (1600, 1280, 1000, 800):
+        root.geometry('%dx760+0+0' % width)
+        _settle(root)
+
+        panel_top = app.panel_outer.winfo_rooty()
+        btn_top = app.analyze_btn.winfo_rooty() - panel_top
+        assert app.analyze_btn.winfo_ismapped(), f'no panel Analyze at {width} px'
+        assert btn_top < 120, (
+            'Analyze sits %d px down the panel at %d px wide -- it must be at '
+            'the top, not behind a scroll' % (btn_top, width))
+
+        assert app.analyze_btn_bar.winfo_ismapped(), (
+            f'no toolbar Analyze at {width} px')
+
+
+def test_the_panel_is_left_of_the_drawing(truss_app):
+    """The tab-to-tab consistency the shell exists for. This one used to put
+    its panel on the right while Stereo put its on the left."""
+    root, host, app = truss_app
+    root.geometry('1280x860+0+0')
+    _settle(root)
+    assert app.panel_outer.winfo_rootx() < app.zc.winfo_rootx()
+
+
+def test_the_panel_width_follows_the_sash(truss_app):
+    """The width belongs to whoever drags the divider, not to a constant."""
+    root, host, app = truss_app
+    root.geometry('1400x860+0+0')
+    _settle(root)
+    before = app.panel_outer.winfo_width()
+    app.shell.body.sash_place(0, before + 150, 0)
+    _settle(root)
+    after = app.panel_outer.winfo_width()
+    assert after > before + 100, (
+        'dragging the sash did not widen the panel (%d -> %d)' % (before, after))

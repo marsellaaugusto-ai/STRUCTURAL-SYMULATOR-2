@@ -56,6 +56,26 @@ def _new_id():
     return next(_IDS)
 
 
+def reserve_ids(up_to):
+    """Push the session counter past `up_to`, so nothing created later can
+    collide with an id that was assigned by hand.
+
+    `canonical_renumber` assigns 1..N over the live objects, and the counter
+    has already issued at least N ids by then, so a collision cannot happen
+    in practice -- but it costs one line to make that a guarantee rather
+    than an argument, and a collision would be a shared id between two live
+    objects, which every path lookup in the graph would then get wrong.
+    """
+    global _IDS
+    want = int(up_to)
+    current = next(_IDS)
+    if current <= want:
+        _IDS = itertools.count(want + 1)
+    else:
+        _IDS = itertools.count(current)
+    return want + 1
+
+
 class SceneObject:
     """The common base: anything that has a frame and a place in the tree.
 

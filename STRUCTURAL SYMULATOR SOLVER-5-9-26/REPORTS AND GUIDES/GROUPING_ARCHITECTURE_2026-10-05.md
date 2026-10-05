@@ -1,6 +1,6 @@
 # Element grouping: data architecture and object model
 
-**Date** 2026-10-05 · **Code** `apps/stereo/scene/` · **Tests** `tests/test_scene_graph.py` (58)
+**Date** 2026-10-05 · **Code** `apps/stereo/scene/` · **Tests** `tests/test_scene_graph.py` (58) + `tests/test_scene_persistence.py` (57)
 
 ## Originality
 
@@ -81,7 +81,14 @@ never stored"), applied one level up.
 ┌─ Layer 1 ── AUTHORING GRAPH (source of truth) ──────────────────┐
 │  SceneObject tree · local Transform per node                    │
 │  GroupNode (unique) · InstanceNode → Definition (shared)        │
-└──────────────── apps/stereo/scene/{objects,definitions,transform}.py┘
+│  SceneDocument: root + library + meta, canonical id numbering   │
+└──────────────── apps/stereo/scene/{objects,definitions,transform,document}.py┘
+        ▲                                                   ▲
+        │ from_records                            to_records │
+┌───────┴───────────────────────────────────────────────────┴─────┐
+│  Layer 0 ── PERSISTENCE: records.py (one record form, validated)│
+│  codecs: JSON (project format, atomic) · Excel sheet · snapshot │
+└───────────────── apps/stereo/scene/{records,persist}.py ────────┘
 ```
 
 The package imports no Tk, no numpy, and knows nothing about steel sections
@@ -440,14 +447,7 @@ keeps working.
    placed many times, which is what the Module Editor's roles have been
    approximating from the other direction.
 
-### Persistence (not yet written — the next decision)
-
-Records in the existing flat style, with two tables instead of one:
-objects (`id`, `kind`, `parent`, `name`, the 12 affine floats, `meta`) and
-definitions (`id`, `name`, `policy`, content root id). In-memory ids come
-from a session counter and are deliberately **not** what gets saved: a save
-should renumber canonically so two files built by the same steps compare
-equal and a diff of a saved model is readable.
+### Persistence — written, see section 9
 
 ### Known gaps, named rather than discovered later
 
@@ -459,3 +459,157 @@ equal and a diff of a saved model is readable.
   deliberately not supported: that is what `make_unique` is for.
 - `meta` is copied one level deep by `clone()`. A nested mutable inside
   `meta` would be shared between copies; don't put one there.
+- The Excel codec packs `meta`, `overrides`, `vertices` and `faces` into
+  JSON cells, and refuses a model whose cell would exceed Excel's 32767
+  characters. Sections stay where they are edited today: the `Model` sheet.
+- `validate` checks structure, not engineering. A file can be structurally
+  perfect and describe a mechanism; that is the solver's judgement, not the
+  loader's.
+
+---
+
+## 9. Persistence
+
+`records.py` turns the graph into plain dicts and back; `persist.py` writes
+those records in two formats. **Neither codec knows what a `SceneObject`
+is** — a third format later is another codec, not another serialiser.
+
+| | what it is for |
+|---|---|
+| **JSON** (`.scene.json`) | the project format: lossless, sorted, indented, diffable, written atomically |
+| **Excel** (`Scene` sheet) | inspection and interchange, written into the **same workbook** as the `Model` sheet the tab already exports, in the same `[SECTION]` + named-column style |
+| **snapshot/restore** | the undo stack: the same records, never touching a disk |
+
+### Why JSON is the project format and Excel is not
+
+A scene graph is a tree with cross-references, variable-length geometry and
+free-form metadata. JSON holds all three exactly. A spreadsheet holds the
+first two awkwardly and the third not at all — a mesh's vertex list has no
+fixed column count. So the Excel form carries structure and geometry in
+readable columns and packs the rest into JSON cells, which is **honest about
+the trade rather than dropping it**, and refuses a cell over Excel's limit
+rather than truncating one: a silently clipped vertex list is a model that
+loads and is not the model that was saved.
+
+### Four decisions
+
+**1. File ids are not object ids.** A load builds fresh objects with fresh
+session ids and keeps a map from the file's ids only while it wires parents
+up. Adopting the file's ids means loading a file whose ids overlap the
+session counter hands two live objects the same id, and every path lookup in
+the graph is then quietly wrong. `from_records` returns that map as its
+third value, because a load makes new objects and anything holding ids — a
+restored selection — has no other way to follow them.
+
+**2. Child order is file order.** The records carry `parent`, not a child
+list, and a parent's children are rebuilt in the order their records appear.
+One ordering rather than two that can disagree.
+
+**3. Absent means default, never error.** No `xform` is identity, no `meta`
+is empty, no `name` is unnamed. Writers omit what is default, so a file stays
+small and its diff shows only what someone actually set — and, the same rule
+from the other side, **a file written before a field existed still loads**.
+That is the convention the existing `Model` sheet already follows by reading
+its columns by *name*, and the Excel codec follows it too: a column inserted
+by a future build does not shift the ones before it.
+
+**4. A file is untrusted input** — not malicious, but hand-edited,
+half-merged, written by an older build, truncated by a full disk.
+`validate` separates the two kinds of wrong:
+
+- **Structural impossibility** → raises, with a message meant for a person.
+  A parent cycle, a duplicate id, a missing parent, two definitions claiming
+  one content root, a rod with no endpoint, **a definition that contains
+  itself**. There is no graph to build.
+- **Recoverable gap** → a warning, and the rest of the model loads. An
+  instance whose definition is missing, an unknown `kind` from a newer
+  build, an orphan nothing places. A user with a damaged file wants the
+  other 99% of their work back, not a dialog. `strict=True` promotes the
+  warnings for an importer that would rather refuse than guess.
+
+A skipped object takes its subtree with it. Re-parenting the children to the
+root would be worse than dropping them: they would appear in the model at
+the wrong place and nothing on screen would say so.
+
+The self-containing definition is worth singling out. The library refuses to
+*build* one, so it can only arrive from a hand-edited or half-merged file —
+and without the check the file loads happily and the **bake** finds out 64
+levels down, having already emitted whatever it met on the way. The loader
+refuses it instead, naming the loop (`'def1' -> 'def2' -> 'def1'`).
+
+### Canonical numbering
+
+In-memory ids come from a session counter: cheap, never reused, and
+deliberately **not** what gets saved. A counter cannot promise that two
+files built by the same steps come out the same — an object created and
+deleted still consumes an id, so a model built, half undone and rebuilt
+saves differently from the same model built once. A saved model that differs
+from an identically-built one **cannot be diffed**, and a diff is how a
+person checks what their last hour of editing actually changed.
+
+So a save renumbers: ids `1..N` in the deterministic walk order, derived
+from tree position alone. Definitions likewise, ordered **depth-first by
+first use**, so a loader never meets a reference it cannot resolve yet and
+inserting a component does not rewrite the whole table in the diff.
+
+The renumber is applied to the **live document**, not to a copy written out.
+Writing a renumbered copy would leave file and memory disagreeing about
+every id — invisible until something stores an id across a save. Instead the
+maps come back, in the same spirit as `stereo_groups.remap_members`, and the
+session id counter is pushed past the highest assigned so nothing created
+later can collide.
+
+### Atomic writes
+
+A save interrupted by a full disk, a crash or a closed lid must not leave a
+half-written file where the model used to be. `write_text` writes to a temp
+file **in the target's own directory** (so the replace is a rename within
+one filesystem — across filesystems `os.replace` falls back to a copy, which
+is the non-atomic behaviour this exists to avoid), `fsync`s it (the rename is
+atomic, but only for content the OS has actually written), then replaces.
+The temp file is removed whether the write succeeded or not.
+
+A truncated file says what to do about it: *"it was interrupted while saving
+— the previous save is the one to go back to."*
+
+### Undo snapshots
+
+Records rather than `clone()`, because a snapshot must capture **the
+document and its library together**: an undo across "make component" has to
+put the definition back too, and records are the only form holding both.
+`canonical=False`, because an undo must not renumber the model the user is
+still looking at — a renumber mid-edit would invalidate their selection as a
+side effect of pressing Ctrl+Z once.
+
+### Recognising one part arriving twice
+
+`content_digest` hashes what a definition **is** — geometry, topology,
+structure, nested definition references — and not its ids, names or
+metadata. Two trusses with the same bars are the same part whatever they
+were called, which is what an importer or a merge needs to know: bringing in
+a file containing the same component twice should **offer** to reuse one
+definition rather than silently stocking two parts indistinguishable on the
+drawing and distinguishable in a take-off. It is an offer, not a rule — a
+user may be keeping two names apart on purpose. (`-0.0` and `0.0` hash
+alike, so a mirror does not make a part stop matching itself.)
+
+### How it is tested
+
+A round trip that "does not raise" proves nothing: an import that drops a
+section, or reads a column into the wrong key, produces a model that loads
+cleanly, analyses cleanly, and is **not** the model that was saved — the
+same reasoning `tests/test_excel_roundtrip.py` gives for the `Model` sheet.
+So the tests compare the **baked** model field by field across the round
+trip (nodes, members, sections, joint names, provenance, mesh geometry,
+definition digests and tree shape), deliberately **not** the ids, since a
+load makes fresh objects and a canonical save renumbers on purpose —
+comparing ids would fail on a correct round trip and pass on one that
+scrambled the geometry.
+
+Also pinned: that the same model built twice saves byte for byte
+identically; that awkward floats (`1/3`, `1e-9`, `1e12`, `-0.0`) survive
+exactly, because a layer that rounds moves the model a little every time it
+is opened; that **sharing** survives, since a file that loses it loads as a
+model that looks identical and behaves differently the moment someone edits
+a component; that a loaded model still solves through `stereo_math.analyze`;
+and thirteen separate ways of being a broken file.

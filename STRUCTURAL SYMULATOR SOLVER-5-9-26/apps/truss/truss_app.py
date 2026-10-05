@@ -146,6 +146,10 @@ class TrussApp(UnitsMixin):
         self.cad_angle      = tk.DoubleVar(value=0.0)
         self.ruler_active   = tk.BooleanVar(value=False)
         self._space_pan     = False   # space held down -> drag pans
+        self._anim_job      = None    # after() id while animating
+        self._anim_base     = 0       # deflection scale to restore
+        self._live_busy     = False   # re-entrancy guard for live mode
+        self._unstable      = None    # mechanism diagnosis, or None
         self.ruler_start    = None   # world (wx,wy) or None
         self._mouse_wx      = 0.0   # live world cursor position
         self._mouse_wy      = 0.0
@@ -249,14 +253,28 @@ class TrussApp(UnitsMixin):
         self.show_contraflexure = tk.BooleanVar(value=True)
         self.show_node_moments = tk.BooleanVar(value=False)
         self.show_guides = tk.BooleanVar(value=True)
+        self.show_force_labels = tk.BooleanVar(value=True)
+        self.live_analyze = tk.BooleanVar(value=False)
         self._menu_button(view_g, 'View ▾', [
+            ('check', 'Force on each member', self.show_force_labels, self._draw),
             ('check', 'Deformed shape', self.show_deform, self._draw),
             ('check', '○ Inflection points (M = 0)',
              self.show_contraflexure, self._draw),
             ('check', 'Moment at rigid joints', self.show_node_moments, self._draw),
             ('sep',),
             ('check', 'Construction guides', self.show_guides, self._draw),
+            ('sep',),
+            ('check', 'Re-solve automatically while I edit',
+             self.live_analyze, self._on_live_toggled),
         ])
+        self.animate_btn = tk.Button(
+            view_g, text='▶ Animate', relief='flat', bd=0, padx=8, pady=4,
+            font=('Helvetica', 11), command=self._toggle_animation)
+        self._bind_widget_tooltip(self.animate_btn,
+            'Sway the deformed shape between zero and the deflection scale, '
+            'about once a second. Exaggerated movement is the quickest way '
+            'to feel what a structure is doing if you do not read the '
+            'numbers yet. Needs an analysis first.')
 
         # -- ANALYZE --
         self.toolbar_flow.separator()
@@ -283,6 +301,12 @@ class TrussApp(UnitsMixin):
             ('Export model and results…', self._export_excel),
             ('Import model…', self._import_excel),
         ], fg='#1a6bbd')
+        guide_btn = tk.Button(io_g, text='?  Guide', relief='flat', bd=0,
+                              padx=8, pady=4, font=('Helvetica', 11),
+                              fg='#1a6bbd', command=self._show_guide)
+        self._bind_widget_tooltip(guide_btn,
+            'How to use this tab, written around the questions rather than '
+            'the buttons. F1 opens it from anywhere.')
 
         # ── control panel (LEFT, behind the sash) ────────────────────────────
         # Kept under its old name: `_sync()` is called on it from several
@@ -342,6 +366,8 @@ class TrussApp(UnitsMixin):
         c.bind('<Leave>',      self._on_leave)
         # Space-drag pans from any tool, the CAD convention, for the same
         # reason the Pan tool exists: no middle button on most trackpads.
+        root.bind_all('<F1>', self._guard_shortcut(self._show_guide), add='+')
+        self._guide_win = None
         c.bind('<KeyPress-space>', self._space_pan_on)
         c.bind('<KeyRelease-space>', self._space_pan_off)
         c.focus_set()
@@ -472,6 +498,90 @@ class TrussApp(UnitsMixin):
         except Exception:
             pass
 
+    # ── deflection animation ───────────────────────────
+    def _toggle_animation(self):
+        if self._anim_job is not None:
+            self._stop_animation()
+            return
+        if not self.results:
+            self.status_var.set('Run \u25b6 Analyze first \u2014 there is no '
+                                'deflected shape to animate yet.')
+            return
+        self._anim_base = max(1, self.def_scale.get())
+        self._anim_phase = 0.0
+        self.show_deform.set(True)
+        self.animate_btn.configure(text='\u25a0 Stop')
+        self.status_var.set(
+            'Animating the deflection. The movement is exaggerated '
+            '%d\u00d7 \u2014 a real truss moves far less than this.'
+            % self._anim_base)
+        self._anim_step()
+
+    def _stop_animation(self):
+        if self._anim_job is not None:
+            try:
+                self.root.after_cancel(self._anim_job)
+            except Exception:
+                pass
+            self._anim_job = None
+        if self._anim_base:
+            self.def_scale.set(self._anim_base)
+        try:
+            self.animate_btn.configure(text='\u25b6 Animate')
+        except Exception:
+            pass
+        self._draw()
+
+    def _anim_step(self):
+        """One frame. The deflection SCALE is what moves, so every other
+        consumer of the deformed shape -- the inflection markers, the node
+        ghosts, the dashed offsets -- follows for free."""
+        if not self.results:
+            self._stop_animation()
+            return
+        self._anim_phase += 2 * math.pi / 20.0
+        amp = (math.sin(self._anim_phase) + 1.0) / 2.0
+        self.def_scale.set(max(1, int(self._anim_base * amp)))
+        self._draw()
+        try:
+            self._anim_job = self.root.after(50, self._anim_step)
+        except Exception:
+            self._anim_job = None
+
+    # ── live re-analysis ──────────────────────────────
+    def _on_live_toggled(self):
+        if self.live_analyze.get():
+            self.status_var.set(
+                'Live mode on \u2014 the structure re-solves on every edit. '
+                'Watch the colours change as you move a joint.')
+            self._maybe_live_analyze()
+        else:
+            self.status_var.set('Live mode off \u2014 press \u25b6 Analyze to solve.')
+
+    def _maybe_live_analyze(self):
+        """Re-solve after an edit, if the student asked for that.
+
+        These models are a handful of degrees of freedom and solve
+        instantly. Requiring a button press between every change breaks the
+        loop that actually teaches -- move a diagonal, watch the forces
+        redistribute. It is offered as a mode rather than imposed, because
+        the explicit Analyze step is also what makes "I have finished
+        building, now solve it" a deliberate act.
+
+        Failures are swallowed here ON PURPOSE: a half-built structure is a
+        mechanism most of the time, and a modal error box on every click
+        while you are still drawing would make the mode unusable. Pressing
+        Analyze still reports properly.
+        """
+        if not self.live_analyze.get():
+            return
+        if len(self.nodes) < 2 or not self.rods or not self.supports:
+            return
+        try:
+            self._run_analysis(quiet=True)
+        except Exception:
+            pass
+
     def _fit_view(self):
         """Zoom and centre on everything there is -- structure first, guides
         too when there is no structure yet."""
@@ -578,7 +688,55 @@ class TrussApp(UnitsMixin):
         tk.Label(cursor_f, textvariable=self.cursor_var, bg='#dde3ec',
                  font=('Courier',9), fg='#333')
 
+    #: The five steps of building a truss, in order. Each is (key, label,
+    #: test). A beginner opening this tab saw a blank canvas, a status line
+    #: and about sixty controls; nothing said what order to do things in,
+    #: and getting it wrong produced a modal that said "Need >= 1 support."
+    CHECKLIST = (
+        ('nodes',    'Joints',   lambda a: len(a.nodes) >= 2),
+        ('rods',     'Members',  lambda a: len(a.rods) >= 1),
+        ('supports', 'Supports', lambda a: len(a.supports) >= 1),
+        ('loads',    'Loads',    lambda a: len(a.loads) >= 1 or any(
+            r.get('udl') or r.get('point_loads') for r in a.rods)),
+        ('solved',   'Analyse',  lambda a: a.results is not None),
+    )
+
+    def _build_checklist(self, panel):
+        box = tk.Frame(panel, bg='#f0f0ee')
+        box.pack(fill='x', padx=8, pady=(8, 0))
+        self._check_labels = {}
+        for idx, (key, label, _test) in enumerate(self.CHECKLIST, start=1):
+            row = tk.Frame(box, bg='#f0f0ee')
+            row.pack(side='left', expand=True)
+            lb = tk.Label(row, text=f'{idx}. {label}', bg='#f0f0ee',
+                          font=('Helvetica', 8), fg='#aaa')
+            lb.pack()
+            self._check_labels[key] = lb
+        self._refresh_checklist()
+
+    def _refresh_checklist(self):
+        """Tick each step as it becomes true. Loads are genuinely optional --
+        a self-weight-free truss with no load solves to zero everywhere and
+        that is a legitimate thing to look at -- so step 4 is shown as done
+        or not, never as blocking."""
+        labels = getattr(self, '_check_labels', None)
+        if not labels:
+            return
+        for idx, (key, label, test) in enumerate(self.CHECKLIST, start=1):
+            try:
+                done = bool(test(self))
+            except Exception:
+                done = False
+            lb = labels.get(key)
+            if lb is None:
+                continue
+            lb.configure(text=('\u2713 ' if done else f'{idx}. ') + label,
+                         fg='#2f7d4f' if done else '#aaaaaa',
+                         font=('Helvetica', 8, 'bold' if done else 'normal'))
+
     def _build_panel(self, panel):
+        self._build_checklist(panel)
+
         # ── RUN + RESULTS, pinned at the top ─────────────────────────────────
         # This used to be the THIRTEENTH block down, under material,
         # selection, connection type, two load editors, construction
@@ -2026,6 +2184,19 @@ class TrussApp(UnitsMixin):
         self.results = None
         self.diagrams = None
         self.plate_checks = []
+        self._unstable = None
+        if self._anim_job is not None:
+            # The deflected shape it was swaying is gone.
+            self._stop_animation()
+        # Live mode re-solves here, after the edit that cleared the old
+        # answer. Guarded because _run_analysis itself does not touch this,
+        # but a future caller might.
+        if not self._live_busy:
+            self._live_busy = True
+            try:
+                self._maybe_live_analyze()
+            finally:
+                self._live_busy = False
 
     def _add_panel(self):
         """Create a shear panel from the selected rods."""
@@ -3189,19 +3360,39 @@ class TrussApp(UnitsMixin):
     # ══════════════════════════════════════════════════════════════════════════
     #  Analysis
     # ══════════════════════════════════════════════════════════════════════════
-    def _run_analysis(self):
-        if len(self.nodes)<2:
-            messagebox.showwarning('Truss','Need ≥ 2 nodes.'); return
-        if len(self.rods)<1:
-            messagebox.showwarning('Truss','Need ≥ 1 rod.'); return
-        if len(self.supports)<1:
-            messagebox.showwarning('Truss','Need ≥ 1 support.'); return
+    def _run_analysis(self, quiet=False):
+        """Solve, or explain in plain language why it cannot be solved yet.
+
+        This used to open one of four modal boxes -- three counting things
+        ("Need >= 2 nodes.") and one reporting "Singular stiffness matrix -
+        check for mechanisms or floating nodes." For an architecture
+        student that last one is not an error, it is the single most
+        important thing this app can teach: your structure moves. A modal
+        you dismiss is the worst possible place to say it. All four now
+        report through `_set_unstable`, which writes plain language into the
+        panel and MARKS THE CULPRITS ON THE DRAWING.
+        """
+        missing = self._readiness()
+        if missing:
+            self._set_unstable({
+                'headline': 'Not ready to analyse yet',
+                'body': missing,
+                'nodes': set(), 'rods': set()})
+            if not quiet:
+                self.status_var.set(missing.replace('\n', '  '))
+            self._draw()
+            return
 
         res, err = analyze(self.nodes, self.rods, self.loads, self.supports,
                             self.plates)
         if err:
-            messagebox.showerror('Analysis failed', err)
-            self.res_var.set(f'Failed: {err}'); return
+            diag = self._diagnose_instability(err)
+            self._set_unstable(diag)
+            if not quiet:
+                self.status_var.set(diag['headline'])
+            self._draw()
+            return
+        self._set_unstable(None)
 
         self.results  = res
         self.diagrams = compute_diagrams(self.nodes, self.rods, self.loads, res)
@@ -3212,16 +3403,505 @@ class TrussApp(UnitsMixin):
         self._show_plate_checks()
         self._pick_default_diagram_mode()
 
-        self.show_deform.set(True)
-        self._draw()
-        self._show_diagrams()
+        # A deliberate Analyze opens the deflected shape and the diagram
+        # pane; a live re-solve does not, or the pane would spring open
+        # under the cursor on every click while you are still drawing. Once
+        # it IS open, live keeps it up to date.
+        if not quiet:
+            self.show_deform.set(True)
+            self._draw()
+            self._show_diagrams()
+        else:
+            self._draw()
+            if self.shell.lower_visible():
+                self._draw_diagrams_only()
         rr = res['rod_res']
         n_t=sum(1 for r in rr if r['force']>0.01)
         n_c=sum(1 for r in rr if r['force']<-0.01)
-        self.status_var.set(
-            f'Done — {n_t} tension, {n_c} compression. '
-            f'Reactions and diagrams shown. Scroll/zoom both canvases freely.')
+        n_0=sum(1 for r in rr if abs(r['force'])<=0.01)
+        if not quiet:
+            zero_note = (f' {n_0} carry nothing in this load case.'
+                         if n_0 else '')
+            self.status_var.set(
+                f'Solved — {n_t} member(s) in tension, {n_c} in '
+                f'compression.{zero_note}')
         if self.selected_nodes or self.selected_rods: self._show_sel()
+
+    # ═════════════════════════════════════════════════════════════════════════
+    #  Why it will not solve — said in words, and shown on the drawing
+    # ═════════════════════════════════════════════════════════════════════════
+    #
+    # "Singular stiffness matrix" is a true statement about a matrix and a
+    # useless one about a building. What it MEANS is that the structure can
+    # move without stretching any member -- it is a mechanism, not a truss --
+    # and for the audience this app is for, understanding that is most of the
+    # subject. So the failure is treated as a result to be explained rather
+    # than an error to be dismissed: plain words in the panel, and the
+    # offending joints and bays marked in orange on the drawing.
+
+    def _readiness(self):
+        """What is still missing before the model can be solved at all, as
+        one sentence -- or None when it is ready. Replaces three modal
+        warnings that each said a number and nothing else."""
+        if len(self.nodes) < 2:
+            return ('A truss needs at least two joints. Pick the Node tool '
+                    'and click the canvas to place them.')
+        if not self.rods:
+            return ('There are joints but no members between them. Pick the '
+                    'Rod tool and click one joint, then another.')
+        if not self.supports:
+            return ('Nothing is holding this structure up. Pick the Support '
+                    'tool, click a joint, and choose a support type — a '
+                    'plane frame needs at least three restraints, which '
+                    'usually means one pin and one roller.')
+        return None
+
+    def _loose_nodes(self):
+        """Joints that cannot be held still by what is attached to them.
+
+        Two cases a beginner actually creates, found by counting rather than
+        by inspecting the stiffness matrix, so the answer can be pointed at
+        on the drawing:
+
+        * a joint with NO member at all -- it was placed and never connected;
+        * a free (unsupported) pin joint with only ONE member, which can
+          swing about that member's far end. Two collinear members are the
+          same case, so the directions are compared too.
+
+        This is not a complete mechanism finder -- a whole un-triangulated
+        bay is not caught here, and `_suspect_quads` handles the common
+        shape of that. It is meant to name the thing a student most often
+        did, not to prove stability.
+        """
+        attached = {}
+        for i, rod in enumerate(self.rods):
+            attached.setdefault(rod['a'], []).append(i)
+            attached.setdefault(rod['b'], []).append(i)
+        supported = {sp['node'] for sp in self.supports}
+
+        orphan, hinge = set(), set()
+        for ni in range(len(self.nodes)):
+            rods_here = attached.get(ni, [])
+            if not rods_here:
+                orphan.add(ni)
+                continue
+            if ni in supported:
+                continue
+            if any(self.rods[r].get('conn') == 'rigid' for r in rods_here):
+                continue        # a moment connection can hold a joint alone
+            dirs = []
+            for r in rods_here:
+                rod = self.rods[r]
+                other = rod['b'] if rod['a'] == ni else rod['a']
+                dx = self.nodes[other][0] - self.nodes[ni][0]
+                dy = self.nodes[other][1] - self.nodes[ni][1]
+                L = math.hypot(dx, dy)
+                if L > 1e-9:
+                    dirs.append((dx / L, dy / L))
+            if len(dirs) < 2:
+                hinge.add(ni)
+                continue
+            # All members along one line? Then the joint is free to move
+            # across that line, which is the collinear special case every
+            # textbook warns about.
+            ux, uy = dirs[0]
+            if all(abs(ux * vy - uy * vx) < 1e-6 for (vx, vy) in dirs[1:]):
+                hinge.add(ni)
+        return orphan, hinge
+
+    def _suspect_quads(self):
+        """Four members closing a bay with no diagonal and no rigid joint --
+        the parallelogram that folds flat. Returns the rod indices involved.
+
+        Only quadrilaterals are checked. A triangle cannot fold, and
+        anything with five or more sides is past the point where pointing at
+        it helps more than saying 'add bracing'.
+        """
+        from itertools import combinations
+        adj = {}
+        for i, rod in enumerate(self.rods):
+            if rod.get('conn') == 'rigid':
+                continue
+            adj.setdefault(rod['a'], {})[rod['b']] = i
+            adj.setdefault(rod['b'], {})[rod['a']] = i
+
+        suspects = set()
+        nodes = sorted(adj)
+        # Small models only: this is O(n^4) in the worst case and the tab is
+        # built one joint at a time by hand. Bail out rather than stall.
+        if len(nodes) > 60:
+            return suspects
+        for a, b, c, d in combinations(nodes, 4):
+            for order in ((a, b, c, d), (a, b, d, c), (a, c, b, d)):
+                p, q, r, t = order
+                ring = [adj.get(p, {}).get(q), adj.get(q, {}).get(r),
+                        adj.get(r, {}).get(t), adj.get(t, {}).get(p)]
+                if any(e is None for e in ring):
+                    continue
+                # A diagonal across either pair makes it stable.
+                if (adj.get(p, {}).get(r) is not None
+                        or adj.get(q, {}).get(t) is not None):
+                    continue
+                suspects.update(ring)
+        return suspects
+
+    def _diagnose_instability(self, err):
+        """Turn the solver's message into something a student can act on."""
+        orphan, hinge = self._loose_nodes()
+        quads = self._suspect_quads()
+
+        if 'Singular' not in err and 'All DOFs' not in err:
+            # A support referencing a missing node, an unknown type: those
+            # messages are already specific and in plain enough language.
+            return {'headline': err, 'body': err,
+                    'nodes': set(), 'rods': set()}
+
+        lines = ["This structure isn't stable yet: it can move without "
+                 "stretching or shortening any member. That is a mechanism, "
+                 "not a truss — under any load at all it would simply "
+                 "fold up."]
+        if orphan:
+            lines.append(
+                'Joint %s has no member attached, so nothing holds it in '
+                'place. Connect it with the Rod tool, or delete it.'
+                % ', '.join(str(n) for n in sorted(orphan)))
+        if hinge:
+            lines.append(
+                'Joint %s is held by a single line of members and no '
+                'support, so it can swing sideways. Add a second member in '
+                'a different direction, or support it.'
+                % ', '.join(str(n) for n in sorted(hinge)))
+        if quads and not orphan and not hinge:
+            lines.append(
+                'The highlighted four-sided bay has no diagonal, so it can '
+                'lean over into a parallelogram. Add a diagonal across it — '
+                'or select its members and press "Set Rigid" to carry the '
+                'load by bending instead, the way a Vierendeel girder does.')
+        if not (orphan or hinge or quads):
+            lines.append(
+                'Check that the supports actually restrain the structure in '
+                'both directions and against rotation: two rollers pointing '
+                'the same way leave it free to slide, and three parallel '
+                'reaction lines leave it free to turn.')
+        return {'headline': "This structure isn't stable yet — it is a "
+                            'mechanism. See the panel for what to fix.',
+                'body': '\n\n'.join(lines),
+                'nodes': orphan | hinge,
+                'rods': quads if not (orphan or hinge) else set()}
+
+    def _set_unstable(self, diag):
+        """Record (or clear) the diagnosis and show it where results go."""
+        self._unstable = diag
+        if diag is None:
+            self.res_var.set('')
+            return
+        self.res_var.set(diag['body'])
+        self.rod_res_frame.pack_forget()
+        self.rxn_frame.pack_forget()
+
+    def _draw_instability_marks(self, c, w2s, z):
+        """Mark the culprits on the drawing. Saying 'it is a mechanism' is
+        half the lesson; pointing at the joint that proves it is the other
+        half."""
+        diag = self._unstable
+        if not diag:
+            return
+        WARN = '#E8A33D'
+        for ni in diag.get('nodes', ()):  # loose joints
+            if ni >= len(self.nodes):
+                continue
+            nx, ny = self.nodes[ni]
+            sx, sy = w2s(nx, ny)
+            for rr in (13, 19):
+                c.create_oval(sx-rr, sy-rr, sx+rr, sy+rr,
+                              outline=WARN, width=2, dash=(4, 3))
+            c.create_text(sx, sy-26, text='loose joint', fill=WARN,
+                          font=('Helvetica', 8, 'bold'))
+        for ri in diag.get('rods', ()):   # the un-braced bay
+            if ri >= len(self.rods):
+                continue
+            rod = self.rods[ri]
+            a, b = self.nodes[rod['a']], self.nodes[rod['b']]
+            sx0, sy0 = w2s(a[0], a[1]); sx1, sy1 = w2s(b[0], b[1])
+            c.create_line(sx0, sy0, sx1, sy1, fill=WARN, width=6, dash=(8, 5))
+
+    # ═════════════════════════════════════════════════════════════════════════
+    #  The guide
+    # ═════════════════════════════════════════════════════════════════════════
+    #
+    # The Cable Web tab has had a two-tab guide, an F1 binding and a tooltip
+    # on nearly every control since v12. This tab had six tooltips in 4800
+    # lines and no guide at all. The structure is borrowed from there; the
+    # CONTENT is not, because the audiences differ. Cable Web's guide is
+    # organised by control ("Junction: create a true structural connection
+    # at an exact s position"). A student who does not yet know what a
+    # mechanism is cannot look up the control they need, because the thing
+    # they are missing is not a control. So this one is organised by
+    # question, and the reference list comes second.
+
+    GUIDE_QUESTIONS = (
+        ("I've just opened this. What do I do?",
+         "Press Examples ▸ Warren truss, then ▶ Analyze. That is the "
+         "whole loop. Red members are being pulled apart (tension), blue "
+         "ones are being squashed (compression), and the thicker the line "
+         "the larger the force.\n\n"
+         "To build your own, follow the five steps across the top of the "
+         "panel: place Joints, connect them with Members, add Supports to "
+         "hold the structure down, add Loads, then Analyze."),
+
+        ("Why won't it analyse? It says it is a mechanism.",
+         "Because your structure can move without any member changing "
+         "length. A square of four bars is the classic case: nothing "
+         "stretches when it leans over into a parallelogram, so it has no "
+         "strength at all. A triangle cannot do this — that is why trusses "
+         "are made of triangles.\n\n"
+         "The panel names the joint or bay at fault and the drawing rings "
+         "it in orange. Usually the fix is one diagonal. The other way out "
+         "is to select the bay's members and press Set Rigid, which welds "
+         "the corners so the frame resists by bending instead: that is a "
+         "Vierendeel girder, and it is why those are much heavier."),
+
+        ("What are tension and compression, on this screen?",
+         "Tension pulls a member apart; it is drawn red and its force is "
+         "positive. Compression squashes it; it is drawn blue and its force "
+         "is negative. A long compression member is the one to worry about "
+         "in real life — it can buckle sideways long before it is crushed, "
+         "which is why compression members are usually fatter than tension "
+         "members carrying the same load."),
+
+        ("Some members are dashed grey and say 0.",
+         "They carry no force in this load case. That is a real and useful "
+         "answer, not a failure: remove one and the truss still stands "
+         "under THIS load. They are usually there to hold a long "
+         "compression member straight, or to carry a different load case "
+         "(wind from the other side, snow on half the roof) that you have "
+         "not drawn. Try moving a load and watch which members wake up."),
+
+        ("What do the supports mean?",
+         "A pin is held in both directions and free to rotate — think of a "
+         "bolt through a plate. A roller is held in one direction only and "
+         "free to slide in the other; it is what lets a bridge expand in "
+         "summer without tearing its abutments off. Fixed is held both ways "
+         "AND stopped from rotating, like a column cast into a foundation.\n\n"
+         "A flat structure needs at least three restraints to be held — "
+         "normally one pin (two) plus one roller (one). Two rollers "
+         "pointing the same way leave it free to slide away."),
+
+        ("How do I see what it is actually doing?",
+         "Turn on View ▸ Deformed shape and press ▶ Animate. The movement "
+         "is exaggerated — by the Deflection × factor under the results — "
+         "because a real truss deflects a few millimetres over many metres "
+         "and you would see nothing at true scale.\n\n"
+         "Turn on View ▸ Re-solve automatically while I edit, then drag a "
+         "joint. The forces re-colour under the cursor. Making a change and "
+         "seeing the consequence immediately is the fastest way to build an "
+         "intuition for where load goes."),
+
+        ("Where do the numbers come from?",
+         "Report ▸ Show me the working opens one block per member: where "
+         "it sits in the truss, the length and angle, the axial force "
+         "resolved into its horizontal and vertical parts, and the complete "
+         "free-body diagram at both of its end joints — every other member, "
+         "load and reaction meeting there. Everything the solver did, "
+         "written out."),
+
+        ("What are E, A and I? I only know the shape I want.",
+         "E is how stiff the material is, A is the cross-sectional area of "
+         "the member and I is how hard it is to bend. For a pin-jointed "
+         "truss they only affect how far it deflects, never the member "
+         "FORCES — so you can leave the defaults alone while you are "
+         "learning the force paths, and come back to them when you care "
+         "about deflection. I matters only for members set to Rigid."),
+
+        ("Is this good enough to build from?",
+         "No, and it is not meant to be. It is a teaching model: it solves "
+         "an idealised two-dimensional frame with the loads you drew. It "
+         "does not check buckling of your members, it does not apply load "
+         "factors or combinations, it does not know about wind, and the "
+         "plate checks it does run use CIRSOC 301 factors whichever units "
+         "you have selected. Use it to understand how a structure behaves, "
+         "then take that understanding to an engineer."),
+    )
+
+    GUIDE_CONVENTIONS = (
+        ('Axes', 'X runs right, Y runs UP on screen. The coordinate readout '
+                 'in Precision input uses that.'),
+        ('Point loads', 'Fx is positive to the right. Fy is positive '
+                        'DOWNWARD, because that is the direction load '
+                        'usually acts.'),
+        ('Member force N', 'Positive = tension (red). Negative = '
+                           'compression (blue).'),
+        ('Along a member', 'Each member runs from its end A to its end B — '
+                           'shown as "Rod 4 (2 → 3)" in the Selection panel. '
+                           '"% from A" and the point-load angle are measured '
+                           'from that end.'),
+        ('Spread loads', '0° is perpendicular to the member. +90° points '
+                         'along A→B, −90° the other way.'),
+        ('Moments', 'Positive is counter-clockwise, and the curved arrows '
+                    'on the drawing curl the way the moment acts.'),
+        ('Units', 'Chosen once for the whole app, above the tabs, by design '
+                  'code. Every number on screen follows it. The solver '
+                  'always works in SI underneath, so switching convention '
+                  'never changes a result — only how it is written.'),
+    )
+
+    def _show_guide(self, _event=None):
+        """The guide. Questions first, then conventions, then the controls."""
+        if getattr(self, '_guide_win', None) is not None:
+            try:
+                self._guide_win.lift()
+                return
+            except Exception:
+                self._guide_win = None
+
+        win = tk.Toplevel(self.root)
+        self._guide_win = win
+        win.title('Truss — how to use it')
+        win.geometry('760x620')
+        win.configure(bg='#f5f5f3')
+
+        tk.Label(win, text='Truss — how to use it', bg='#f5f5f3',
+                 font=('Helvetica', 14, 'bold'), fg='#1a6bbd').pack(pady=(12, 0))
+        tk.Label(win, text='A tool for seeing how structures behave, built '
+                           'for people who design buildings rather than '
+                           'calculate them.',
+                 bg='#f5f5f3', fg='#555', font=('Helvetica', 10)).pack(pady=(2, 8))
+
+        nb = ttk.Notebook(win)
+        nb.pack(fill='both', expand=True, padx=12, pady=(0, 8))
+
+        def page(title):
+            fr = tk.Frame(nb, bg='white')
+            nb.add(fr, text=title)
+            sb = tk.Scrollbar(fr, orient='vertical')
+            txt = tk.Text(fr, wrap='word', bg='white', fg='#222', relief='flat',
+                          font=('Helvetica', 11), padx=16, pady=14,
+                          yscrollcommand=sb.set, spacing1=2, spacing3=4)
+            sb.config(command=txt.yview)
+            sb.pack(side='right', fill='y')
+            txt.pack(side='left', fill='both', expand=True)
+            txt.tag_configure('q', font=('Helvetica', 12, 'bold'),
+                              foreground='#1a6bbd', spacing1=12, spacing3=4)
+            txt.tag_configure('term', font=('Helvetica', 11, 'bold'),
+                              foreground='#333', spacing1=8)
+            return txt
+
+        t = page('Questions')
+        for question, answer in self.GUIDE_QUESTIONS:
+            t.insert('end', question + '\n', ('q',))
+            t.insert('end', answer + '\n')
+        t.configure(state='disabled')
+
+        t2 = page('What the signs mean')
+        t2.insert('end', 'Every convention this tab uses, in one place. '
+                         'These used to be scattered through the panel in '
+                         '7-point grey.\n\n')
+        for term, meaning in self.GUIDE_CONVENTIONS:
+            t2.insert('end', term + '\n', ('term',))
+            t2.insert('end', '   ' + meaning + '\n')
+        t2.configure(state='disabled')
+
+        t3 = page('Every control')
+        for group, rows in self._guide_reference():
+            t3.insert('end', group + '\n', ('q',))
+            for name, desc in rows:
+                t3.insert('end', name + '\n', ('term',))
+                t3.insert('end', '   ' + desc + '\n')
+        t3.configure(state='disabled')
+
+        bottom = tk.Frame(win, bg='#f5f5f3')
+        bottom.pack(fill='x', padx=12, pady=(0, 12))
+        tk.Label(bottom, text='F1 opens this at any time. Hover any button '
+                              'for a one-line version.',
+                 bg='#f5f5f3', fg='#888', font=('Helvetica', 9)).pack(side='left')
+        tk.Button(bottom, text='Close', relief='flat', bg='#1a6bbd', fg='white',
+                  font=('Helvetica', 10, 'bold'),
+                  command=lambda: self._close_guide()).pack(side='right')
+        win.protocol('WM_DELETE_WINDOW', self._close_guide)
+        return 'break'
+
+    def _close_guide(self):
+        win, self._guide_win = getattr(self, '_guide_win', None), None
+        if win is not None:
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+    def _guide_reference(self):
+        return (
+            ('Tools', (
+                ('Node', 'Place a joint. Clicks snap to the grid unless you '
+                         'turn that off in Precision input.'),
+                ('Rod', 'Connect two joints with a member: click one, then '
+                        'the other.'),
+                ('Support', 'Click a joint, then choose the support type in '
+                            'the panel and press Apply.'),
+                ('Load', 'Click a joint, type Fx and Fy in the panel, press '
+                         'Apply load.'),
+                ('Select', 'Click, shift-click or drag a box. Drag the '
+                           'selection to move it; Delete removes it.'),
+                ('Pan', 'Drag the canvas to move the view. Holding the space '
+                        'bar does the same from any tool, and so does the '
+                        'middle mouse button if you have one.'),
+            )),
+            ('Edit', (
+                ('↶ / ↷', 'Undo and redo, also Ctrl+Z and Ctrl+Y. The '
+                                'tooltip says what you are about to undo.'),
+                ('Examples', 'Two worked structures: a Warren truss and a '
+                             'Vierendeel girder.'),
+                ('Clear', 'Throw the model away. Ctrl+Z brings it back.'),
+            )),
+            ('View', (
+                ('Fit', 'Zoom so the whole model is on screen.'),
+                ('Reset view', 'Back to the origin at 1:1 — not the same '
+                               'as Fit once you have built away from it.'),
+                ('Force on each member', 'Writes the force on the drawing '
+                                         'itself, so a screenshot stands on '
+                                         'its own.'),
+                ('Deformed shape', 'The exaggerated deflected shape, in '
+                                   'green.'),
+                ('Inflection points', 'Where bending reverses along a rigid '
+                                      'member. Pin-jointed members do not '
+                                      'bend, so they have none.'),
+                ('Animate', 'Sway the deflection so you can see it move.'),
+                ('Re-solve automatically', 'Live mode: the structure solves '
+                                           'again after every edit.'),
+            )),
+            ('Analyse and report', (
+                ('▶ Analyze', 'Solve. The same button is at the top of '
+                                 'the panel.'),
+                ('Report ▸ Node force vectors', 'Every force meeting at '
+                                                  'each joint, drawn and '
+                                                  'listed.'),
+                ('Report ▸ Show me the working', 'The full calculation for '
+                                                   'each member, with its '
+                                                   'free-body diagrams.'),
+                ('Excel', 'Save and reload the model. You can save before '
+                          'analysing — the workbook then holds the geometry '
+                          'and loads only. Ctrl+S is the shortcut.'),
+            )),
+            ('In the panel', (
+                ('Connection type', 'Pin is a classic truss bar: axial force '
+                                    'only. Rigid is a welded corner that '
+                                    'also carries shear and bending — what a '
+                                    'Vierendeel girder uses instead of '
+                                    'diagonals.'),
+                ('Distributed load', 'A load spread along a member rather '
+                                     'than at a joint. Needs Rigid, because '
+                                     'a pin-jointed bar cannot bend.'),
+                ('Construction geometry', 'Curves to build onto — a '
+                                          'parabola, an arc, a fitted shape. '
+                                          'They are drawing aids and are '
+                                          'never analysed.'),
+                ('Arrays', 'Repeat the selection along a guide, in a grid, '
+                           'or around a point.'),
+                ('Plates and connections', 'Gusset plates and shear panels, '
+                                           'with steel checks. Advanced; '
+                                           'leave it folded until you need '
+                                           'it.'),
+            )),
+        )
 
     def _show_analysis_text(self):
         """The three result panels, written in the selected convention.
@@ -3444,6 +4124,7 @@ class TrussApp(UnitsMixin):
         # Grey means "the model has changed since the last solve", never
         # "disabled" -- both buttons stay clickable, because a beginner who
         # cannot press Analyze has no way to find out what is wrong.
+        self._refresh_checklist()
         solved = self.results is not None
         for name in ('analyze_btn', 'analyze_btn_bar'):
             btn = getattr(self, name, None)
@@ -3469,6 +4150,10 @@ class TrussApp(UnitsMixin):
         # Plates go down BEFORE the rods and nodes, so a filled bay never
         # hides the members that bound it.
         self._draw_plates(c, w2s, z)
+
+        # Marks for a model that would not solve. Drawn under the members
+        # so they read as a halo around the structure, not as part of it.
+        self._draw_instability_marks(c, w2s, z)
 
         show_def  = self.show_deform.get() and self.results is not None
         def_scale = self.def_scale.get()
@@ -3530,12 +4215,22 @@ class TrussApp(UnitsMixin):
             na,nb = self.nodes[rod['a']],self.nodes[rod['b']]
             res   = self.results['rod_res'][i] if self.results else None
             color = CZ; lw = 2.5
+            is_zero_force = False
             if res:
                 f=res['force']
                 if   f> 0.01: color=CT; lw=2+min(5,abs(f)/8)
                 elif f<-0.01: color=CC; lw=2+min(5,abs(f)/8)
+                else:         is_zero_force = True
             sx0,sy0=w2s(na[0],na[1]); sx1,sy1=w2s(nb[0],nb[1])
-            c.create_line(sx0,sy0,sx1,sy1,fill=color,width=lw)
+            if is_zero_force:
+                # A member that solved to zero looked EXACTLY like one that
+                # had not been solved at all -- both plain CZ grey. Zero-force
+                # members are the first real lesson in reading a truss, so
+                # they get a mark of their own rather than sharing the colour
+                # of "no answer yet".
+                c.create_line(sx0,sy0,sx1,sy1,fill=color,width=lw,dash=(7,4))
+            else:
+                c.create_line(sx0,sy0,sx1,sy1,fill=color,width=lw)
 
             if rod.get('conn') == 'rigid':
                 ddx0=sx1-sx0; ddy0=sy1-sy0
@@ -3598,6 +4293,24 @@ class TrussApp(UnitsMixin):
             c.create_text(mx+px*off,my+py*off,text=str(i),
                            fill=color if color!=CZ else '#555',
                            font=('Helvetica',8,'bold'))
+
+            # The force, written on the member itself. Architects read
+            # drawings; the rod table is 22 characters wide and unreadable
+            # on a projector, so the drawing could not be shown on its own.
+            if res and self.show_force_labels.get():
+                if is_zero_force:
+                    txt = '0'
+                else:
+                    txt = (self.fmt('force', res['force'], digits=1,
+                                    with_label=False)
+                           + ('  T' if res['force'] > 0 else '  C'))
+                lx, ly = mx - px*off, my - py*off
+                for dxo, dyo in ((-1,0),(1,0),(0,-1),(0,1)):
+                    c.create_text(lx+dxo, ly+dyo, text=txt, fill='white',
+                                  font=('Helvetica',9,'bold'))
+                c.create_text(lx, ly, text=txt,
+                              fill=color if not is_zero_force else '#8a8a8a',
+                              font=('Helvetica',9,'bold'))
 
         # supports
         for s in self.supports:
@@ -5201,6 +5914,7 @@ class TrussApp(UnitsMixin):
         self._refresh_profile_combo()
         self._draw()
         self.status_var.set('Warren truss loaded — click ▶ Analyze.')
+        self._maybe_live_analyze()
 
     def _load_example_vierendeel(self):
         self._push_undo('load Vierendeel example')
@@ -5231,6 +5945,7 @@ class TrussApp(UnitsMixin):
         self.status_var.set(
             'Vierendeel girder loaded (all rods rigid, no diagonals) — click ▶ Analyze. '
             'Select rods + "Set Pinned" to turn any of them back into a classic truss bar.')
+        self._maybe_live_analyze()
 
     def _clear_all(self, push_undo=True):
         if push_undo:

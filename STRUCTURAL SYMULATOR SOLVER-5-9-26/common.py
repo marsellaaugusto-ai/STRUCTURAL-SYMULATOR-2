@@ -1110,6 +1110,260 @@ class WrapBar:
             self._running = False
 
 
+class CollapsibleSection(tk.Frame):
+    """A LabelFrame whose title bar folds the contents away.
+
+    Drop-in for `tk.LabelFrame` with one difference: children go into
+    `.body`, not into the section itself::
+
+        sec = CollapsibleSection(panel, text='Plates', open=False)
+        sec.pack(fill='x', padx=8, pady=4)
+        tk.Label(sec.body, text='...').pack()
+
+    WHY THIS EXISTS. The Truss panel had nine LabelFrames open at all times
+    and the Analyze button underneath them, so the control that runs the
+    analysis was roughly 900 px down a 235 px-wide scrolling column. Four of
+    those nine (construction geometry, arrays, plates with its gusset bolt
+    grid, rod families) are advanced work that an architecture student --
+    this app's actual audience -- does not touch for weeks.
+
+    Folding is NOT hiding. The section keeps its place in the panel and its
+    title stays readable, so the control is still discoverable; only its
+    fields are out of the way. That distinction is what
+    `tests/test_truss_layout.py` asserts on: a widget inside a folded
+    section is *available*, while a widget pushed off the panel edge is
+    lost. Collapsing must never be a way to make that test pass.
+    """
+
+    #: Shown before the title. Unicode triangles, not images: the rest of
+    #: this project draws its glyphs the same way (see the ruler and the
+    #: diagram-pane hints) and it keeps the widget dependency-free.
+    MARK_OPEN = '▾'      # ▾
+    MARK_SHUT = '▸'      # ▸
+
+    def __init__(self, master, text='', open=True, bg='#f0f0ee',
+                 font=('Helvetica', 10, 'bold'), fg='#333333',
+                 padx=6, pady=4, **kw):
+        super().__init__(master, bg=bg, bd=1, relief='solid', **kw)
+        self._bg = bg
+        self._title = text
+        self._open = bool(open)
+        self._on_toggle = None
+
+        self.header = tk.Frame(self, bg=bg, cursor='hand2')
+        self.header.pack(fill='x')
+        self.title_label = tk.Label(self.header, bg=bg, fg=fg, font=font,
+                                    anchor='w', padx=4, pady=2)
+        self.title_label.pack(side='left', fill='x', expand=True)
+
+        self.body = tk.Frame(self, bg=bg, padx=padx, pady=pady)
+        if self._open:
+            self.body.pack(fill='both', expand=True)
+
+        # Bound on the header AND the label: clicking the text is the
+        # obvious gesture, clicking the strip beside it is the forgiving one.
+        for w in (self.header, self.title_label):
+            w.bind('<Button-1>', self._click)
+        self._sync_title()
+
+    # -- state ----------------------------------------------------------------
+    def _click(self, _event=None):
+        self.toggle()
+        return 'break'
+
+    def _sync_title(self):
+        mark = self.MARK_OPEN if self._open else self.MARK_SHUT
+        self.title_label.configure(text=f'{mark}  {self._title}')
+
+    def toggle(self):
+        self.set_open(not self._open)
+
+    def set_open(self, flag):
+        flag = bool(flag)
+        if flag == self._open:
+            return
+        self._open = flag
+        if flag:
+            self.body.pack(fill='both', expand=True)
+        else:
+            self.body.pack_forget()
+        self._sync_title()
+        if self._on_toggle is not None:
+            try:
+                self._on_toggle(self)
+            except Exception:
+                pass
+
+    def is_open(self):
+        return self._open
+
+    def on_toggle(self, fn):
+        """Run `fn(section)` after every fold/unfold -- used by the panel to
+        re-measure its scrollregion once the section's height has changed."""
+        self._on_toggle = fn
+        return self
+
+    # -- compatibility --------------------------------------------------------
+    def configure(self, cnf=None, **kw):
+        """Accept `text=` like a LabelFrame, so a caller that retitles a
+        section ('Load on node 3') does not have to know it is not one."""
+        if 'text' in kw:
+            self._title = kw.pop('text')
+            self._sync_title()
+        if cnf is None and not kw:
+            return super().configure()
+        return super().configure(cnf, **kw)
+
+    config = configure
+
+
+class AppShell(tk.Frame):
+    """The layout every tab shares: toolbar on top, control panel on the
+    LEFT behind a draggable divider, drawing filling the rest, an optional
+    diagram pane under it behind a second divider, status bar at the bottom.
+
+        shell = AppShell(tab, panel_width=340)
+        shell.pack(fill='both', expand=True)
+        flow = FlowBar(shell.toolbar)          # build the toolbar as usual
+        self._build_panel(shell.panel.interior)
+        self.zc = ZoomCanvas(shell.work); self.zc.pack(fill='both', expand=True)
+        shell.set_status('Ready.')
+
+    WHY THIS EXISTS. Before it, six tabs used four different arrangements:
+    Truss/Beam/Arch/Cable put the panel on the right at a fixed width (235 px
+    in Truss, 340 in the others, for strictly more content), Cable Web used
+    two fixed panels, Stereo put its sidebar on the left under a comment
+    claiming that was "the rest of the app's left-panel convention", and only
+    Perforated Beam let the user drag the divider. A student who learned one
+    tab had to relearn the next.
+
+    Two of those were already right and are what this generalises:
+
+    * **Left panel** -- `apps/stereo/stereo_app.py`. Reading order runs
+      left to right, so the controls that produce the drawing belong before
+      it, not after it.
+    * **Draggable width** -- `apps/perforated_beam/perforated_beam_app.py`,
+      whose own comment says it best: a fixed width "cannot be right for
+      everyone -- the tab is used at 1280 and at 2560 -- so the width became
+      the user's to set".
+
+    The panel is a `ScrollPanel`, so everything that class guarantees still
+    holds inside the pane: content wider than the panel scrolls rather than
+    being clipped, and the panel can never be squeezed out of existence by
+    the canvas. What changes is who decides the width. Do NOT also call
+    `panel.apply_responsive_width()` on a panel inside a shell: the sash is
+    the user's, and a <Configure> handler that resets it every time the
+    window moves would take it back.
+    """
+
+    #: Narrowest the user may drag the panel. Below this the panel is a
+    #: scrollbar and nothing else, which is worse than useless -- but it is
+    #: deliberately reachable, because dragging the panel down to a sliver to
+    #: look at a wide truss and then dragging it back is a real workflow.
+    PANEL_MIN = 120
+    #: Narrowest the drawing may become. The drawing is the point of every
+    #: tab in this app; it never goes away to make room for controls.
+    WORK_MIN = 260
+    #: Shortest the diagram pane may be dragged before it is simply closed.
+    DIAG_MIN = 90
+
+    def __init__(self, master, panel_width=PANEL_W + 105, bg='#f5f5f3',
+                 panel_bg='#f0f0ee', toolbar_bg='#ebebea', status=True, **kw):
+        super().__init__(master, bg=bg, **kw)
+        self._bg = bg
+
+        self.toolbar = tk.Frame(self, bg=toolbar_bg)
+        self.toolbar.pack(fill='x', padx=6, pady=(6, 0))
+
+        # Status bar packed BEFORE the body even though it is drawn last.
+        # Tk's pack hands each slave a parcel in packing order, so a status
+        # bar packed after an expand=True body is the first thing to be
+        # starved when the window shrinks -- the same trap ScrollPanel's
+        # docstring describes one level up. side='bottom' plus early packing
+        # is what keeps it pinned.
+        self.status_var = tk.StringVar(value='')
+        self.status_label = None
+        if status:
+            self.status_label = tk.Label(
+                self, textvariable=self.status_var, anchor='w',
+                bg=toolbar_bg, font=('Helvetica', 10), relief='flat',
+                padx=8, pady=3)
+            self.status_label.pack(side='bottom', fill='x', padx=6, pady=(4, 6))
+
+        self.body = tk.PanedWindow(self, orient='horizontal', bg='#d8d8d4',
+                                   sashwidth=7, sashrelief='raised', sashpad=0,
+                                   borderwidth=0, opaqueresize=False)
+        self.body.pack(fill='both', expand=True, padx=6, pady=(6, 0))
+
+        self.panel = ScrollPanel(self.body, width=panel_width, bg=panel_bg,
+                                 bd=1, relief='solid')
+        self.body.add(self.panel, minsize=self.PANEL_MIN, width=panel_width,
+                      stretch='never')
+
+        # Everything right of the sash. A second, VERTICAL PanedWindow so the
+        # diagram pane gets its own draggable divider: a fixed 260 px diagram
+        # band plus a wrapped toolbar left the Truss drawing about 240 px tall
+        # on a 768 px laptop, and the drawing is the thing being taught with.
+        self.work_outer = tk.PanedWindow(self.body, orient='vertical',
+                                         bg='#d8d8d4', sashwidth=7,
+                                         sashrelief='raised', sashpad=0,
+                                         borderwidth=0, opaqueresize=False)
+        self.body.add(self.work_outer, minsize=self.WORK_MIN, stretch='always')
+
+        self.work = tk.Frame(self.work_outer, bg=bg)
+        self.work_outer.add(self.work, minsize=self.WORK_MIN, stretch='always')
+
+        self.lower = tk.Frame(self.work_outer, bg=bg)
+        self._lower_shown = False
+
+    # -- the optional lower (diagram) pane ------------------------------------
+    def show_lower(self, height=None):
+        """Reveal the pane under the drawing, building nothing. The caller
+        owns `.lower` and keeps its contents between shows."""
+        if self._lower_shown:
+            return
+        kw = {'minsize': self.DIAG_MIN, 'stretch': 'never'}
+        if height:
+            kw['height'] = height
+        self.work_outer.add(self.lower, **kw)
+        self._lower_shown = True
+
+    def hide_lower(self):
+        if not self._lower_shown:
+            return
+        try:
+            self.work_outer.forget(self.lower)
+        except Exception:
+            pass
+        self._lower_shown = False
+
+    def lower_visible(self):
+        return self._lower_shown
+
+    # -- status ---------------------------------------------------------------
+    def set_status(self, text):
+        self.status_var.set(text)
+
+    # -- panel width ----------------------------------------------------------
+    def panel_width(self):
+        """Current width of the panel pane, in pixels."""
+        try:
+            return int(self.panel.winfo_width())
+        except Exception:
+            return 0
+
+    def set_panel_width(self, width):
+        """Move the sash. Used by the tab's own 'fit the panel to its
+        content' call at startup; after that the width is the user's."""
+        try:
+            width = max(self.PANEL_MIN, int(width))
+            self.body.paneconfigure(self.panel, width=width)
+            self.update_idletasks()
+            self.body.sash_place(0, width, 0)
+        except Exception:
+            pass
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 class UnitsMixin:
     """Show a tab's numbers in the unit convention chosen above the notebook.

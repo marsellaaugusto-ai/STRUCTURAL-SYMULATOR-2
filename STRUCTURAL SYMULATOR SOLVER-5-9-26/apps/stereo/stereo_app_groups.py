@@ -266,7 +266,12 @@ class StereoGroupsMixin:
         menu.add_separator()
         menu.add_command(label='Move group…', command=self._group_move_dialog)
         menu.add_command(label='Rename…', command=self._group_rename)
-        menu.add_command(label='Delete', command=self._group_delete)
+        # Two verbs, two names. "Delete" used to mean this one, which is why
+        # nothing in the tab ever removed a group and its rods together.
+        menu.add_command(label='Explode (keep the rods)',
+                         command=self._group_explode)
+        menu.add_command(label='Delete group and its rods',
+                         command=self._group_delete_object)
         menu.add_separator()
         menu.add_command(label='Shared joints…',
                          command=self._group_shared_nodes)
@@ -534,6 +539,110 @@ class StereoGroupsMixin:
         self._group_note_action('%s deleted; its rods are Ungrouped again.'
                                 % name)
         self._draw()
+
+    # ── a group as the thing you have selected ────────────────────────────
+    #
+    # Asked for in these words: "I should be able to select a complete group
+    # by selecting a single rod that is inside that group", and "I should be
+    # able to delete groups using the delete button".
+    #
+    # Both need one idea the tab did not have: a selection can BE a group,
+    # rather than being some rods that happen to belong to one. Everything
+    # below rests on that, and on its being DERIVED rather than stored --
+    # see _selected_group_object.
+
+    def _group_object_for_rod(self, rod):
+        """The group a click on `rod` should select, or None for the rod alone.
+
+        Read through `stereo_groups.object_at`, so the answer depends on the
+        CONTEXT and not on how deep the rod sits: with nothing open it is the
+        outermost group holding the rod; with a group open it is whichever of
+        that group's own subgroups holds it, and None when the rod is one of
+        the open group's own -- inside a group its own rods are the things
+        you pick, which is what being inside it means.
+        """
+        if not self.groups:
+            return None
+        owner = sgp.owner_of_rod(self.groups).get(rod)
+        if owner is None:
+            return None                      # Ungrouped: the rod itself
+        obj = sgp.object_at(self.groups, owner, self._editing_gid())
+        return None if obj in (None, sgp.OWN) else obj
+
+    def _selected_group_object(self):
+        """The group this selection IS, as one object, or None.
+
+        DERIVED, never stored. A flag would have to be cleared in every one
+        of the dozen places a selection changes -- a lasso, a paste, an
+        undo, a filter, the group list -- and the first one missed would
+        delete a group the user had not selected. Comparing the sets cannot
+        go stale, because there is nothing to keep in step.
+        """
+        if not self.groups or not self.selected_members or self.selected_nodes:
+            return None
+        sel = set(self.selected_members)
+        for gid in sgp.context_objects(self.groups, self._editing_gid()):
+            if set(sgp.rods_of(self.groups, gid, deep=True)) == sel:
+                return gid
+        return None
+
+    def _group_select_object(self, gid, additive=False):
+        """Select every rod of `gid` -- the group as one object."""
+        rods = set(sgp.rods_of(self.groups, gid, deep=True))
+        hidden = self._hidden_rods()
+        if hidden:
+            rods -= hidden
+        if not rods:
+            return False
+        self.selected_members = (self.selected_members | rods) if additive \
+            else rods
+        self.selected_nodes = set()
+        self.selected_member = None
+        self._sync_selection_fields()
+        return True
+
+    def _group_delete_object(self, gid=None):
+        """DELETE: the group, its subgroups, and all of their rods.
+
+        The other verb -- `_group_explode`, which the panel used to call
+        "Delete" -- takes the container away and leaves the rods. Two
+        different things happening to a model deserve two different words,
+        and calling the gentler one "Delete" is why pressing Delete never
+        did what anyone expected.
+        """
+        gid = self._current_group() if gid is None else gid
+        if gid is False or gid is None:
+            return False
+        name = self._group_display_name(gid)
+        doomed = {gid} | sgp.descendant_ids(self.groups, gid)
+        rods = set(sgp.rods_of(self.groups, gid, deep=True))
+        if not messagebox.askyesno(
+                'Delete group',
+                'Delete %s and the %d rod(s) in it?\n\n'
+                'The rods go too. To keep them and lose only the grouping, '
+                'use Explode instead.' % (name, len(rods))):
+            return False
+        self._push_undo('delete group')
+        # The group records go FIRST, for two reasons. Those rods are then
+        # Ungrouped, so the lock guard does not refuse the very deletion the
+        # user asked for; and the rods then travel through the model's own
+        # deletion, which is the one place that remaps supports, loads,
+        # _support_candidates and _load_nodes. There is no second copy of
+        # that logic here, and so no second copy to drift.
+        for g in list(self.groups):
+            if g['id'] in doomed:
+                self.groups.remove(g)
+        self.selected_nodes = set()
+        self.selected_members = set(rods)
+        self.selected_member = None
+        self._on_delete_selection(push_undo=False)
+        self._group_note_action('%s deleted, with its %d rod(s).'
+                                % (name, len(rods)))
+        return True
+
+    def _group_explode(self):
+        """EXPLODE: the container goes, the rods stay. Was called "Delete"."""
+        return self._group_delete()
 
     def _group_assign_selection(self):
         gid = self._current_group()

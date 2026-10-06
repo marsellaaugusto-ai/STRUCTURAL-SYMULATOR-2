@@ -310,7 +310,10 @@ class StereoViewMixin:
             self.selected_member = None
             self._sync_selection_fields()
         else:
-            self._select_node_at(event.x, event.y, additive=additive)
+            # Mod1 (Alt on X11 and Windows): pick the single rod rather than
+            # the group it belongs to.
+            self._select_node_at(event.x, event.y, additive=additive,
+                                 whole_group=not (event.state & 0x0008))
         self._lasso_press = None
         self._lasso_dragging = False
         self._lasso_cur = None
@@ -1354,7 +1357,7 @@ class StereoViewMixin:
         self.canvas.focus_set()
         self._refresh_all()
 
-    def _select_node_at(self, ex, ey, additive=False):
+    def _select_node_at(self, ex, ey, additive=False, whole_group=True):
         if not self.nodes:
             return
         # Hidden groups are never picked, and with "Pick inside group" on
@@ -1390,6 +1393,21 @@ class StereoViewMixin:
         # on empty space near a member still does something useful.
         mi = self._select_member_at(ex, ey, allowed=ok_rods)
         if mi is not None:
+            # A rod you can see belongs to something, and THAT is what a
+            # click selects: the group, as one object, in the context you
+            # are standing in. Picking the single rod out of a closed group
+            # is the exception, so it is the one that takes a modifier.
+            gid = None
+            if whole_group and hasattr(self, '_group_object_for_rod'):
+                gid = self._group_object_for_rod(mi)
+            if gid is not None and self._group_select_object(gid, additive):
+                self._set_status(
+                    '%s selected -- %d rod(s). Double-click to go inside it; '
+                    'Alt+click picks one rod.'
+                    % (self._group_display_name(gid),
+                       len(self.selected_members)), 'ok')
+                self._draw()
+                return
             self.selected_member = mi
             if additive:
                 self.selected_members.symmetric_difference_update({mi})
@@ -1430,13 +1448,27 @@ class StereoViewMixin:
                 best, best_d = i, d
         return best
 
-    def _on_delete_selection(self, event=None):
+    def _on_delete_selection(self, event=None, push_undo=True):
         """Delete selected nodes and/or members.
 
         When nodes are selected their connected members are removed
         transitively and every surviving node-index reference is remapped.
         When only members are selected (no nodes) just those members are
-        removed -- nodes at their endpoints are kept."""
+        removed -- nodes at their endpoints are kept.
+
+        When the selection IS a group -- every rod of one, and nothing else
+        -- this hands over to `_group_delete_object`, which takes the group
+        away with its rods. That is what the Delete key is expected to do to
+        something you have selected whole, and until now the tab had no such
+        operation at all: its only "Delete group" left the rods behind.
+
+        `push_undo=False` is for a caller that has already pushed one, so a
+        single user action is a single step back.
+        """
+        if push_undo and hasattr(self, '_selected_group_object'):
+            gid = self._selected_group_object()
+            if gid is not None:
+                return self._group_delete_object(gid)
         node_targets = set(self.selected_nodes)
         member_targets = set(self.selected_members)
         if not node_targets and not member_targets:
@@ -1458,7 +1490,8 @@ class StereoViewMixin:
                     'group -- %s.\n\nOpen the group with Edit group to '
                     'change its parts.' % sgp.describe_rods(self.groups, block))
                 return
-        self._push_undo('delete ' + what)
+        if push_undo:
+            self._push_undo('delete ' + what)
 
         # Groups hold MEMBER indices, so work out which rods are about to go
         # and remap the groups BEFORE self.members is rebuilt under them.

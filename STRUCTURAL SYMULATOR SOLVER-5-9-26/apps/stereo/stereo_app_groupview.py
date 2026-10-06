@@ -239,8 +239,18 @@ class StereoGroupViewMixin:
     # ── double-click: a rod's group, then up a level ───────────────────────
 
     def _on_canvas_double(self, event):
+        """Double-click a rod: GO INSIDE the group it belongs to.
+
+        It used to only move a highlight in the side panel, which is why
+        nothing you did on the canvas ever changed where you were standing.
+        Esc comes back out, and the breadcrumb says where you are.
+        """
         self._dbl_click = True
-        return self._group_double_click(event.x, event.y)
+        gid = self._group_double_click(event.x, event.y)
+        if gid is not None and gid is not False:
+            inside = self._editing_gid() is not None
+            self._group_open(gid, nested=inside)
+        return gid
 
     def _group_double_click(self, ex, ey):
         """Double-click a rod: its group (the innermost one). Again, on a

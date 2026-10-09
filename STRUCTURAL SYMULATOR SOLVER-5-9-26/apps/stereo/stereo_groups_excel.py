@@ -442,8 +442,14 @@ def import_groups(path, members, profiles=None):
     """(groups, report) from a workbook's Groups sheet, applied to members.
 
     (None, []) when the workbook has no Groups sheet -- one written before
-    groups existed, or by SketchUp -- so the caller can tell "no groups in
-    this file" from "the file says there are no groups".
+    groups existed, or by a SketchUp model with nothing grouped in it -- so
+    the caller can tell "no groups in this file" from "the file says there
+    are no groups".
+
+    The SketchUp extension writes this sheet too, from the groups and
+    components the model was built with, and writes only its id/name/parent/
+    rods columns: SketchUp knows nothing about steel sections, and every
+    other cell arrives blank, which means "leave this rod as it is".
     """
     import openpyxl
     wb = openpyxl.load_workbook(path, data_only=True)

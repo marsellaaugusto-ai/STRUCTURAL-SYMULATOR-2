@@ -19,12 +19,25 @@ module CoordinateCoordinatorTrussAppAMAC
   require File.join(MY_DIR, 'pick_tool')
   require File.join(MY_DIR, 'intersections')
 
-  # Writes nodes_m/members in the single-sheet "Model" layout that
+  # Writes nodes_m/members in the "Model" layout that
   # apps/stereo/stereo_reports.py's import_excel_model reads: a sheet named
   # "Model" with bracketed [NODES] / [MEMBERS] tables. Loads and supports
   # are intentionally left out -- SketchUp geometry has no notion of either;
   # add those inside the Stereo tab after importing.
-  def self.export_to_excel(nodes_m, members)
+  #
+  # `groups`, when there is anything to say, adds the second sheet the
+  # Stereo tab already reads (apps/stereo/stereo_groups_excel.py): one row
+  # per group, nested by `parent`, listing its rods as ranges. That is how
+  # the groups and components someone modelled with arrive as the Stereo
+  # tab's own groups instead of being flattened away on the trip across.
+  #
+  # Only the four columns that say WHERE a rod belongs are written. The
+  # section columns of that sheet are left out entirely, and a cell the
+  # sheet does not have reads as blank, which means "leave this rod as it
+  # is" -- so importing changes the grouping and nothing else. SketchUp
+  # geometry knows nothing about steel sections, and a column of guessed
+  # defaults would overwrite real ones on the way in.
+  def self.export_to_excel(nodes_m, members, groups = nil)
     path = UI.savepanel('Export Stereo Model', Dir.pwd, 'stereo_model.xlsx')
     return unless path
     path += '.xlsx' unless path.downcase.end_with?('.xlsx')
@@ -65,8 +78,31 @@ module CoordinateCoordinatorTrussAppAMAC
       row += 1
     end
 
+    write_groups_sheet(wb, groups) if groups && !groups.empty?
+
     wb.save(path)
-    UI.messagebox("Exported #{nodes_m.length} nodes and #{members.length} members to:\n#{path}")
+    UI.messagebox("Exported #{nodes_m.length} nodes, #{members.length} " \
+                  "members and #{(groups || []).length} group(s) to:\n#{path}")
+  end
+
+  # The "Groups" sheet. Header names are read by name on the way in, so the
+  # column order here is for the reader's benefit only; the one thing that
+  # is load-bearing is that the header row begins with "id".
+  def self.write_groups_sheet(wb, groups)
+    ws = wb.add_sheet('Groups')
+    row = 1
+    ws.set(row, 1, 'GROUPS — the groups and components this model was ' \
+                   'built from. Nesting is in the "parent" column.')
+    row += 2
+    %w[id name parent rods].each_with_index { |h, c| ws.set(row, c + 1, h) }
+    row += 1
+    groups.each do |g|
+      ws.set(row, 1, g[:id])
+      ws.set(row, 2, g[:name])
+      ws.set(row, 3, g[:parent])     # nil -> an empty cell -> a top-level group
+      ws.set(row, 4, rods_to_ranges(g[:rods]))
+      row += 1
+    end
   end
 
   unless file_loaded?(__FILE__)

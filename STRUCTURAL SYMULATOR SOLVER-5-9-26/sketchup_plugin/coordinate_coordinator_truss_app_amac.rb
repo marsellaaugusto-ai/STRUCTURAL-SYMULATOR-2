@@ -21,15 +21,22 @@ module CoordinateCoordinatorTrussAppAMAC
     ex.description = 'Two-way bridge to the Structural Simulator Stereo ' \
                       '(space-truss) app. Pick an origin point and node points ' \
                       '(vertices or line intersections), or auto-detect them from ' \
-                      'a selection, and export them with member connectivity to an ' \
-                      'Excel file the Stereo tab imports -- or go the other way and ' \
-                      'build SketchUp geometry from a model the Stereo tab exported.'
-    # 0.2.0 adds "Import from Stereo…" (model_import.rb + xlsx_reader.rb).
+                      'a selection, and export them with member connectivity -- and ' \
+                      'with the groups and components they sit in -- to an Excel file ' \
+                      'the Stereo tab imports, or go the other way and build SketchUp ' \
+                      'geometry from a model the Stereo tab exported.'
+    # 0.3.0 follows groups and components on the way OUT. Until it, both
+    # export paths read only the edges lying loose in the current context,
+    # so a truss that had been grouped -- the normal way to model one --
+    # exported with no members and no warning. The groups themselves now
+    # travel too, as the Stereo tab's own nested groups.
+    #
+    # 0.2.0 added "Import from Stereo…" (model_import.rb + xlsx_reader.rb).
     # The 0.1.0 .rbz that shipped before this was built by hand and left
     # both of those files out, so the command it advertised raised
     # LoadError; tools/build_release.py now assembles and verifies the
     # archive so that cannot recur.
-    ex.version = '0.2.0'
+    ex.version = '0.3.0'
     ex.creator = 'Augusto'
     ex.copyright = Time.now.year.to_s
     Sketchup.register_extension(ex, true)

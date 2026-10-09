@@ -105,9 +105,23 @@ module CoordinateCoordinatorTrussAppAMAC
         return
       end
 
-      entities = view.model.active_entities
-      nodes_m, members = CoordinateCoordinatorTrussAppAMAC.build_model(@origin, @nodes, entities)
-      CoordinateCoordinatorTrussAppAMAC.export_to_excel(nodes_m, members)
+      model = view.model
+      # InputPoint reports in world coordinates, so the edges have to be
+      # gathered in world coordinates too: edit_transform is what carries
+      # the context we are picking in out to the world, and it is the
+      # identity at the top level. Picking while inside a group used to
+      # compare the two in different spaces and find no members at all.
+      base = begin
+        model.edit_transform
+      rescue StandardError
+        nil
+      end
+      nodes_m, members, member_paths = CoordinateCoordinatorTrussAppAMAC
+                                       .build_model(@origin, @nodes,
+                                                    model.active_entities, base)
+      CoordinateCoordinatorTrussAppAMAC.export_to_excel(
+        nodes_m, members,
+        CoordinateCoordinatorTrussAppAMAC.group_rows(member_paths))
       Sketchup.active_model.select_tool(nil)
     end
   end

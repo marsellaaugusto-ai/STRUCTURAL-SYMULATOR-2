@@ -155,6 +155,7 @@ class StereoGroupsMixin:
         # The OTHER axis. Groups answer "what belongs to what"; roles answer
         # "what kind is this", which no tree can answer -- see stereo_roles.
         self._build_roles_panel(box)
+        self._build_marks_panel(box)
 
         # ── rarer tools, folded away ──────────────────────────────────────
         self.group_more_open = tk.BooleanVar(value=False)
@@ -326,6 +327,14 @@ class StereoGroupsMixin:
         """
         rows = []
         editing = getattr(self, '_group_editing', None)
+        # Piece marks when they are switched on: which groups are the same
+        # part. Derived here rather than stored, so a mark can never outlive
+        # the edit that made it wrong -- see stereo_marks.
+        marks = (self._mark_of_group()
+                 if hasattr(self, '_mark_of_group') else {})
+        repeats = {}
+        for gid, mark in marks.items():
+            repeats[mark] = repeats.get(mark, 0) + 1
         for g, lvl in sgp.walk(self.groups):
             deep = len(sgp.rods_of(self.groups, g['id'], deep=True))
             own = len(g['members'])
@@ -340,6 +349,11 @@ class StereoGroupsMixin:
                 tag = '  {it %s · %s %s}' % (g.get('iteration') or '?',
                                              g['stage'],
                                              g.get('position') or '')
+            piece = marks.get(g['id'])
+            if piece:
+                n = repeats.get(piece, 1)
+                tag = ('  %s%s' % (piece, ' ×%d' % n if n > 1 else '')
+                       ) + tag
             rows.append(('%s%s%s  [%s]%s' % ('   ' * lvl, mark,
                                              self._group_display_name(g['id']),
                                              count, tag),

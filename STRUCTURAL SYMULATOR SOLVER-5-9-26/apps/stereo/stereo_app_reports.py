@@ -38,6 +38,13 @@ class StereoReportsMixin:
         self._me_maybe_refresh_topology()
         self._refresh_status()
         self._refresh_shape_note()
+        # The role list and the piece-mark note are views of the model like
+        # every other panel here, and were not being refreshed with them:
+        # the tab opens empty, so the Roles panel kept saying "No rods yet"
+        # over a model with thousands of them until something else happened
+        # to rebuild it.
+        self._refresh_roles_list()
+        self._refresh_marks_note()
         # The control table is a view of the profile, so it has to
         # follow an undo as well as an edit -- otherwise the table
         # shows a curve that no longer exists.
@@ -204,7 +211,8 @@ class StereoReportsMixin:
                             profiles=self.profiles, groups=self.groups,
                             lifts=self._lift_export(),
                             compare=self._compare_export(),
-                            scene=self._scene_for_export())
+                            scene=self._scene_for_export(),
+                            mark_tol_mm=self._mark_tol_mm())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return
@@ -217,6 +225,13 @@ class StereoReportsMixin:
         if any(m.get('timber') for m in self.members):
             from apps.stereo import stereo_timber as stt
             meta.update(stt.settings_to_meta(self._timber_settings()))
+        # The piece-mark tolerance travels with the model: the marks
+        # themselves are derived, but the question they answer -- "the same
+        # to within how much?" -- is a decision someone made, and a
+        # re-export under a different tolerance is a different schedule.
+        if hasattr(self, '_mark_tol_mm'):
+            from apps.stereo.stereo_app_marks import META_TOL_KEY
+            meta[META_TOL_KEY] = self._mark_tol_mm()
         return meta
 
     def _import_excel(self):
@@ -249,6 +264,17 @@ class StereoReportsMixin:
             ts = None
         if ts and hasattr(self, 'timber_duration'):
             self._set_timber_settings(ts)
+        # The piece-mark tolerance, if the workbook carries one: the
+        # schedule is recomputed here, but under the setting it was
+        # exported with rather than ours.
+        if hasattr(self, '_set_mark_tol'):
+            from apps.stereo.stereo_app_marks import META_TOL_KEY
+            try:
+                saved = sr.read_excel_meta(path).get(META_TOL_KEY)
+            except Exception:                         # noqa: BLE001
+                saved = None
+            if saved not in (None, ''):
+                self._set_mark_tol(saved)
         try:
             cranes = sr.read_cranes_sheet(path)
         except Exception:

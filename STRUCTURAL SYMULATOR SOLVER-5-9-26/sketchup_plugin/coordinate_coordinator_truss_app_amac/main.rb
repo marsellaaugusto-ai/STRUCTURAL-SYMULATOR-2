@@ -16,6 +16,7 @@ module CoordinateCoordinatorTrussAppAMAC
   require File.join(MY_DIR, 'xlsx_reader')
   require File.join(MY_DIR, 'model_export')
   require File.join(MY_DIR, 'model_import')
+  require File.join(MY_DIR, 'model_groups_in')
   require File.join(MY_DIR, 'pick_tool')
   require File.join(MY_DIR, 'intersections')
 

@@ -25,7 +25,16 @@ module CoordinateCoordinatorTrussAppAMAC
                       'the groups they sit in, and with components arriving as shared ' \
                       'parts -- to an Excel file the Stereo tab imports, or go the ' \
                       'other way and build SketchUp geometry from a model the Stereo ' \
-                      'tab exported.'
+                      'tab exported, with its groups, its shared components and its ' \
+                      'piece marks.'
+    # 0.5.0 closes the loop: "Import from Stereo…" now rebuilds the
+    # model's own organisation instead of a flat heap of edges. Groups
+    # arrive as groups the Outliner shows, nested as they were; groups
+    # that are copies of one part arrive as instances of ONE component,
+    # so editing the definition still changes every copy; and each
+    # container is named after the piece mark it carries, which is the
+    # thing a fabricator reads off the model.
+    #
     # 0.4.0 maps SketchUp's two container kinds onto the Stereo tab's,
     # one to one. A GROUP is unique -- editing one does not touch another
     # -- so it arrives as a group. A COMPONENT INSTANCE is a placement of
@@ -45,7 +54,7 @@ module CoordinateCoordinatorTrussAppAMAC
     # both of those files out, so the command it advertised raised
     # LoadError; tools/build_release.py now assembles and verifies the
     # archive so that cannot recur.
-    ex.version = '0.4.0'
+    ex.version = '0.5.0'
     ex.creator = 'Augusto'
     ex.copyright = Time.now.year.to_s
     Sketchup.register_extension(ex, true)

@@ -22,6 +22,19 @@ module Geom
     def dot(o) = @x * o.x + @y * o.y + @z * o.z
     def length = Math.sqrt(dot(self))
     def to_a = [@x, @y, @z]
+
+    def cross(o)
+      Vector3d.new(@y * o.z - @z * o.y, @z * o.x - @x * o.z,
+                   @x * o.y - @y * o.x)
+    end
+
+    def normalize
+      n = length
+      n < 1e-12 ? Vector3d.new(0, 0, 0) : Vector3d.new(@x / n, @y / n, @z / n)
+    end
+
+    def -(o) = Vector3d.new(@x - o.x, @y - o.y, @z - o.z)
+    def +(o) = Vector3d.new(@x + o.x, @y + o.y, @z + o.z)
   end
 
   class Point3d
@@ -48,20 +61,46 @@ module Geom
   class Transformation
     attr_reader :m, :t
 
-    # Transformation.new                       -> identity
-    # Transformation.new([dx, dy, dz])         -> translation
-    # Transformation.new(m_3x3, [dx, dy, dz])  -> general affine
-    def initialize(a = nil, b = nil)
-      if a.nil?
+    # Transformation.new                            -> identity
+    # Transformation.new([dx, dy, dz])              -> translation
+    # Transformation.new(m_3x3, [dx, dy, dz])       -> general affine
+    # Transformation.new(xaxis, yaxis, zaxis, origin) -> a frame, which is
+    #   SketchUp's own four-argument form: the three axes become the
+    #   matrix COLUMNS, so the transformation carries frame coordinates
+    #   out into the space the axes are expressed in.
+    def initialize(a = nil, b = nil, c = nil, d = nil)
+      if !c.nil?
+        @m = [[a.x, b.x, c.x], [a.y, b.y, c.y], [a.z, b.z, c.z]]
+        @t = [d.x, d.y, d.z]
+      elsif a.nil?
         @m = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
         @t = [0.0, 0.0, 0.0]
       elsif b.nil?
         @m = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-        @t = a.map(&:to_f)
+        @t = a.respond_to?(:x) ? [a.x, a.y, a.z] : a.map(&:to_f)
       else
         @m = a.map { |r| r.map(&:to_f) }
-        @t = b.map(&:to_f)
+        @t = b.respond_to?(:x) ? [b.x, b.y, b.z] : b.map(&:to_f)
       end
+    end
+
+    def self.translation(v)
+      Transformation.new(v.respond_to?(:x) ? [v.x, v.y, v.z] : v)
+    end
+
+    # The inverse of an affine map: invert the linear part by cofactors,
+    # then carry the translation back through it.
+    def inverse
+      a, b, c = @m[0]
+      d, e, f = @m[1]
+      g, h, i = @m[2]
+      det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+      raise 'singular transformation' if det.abs < 1e-15
+      inv = [[(e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det],
+             [(f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det],
+             [(d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det]]
+      t = (0..2).map { |r| -(0..2).sum { |k| inv[r][k] * @t[k] } }
+      Transformation.new(inv, t)
     end
 
     def apply(p)
@@ -123,9 +162,66 @@ module Sketchup
   end
 
   class Vertex
-    attr_reader :position
+    attr_accessor :position
     def initialize(position)
       @position = position
+    end
+  end
+
+  # A real Entities collection, because the import side BUILDS one: it
+  # adds groups, places instances and moves geometry about. The export
+  # side only ever reads, and a plain Array answered that, which is why
+  # the scenarios still hand one over -- anything that responds to `each`
+  # works where only reading happens.
+  class Entities
+    include Enumerable
+    attr_accessor :owner
+
+    def initialize(items = [], owner = nil)
+      @items = items.to_a
+      @owner = owner
+    end
+
+    def each(&blk) = @items.each(&blk)
+    def to_a = @items.dup
+    def length = @items.length
+    def size = @items.length
+    def empty? = @items.empty?
+    def [](i) = @items[i]
+    def <<(e)
+      @items << e
+      e
+    end
+
+    def remove(e) = @items.delete(e)
+
+    def add_line(p0, p1) = self << Edge.new(p0, p1)
+    def add_face(*_pts) = nil
+
+    def add_group(*_args)
+      g = Group.new(Entities.new, Geom::Transformation.new)
+      g.parent_entities = self
+      self << g
+    end
+
+    def add_instance(definition, transformation)
+      i = ComponentInstance.new(definition, transformation)
+      i.parent_entities = self
+      self << i
+    end
+
+    # Moves the geometry itself, which is what SketchUp's own does -- the
+    # points change, no container is wrapped round them.
+    def transform_entities(tr, ents)
+      ents.to_a.each do |e|
+        if e.is_a?(Edge)
+          e.start.position = e.start.position.transform(tr)
+          e.end.position = e.end.position.transform(tr)
+        elsif e.respond_to?(:transformation)
+          e.transformation = tr * e.transformation
+        end
+      end
+      true
     end
   end
 
@@ -148,11 +244,26 @@ module Sketchup
 
   class Group < Entity
     attr_reader :entities
-    attr_accessor :transformation
+    attr_accessor :transformation, :parent_entities
     def initialize(entities, transformation = Geom::Transformation.new, name = '')
       super(name)
-      @entities = entities
+      @entities = entities.is_a?(Entities) ? entities : Entities.new(entities)
+      @entities.owner = self
       @transformation = transformation
+    end
+
+    # SketchUp's own: the group's contents become a definition, and an
+    # instance of it takes the group's place with the group's transform.
+    def to_component
+      definition = ComponentDefinition.new(@entities, @name)
+      Sketchup.active_model&.definitions&.add(definition)
+      inst = ComponentInstance.new(definition, @transformation, @name)
+      if @parent_entities
+        @parent_entities.remove(self)
+        inst.parent_entities = @parent_entities
+        @parent_entities << inst
+      end
+      inst
     end
   end
 
@@ -160,28 +271,61 @@ module Sketchup
     attr_reader :entities
     def initialize(entities, name = '')
       super(name)
-      @entities = entities
+      @entities = entities.is_a?(Entities) ? entities : Entities.new(entities)
+      @entities.owner = self
     end
   end
 
   class ComponentInstance < Entity
     attr_reader :definition
-    attr_accessor :transformation
+    attr_accessor :transformation, :parent_entities
     def initialize(definition, transformation = Geom::Transformation.new, name = '')
       super(name)
       @definition = definition
       @transformation = transformation
     end
+
+    def entities = @definition.entities
+  end
+
+  class Definitions
+    include Enumerable
+    def initialize = @items = []
+    def each(&blk) = @items.each(&blk)
+    def add(d)
+      @items << d
+      d
+    end
+    def length = @items.length
   end
 
   class Model
-    attr_accessor :selection, :active_entities, :edit_transform
-    attr_reader :tools_selected
+    attr_accessor :selection, :edit_transform
+    attr_reader :tools_selected, :definitions, :operations
     def initialize(entities = [], selection = nil, edit_transform = nil)
-      @active_entities = entities
-      @selection = selection || entities
+      @active_entities = entities.is_a?(Entities) ? entities
+                                                  : Entities.new(entities)
+      @selection = selection || @active_entities
       @edit_transform = edit_transform || Geom::Transformation.new
       @tools_selected = []
+      @definitions = Definitions.new
+      @operations = []
+    end
+
+    def active_entities = @active_entities
+
+    def active_entities=(v)
+      @active_entities = v.is_a?(Entities) ? v : Entities.new(v)
+    end
+
+    def start_operation(name, *_rest)
+      @operations << [:start, name]
+      true
+    end
+
+    def commit_operation
+      @operations << [:commit]
+      true
     end
 
     def select_tool(tool)
@@ -223,7 +367,8 @@ module UI
     end
 
     def savepanel(*) = @save_path
-    attr_accessor :save_path
+    def openpanel(*) = @open_path
+    attr_accessor :save_path, :open_path
 
     def menu(*) = DummyMenu.new
   end

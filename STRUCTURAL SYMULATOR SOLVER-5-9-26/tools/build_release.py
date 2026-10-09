@@ -119,6 +119,7 @@ REQUIRED_RB = (
     f'{PLUGIN_NAME}/xlsx_reader.rb',
     f'{PLUGIN_NAME}/model_export.rb',
     f'{PLUGIN_NAME}/model_import.rb',
+    f'{PLUGIN_NAME}/model_groups_in.rb',
     f'{PLUGIN_NAME}/pick_tool.rb',
     f'{PLUGIN_NAME}/intersections.rb',
 )

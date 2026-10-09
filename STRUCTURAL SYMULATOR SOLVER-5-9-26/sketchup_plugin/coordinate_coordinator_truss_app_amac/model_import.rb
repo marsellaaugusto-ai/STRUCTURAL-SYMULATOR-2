@@ -13,6 +13,13 @@
 # Geometry rules (matching export_obj in stereo_reports.py):
 #   radius = 0  -> wireframe: edges for rods, no node geometry
 #   radius > 0  -> solid: sphere meshes at nodes, cylinder meshes for rods
+#
+# The Groups sheet, when the workbook has one, rebuilds the model's own
+# organisation: its groups as SketchUp groups, nested; the groups that are
+# copies of one part as instances of one component; and each container
+# named after the piece mark it carries. See model_groups_in.rb. Without
+# that sheet -- every workbook written before groups existed -- the import
+# is the flat geometry it always was.
 require 'sketchup.rb'
 
 module CoordinateCoordinatorTrussAppAMAC
@@ -213,6 +220,8 @@ module CoordinateCoordinatorTrussAppAMAC
       return
     end
 
+    groups = groups_from_sheet(reader)
+
     # Build geometry
     model.start_operation('Import Stereo Model', true)
     ents = model.active_entities
@@ -220,48 +229,61 @@ module CoordinateCoordinatorTrussAppAMAC
     rr_inch = rod_radius * M_TO_INCH
     wireframe = (nr_inch <= 0 && rr_inch <= 0)
 
-    if wireframe
-      # Simple edges
-      members.each do |m|
-        next if m[:a] >= nodes.length || m[:b] >= nodes.length
-        pt_a = Geom::Point3d.new(*nodes[m[:a]])
-        pt_b = Geom::Point3d.new(*nodes[m[:b]])
-        ents.add_line(pt_a, pt_b)
-      end
-    else
-      # Solid geometry
-      grp = ents.add_group
-      g_ents = grp.entities
-
-      if nr_inch > 0
-        nodes.each do |x, y, z|
-          build_sphere(g_ents, x, y, z, nr_inch)
-        end
-      end
-
+    # One way of drawing a rod, whichever mode we are in, so the grouping
+    # below does not have to know which it is.
+    draw = lambda do |into, i|
+      m = members[i]
+      next if m.nil? || m[:a] >= nodes.length || m[:b] >= nodes.length
       if rr_inch > 0
-        members.each do |m|
-          next if m[:a] >= nodes.length || m[:b] >= nodes.length
-          ax, ay, az = nodes[m[:a]]
-          bx, by, bz = nodes[m[:b]]
-          build_cylinder(g_ents, ax, ay, az, bx, by, bz, rr_inch)
-        end
+        ax, ay, az = nodes[m[:a]]
+        bx, by, bz = nodes[m[:b]]
+        build_cylinder(into, ax, ay, az, bx, by, bz, rr_inch)
       else
-        members.each do |m|
-          next if m[:a] >= nodes.length || m[:b] >= nodes.length
-          pt_a = Geom::Point3d.new(*nodes[m[:a]])
-          pt_b = Geom::Point3d.new(*nodes[m[:b]])
-          g_ents.add_line(pt_a, pt_b)
-        end
+        into.add_line(Geom::Point3d.new(*nodes[m[:a]]),
+                      Geom::Point3d.new(*nodes[m[:b]]))
       end
+    end
+
+    report = nil
+    if groups.empty?
+      host = wireframe ? ents : ents.add_group.entities
+      if nr_inch > 0
+        nodes.each { |x, y, z| build_sphere(host, x, y, z, nr_inch) }
+      end
+      (0...members.length).each { |i| draw.call(host, i) }
+    else
+      # Nodes are not owned by any one group -- a joint is where two
+      # branches hand load to each other -- so they go in the context the
+      # import happens in, beside the groups rather than inside one.
+      if nr_inch > 0
+        nodes.each { |x, y, z| build_sphere(ents, x, y, z, nr_inch) }
+      end
+      _made, report = build_group_tree(ents, groups, nodes, members, draw)
+      # Whatever the sheet did not place. A rod belongs to exactly one
+      # group, and the ones in none are the Stereo tab's Ungrouped set.
+      placed = {}
+      groups.each { |g| g[:rods].each { |i| placed[i] = true } }
+      (0...members.length).each { |i| draw.call(ents, i) unless placed[i] }
     end
 
     model.commit_operation
 
-    UI.messagebox(
-      "Imported #{nodes.length} nodes and #{members.length} members.\n" \
-      "Node radius: #{node_radius} m, Rod radius: #{rod_radius} m\n" \
-      "(#{wireframe ? 'wireframe' : 'solid'} mode)"
-    )
+    said = ["Imported #{nodes.length} nodes and #{members.length} members.",
+            "Node radius: #{node_radius} m, Rod radius: #{rod_radius} m",
+            "(#{wireframe ? 'wireframe' : 'solid'} mode)"]
+    if report
+      said << ''
+      said << "#{report[:groups]} group(s), " \
+              "#{report[:definitions]} shared component(s) placed as " \
+              "#{report[:instances]} instance(s)."
+      unless report[:loose_copies].empty?
+        said << ''
+        said << 'These were listed as copies of a part, but their shape ' \
+                'did not line up with the first copy, so each was built on ' \
+                'its own rather than placed as an instance somewhere wrong:'
+        said << '  ' + report[:loose_copies].join(', ')
+      end
+    end
+    UI.messagebox(said.join("\n"))
   end
 end

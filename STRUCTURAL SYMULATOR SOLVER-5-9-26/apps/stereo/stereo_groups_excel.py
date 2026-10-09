@@ -62,8 +62,12 @@ FIELDS = (
 GROUP_FLAGS = ('excluded', 'iteration', 'stage', 'position', 'component')
 HEADERS = ('id', 'name', 'parent', 'rods') + tuple(f[0] for f in FIELDS) \
     + GROUP_FLAGS
-# Written for the reader, never read back.
-INFO_HEADERS = ('info: rods', 'info: worst util', 'info: mixed')
+# Written for the reader, never read back by THIS module. The piece mark
+# is also what the SketchUp extension names a group it builds, which is
+# why it is one column per row rather than a lookup into the Piece Marks
+# sheet: a group name with a comma in it would be ambiguous there.
+INFO_HEADERS = ('info: rods', 'info: worst util', 'info: mixed',
+                'info: piece mark')
 
 _REL_TOL = 1e-9
 
@@ -153,9 +157,13 @@ def common_values(members, rods):
     return values, mixed
 
 
-def group_rows(groups, members, checks=None):
-    """One dict per group, in tree order: what the sheet shows."""
+def group_rows(groups, members, checks=None, marks=None):
+    """One dict per group, in tree order: what the sheet shows.
+
+    `marks` is {gid: piece mark}, when the caller has worked them out.
+    """
     rows = []
+    marks = marks or {}
     for g, lvl in sgp.walk(groups):
         own = sorted(g['members'])
         values, mixed = common_values(members, own)
@@ -169,13 +177,13 @@ def group_rows(groups, members, checks=None):
                      'flags': {k: g.get(k) for k in GROUP_FLAGS},
                      'level': lvl, 'rods': rods_to_ranges(own),
                      'values': values, 'mixed': mixed, 'n_rods': len(own),
-                     'worst': worst})
+                     'worst': worst, 'mark': marks.get(g['id'])})
     return rows
 
 
 # ── writing ───────────────────────────────────────────────────────────────
 
-def write_groups_sheet(wb, groups, members, checks=None):
+def write_groups_sheet(wb, groups, members, checks=None, marks=None):
     """Add the Groups sheet to an openpyxl workbook. Returns the sheet."""
     from openpyxl.styles import Font, PatternFill, Alignment
     ws = wb.create_sheet(SHEET)
@@ -208,7 +216,7 @@ def write_groups_sheet(wb, groups, members, checks=None):
         c.fill = info_fill if h.startswith('info:') else hdr_fill
         c.alignment = Alignment(horizontal='center')
     r = hdr_row + 1
-    for row in group_rows(groups, members, checks):
+    for row in group_rows(groups, members, checks, marks):
         cells = [row['id'], row['name'],
                  row['parent'] if row['parent'] is not None else None,
                  row['rods']]
@@ -218,7 +226,7 @@ def write_groups_sheet(wb, groups, members, checks=None):
             flags.get(k) or None for k in GROUP_FLAGS[1:]]
         cells += [row['n_rods'],
                   None if row['worst'] is None else round(row['worst'], 3),
-                  ', '.join(row['mixed'])]
+                  ', '.join(row['mixed']), row['mark']]
         for col, v in enumerate(cells, 1):
             c = ws.cell(row=r, column=col, value=v)
             # Shown to four places, STORED in full: a catalog area is

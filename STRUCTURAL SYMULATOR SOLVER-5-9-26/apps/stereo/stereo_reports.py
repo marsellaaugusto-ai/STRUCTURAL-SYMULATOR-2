@@ -1030,7 +1030,20 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     # ── Groups sheet (editable; read back by Import from Excel) ─────────────
     if groups:
         from apps.stereo import stereo_groups_excel as _sge
-        _sge.write_groups_sheet(wb, groups, members, checks=checks)
+        # The piece mark rides along as an info column, so the SketchUp
+        # extension can name a group it builds after the part it is --
+        # one column per row, because a group name with a comma in it
+        # would be ambiguous as a list on the Piece Marks sheet.
+        marks = None
+        if mark_tol_mm is not None:
+            try:
+                from apps.stereo import stereo_marks as _sm
+                marks, _rows = _sm.assembly_marks(nodes, members, groups,
+                                                  mark_tol_mm)
+            except Exception:                         # noqa: BLE001
+                marks = None
+        _sge.write_groups_sheet(wb, groups, members, checks=checks,
+                                marks=marks)
 
     # ── Rules sheet (editable; read back by Import from Excel) ─────────────
     if rules and rules.get('rules'):

@@ -85,6 +85,8 @@ from apps.stereo.stereo_app_reports import StereoReportsMixin
 from apps.stereo.stereo_app_inspector import StereoInspectorMixin
 from apps.stereo.stereo_app_groups import StereoGroupsMixin
 from apps.stereo.stereo_app_scene import StereoSceneMixin
+from apps.stereo.stereo_app_objectmenu import StereoObjectMenuMixin
+from apps.stereo.stereo_app_roles import StereoRolesMixin
 from apps.stereo.stereo_app_groupview import StereoGroupViewMixin
 from apps.stereo.stereo_app_compare import StereoCompareMixin
 from apps.stereo.stereo_app_transform import StereoTransformMixin
@@ -99,7 +101,7 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
                 StereoRenderMixin, StereoModuleEditorMixin,
                 StereoWizardMixin, StereoAddonsMixin, StereoReportsMixin,
                 StereoInspectorMixin, StereoGroupsMixin, StereoGroupViewMixin,
-                StereoSceneMixin,
+                StereoSceneMixin, StereoObjectMenuMixin, StereoRolesMixin,
                 StereoCompareMixin,
                 StereoTransformMixin,
                 StereoClipboardMixin, StereoMechanismMixin,
@@ -188,6 +190,8 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         # The current group made visible: the bar over the view, the
         # highlight, Group # labels, Pick inside group, hidden groups.
         self._init_group_view_state()
+        # Roles: the axis that cuts across the group tree (stereo_roles).
+        self._init_roles_state()
         # Rotate / mirror (roadmap 3.4): the active axis, set by the arrow
         # keys and the panel's radio buttons alike, and where the mirror
         # plane sits.

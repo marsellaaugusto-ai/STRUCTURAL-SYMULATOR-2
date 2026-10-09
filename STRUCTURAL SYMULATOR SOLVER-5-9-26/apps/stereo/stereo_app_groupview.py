@@ -49,10 +49,13 @@ class StereoGroupViewMixin:
     # ── state ──────────────────────────────────────────────────────────────
 
     def _init_group_view_state(self):
-        self.group_dim_others = tk.BooleanVar(value=False)
+        # `group_dim_others` and `pick_inside_group` were here. Both asked
+        # the user to manage, by checkbox, something the tab already knows:
+        # whether they are inside a group. Dimming and pick-restriction now
+        # follow that, so there is nothing to set and nothing to forget --
+        # see _pick_filter and the dim block in stereo_app_render.
         self.show_group_labels = tk.BooleanVar(value=False)
         self.group_label_depth = tk.StringVar(value=GROUP_LABEL_DEPTHS[0])
-        self.pick_inside_group = tk.BooleanVar(value=True)
         self._hidden_groups = set()
         self._dbl_click = False
 
@@ -103,12 +106,21 @@ class StereoGroupViewMixin:
     # ── what is hidden, what can be picked ─────────────────────────────────
 
     def _hidden_rods(self):
+        """Everything hidden, from both axes.
+
+        A group hides a BRANCH; a role or a rule hides a KIND, wherever it
+        sits. The two are unioned here, which is the only place that has to
+        know there are two -- every caller just asks what is hidden.
+        """
         hidden = set()
         for gid in list(getattr(self, '_hidden_groups', ()) or ()):
             if sgp.find(self.groups, gid) is None:
                 self._hidden_groups.discard(gid)
                 continue
             hidden.update(sgp.rods_of(self.groups, gid, deep=True))
+        by_role = getattr(self, '_hidden_by_role', None)
+        if by_role is not None:
+            hidden.update(by_role())
         return hidden
 
     def _hidden_nodes(self, hidden_rods=None):
@@ -123,16 +135,27 @@ class StereoGroupViewMixin:
                 (self.members[j]['a'], self.members[j]['b'])} - shown
 
     def _pick_filter(self):
-        """(allowed nodes or None, allowed rods or None) for a click or a
-        lasso: hidden groups are never picked, and with "Pick inside group"
-        on only the current group is."""
+        """(allowed nodes or None, allowed rods or None) for a click or lasso.
+
+        Hidden groups are never picked, and while a group is OPEN only its
+        own contents are.
+
+        It used to be a checkbox ("Pick inside group") over whichever group
+        was highlighted in the list. That made merely LOOKING at a group in
+        the panel change what the canvas would let you touch, which is a
+        rule you cannot see -- and it is why the panel needed a checkbox to
+        turn it off again. Now the restriction follows the one thing that is
+        already visible: whether you have gone inside a group. Outside, the
+        whole model is pickable; inside, its contents are. Nothing to set.
+        """
         hidden = self._hidden_rods()
         nodes = rods = None
         if hidden:
             rods = set(range(len(self.members))) - hidden
             nodes = set(range(len(self.nodes))) - self._hidden_nodes(hidden)
-        if self.pick_inside_group.get() and self._cur_gid() is not None:
-            mine = self._cur_rods()
+        editing = self._editing_gid()
+        if editing is not None:
+            mine = set(sgp.rods_of(self.groups, editing, deep=True))
             mine_nodes = set(sgp.nodes_of_rods(self.members, mine))
             rods = mine if rods is None else rods & mine
             nodes = mine_nodes if nodes is None else nodes & mine_nodes
@@ -609,12 +632,11 @@ class StereoGroupViewMixin:
 
     def _say_pick_inside(self):
         """Why a pick took less than was under the pointer."""
-        gid = self._cur_gid()
-        if gid is not None and self.pick_inside_group.get():
-            self._set_status('Pick inside group is on: only %s can be picked '
-                             '-- untick it in the Groups panel to pick '
-                             'outside.' % self._group_display_name(gid),
-                             'idle')
+        gid = self._editing_gid()
+        if gid is not None:
+            self._set_status('You are inside %s, so only its own parts can '
+                             'be picked. Press Esc to come back out.'
+                             % self._group_display_name(gid), 'idle')
         else:
             self._set_status('Hidden groups cannot be picked -- Show all in '
                              'the Groups panel.', 'idle')

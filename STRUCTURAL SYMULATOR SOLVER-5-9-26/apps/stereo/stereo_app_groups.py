@@ -142,21 +142,19 @@ class StereoGroupsMixin:
                   font=('Helvetica', 8, 'bold'),
                   command=self._open_iterations
                   ).pack(fill='x', padx=6, pady=(0, 2))
-        opts = tk.Frame(box, bg=BG)
-        opts.pack(fill='x', padx=6, pady=(0, 4))
-        tk.Checkbutton(opts, text='Pick inside group',
-                       variable=self.pick_inside_group, bg=BG,
-                       font=('Helvetica', 8), command=self._draw
-                       ).pack(side='left')
-        tk.Checkbutton(opts, text='Dim others',
-                       variable=self.group_dim_others, bg=BG,
-                       font=('Helvetica', 8), command=self._draw
-                       ).pack(side='left', padx=(6, 0))
-        tk.Label(box, text='Double-click a rod to make its group current; '
-                           'double-click again for the group above it.',
+        # "Pick inside group" and "Dim others" used to live here. Both now
+        # follow the one thing already on screen -- whether you are inside a
+        # group -- so there is nothing left to set. See _pick_filter.
+        tk.Label(box, text='Click a rod to select its group. Double-click to '
+                           'go inside it, Esc to come back out. Right-click '
+                           'anything for what you can do with it.',
                  bg=BG, fg=HINT_FG, font=('Helvetica', 8), justify='left',
                  wraplength=PANEL_TEXT_W).pack(anchor='w', padx=6,
                                                pady=(0, 4))
+
+        # The OTHER axis. Groups answer "what belongs to what"; roles answer
+        # "what kind is this", which no tree can answer -- see stereo_roles.
+        self._build_roles_panel(box)
 
         # ── rarer tools, folded away ──────────────────────────────────────
         self.group_more_open = tk.BooleanVar(value=False)
@@ -1650,11 +1648,18 @@ class StereoGroupsMixin:
         gid = self._editing_gid()
         state = getattr(self, 'group_edit_state', None)
         if gid is None:
-            btn.config(text='Open group', relief='raised')
+            # The button is only DONE now. Going in is a double-click or the
+            # right-click menu, both of them on the object itself, so a
+            # button that merely repeated them was a fourth way to do one
+            # thing. It appears when it has something to do.
+            btn.pack_forget()
             if state is not None:
-                state.config(text='Nothing open -- every group is locked.',
+                state.config(text='Nothing open -- every group is locked. '
+                                  'Double-click a rod to go inside its group.',
                              fg=HINT_FG)
         else:
+            if not btn.winfo_ismapped():
+                btn.pack(side='right')
             btn.config(text='Done', relief='sunken')
             path = [self._group_display_name(g)
                     for g in self._group_path(gid)]

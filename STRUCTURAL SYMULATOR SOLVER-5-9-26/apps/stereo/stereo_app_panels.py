@@ -321,8 +321,6 @@ class StereoPanelsMixin(_ToolbarModes):
         gd.bind('<<ComboboxSelected>>', lambda _e: self._draw())
         tk.Checkbutton(g, text='Group colours', variable=self.group_view,
                        bg=BG, command=self._draw).pack(side='left', padx=(4, 0))
-        tk.Checkbutton(g, text='Dim others', variable=self.group_dim_others,
-                       bg=BG, command=self._draw).pack(side='left', padx=(4, 0))
         tk.Checkbutton(g, text='Hide # when crowded',
                        variable=self.labels_auto_hide, bg=BG,
                        command=self._draw).pack(side='left', padx=(4, 0))
@@ -468,7 +466,6 @@ class StereoPanelsMixin(_ToolbarModes):
                    ('Node #', self.show_node_labels),
                    ('Group #', self.show_group_labels),
                    ('Group colours', self.group_view),
-                   ('Dim other groups', self.group_dim_others),
                    ('Loads', self.show_loads), ('Reactions', self.show_reactions),
                    ('Axes + ground', self.show_axes),
                    ('Load-path arrows', self.load_path_anim))

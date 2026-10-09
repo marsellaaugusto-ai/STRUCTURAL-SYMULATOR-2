@@ -162,9 +162,12 @@ class StereoViewMixin:
         self._orbit_start = None
         self._orbit_dragged = False
         if clicked:
-            # A right-CLICK, not a drag: open the group under the pointer,
-            # or step out of the open one on empty canvas (layers).
-            self._group_canvas_open(event.x, event.y)
+            # A right-CLICK, not a drag: the object's own verbs, where the
+            # object is. It used to open the group under the pointer --
+            # one useful verb out of eight, on the gesture every other
+            # program uses for "what can I do with this". Opening is now an
+            # entry in the menu, and a double-click (stage 1).
+            self._object_menu_at(event.x, event.y)
 
     # ── lasso (rubber-band) multi-select, mirroring truss_app.py's own
     # _on_press/_on_drag_motion/_on_release box-select ──────────────────────
@@ -1109,6 +1112,7 @@ class StereoViewMixin:
         web_profile = self.web_profile_var.get() if hasattr(self, 'web_profile_var') else ''
         self.members.append({'a': a, 'b': b, 'conn': self.sec_conn.get(),
                             'role': 'user_rod', 'profile': web_profile, **web})
+        self._claim_new_rod()
         self._adopt_new_rods(len(self.members) - 1)
         self.results = None
         self.member_checks = None
@@ -1346,6 +1350,7 @@ class StereoViewMixin:
         self.members.append({'a': src, 'b': new_idx,
                             'conn': self.sec_conn.get(),
                             'role': 'user_rod', **web})
+        self._claim_new_rod()
         self._adopt_new_rods(len(self.members) - 1)
         self.results = None
         self.member_checks = None
@@ -1447,6 +1452,30 @@ class StereoViewMixin:
             if d < best_d:
                 best, best_d = i, d
         return best
+
+    def _claim_new_rod(self, index=None):
+        """A rod drawn while inside a group BELONGS to that group.
+
+        Ownership following the context is the step that removes the
+        "Add selection to group" journey from ordinary work: you went
+        inside the bay, you drew a rod there, so it is the bay's. The
+        button stays for tidying up an import, but it stops being how
+        grouping is normally done.
+
+        Outside every group there is nothing to claim, and the rod is
+        Ungrouped exactly as before.
+        """
+        editing = self._editing_gid()
+        if editing is None or not self.groups:
+            return None
+        if index is None:
+            index = len(self.members) - 1
+        if index < 0:
+            return None
+        sgp.assign(self.groups, editing, [index])
+        if hasattr(self, '_refresh_group_list'):
+            self._refresh_group_list(keep=editing)
+        return editing
 
     def _on_delete_selection(self, event=None, push_undo=True):
         """Delete selected nodes and/or members.

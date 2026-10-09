@@ -1,4 +1,9 @@
-"""Stage 1 of the group workflow: a group is a thing you can select and delete.
+"""The group workflow: a group is a thing you select, enter, delete and own.
+
+Stage 1 made a group selectable and deletable. Stage 2 (task 1) puts its
+verbs under the pointer, lets the context decide what a new rod belongs to,
+and retires the controls that asked the user to manage, by checkbox, what
+the tab already knew.
 
 The two complaints this answers, in the words they were made in: "I should be
 able to delete groups using the delete button", and "I should be able to
@@ -239,3 +244,106 @@ def test_delete_with_nothing_selected_does_nothing(app):
     before = len(app.members), len(app.groups)
     app._on_delete_selection()
     assert (len(app.members), len(app.groups)) == before
+
+
+# ── stage 2: the verbs are where the object is ─────────────────────────────
+
+def test_right_click_offers_the_group_its_own_verbs(app):
+    """It used to OPEN the group -- one verb out of eight, on the gesture
+    every other program uses for "what can I do with this"."""
+    gid = app.groups[0]['id']
+    rod = _rod_of(app, gid)
+    sp = app._screen_positions()
+    m = app.members[rod]
+    ex = (sp[m['a']][0] + sp[m['b']][0]) / 2
+    ey = (sp[m['a']][1] + sp[m['b']][1]) / 2
+    menu = app._object_menu_at(int(ex), int(ey))
+    labels = [menu.entrycget(i, 'label') for i in range(menu.index('end') + 1)
+              if menu.type(i) != 'separator']
+    joined = ' | '.join(labels)
+    for verb in ('Enter', 'Select it', 'Rename', 'Hide it', 'Explode', 'Delete it'):
+        assert verb in joined, '%r missing from %r' % (verb, joined)
+    # And opening is still reachable, just no longer the whole gesture.
+    assert any(l.startswith('Enter ') for l in labels)
+
+
+def test_the_menu_offers_the_way_out_while_inside_a_group(app):
+    gid = app.groups[0]['id']
+    app._group_open(gid)
+    menu = app._object_menu_at(5, 5)          # empty canvas
+    labels = [menu.entrycget(i, 'label') for i in range(menu.index('end') + 1)
+              if menu.type(i) != 'separator']
+    assert any(l.startswith('Leave ') for l in labels), labels
+
+
+def test_entering_from_the_menu_is_the_same_as_double_clicking(app):
+    gid = app.groups[0]['id']
+    assert app._menu_enter(gid) == gid
+    assert app._editing_gid() == gid
+
+
+# ── stage 2: picking and dimming follow the context, not a checkbox ────────
+
+def test_the_two_checkboxes_are_gone(app):
+    """Both asked the user to manage something the tab already knew."""
+    assert not hasattr(app, 'pick_inside_group')
+    assert not hasattr(app, 'group_dim_others')
+
+
+def test_picking_is_restricted_only_while_inside_a_group(app):
+    gid = app.groups[0]['id']
+    mine = set(sgp.rods_of(app.groups, gid, deep=True))
+
+    # Outside: the whole model is pickable, even with a group highlighted.
+    app._set_current_group(gid)
+    _nodes, rods = app._pick_filter()
+    assert rods is None, 'merely highlighting a row must not restrict picking'
+
+    # Inside: only its own parts.
+    app._group_open(gid)
+    _nodes, rods = app._pick_filter()
+    assert rods == mine
+    app._group_step_out()
+    assert app._pick_filter()[1] is None
+
+
+def test_the_view_dims_only_while_inside_a_group(app):
+    gid = app.groups[0]['id']
+    app._set_current_group(gid)
+    app._draw()
+    assert not app.canvas.find_withtag('group_dim'), \
+        'highlighting a row is not going inside it'
+    app._group_open(gid)
+    app._draw()
+    dimmed = len(app.canvas.find_withtag('group_dim'))
+    assert dimmed == len(app.members) - len(sgp.rods_of(app.groups, gid, deep=True))
+    app._group_step_out()
+    app._draw()
+    assert not app.canvas.find_withtag('group_dim')
+
+
+# ── stage 2: ownership follows the context ────────────────────────────────
+
+def test_a_rod_drawn_inside_a_group_belongs_to_it(app):
+    gid = app.groups[0]['id']
+    before = set(sgp.rods_of(app.groups, gid, deep=True))
+    app._group_open(gid)
+    app.members.append({'a': 0, 'b': 2, 'conn': 'pin', 'role': 'user_rod'})
+    claimed = app._claim_new_rod()
+    assert claimed == gid
+    now = set(sgp.rods_of(app.groups, gid, deep=True))
+    assert now == before | {len(app.members) - 1}
+
+
+def test_a_rod_drawn_outside_every_group_stays_ungrouped(app):
+    app.members.append({'a': 0, 'b': 2, 'conn': 'pin', 'role': 'user_rod'})
+    assert app._claim_new_rod() is None
+    assert sgp.owner_of_rod(app.groups).get(len(app.members) - 1) is None
+
+
+def test_taking_a_rod_out_of_its_group_from_the_menu(app):
+    gid = app.groups[0]['id']
+    rod = _rod_of(app, gid)
+    app._menu_unassign(rod)
+    assert sgp.owner_of_rod(app.groups).get(rod) is None
+    assert len(app.members) == 10, 'the rod itself is untouched'

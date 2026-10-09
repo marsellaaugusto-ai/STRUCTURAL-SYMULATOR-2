@@ -292,6 +292,9 @@ class StereoModelMixin:
         # of a different model, which is worse than no branch at all.
         self.groups = []
         self._group_sel = None
+        # Same reasoning as _drop_groups: a collapsed branch was about the
+        # groups that are gone, and ids start again for the new ones.
+        self._group_closed = set()
         if hasattr(self, '_refresh_group_list'):
             self._refresh_group_list()
         if hasattr(self, '_refresh_group_edit_controls'):

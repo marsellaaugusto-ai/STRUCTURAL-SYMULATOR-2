@@ -81,14 +81,12 @@ class StereoGroupViewMixin:
         if gid is not None and sgp.find(self.groups, gid) is None:
             gid = None
         self._group_sel = gid
-        lst = getattr(self, 'group_list', None)
-        if lst is not None:
+        if getattr(self, 'group_list', None) is not None:
             ids = getattr(self, '_group_row_ids', [])
-            lst.selection_clear(0, 'end')
             if gid is not None and gid in ids:
-                i = ids.index(gid)
-                lst.selection_set(i)
-                lst.see(i)
+                self._group_row_select(gid)
+            else:
+                self._group_row_clear()
         self._refresh_group_note()
         if hasattr(self, '_follow_current_group'):
             self._follow_current_group()

@@ -122,6 +122,32 @@ def blank_app(tk_root):
     tab.destroy()
 
 
+# ── the group outliner ────────────────────────────────────────────────────
+# The groups are shown as a real tree now (stereo_app_outliner), so a row
+# is reached by the group it stands for rather than by its position in a
+# Listbox. These say what the old index calls said, in one place.
+
+def group_rows_shown(app):
+    """Every row's text, in the order the outliner shows them."""
+    return app._group_row_labels()
+
+
+def pick_group_row(app, i):
+    """Select the i-th row, as clicking it would."""
+    app._group_row_select(app._group_row_ids[i])
+    app._on_group_pick()
+
+
+def clear_group_rows(app):
+    """Leave nothing selected."""
+    app._group_row_clear()
+
+
+def group_row_bbox(app, i):
+    """Where the i-th row is on screen, or None if it is not laid out."""
+    return app.group_list.bbox(app._group_row_iid(app._group_row_ids[i]))
+
+
 class FakeEvent:
     def __init__(self, x, y, width=None, height=None, state=0):
         self.x = x
@@ -8977,12 +9003,10 @@ class TestGroupsPanel:
     """
 
     def _names(self, app):
-        return [app.group_list.get(i) for i in range(app.group_list.size())]
+        return group_rows_shown(app)
 
     def _pick_row(self, app, i):
-        app.group_list.selection_clear(0, 'end')
-        app.group_list.selection_set(i)
-        app._on_group_pick()
+        pick_group_row(app, i)
 
     def _make(self, app, monkeypatch, name, rods, parent_row=None):
         monkeypatch.setattr('apps.stereo.stereo_app_groups.simpledialog'
@@ -9036,14 +9060,21 @@ class TestGroupsPanel:
         rows = self._names(app)
         assert any(sgp.UNGROUPED_NAME in r for r in rows), rows
 
-    def test_a_subgroup_is_shown_indented_under_its_parent(self, app,
-                                                           monkeypatch):
+    def test_a_subgroup_is_shown_under_its_parent(self, app, monkeypatch):
+        """Nesting used to be leading spaces in a flat list, and the only
+        thing to assert was how many. It is a real tree now, so the
+        assertion is the real one: the row IS inside the other row."""
         self._make(app, monkeypatch, 'Roof', range(6))
         self._make(app, monkeypatch, 'Bay', range(6, 10), parent_row=0)
         rows = self._names(app)
         assert rows[0].startswith('Roof')
-        assert rows[1].startswith('   ') and 'Bay' in rows[1]
+        assert 'Bay' in rows[1]
         assert app.groups[1]['parent'] == app.groups[0]['id']
+        roof = app._group_row_iid(app.groups[0]['id'])
+        bay = app._group_row_iid(app.groups[1]['id'])
+        assert app.group_list.parent(bay) == roof
+        assert bay in app.group_list.get_children(roof)
+        assert app.group_list.parent(roof) == ''
 
     def test_the_parent_row_shows_its_own_count_and_its_subtree_count(self, app,
                                                                       monkeypatch):
@@ -9172,8 +9203,7 @@ class TestGroupSectionRecommendationUI:
         app.selected_member = None
         app.selected_nodes = set()
         app._group_new_from_selection()
-        app.group_list.selection_clear(0, 'end')
-        app.group_list.selection_set(0)
+        pick_group_row(app, 0)
         app._on_group_pick()
         return app.groups[-1]
 
@@ -9270,16 +9300,15 @@ class TestGroupSectionRecommendationUI:
                             '.askstring', lambda *a, **k: 'B')
         app.selected_members = {4, 5}
         app._group_new_from_selection()
-        app.group_list.selection_clear(0, 'end')
-        app.group_list.selection_set(0)
+        pick_group_row(app, 0)
         app._on_group_pick()
-        # The Listbox has no geometry until its panel is on screen, so
+        # The outliner has no geometry until its panel is on screen, so
         # bbox() returns None and a y coordinate cannot be chosen. Show it
         # first -- this is a real property of the widget, not a workaround.
         app._set_mode('groups')
         app.root.update_idletasks()
         app.root.update()
-        bbox = app.group_list.bbox(1)
+        bbox = group_row_bbox(app, 1)
         assert bbox, 'the second row has no bbox even once Groups is shown'
 
         class E:
@@ -9546,8 +9575,7 @@ class TestLockedGroups:
             self, app, monkeypatch):
         from apps.stereo import stereo_profiles as sp
         g = self._group(app, monkeypatch, 'Roof', range(6))
-        app.group_list.selection_clear(0, 'end')
-        app.group_list.selection_set(0)
+        pick_group_row(app, 0)
         app._on_group_pick()
         name = sp.catalog_names()[5]
         app.group_profile.set(name)
@@ -9573,8 +9601,7 @@ class TestLockedGroups:
 
     def test_the_move_dialog_moves_the_picked_group(self, app, monkeypatch):
         g = self._group(app, monkeypatch, 'Roof', range(6))
-        app.group_list.selection_clear(0, 'end')
-        app.group_list.selection_set(0)
+        pick_group_row(app, 0)
         app._on_group_pick()
         n = sgp.nodes_of_rods(app.members, sorted(g['members']))[0]
         x0 = app.nodes[n][0]
@@ -9676,8 +9703,7 @@ class TestLockedGroups:
         a = self._group(app, monkeypatch, 'A', range(6))
         b = self._group(app, monkeypatch, 'B', [300])
         app._group_edit_toggle(a['id'])
-        app.group_list.selection_clear(0, 'end')
-        app.group_list.selection_set(1)
+        pick_group_row(app, 1)
         app._on_group_pick()
         app._group_delete()
         assert sgp.find(app.groups, b['id']) is not None
@@ -9806,8 +9832,7 @@ class TestShowMeThisRod:
         app.selected_nodes = set()
         app._group_new_from_selection()
         app._analyze()
-        app.group_list.selection_clear(0, 'end')
-        app.group_list.selection_set(0)
+        pick_group_row(app, 0)
         app._on_group_pick()
         app._group_recommend()
         win = app._group_rec_win
@@ -9836,8 +9861,7 @@ class TestShowMeThisRod:
         app.selected_nodes = set()
         app._group_new_from_selection()
         app._analyze()
-        app.group_list.selection_clear(0, 'end')
-        app.group_list.selection_set(0)
+        pick_group_row(app, 0)
         app._on_group_pick()
         win = app._group_properties()
         btn = []
@@ -9864,8 +9888,7 @@ class TestSectionPropertiesInTheBoxes:
         app.selected_members = set(rods)
         app.selected_nodes = set()
         app._group_new_from_selection()
-        app.group_list.selection_clear(0, 'end')
-        app.group_list.selection_set(0)
+        pick_group_row(app, 0)
         app._on_group_pick()
         return app.groups[-1]
 
@@ -9945,8 +9968,7 @@ class TestGroupsPdf:
         app.selected_members = set(range(0, 200))
         app._group_new_from_selection()
         a = app.groups[-1]
-        app.group_list.selection_clear(0, 'end')
-        app.group_list.selection_set(0)
+        pick_group_row(app, 0)
         app._on_group_pick()
         app.selected_members = set(range(0, 40))
         app._group_edit_toggle(a['id'])       # rods leave A only while open
@@ -10002,8 +10024,7 @@ class TestGroupsPdf:
     def test_pdf_of_this_group_covers_it_and_its_subgroups_only(
             self, app, monkeypatch, tmp_path):
         self._groups(app, monkeypatch)
-        app.group_list.selection_clear(0, 'end')
-        app.group_list.selection_set(0)            # Roof A, with Bay A1
+        pick_group_row(app, 0)            # Roof A, with Bay A1
         app._on_group_pick()
         contents = app._export_groups_pdf(only_picked=True,
                                           path=str(tmp_path / 'a.pdf'))
@@ -10793,7 +10814,7 @@ class TestGroupsAsLayers:
             self, app, monkeypatch):
         top, _sub = self._tree(app, monkeypatch)
         app._group_open(top['id'])
-        app.group_list.selection_clear(0, 'end')
+        clear_group_rows(app)
         free = max(sgp.ungrouped_rods(app.groups, len(app.members)))
         app.selected_members = {free}
         monkeypatch.setattr('apps.stereo.stereo_app_groups.messagebox'
@@ -10804,7 +10825,7 @@ class TestGroupsAsLayers:
     def test_the_open_group_is_marked_in_the_list(self, app, monkeypatch):
         top, _sub = self._tree(app, monkeypatch)
         app._group_open(top['id'])
-        rows = app.group_list.get(0, 'end')
+        rows = group_rows_shown(app)
         assert any(r.lstrip().startswith('✎ Roof') for r in rows)
 
     def test_while_open_its_subgroups_are_tinted_as_objects(self, app,
@@ -12503,8 +12524,7 @@ class TestGroupsInTheView:
     def test_picking_a_row_makes_it_current_in_the_view(self, app):
         _g1, _g2, g3 = self._two_levels(app)
         i = app._group_row_ids.index(g3)
-        app.group_list.selection_clear(0, 'end')
-        app.group_list.selection_set(i)
+        pick_group_row(app, i)
         app._on_group_pick()
         assert app._cur_gid() == g3
         assert len(app.canvas.find_withtag('group_halo')) == \
@@ -12556,8 +12576,8 @@ class TestGroupsInTheView:
         app._draw()
         assert len(app.canvas.find_withtag('member')) == \
             len(app.members) - n_rods
-        assert any(app.group_list.get(k).lstrip().startswith('◌')
-                   for k in range(app.group_list.size()))
+        assert any(r.lstrip().startswith('◌')
+                   for r in group_rows_shown(app))
         rod = sgp.rods_of(app.groups, g3)[0]
         x, y = self._rod_screen(app, rod)
         nodes, rods = app._pick_filter()
@@ -12651,7 +12671,7 @@ class TestCraneWorkflow:
         assert all(mr[j].get('left_out') and mr[j]['N'] == 0.0
                    for j in range(m0, 2 * m0))
         assert app.member_checks[m0]['note'] == 'left out of the analysis'
-        assert '⊘' in ' '.join(app.group_list.get(0, 'end'))
+        assert '⊘' in ' '.join(group_rows_shown(app))
         app._draw()
         assert len(app.canvas.find_withtag('left_out')) == m0
         assert app._group_toggle_excluded(gid) is False
@@ -12737,7 +12757,7 @@ class TestIterations:
         g = [sgp.find(app.groups, i) for i in gids]
         assert [x['stage'] for x in g] == ['module'] * 3
         assert [x['iteration'] for x in g] == ['1', '2', '7']
-        assert '{it 2 · module 1}' in ' '.join(app.group_list.get(0, 'end'))
+        assert '{it 2 · module 1}' in ' '.join(group_rows_shown(app))
         app._set_group_tags(gids[0], iteration='', stage='roof')
         assert 'iteration' not in g[0] and g[0]['stage'] == 'roof'
 

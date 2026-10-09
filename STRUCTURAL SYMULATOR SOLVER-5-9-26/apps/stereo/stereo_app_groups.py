@@ -65,16 +65,12 @@ class StereoGroupsMixin:
                            value=val, bg=BG, font=('Helvetica', 8),
                            command=self._draw).pack(side='left', padx=(4, 0))
 
-        self.group_list = tk.Listbox(box, height=7, exportselection=False,
-                                     font=('Courier', 8), activestyle='none')
-        self.group_list.pack(fill='x', padx=6, pady=(0, 2))
-        self.group_list.bind('<<ListboxSelect>>', self._on_group_pick)
-        self.group_list.bind('<Double-Button-1>',
-                             lambda _e: self._group_select_rods())
-        # Right-click a row: open that group for editing (the request, in
-        # so many words). The other actions are on the Actions menu.
-        for seq in ('<Button-3>', '<Button-2>', '<Control-Button-1>'):
-            self.group_list.bind(seq, self._on_group_right_click)
+        # The group tree. Flat rows with the nesting faked in leading
+        # spaces read well enough for three groups and stop reading at ten
+        # -- and a tree drawn in spaces has no branch to collapse and
+        # nothing to drag. See stereo_app_outliner, which owns the widget
+        # and the gestures; nothing here reaches into it.
+        self._build_group_outliner(box)
 
         # The one line that says what is open, with the way out beside it.
         edit_row = tk.Frame(box, bg=BG)
@@ -319,11 +315,15 @@ class StereoGroupsMixin:
     # ── the list ───────────────────────────────────────────────────────────
 
     def _group_rows(self):
-        """(label, gid) per row, indented by depth, Ungrouped last.
+        """(label, gid) per row, in tree order, Ungrouped last.
 
         `None` as the gid is the Ungrouped set, which is a row like any other
         so that it cannot be overlooked -- it is where the rods nobody has
         assigned still are.
+
+        No row carries its own indentation: where it sits comes from the
+        group's `parent` when the tree is filled (stereo_app_outliner), so
+        the nesting has one source rather than two that can disagree.
         """
         rows = []
         editing = getattr(self, '_group_editing', None)
@@ -335,7 +335,7 @@ class StereoGroupsMixin:
         repeats = {}
         for gid, mark in marks.items():
             repeats[mark] = repeats.get(mark, 0) + 1
-        for g, lvl in sgp.walk(self.groups):
+        for g, _lvl in sgp.walk(self.groups):
             deep = len(sgp.rods_of(self.groups, g['id'], deep=True))
             own = len(g['members'])
             count = ('%d' % own) if deep == own else ('%d/%d' % (own, deep))
@@ -367,9 +367,9 @@ class StereoGroupsMixin:
                     n = repeats.get(piece, 1)
                     tag = ('  %s%s' % (piece, ' ×%d' % n if n > 1 else '')
                            ) + tag
-            rows.append(('%s%s%s  [%s]%s' % ('   ' * lvl, mark,
-                                             self._group_display_name(g['id']),
-                                             count, tag),
+            rows.append(('%s%s  [%s]%s'
+                         % (mark, self._group_display_name(g['id']),
+                            count, tag),
                          g['id']))
         rest = sgp.ungrouped_rods(self.groups, len(self.members))
         if rest:
@@ -383,16 +383,10 @@ class StereoGroupsMixin:
             keep = getattr(self, '_group_sel', None)
         rows = self._group_rows()
         self._group_row_ids = [gid for _label, gid in rows]
-        self.group_list.delete(0, 'end')
-        for label, _gid in rows:
-            self.group_list.insert('end', label)
-        if keep in self._group_row_ids:
-            i = self._group_row_ids.index(keep)
-            self.group_list.selection_clear(0, 'end')
-            self.group_list.selection_set(i)
-            self._group_sel = keep
-        else:
-            self._group_sel = None
+        if keep not in self._group_row_ids:
+            keep = False                       # nothing to reselect
+        self._fill_group_outliner(rows, keep)
+        self._group_sel = None if keep is False else keep
         self._refresh_group_note()
 
     def _current_group(self):
@@ -401,12 +395,16 @@ class StereoGroupsMixin:
         False rather than None, because None is a real answer here: it is
         the Ungrouped set.
         """
-        sel = self.group_list.curselection() if hasattr(self, 'group_list') else ()
-        if not sel:
+        tree = getattr(self, 'group_list', None)
+        sel = tree.selection() if tree is not None else ()
+        if not sel or not tree.exists(sel[0]):
             return False
-        ids = getattr(self, '_group_row_ids', [])
-        i = sel[0]
-        return ids[i] if 0 <= i < len(ids) else False
+        gid = self._group_row_gid(sel[0])
+        # Ungrouped is a real answer (None); a row for a group that is gone
+        # is not, and must not read as one.
+        if gid is not None and sgp.find(self.groups, gid) is None:
+            return False
+        return gid
 
     def _on_group_pick(self, _event=None):
         """A row picked in the list is the current group in the view too
@@ -985,13 +983,12 @@ class StereoGroupsMixin:
         row's other actions are on the Actions menu.
         """
         try:
-            i = self.group_list.nearest(event.y)
+            iid = self.group_list.identify_row(event.y)
         except tk.TclError:
             return
-        if i < 0 or i >= self.group_list.size():
+        if not iid:
             return
-        self.group_list.selection_clear(0, 'end')
-        self.group_list.selection_set(i)
+        self.group_list.selection_set(iid)
         self._on_group_pick()
         gid = self._current_group()
         if gid is False or gid is None:
@@ -1672,6 +1669,11 @@ class StereoGroupsMixin:
         self._group_editing = None
         self._group_edit_stack = []
         self._hidden_groups = set()
+        # Which branches were put away was about THOSE groups. Ids start
+        # again at 1 for a new list, so keeping it would collapse a group
+        # of the new model because an unrelated one of the old model was
+        # collapsed -- for no reason anyone could see.
+        self._group_closed = set()
         self._refresh_group_list()
         self._refresh_group_edit_controls()
 

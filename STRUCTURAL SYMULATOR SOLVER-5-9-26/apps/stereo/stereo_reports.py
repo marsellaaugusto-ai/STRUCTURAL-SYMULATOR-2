@@ -398,7 +398,7 @@ DEFAULT_MAX_CALC_MEMBERS = 40
 def export_excel(nodes, members, loads, supports, results, path, checks=None,
                   meta=None, max_calc_members=DEFAULT_MAX_CALC_MEMBERS,
                   profiles=None, groups=None, lifts=None, compare=None,
-                  scene=None, mark_tol_mm=None):
+                  scene=None, mark_tol_mm=None, rules=None):
     """Write a workbook with Nodes, Members, Loads, Supports, Results (if
     `results` is not None), Member Checks (if `checks` is not None) and a
     machine-parseable Model sheet. `meta` is an optional dict of free-text
@@ -424,6 +424,13 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     so a reader that knows nothing about scenes is unaffected. Failing to
     write the Scene sheet never fails the export: the rest of the workbook
     is the deliverable.
+
+    `rules` -- {'rules': stereo_roles' saved rules, 'hidden': the names of
+    the ones currently hiding} -- adds the editable "Rules" sheet, which
+    Import from Excel reads back. A rule is a saved question about the
+    rods rather than a list of them, so it survives the model changing
+    under it; until it travelled in the workbook it did not survive the
+    file being closed.
 
     `mark_tol_mm` (a comparison tolerance in millimetres) adds the
     read-only "Piece Marks" sheet: which rods are the same part, which
@@ -1024,6 +1031,12 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     if groups:
         from apps.stereo import stereo_groups_excel as _sge
         _sge.write_groups_sheet(wb, groups, members, checks=checks)
+
+    # ── Rules sheet (editable; read back by Import from Excel) ─────────────
+    if rules and rules.get('rules'):
+        from apps.stereo import stereo_roles_excel as _sre
+        _sre.write_rules_sheet(wb, rules['rules'], groups or (),
+                               rules.get('hidden') or ())
 
     # ── Piece Marks sheet (read-only; derived, never read back) ─────────────
     if mark_tol_mm is not None:

@@ -212,7 +212,8 @@ class StereoReportsMixin:
                             lifts=self._lift_export(),
                             compare=self._compare_export(),
                             scene=self._scene_for_export(),
-                            mark_tol_mm=self._mark_tol_mm())
+                            mark_tol_mm=self._mark_tol_mm(),
+                            rules=self._rules_for_export())
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return
@@ -232,6 +233,11 @@ class StereoReportsMixin:
         if hasattr(self, '_mark_tol_mm'):
             from apps.stereo.stereo_app_marks import META_TOL_KEY
             meta[META_TOL_KEY] = self._mark_tol_mm()
+        # Which roles are hidden. The rules themselves get a sheet, because
+        # a rule is something someone composed; a ticked checkbox is not,
+        # and a key/value belongs where the other settings are.
+        if hasattr(self, '_hidden_roles_meta'):
+            meta.update(self._hidden_roles_meta())
         return meta
 
     def _import_excel(self):
@@ -295,6 +301,13 @@ class StereoReportsMixin:
         if groups:
             self.groups = groups
             self._refresh_group_list()
+        # The saved rules, read AFTER the groups are settled: a rule scoped
+        # to groups resolves them by name, and which groups exist is only
+        # decided above -- the Scene sheet can replace the Groups sheet's.
+        rule_report = []
+        if hasattr(self, '_restore_roles_axis'):
+            rule_report = self._restore_roles_axis(path, self.members,
+                                                   self.groups)
         # the cranes' lift settings come back from the Cranes sheet
         self._crane_lifts = self._crane_lifts_from_sheet(cranes)
         if profiles:
@@ -316,17 +329,32 @@ class StereoReportsMixin:
         self.selected_members = set()
         self._refresh_profile_combo()
         self._refresh_all()
-        if groups:
+        if groups or rule_report or getattr(self, 'role_rules', None):
             lines = '\n'.join('  ' + ln for ln in group_report[:14])
             more = len(group_report) - 14
-            messagebox.showinfo(
-                'Import from Excel',
-                '%d group(s) read from the Groups sheet.\n\n%s%s' % (
-                    len(groups),
-                    lines if group_report else
-                    '  No group row changed any rod -- the sections are as '
-                    'they were exported.',
-                    '\n  … and %d more' % more if more > 0 else ''))
+            said = []
+            if groups:
+                said.append('%d group(s) read from the Groups sheet.' %
+                            len(groups))
+                said.append('')
+                said.append(lines if group_report else
+                            '  No group row changed any rod -- the sections '
+                            'are as they were exported.')
+                if more > 0:
+                    said.append('  … and %d more' % more)
+            n_rules = len(getattr(self, 'role_rules', ()) or ())
+            if n_rules:
+                hidden = len(getattr(self, '_hidden_rules', ()) or ())
+                said.append('')
+                said.append('%d saved rule(s) read from the Rules sheet%s.'
+                            % (n_rules,
+                               ', %d of them hiding rods' % hidden
+                               if hidden else ''))
+            # A rule that outlived part of its question is worth saying out
+            # loud: it still works, and it now asks something narrower.
+            for line in rule_report[:8]:
+                said.append('  ' + line)
+            messagebox.showinfo('Import from Excel', '\n'.join(said))
 
     def _merge_excel_files(self, paths=None, tol=None):
         """Combine several workbooks -- roof, columns, bracing -- into this

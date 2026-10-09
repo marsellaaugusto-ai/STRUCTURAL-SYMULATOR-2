@@ -12,8 +12,9 @@ What this adds, and nothing more:
   * save a RULE -- a question, not a list -- and select or hide by it.
 
 A rule is re-asked every time it is used, so it stays right after the model
-changes. Rules live for the session; they are not yet written into the
-workbook, which is the obvious next step and deliberately not in this one.
+changes -- and it travels in the workbook's Rules sheet, so it also
+survives the file being closed. See stereo_roles_excel for the sheet, and
+for why a rule's groups are written by id AND by name.
 """
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -26,12 +27,76 @@ from apps.stereo.stereo_app_shell import HINT_FG
 class StereoRolesMixin:
     """Select and hide by role, and by saved rule."""
 
+    #: Where the hidden ROLES live in an exported workbook's [META]. The
+    #: rules get a sheet of their own, because a rule is something someone
+    #: composed; a ticked checkbox is not, and belongs with the settings.
+    META_HIDDEN_ROLES = 'hidden_roles'
+
     def _init_roles_state(self):
         self._hidden_roles = set()
         self.role_rules = []
         self._hidden_rules = set()        # names of rules currently hiding
         self._roles_rows = None
         self._rules_list = None
+
+    # ── travelling in the workbook ─────────────────────────────────────────
+
+    def _rules_for_export(self):
+        """What export_excel writes as the Rules sheet, or None."""
+        if not getattr(self, 'role_rules', None):
+            return None
+        return {'rules': list(self.role_rules),
+                'hidden': set(getattr(self, '_hidden_rules', ()) or ())}
+
+    def _hidden_roles_meta(self):
+        """The hidden roles as one [META] key, or {} when none are."""
+        hidden = sorted(getattr(self, '_hidden_roles', ()) or ())
+        if not hidden:
+            return {}
+        # UNSET is the empty string and would come back as "nothing was
+        # hidden", so it is spelled the way the panel spells it.
+        return {self.META_HIDDEN_ROLES:
+                ', '.join(r or sr.UNSET_LABEL for r in hidden)}
+
+    def _restore_roles_axis(self, path, members, groups):
+        """Read the Rules sheet and the hidden roles back. Returns the
+        report: the rules that outlived part of their question.
+
+        Called once the groups are settled, because a rule scoped to groups
+        resolves them by name against whichever groups actually won.
+        """
+        from apps.stereo import stereo_reports as srp
+        from apps.stereo import stereo_roles_excel as sre
+        self._hidden_roles = set()
+        self.role_rules = []
+        self._hidden_rules = set()
+        report = []
+        try:
+            rules, hidden, report = sre.import_rules(path, members, groups)
+        except Exception as exc:                      # noqa: BLE001
+            # A Rules sheet nobody can read is a reason to open the model
+            # without its rules, never a reason not to open the model.
+            self._refresh_roles_list()
+            return ['The Rules sheet could not be read (%s), so this model '
+                    'opened without its saved rules.' % exc]
+        if rules:
+            self.role_rules = rules
+            self._hidden_rules = {n for n in hidden
+                                  if n in {r['name'] for r in rules}}
+        try:
+            text = (srp.read_excel_meta(path) or {}).get(
+                self.META_HIDDEN_ROLES)
+        except Exception:                             # noqa: BLE001
+            text = None
+        if text:
+            known = {m.get('role') or sr.UNSET for m in members or ()}
+            known |= set(sr.ROLE_LABELS)
+            for part in str(text).split(','):
+                key = sre.role_key(part, known)
+                if key is not None:
+                    self._hidden_roles.add(key)
+        self._refresh_roles_list()
+        return report
 
     # ── what is hidden by this axis ────────────────────────────────────────
 

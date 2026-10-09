@@ -96,8 +96,19 @@ class StereoSceneMixin:
         src = [m.get(sbr.MEMBER_INDEX_KEY) for m in baked.members]
         if any(i is None for i in src) or sorted(src) != list(range(len(members))):
             return None
+        from apps.stereo.stereo_groups_excel import GROUP_FLAGS
         for g in groups:
             g['members'] = {src[i] for i in g['members']}
+            # The group's own facts travelled in the node's metadata (see
+            # stereo_scene_bridge.graph_from_model). Lift the ones a flat
+            # record carries back onto it and drop the rest: without this
+            # the Scene sheet, which is meant to be the RICHER record,
+            # came back poorer than the Groups sheet it overrides -- and a
+            # group left out of the analysis came back in it.
+            meta = g.pop('meta', None) or {}
+            for key in GROUP_FLAGS:
+                if meta.get(key) not in (None, ''):
+                    g[key] = meta[key]
         # A group that ends up holding nothing is one whose rods all went to
         # its subgroups; it is still a real branch of the tree, so it stays.
         if warnings:

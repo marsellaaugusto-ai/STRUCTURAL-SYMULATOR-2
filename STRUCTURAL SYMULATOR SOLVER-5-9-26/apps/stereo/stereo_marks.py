@@ -216,13 +216,24 @@ def _frames(pts, tol):
 
 
 def _canonical(pts, rods, tol, handed):
-    """The smallest canonical spelling of this cloud over every candidate
-    frame, or None when there are too many to enumerate.
+    """(spelling, rod_order) for this cloud, or None.
+
+    The smallest spelling over every candidate frame, and the order its
+    bars came out in. The spelling is the identity -- what gets hashed --
+    and the order is the CORRESPONDENCE: two copies of one part spell the
+    same, so their bars come out in the same order, and zipping the two
+    orders says which bar of one is which bar of the other. That is what
+    lets a section applied to one copy land on the matching bar of all of
+    them (see stereo_components).
 
     `handed` is +1 for the cloud as drawn and -1 for its mirror image: the
     third axis is flipped, which reflects the whole cloud. A part and its
     mirror are different shop pieces -- one cannot be installed where the
     other goes -- so they are compared separately and marked apart.
+
+    None means the cloud gave us nothing to work from: every node on the
+    centroid, or so symmetric that enumerating the candidate frames ran
+    past MAX_FRAMES.
     """
     c = _centroid(pts)
     local = [_sub(p, c) for p in pts]
@@ -243,12 +254,13 @@ def _canonical(pts, rods, tol, handed):
                    _q(_dot(p, e3), tol)) for p in local]
         order = sorted(range(len(placed)), key=lambda i: placed[i])
         where = {old: new for new, old in enumerate(order)}
+        bars = sorted(
+            ((min(where[a], where[b]), max(where[a], where[b]), key), k)
+            for k, (a, b, key) in enumerate(rods))
         spelling = (tuple(placed[i] for i in order),
-                    tuple(sorted((min(where[a], where[b]),
-                                  max(where[a], where[b]), key)
-                                 for a, b, key in rods)))
-        if best is None or spelling < best:
-            best = spelling
+                    tuple(bar for bar, _k in bars))
+        if best is None or spelling < best[0]:
+            best = (spelling, tuple(k for _bar, k in bars))
     return best
 
 
@@ -281,14 +293,43 @@ def assembly_signature(nodes, members, rods, tol_mm=DEFAULT_TOL_MM):
 
     out = []
     for handed in (1, -1):
-        spelling = _canonical(pts, bars, tol, handed)
-        if spelling is None:
+        found = _canonical(pts, bars, tol, handed)
+        if found is None:
             return (None, None)
         h = hashlib.sha256()
         h.update(b'STEREO-MARK/1|%d|' % _q(tol, 1e-9))
-        h.update(repr(spelling).encode())
+        h.update(repr(found[0]).encode())
         out.append(h.hexdigest())
     return (out[0], out[1])
+
+
+def canonical_order(nodes, members, rods, tol_mm=DEFAULT_TOL_MM, handed=1):
+    """This group's rods in canonical order, or None.
+
+    The correspondence between copies of one part: two groups whose
+    signatures match spell the same, so their canonical orders line up
+    position for position and `zip` of the two says which rod of one is
+    which rod of the other. For a MIRRORED copy pass handed=-1, which is
+    the spelling its mirror signature came from.
+
+    None whenever `assembly_signature` would refuse -- there is no
+    correspondence to offer for a group we declined to compare.
+    """
+    rods = sorted(i for i in rods if 0 <= i < len(members))
+    if not rods:
+        return None
+    tol = clamp_tol(tol_mm) / 1000.0
+    idx = sgp.nodes_of_rods(members, rods)
+    if len(idx) < 2:
+        return None
+    at = {n: k for k, n in enumerate(idx)}
+    pts = [nodes[n] for n in idx]
+    bars = [(at[members[i]['a']], at[members[i]['b']], section_key(members[i]))
+            for i in rods]
+    found = _canonical(pts, bars, tol, handed)
+    if found is None:
+        return None
+    return [rods[k] for k in found[1]]
 
 
 # ── assigning the marks ───────────────────────────────────────────────────

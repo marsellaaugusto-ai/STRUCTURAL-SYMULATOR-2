@@ -45,6 +45,21 @@ class StereoObjectMenuMixin:
             menu.add_command(label='Hide it',
                              command=lambda g=gid: self._menu_hide(g))
             menu.add_separator()
+            # One part built more than once. The verb offered is whichever
+            # one is left to do: a copy can be detached, a plain group can
+            # be promoted, and neither is worth showing twice.
+            part = self._component_of(gid)
+            if part:
+                menu.add_command(
+                    label='Component: %s (%d copies)…'
+                          % (part, self._component_copies(gid)),
+                    command=lambda n=part: self._component_dialog(n))
+                menu.add_command(label='Make unique (detach this copy)',
+                                 command=lambda g=gid: self._menu_make_unique(g))
+            else:
+                menu.add_command(label='Make component…',
+                                 command=lambda g=gid: self._menu_make_component(g))
+            menu.add_separator()
             menu.add_command(label='Explode (keep the rods)',
                              command=lambda g=gid: self._menu_on(g, self._group_explode))
             menu.add_command(label='Delete it and its rods',

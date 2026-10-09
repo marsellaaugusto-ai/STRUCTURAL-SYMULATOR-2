@@ -214,6 +214,15 @@ class BakedModel:
         once: every report, Excel sheet and summary that currently reads
         `[{'id','name','parent','members'}]` keeps working against a baked
         scene graph. New code asks the graph; old code is handed this.
+
+        A record also carries `meta`, the source object's own metadata,
+        when it has any. A flat group record holds more than its rods --
+        whether it is left out of the analysis, which iteration it belongs
+        to, which fabricated part it is a copy of -- and a caller
+        converting back needs somewhere to have kept it. Without it the
+        trip through a graph silently drops every one of them, and
+        "excluded" coming back as "included" changes the structure that
+        gets solved.
         """
         groups, by_path = [], {}
         counter = [0]
@@ -223,8 +232,11 @@ class BakedModel:
             counter[0] += 1
             gid = counter[0]
             by_path[path] = gid
-            groups.append({'id': gid, 'name': obj.name or ('Group %d' % gid),
-                           'parent': parent_id, 'members': set()})
+            record = {'id': gid, 'name': obj.name or ('Group %d' % gid),
+                      'parent': parent_id, 'members': set()}
+            if obj.meta:
+                record['meta'] = dict(obj.meta)
+            groups.append(record)
             for child in obj.children():
                 if child.is_group() or child.is_instance():
                     emit(child, gid, path)

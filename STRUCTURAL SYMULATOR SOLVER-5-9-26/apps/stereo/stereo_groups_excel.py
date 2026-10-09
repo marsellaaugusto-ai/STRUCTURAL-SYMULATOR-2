@@ -50,10 +50,16 @@ FIELDS = (
     ('r_gyr_cm', 'r_gyr', 'num'),
     ('c_cm', 'c_cm', 'num'),
 )
-# Facts about the GROUP, not its rods: left out of the analysis, and where
-# it sits among the iterations being compared (stereo_compare). Read back by
-# name; a workbook without them reads as before.
-GROUP_FLAGS = ('excluded', 'iteration', 'stage', 'position')
+# Facts about the GROUP, not its rods: left out of the analysis, where it
+# sits among the iterations being compared (stereo_compare), and which
+# fabricated part it is a copy of (stereo_components). Read back by name; a
+# workbook without them reads as before.
+#
+# `component` is a name, and groups sharing it are copies of one part. It
+# is the only thing a component stores -- which copy matches which rod is
+# worked out from the geometry, never written down, because a stored
+# correspondence outlives the edit that broke it.
+GROUP_FLAGS = ('excluded', 'iteration', 'stage', 'position', 'component')
 HEADERS = ('id', 'name', 'parent', 'rods') + tuple(f[0] for f in FIELDS) \
     + GROUP_FLAGS
 # Written for the reader, never read back.

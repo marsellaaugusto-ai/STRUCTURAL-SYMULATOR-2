@@ -349,11 +349,24 @@ class StereoGroupsMixin:
                 tag = '  {it %s · %s %s}' % (g.get('iteration') or '?',
                                              g['stage'],
                                              g.get('position') or '')
-            piece = marks.get(g['id'])
-            if piece:
-                n = repeats.get(piece, 1)
-                tag = ('  %s%s' % (piece, ' ×%d' % n if n > 1 else '')
+            # A component and a piece mark say nearly the same thing, and
+            # showing both says it twice. The component is the stronger
+            # claim -- someone DECLARED these one part, where a mark only
+            # observes that they are the same shape -- so it wins, and the
+            # mark is what helps you find the copies before you declare
+            # them. Where the two disagree, the component window and the
+            # sizing note are where the decision gets made.
+            part = g.get('component')
+            if part:
+                n = sum(1 for o in self.groups if o.get('component') == part)
+                tag = ('  ⬚%s%s' % (part, ' ×%d' % n if n > 1 else '')
                        ) + tag
+            else:
+                piece = marks.get(g['id'])
+                if piece:
+                    n = repeats.get(piece, 1)
+                    tag = ('  %s%s' % (piece, ' ×%d' % n if n > 1 else '')
+                           ) + tag
             rows.append(('%s%s%s  [%s]%s' % ('   ' * lvl, mark,
                                              self._group_display_name(g['id']),
                                              count, tag),
@@ -785,15 +798,22 @@ class StereoGroupsMixin:
         if not rods:
             messagebox.showinfo('Groups', 'That group has no rods.')
             return
+        # A component is one drawing, so a section set on one copy is set
+        # on all of them. _sizing_rods is the same list for a plain group,
+        # which is why it is not conditional here: an envelope nobody has
+        # to remember to ask for is one that cannot be forgotten.
+        reach = self._sizing_rods(gid, rods)
+        note = self._component_sizing_note(gid, rods)
         self._push_undo('section for group')
-        n = sk.apply_recommendation(self.members, rods, name)
+        n = sk.apply_recommendation(self.members, reach, name)
         self.results = None
         self.member_checks = None
         self._refresh_all()
         self._group_note_action(
             '%s: %d rod(s) set to %s. Analyze again -- stiffening a branch '
-            'changes how the load shares out.'
-            % (self._group_display_name(gid), n, name))
+            'changes how the load shares out.%s'
+            % (self._group_display_name(gid), n, name,
+               ' ' + note if note else ''))
 
     def _group_recommend(self):
         gid = self._current_group()
@@ -812,6 +832,10 @@ class StereoGroupsMixin:
         if not rods:
             messagebox.showinfo('Groups', 'That group has no rods.')
             return
+        # Sized over every copy of the part, not over the copy in front of
+        # you: a component is fabricated once, so the section has to carry
+        # the worst of them. For a plain group this is the same list.
+        rods = self._sizing_rods(gid, rods)
         rec = sk.recommend_for_group(self.nodes, self.members,
                                      self.results['member_res'], rods,
                                      candidates=self._group_candidates())
@@ -853,6 +877,11 @@ class StereoGroupsMixin:
 
         head = ('%s  --  %d rod(s)' % (self._group_display_name(gid), len(rods)))
         tk.Label(win, text=head, font=('', 12, 'bold')).pack(pady=(12, 2))
+        note = self._component_sizing_note(gid)
+        if note:
+            tk.Label(win, text=note, fg=HINT_FG, justify='left',
+                     wraplength=420, font=('Helvetica', 8, 'bold')
+                     ).pack(anchor='w', padx=16, pady=(0, 4))
 
         body = tk.Frame(win)
         body.pack(fill='both', expand=True, padx=16, pady=(4, 4))
@@ -918,6 +947,8 @@ class StereoGroupsMixin:
 
         def apply_now(name):
             self._push_undo('section for group')
+            # `rods` already covers every copy -- _group_recommend widened
+            # it before sizing, so what was sized is what is applied.
             n = sk.apply_recommendation(self.members, rods, name)
             self.results = None
             self.member_checks = None

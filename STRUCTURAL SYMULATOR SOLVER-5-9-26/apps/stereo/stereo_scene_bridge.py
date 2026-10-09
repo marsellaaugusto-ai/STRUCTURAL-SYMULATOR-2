@@ -97,8 +97,16 @@ def graph_from_model(nodes, members, groups=(), supports=(), loads=(),
     for record, _depth in sgp.walk(groups):
         gid = record['id']
         parent = by_gid.get(record.get('parent'))
+        # Everything the record holds beyond its rods and its place in the
+        # tree -- excluded, iteration, stage, position, component -- rides
+        # along in the node's metadata. It is not geometry, so the graph
+        # has no opinion about it; it is also the difference between a
+        # round trip that preserves the model and one that quietly puts
+        # excluded rods back into the analysis.
+        keep = {k: v for k, v in record.items()
+                if k not in ('id', 'name', 'parent', 'members', 'meta')}
         node = GroupNode(record.get('name') or ('Group %d' % gid),
-                         meta={GROUP_ID_KEY: gid})
+                         meta=dict(keep, **{GROUP_ID_KEY: gid}))
         (parent if parent is not None else doc.root).add(node)
         by_gid[gid] = node
 

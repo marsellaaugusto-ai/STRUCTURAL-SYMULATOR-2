@@ -480,3 +480,80 @@ def test_an_export_survives_a_scene_that_cannot_be_built(app, tmp_path):
     wb = openpyxl.load_workbook(path)
     assert 'Model' in wb.sheetnames
     assert 'Scene' not in wb.sheetnames
+
+
+# ── what a flat group record holds besides its rods ──────────────────────
+
+def test_a_groups_own_facts_survive_the_trip_through_the_graph():
+    """A group record is not only rods and a parent. It also says whether
+    it is left out of the analysis, which iteration it belongs to, and
+    which fabricated part it is a copy of -- and the graph used to drop
+    every one of them.
+
+    "excluded" is the one that matters: a group left out of the analysis
+    coming back INSIDE it changes the structure that gets solved, and
+    nothing on screen says so.
+    """
+    from apps.stereo.stereo_groups_excel import GROUP_FLAGS
+    nodes, members = _sectioned(MESHES['flat square']())
+    groups = ag.auto_groups(nodes, members)
+    assert groups, 'the auto-grouper found something to group'
+    marked = groups[0]
+    marked['excluded'] = True
+    marked['iteration'] = '2'
+    marked['stage'] = 'lift'
+    marked['position'] = 'north'
+    marked['component'] = 'Gable truss'
+
+    doc = sbr.graph_from_model(nodes, members, groups)
+    back = doc.bake().legacy_groups(doc.root)
+    same = [g for g in back if g['name'] == marked['name']]
+    assert same, 'the group came back'
+    meta = same[0].get('meta') or {}
+    for key in GROUP_FLAGS:
+        assert meta.get(key) == marked[key], key
+
+
+@pytest.mark.parametrize('flag,value', [
+    ('excluded', True), ('iteration', '3'), ('stage', 'erect'),
+    ('position', 'south'), ('component', 'Bay A'),
+])
+def test_the_scene_sheet_brings_a_groups_facts_back(app, tmp_path, flag,
+                                                     value, monkeypatch):
+    """The Scene sheet is preferred over the Groups sheet on import
+    because it is the richer record. It was coming back poorer: the
+    nesting and the frames survived and everything else did not."""
+    pytest.importorskip('openpyxl')
+    app.groups = ag.auto_groups(app.nodes, app.members)
+    assert app.groups
+    name = app.groups[0]['name']
+    app.groups[0][flag] = value
+
+    path = str(tmp_path / 'facts.xlsx')
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                        lambda **kw: path)
+    app._export_excel()
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                        lambda **kw: path)
+    app._import_excel()
+
+    same = [g for g in app.groups if g['name'] == name]
+    assert same, 'the group came back'
+    assert same[0].get(flag) == value
+
+
+def test_no_group_comes_back_carrying_the_raw_metadata(app, tmp_path,
+                                                        monkeypatch):
+    """`meta` is the envelope the facts travelled in, not a field of a
+    group record. Leaving it on would put a dict into every snapshot and
+    every sheet that walks a group's keys."""
+    pytest.importorskip('openpyxl')
+    app.groups = ag.auto_groups(app.nodes, app.members)
+    path = str(tmp_path / 'clean.xlsx')
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                        lambda **kw: path)
+    app._export_excel()
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                        lambda **kw: path)
+    app._import_excel()
+    assert all('meta' not in g for g in app.groups)

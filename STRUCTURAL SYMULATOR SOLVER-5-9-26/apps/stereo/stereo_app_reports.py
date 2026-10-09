@@ -295,7 +295,8 @@ class StereoReportsMixin:
         # they came from rather than by position. No Scene sheet -- every
         # workbook written before this existed -- and the Groups sheet is
         # read exactly as it always was.
-        scene_groups = self._groups_from_scene_sheet(path, members)
+        scene_groups = self._groups_from_scene_sheet(path, members,
+                                                     fallback=groups)
         if scene_groups is not None:
             groups = scene_groups
         if groups:

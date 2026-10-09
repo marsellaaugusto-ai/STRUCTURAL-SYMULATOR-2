@@ -69,7 +69,7 @@ class StereoSceneMixin:
 
     # ── the Scene sheet, on the way in ─────────────────────────────────────
 
-    def _groups_from_scene_sheet(self, path, members):
+    def _groups_from_scene_sheet(self, path, members, fallback=None):
         """The workbook's Scene sheet as groups for `members`, or None.
 
         None covers every ordinary reason there is nothing to read -- no
@@ -83,6 +83,13 @@ class StereoSceneMixin:
         workbook whose two sheets disagree about how many rods there are is
         one someone has edited by hand, and it is refused rather than
         half-applied.
+
+        `fallback` is the Groups sheet's own records, if the caller has
+        them. A Scene sheet written before it carried a group's facts knows
+        nothing about them, and it still overrides the Groups sheet that
+        does -- so without this, "leave out of the analysis" is still lost
+        today on every workbook saved before that was fixed. See
+        `_carry_group_flags`.
         """
         try:
             from apps.stereo.scene import read_scene_sheet
@@ -109,11 +116,65 @@ class StereoSceneMixin:
             for key in GROUP_FLAGS:
                 if meta.get(key) not in (None, ''):
                     g[key] = meta[key]
+        self._carry_group_flags(groups, fallback)
         # A group that ends up holding nothing is one whose rods all went to
         # its subgroups; it is still a real branch of the tree, so it stays.
         if warnings:
             self._set_status('Scene sheet read with %d note(s): %s'
                              % (len(warnings), warnings[0]), kind='error')
+        return groups
+
+    @staticmethod
+    def _carry_group_flags(groups, fallback):
+        """Fill in facts the Scene sheet does not carry from the Groups
+        sheet, which does.
+
+        Every workbook saved before the scene graph learned to carry them
+        has a Scene sheet that knows a group's rods, its name and its
+        frame, and nothing about whether it is left out of the analysis.
+        That sheet still wins on import -- it is the richer record for
+        everything it does know -- so those files would go on losing the
+        flag, which is not history: it changes the structure that gets
+        solved, and nothing on screen says so.
+
+        Groups are matched by their ROD SETS. A rod belongs to exactly one
+        group, so a non-empty set names its group uniquely and survives the
+        renumbering the bake does -- ids do not. A branch with no rods of
+        its own has no such fingerprint and is matched by name among the
+        branches, which is the best available and cannot mis-assign a flag
+        to a group that holds steel.
+
+        The Scene sheet wins wherever it has an answer; this only fills
+        blanks.
+        """
+        if not fallback:
+            return groups
+        from apps.stereo.stereo_groups_excel import GROUP_FLAGS
+
+        def facts(g):
+            return {k: g[k] for k in GROUP_FLAGS
+                    if g.get(k) not in (None, '')}
+
+        by_rods, by_name = {}, {}
+        for g in fallback:
+            found = facts(g)
+            if not found:
+                continue
+            if g['members']:
+                by_rods[frozenset(g['members'])] = found
+            else:
+                by_name.setdefault(g['name'], []).append(found)
+        if not by_rods and not by_name:
+            return groups
+
+        for g in groups:
+            found = by_rods.get(frozenset(g['members'])) if g['members'] \
+                else None
+            if found is None and not g['members']:
+                waiting = by_name.get(g['name'])
+                found = waiting.pop(0) if waiting else None
+            for key, value in (found or {}).items():
+                g.setdefault(key, value)
         return groups
 
     # ── a scene file of its own ────────────────────────────────────────────

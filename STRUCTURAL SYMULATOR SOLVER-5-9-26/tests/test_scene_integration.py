@@ -557,3 +557,112 @@ def test_no_group_comes_back_carrying_the_raw_metadata(app, tmp_path,
                         lambda **kw: path)
     app._import_excel()
     assert all('meta' not in g for g in app.groups)
+
+
+# ── workbooks written before the scene graph carried a group's facts ─────
+
+def _old_style_workbook(path, mark):
+    """A workbook exactly as the code wrote one BEFORE graph_from_model
+    carried a group's own facts: a Scene sheet that knows nothing about
+    them, beside a Groups sheet that does.
+
+    `mark` is applied to the first group. Returns its name.
+    """
+    from apps.stereo import stereo_reports as sr
+    nodes, members = _sectioned(MESHES['flat square']())
+    groups = ag.auto_groups(nodes, members)
+    assert groups
+    groups[0].update(mark)
+    # The old graph kept the id and dropped everything else.
+    bare = [{k: v for k, v in g.items()
+             if k in ('id', 'name', 'parent', 'members')} for g in groups]
+    doc = sbr.graph_from_model(nodes, members, bare)
+    sr.export_excel(nodes, members, [], [], None, path, groups=groups,
+                    scene=doc)
+    return groups[0]['name']
+
+
+@pytest.mark.parametrize('flag,value', [
+    ('excluded', True), ('iteration', '3'), ('stage', 'erect'),
+    ('position', 'south'), ('component', 'Bay A'),
+])
+def test_an_old_workbooks_group_facts_are_not_lost_today(app, tmp_path,
+                                                          monkeypatch, flag,
+                                                          value):
+    """Fixing graph_from_model fixed workbooks written AFTERWARDS. Every
+    one saved before it still has a Scene sheet that knows nothing about
+    these, and that sheet still wins on import -- so without reading them
+    off the Groups sheet, "leave out of the analysis" goes on being lost
+    on real files today. This is not history.
+    """
+    pytest.importorskip('openpyxl')
+    path = str(tmp_path / 'old.xlsx')
+    name = _old_style_workbook(path, {flag: value})
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                        lambda **kw: path)
+    app._import_excel()
+    same = [g for g in app.groups if g['name'] == name]
+    assert same, 'the group came back'
+    assert same[0].get(flag) == value
+
+
+def test_the_scene_sheet_still_wins_where_it_has_an_answer(app, tmp_path,
+                                                            monkeypatch):
+    """The fallback fills blanks. It must not override the Scene sheet,
+    which is the richer record for everything it does know."""
+    pytest.importorskip('openpyxl')
+    from apps.stereo import stereo_reports as sr
+    nodes, members = _sectioned(MESHES['flat square']())
+    groups = ag.auto_groups(nodes, members)
+    name = groups[0]['name']
+    groups[0]['stage'] = 'from the scene sheet'
+    doc = sbr.graph_from_model(nodes, members, groups)
+    # The Groups sheet is written from records saying something else.
+    stale = [dict(g) for g in groups]
+    stale[0]['stage'] = 'from the groups sheet'
+    path = str(tmp_path / 'both.xlsx')
+    sr.export_excel(nodes, members, [], [], None, path, groups=stale,
+                    scene=doc)
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                        lambda **kw: path)
+    app._import_excel()
+    same = [g for g in app.groups if g['name'] == name]
+    assert same[0].get('stage') == 'from the scene sheet'
+
+
+def test_the_fallback_matches_by_rods_not_by_id(app, tmp_path, monkeypatch):
+    """The bake renumbers, so ids cannot be the match. A rod belongs to
+    exactly one group, so its rod set names it uniquely and survives."""
+    pytest.importorskip('openpyxl')
+    path = str(tmp_path / 'old.xlsx')
+    name = _old_style_workbook(path, {'excluded': True})
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                        lambda **kw: path)
+    app._import_excel()
+    excluded = [g for g in app.groups if g.get('excluded')]
+    assert [g['name'] for g in excluded] == [name], \
+        'exactly the one group that was marked, and no other'
+
+
+def test_a_workbook_with_no_groups_sheet_is_unaffected(app, tmp_path,
+                                                        monkeypatch):
+    """Nothing to fall back to, and no reason to fail over it."""
+    pytest.importorskip('openpyxl')
+    from apps.stereo import stereo_reports as sr
+    nodes, members = _sectioned(MESHES['flat square']())
+    groups = ag.auto_groups(nodes, members)
+    doc = sbr.graph_from_model(nodes, members, groups)
+    path = str(tmp_path / 'scene_only.xlsx')
+    sr.export_excel(nodes, members, [], [], None, path, scene=doc)
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                        lambda **kw: path)
+    app._import_excel()
+    assert app.groups, 'the scene sheet still built the tree'
+
+
+def test_carrying_flags_needs_no_fallback_to_be_safe(app):
+    """Called with nothing to fall back to, it changes nothing."""
+    groups = [{'id': 1, 'name': 'A', 'parent': None, 'members': {0, 1}}]
+    assert app._carry_group_flags(groups, None) == groups
+    assert app._carry_group_flags(groups, []) == groups
+    assert 'excluded' not in groups[0]

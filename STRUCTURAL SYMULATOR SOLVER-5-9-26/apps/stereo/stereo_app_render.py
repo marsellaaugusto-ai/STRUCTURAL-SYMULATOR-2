@@ -671,19 +671,13 @@ class StereoRenderMixin:
             # rods, the rest dimmed when asked; hidden groups not drawn.
             hidden_rods = self._hidden_rods()
             cur_rods = self._cur_rods()
-            # Dimming is what GOING INSIDE a group looks like: the rest of
-            # the model stays on screen for reference and goes quiet. It was
-            # a checkbox over the highlighted group, which meant the view
-            # could dim for a group you had only clicked in a list, and
-            # could stay bright for the one you were actually editing.
-            editing_gid = self._editing_gid()
-            # What stays BRIGHT is the open group's own contents -- read
-            # from the open group itself, not from whichever row the list
-            # happens to be highlighting, so the two can never disagree
-            # about what you are inside.
-            dim_keep = set(sgp.rods_of(self.groups, editing_gid, deep=True)) \
-                if editing_gid is not None else set()
-            dim_rest = bool(dim_keep)
+            # Dimming the rest of the model is what GOING INSIDE a group
+            # looks like, and it already happens a few lines down, by
+            # `open_rods` -- the `locked_dim` pass. There used to be a
+            # SECOND dim here as well, over whichever group the list
+            # highlighted, behind a "Dim others" checkbox. That is the one
+            # that is gone: it could dim for a group you had only clicked in
+            # a list, and stay bright for the one you were editing.
             lift_ghost = None
             if self.results is not None and \
                     self.results.get('case') == 'lift':
@@ -721,10 +715,6 @@ class StereoRenderMixin:
                 bx, by, _ = proj[m['b']]
                 sx0, sy0 = to_screen(ax, ay)
                 sx1, sy1 = to_screen(bx, by)
-                if dim_rest and i not in dim_keep:
-                    c.create_line(sx0, sy0, sx1, sy1, fill=LOCKED_DIM_COLOR,
-                                  width=1, tags=('member', 'group_dim'))
-                    continue
                 if i in cur_rods:
                     c.create_line(sx0, sy0, sx1, sy1, fill=GROUP_HALO_COLOR,
                                   width=7 + int(self.rod_thickness.get()),

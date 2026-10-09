@@ -308,18 +308,23 @@ def test_picking_is_restricted_only_while_inside_a_group(app):
 
 
 def test_the_view_dims_only_while_inside_a_group(app):
+    """Dimming is what going inside LOOKS like. The tag is `locked_dim` --
+    the pass that has always done this. What the "Dim others" checkbox added
+    was a SECOND dim over whichever group the list highlighted, which could
+    dim for a group you had only clicked and stay bright for the one you
+    were editing. That one is gone."""
     gid = app.groups[0]['id']
     app._set_current_group(gid)
     app._draw()
-    assert not app.canvas.find_withtag('group_dim'), \
+    assert not app.canvas.find_withtag('locked_dim'), \
         'highlighting a row is not going inside it'
     app._group_open(gid)
     app._draw()
-    dimmed = len(app.canvas.find_withtag('group_dim'))
+    dimmed = len(app.canvas.find_withtag('locked_dim'))
     assert dimmed == len(app.members) - len(sgp.rods_of(app.groups, gid, deep=True))
     app._group_step_out()
     app._draw()
-    assert not app.canvas.find_withtag('group_dim')
+    assert not app.canvas.find_withtag('locked_dim')
 
 
 # ── stage 2: ownership follows the context ────────────────────────────────

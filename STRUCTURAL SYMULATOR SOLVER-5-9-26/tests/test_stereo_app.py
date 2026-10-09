@@ -9589,9 +9589,17 @@ class TestLockedGroups:
     def test_opening_a_group_shows_it_on_the_button_and_the_drawing(
             self, app, monkeypatch):
         g = self._group(app, monkeypatch, 'Roof', range(6))
-        assert 'Open group' in app.group_edit_btn.cget('text')
+        # Nothing open: the button is not there at all. Going INSIDE a group
+        # is a double-click or the right-click menu, both on the object
+        # itself, so a button that repeated them was a fourth way to do one
+        # thing. It appears when it has something to finish.
+        app.root.update_idletasks()
+        assert not app.group_edit_btn.winfo_ismapped()
+        assert 'Double-click' in app.group_edit_state.cget('text')
         app._group_edit_toggle(g['id'])
         assert app._editing_gid() == g['id']
+        app.root.update_idletasks()
+        assert app.group_edit_btn.winfo_ismapped()
         assert app.group_edit_btn.cget('text') == 'Done'
         assert 'Editing: Roof' in app.group_edit_state.cget('text')
         app._draw()
@@ -9601,8 +9609,10 @@ class TestLockedGroups:
             'everything outside is drawn -- faded, not hidden'
         app._group_edit_toggle()
         app._draw()
+        app.root.update_idletasks()
         assert not app.canvas.find_withtag('edit_banner')
         assert not app.canvas.find_withtag('locked_dim')
+        assert not app.group_edit_btn.winfo_ismapped()
 
     def test_while_open_nothing_outside_can_be_selected(self, app,
                                                         monkeypatch):
@@ -12391,11 +12401,17 @@ class TestGroupsInTheView:
                for i in app.canvas.find_withtag('group_tag')
                if app.canvas.type(i) == 'text']
         assert tag == ['Truss 3']
-        assert not app.canvas.find_withtag('group_dim')
-        app.group_dim_others.set(True)
+        # Highlighting a row is not going inside it, so nothing dims. The
+        # "Dim others" checkbox used to make it dim here, which meant the
+        # view could dim for a group you had only clicked in a list.
+        assert not app.canvas.find_withtag('locked_dim')
+        app._group_open(g2)
         app._draw()
-        assert len(app.canvas.find_withtag('group_dim')) == \
-            len(app.members) - 40
+        assert len(app.canvas.find_withtag('locked_dim')) == \
+            len(app.members) - 40, 'going inside dims the rest'
+        app._group_step_out()
+        app._draw()
+        assert not app.canvas.find_withtag('locked_dim')
 
     # A3 -- Group # labels
     def test_group_names_by_depth(self, app):
@@ -12446,9 +12462,10 @@ class TestGroupsInTheView:
         walk(app.root if hasattr(app, 'root') else app.canvas.winfo_toplevel())
         assert str(app.show_group_labels) in found.get('Group #', [])
         assert str(app.group_view) in found.get('Group colours', [])
-        assert str(app.group_dim_others) in (found.get('Dim others', [])
-                                            + found.get('Dim other groups',
-                                                        []))
+        # "Dim others" is gone from every surface: dimming is no longer
+        # something to set, it is what being inside a group looks like.
+        assert not found.get('Dim others') and not found.get('Dim other groups')
+        assert not hasattr(app, 'group_dim_others')
         self._two_levels(app)
         app.group_view.set(True)
         app._draw()
@@ -12490,28 +12507,40 @@ class TestGroupsInTheView:
             len(sgp.rods_of(app.groups, g3, deep=True))
 
     # B3 + B4 -- picking joints keeps the group; pick inside it
-    def test_picking_joints_keeps_the_group_and_stays_inside_it(self, app):
+    def test_picking_joints_is_confined_to_the_group_you_are_inside(self, app):
+        """It used to be confined to whichever row was HIGHLIGHTED, behind a
+        "Pick inside group" checkbox -- so merely looking at a group in the
+        list changed what the canvas would let you touch, which is a rule you
+        cannot see. Now it follows the one thing that is visible: whether you
+        have gone inside."""
         _g1, g2, _g3 = self._two_levels(app)
-        app._set_current_group(g2)
         mine = set(sgp.nodes_of_rods(app.members,
                                      sgp.rods_of(app.groups, g2)))
         outside = next(n for n in range(len(app.nodes)) if n not in mine)
         inside = sorted(mine)[0]
         sp = app._screen_positions()
+
+        # Highlighting the row restricts nothing.
+        app._set_current_group(g2)
+        app._select_node_at(*sp[outside])
+        assert app.selected_nodes == {outside}
+
+        # Going inside does.
+        app._group_open(g2)
         app._select_node_at(*sp[inside])
         assert app.selected_nodes == {inside}
-        assert app._cur_gid() == g2
         app._select_node_at(*sp[outside])
         assert outside not in app.selected_nodes
-        assert app.status_var.get().startswith('Pick inside group is on')
+        assert 'inside' in app.status_var.get()
         # a lasso over everything takes only the group's joints
         w, h = app.canvas.winfo_width(), app.canvas.winfo_height()
         app._lasso_press, app._lasso_cur = (0, 0), (w, h)
         app._lasso_dragging = True
         app._on_canvas_release(FakeEvent(w, h))
         assert app.selected_nodes == mine
-        assert app._cur_gid() == g2
-        app.pick_inside_group.set(False)
+
+        # And coming back out releases it again.
+        app._group_step_out()
         app._select_node_at(*sp[outside])
         assert app.selected_nodes == {outside}
 

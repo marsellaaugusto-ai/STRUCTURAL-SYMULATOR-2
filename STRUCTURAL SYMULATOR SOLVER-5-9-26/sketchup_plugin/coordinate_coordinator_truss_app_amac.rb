@@ -21,11 +21,20 @@ module CoordinateCoordinatorTrussAppAMAC
     ex.description = 'Two-way bridge to the Structural Simulator Stereo ' \
                       '(space-truss) app. Pick an origin point and node points ' \
                       '(vertices or line intersections), or auto-detect them from ' \
-                      'a selection, and export them with member connectivity -- and ' \
-                      'with the groups and components they sit in -- to an Excel file ' \
-                      'the Stereo tab imports, or go the other way and build SketchUp ' \
-                      'geometry from a model the Stereo tab exported.'
-    # 0.3.0 follows groups and components on the way OUT. Until it, both
+                      'a selection, and export them with member connectivity -- with ' \
+                      'the groups they sit in, and with components arriving as shared ' \
+                      'parts -- to an Excel file the Stereo tab imports, or go the ' \
+                      'other way and build SketchUp geometry from a model the Stereo ' \
+                      'tab exported.'
+    # 0.4.0 maps SketchUp's two container kinds onto the Stereo tab's,
+    # one to one. A GROUP is unique -- editing one does not touch another
+    # -- so it arrives as a group. A COMPONENT INSTANCE is a placement of
+    # a shared definition, one drawing built as many times as it is
+    # placed, so every instance of one definition arrives carrying the
+    # same component name and the Stereo tab sizes them as one part. A
+    # definition placed at two SIZES is two parts, and says so.
+    #
+    # 0.3.0 followed groups and components on the way OUT. Until it, both
     # export paths read only the edges lying loose in the current context,
     # so a truss that had been grouped -- the normal way to model one --
     # exported with no members and no warning. The groups themselves now
@@ -36,7 +45,7 @@ module CoordinateCoordinatorTrussAppAMAC
     # both of those files out, so the command it advertised raised
     # LoadError; tools/build_release.py now assembles and verifies the
     # archive so that cannot recur.
-    ex.version = '0.3.0'
+    ex.version = '0.4.0'
     ex.creator = 'Augusto'
     ex.copyright = Time.now.year.to_s
     Sketchup.register_extension(ex, true)

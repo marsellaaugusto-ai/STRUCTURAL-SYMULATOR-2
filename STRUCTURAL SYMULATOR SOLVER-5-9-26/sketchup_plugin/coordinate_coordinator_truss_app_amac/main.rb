@@ -27,16 +27,25 @@ module CoordinateCoordinatorTrussAppAMAC
   #
   # `groups`, when there is anything to say, adds the second sheet the
   # Stereo tab already reads (apps/stereo/stereo_groups_excel.py): one row
-  # per group, nested by `parent`, listing its rods as ranges. That is how
-  # the groups and components someone modelled with arrive as the Stereo
-  # tab's own groups instead of being flattened away on the trip across.
+  # per group, nested by `parent`, listing its rods as ranges, and naming
+  # the fabricated part it is a copy of. That is how the groups and
+  # components someone modelled with arrive as the Stereo tab's own groups
+  # and components instead of being flattened away on the trip across.
   #
-  # Only the four columns that say WHERE a rod belongs are written. The
-  # section columns of that sheet are left out entirely, and a cell the
-  # sheet does not have reads as blank, which means "leave this rod as it
-  # is" -- so importing changes the grouping and nothing else. SketchUp
-  # geometry knows nothing about steel sections, and a column of guessed
-  # defaults would overwrite real ones on the way in.
+  # The `component` column is the one that carries SHARING. SketchUp's two
+  # container kinds mean different things and map one to one: a group is
+  # unique, so it arrives as a group; a component instance is a placement
+  # of a shared definition, so every instance of one definition arrives
+  # carrying the same component name, and the Stereo tab then sizes them
+  # together and gives them one piece mark. See model_export's
+  # `component_key` for what counts as the same part and what does not.
+  #
+  # Only the columns that say WHERE a rod belongs are written. The section
+  # columns of that sheet are left out entirely, and a cell the sheet does
+  # not have reads as blank, which means "leave this rod as it is" -- so
+  # importing changes the grouping and nothing else. SketchUp geometry
+  # knows nothing about steel sections, and a column of guessed defaults
+  # would overwrite real ones on the way in.
   def self.export_to_excel(nodes_m, members, groups = nil)
     path = UI.savepanel('Export Stereo Model', Dir.pwd, 'stereo_model.xlsx')
     return unless path
@@ -81,8 +90,11 @@ module CoordinateCoordinatorTrussAppAMAC
     write_groups_sheet(wb, groups) if groups && !groups.empty?
 
     wb.save(path)
+    parts = (groups || []).map { |g| g[:component] }.compact.uniq.length
     UI.messagebox("Exported #{nodes_m.length} nodes, #{members.length} " \
-                  "members and #{(groups || []).length} group(s) to:\n#{path}")
+                  "members and #{(groups || []).length} group(s)" \
+                  "#{parts.zero? ? '' : ", #{parts} of them shared part(s)"}" \
+                  " to:\n#{path}")
   end
 
   # The "Groups" sheet. Header names are read by name on the way in, so the
@@ -92,15 +104,19 @@ module CoordinateCoordinatorTrussAppAMAC
     ws = wb.add_sheet('Groups')
     row = 1
     ws.set(row, 1, 'GROUPS — the groups and components this model was ' \
-                   'built from. Nesting is in the "parent" column.')
+                   'built from. Nesting is in the "parent" column; rows ' \
+                   'sharing a "component" are copies of one part.')
     row += 2
-    %w[id name parent rods].each_with_index { |h, c| ws.set(row, c + 1, h) }
+    %w[id name parent rods component].each_with_index do |h, c|
+      ws.set(row, c + 1, h)
+    end
     row += 1
     groups.each do |g|
       ws.set(row, 1, g[:id])
       ws.set(row, 2, g[:name])
       ws.set(row, 3, g[:parent])     # nil -> an empty cell -> a top-level group
       ws.set(row, 4, rods_to_ranges(g[:rods]))
+      ws.set(row, 5, g[:component])  # nil -> blank -> not a copy of anything
       row += 1
     end
   end

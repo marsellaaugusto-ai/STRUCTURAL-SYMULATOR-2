@@ -81,10 +81,53 @@ module CoordinateCoordinatorTrussAppAMAC
   # very often given the same name (or no name at all), so the name cannot
   # be the identity -- persistent_id is the model's own answer, and
   # object_id is the fallback for an older SketchUp.
+  #
+  # This is also what makes shared parts findable, and the reason is worth
+  # stating: a container NESTED INSIDE a component definition is one single
+  # entity, shared by every instance of that definition. Walking two copies
+  # of a truss therefore reports the SAME id for the bay inside each of
+  # them -- not two ids that happen to match. See `component_key`.
   def container_id(ent)
     (ent.respond_to?(:persistent_id) ? ent.persistent_id : nil) || ent.object_id
   rescue StandardError
     ent.object_id
+  end
+
+  # The definition a component instance is a copy of, or nil for a group.
+  #
+  # SketchUp's two container kinds mean different things here, and the
+  # difference is exactly the one the Stereo tab draws. A GROUP is unique:
+  # editing one does not touch another, so it is one group. A COMPONENT
+  # INSTANCE is a placement of a shared definition -- one drawing, built
+  # as many times as it is placed -- which is the Stereo tab's component.
+  def definition_name(ent)
+    return nil unless ent.is_a?(Sketchup::ComponentInstance)
+    name = ent.definition.name.to_s.strip rescue ''
+    name.empty? ? 'Component' : name
+  rescue StandardError
+    nil
+  end
+
+  # How much a transformation stretches each axis, as a string to compare
+  # by. Two instances of one definition are the same fabricated part only
+  # if they are the same SIZE: SketchUp lets an instance be scaled, and a
+  # truss placed at 0.8 is a different piece of steel with different bar
+  # lengths, however much it shares a drawing on screen.
+  #
+  # Magnitudes only, so a MIRRORED instance still matches the one it was
+  # mirrored from -- a left-hand copy is the same part built the other way
+  # round, which is a thing the Stereo tab already knows how to mark.
+  def scale_signature(tr)
+    return '1x1x1' if tr.nil?
+    axes = [Geom::Vector3d.new(1, 0, 0), Geom::Vector3d.new(0, 1, 0),
+            Geom::Vector3d.new(0, 0, 1)]
+    o = Geom::Point3d.new(0, 0, 0).transform(tr)
+    axes.map do |v|
+      p = Geom::Point3d.new(v.x, v.y, v.z).transform(tr)
+      format('%.4f', (p - o).length.to_f)
+    end.join('x')
+  rescue StandardError
+    '1x1x1'
   end
 
   # Depth-first walk of `entities`, following groups and component
@@ -93,8 +136,13 @@ module CoordinateCoordinatorTrussAppAMAC
   #     [p0_world, p1_world, path]
   #
   # where `path` is the containers it was found inside, outermost first, as
-  # [container_id, name] pairs -- the provenance the Groups sheet is built
-  # from. An edge lying loose in the starting context has an empty path.
+  #
+  #     [container_id, name, definition_name_or_nil, scale_signature]
+  #
+  # -- the provenance the Groups sheet is built from. The last two are what
+  # make a component a shared part rather than a container that happens to
+  # repeat; see `component_key`. An edge lying loose in the starting
+  # context has an empty path.
   #
   # `base` is the transformation from the starting context to the world. At
   # the top level that is the identity (pass nil); inside a group being
@@ -120,9 +168,9 @@ module CoordinateCoordinatorTrussAppAMAC
       sub = container_entities(ent)
       next if sub.nil?
       inner = base ? base * ent.transformation : ent.transformation
-      each_world_segment(sub, inner,
-                         path + [[container_id(ent), container_name(ent)]],
-                         depth + 1, &blk)
+      step = [container_id(ent), container_name(ent),
+              definition_name(ent), scale_signature(inner)]
+      each_world_segment(sub, inner, path + [step], depth + 1, &blk)
     end
   end
 
@@ -217,9 +265,49 @@ module CoordinateCoordinatorTrussAppAMAC
     out.join(', ')
   end
 
+  # What makes two containers copies of ONE fabricated part, or nil.
+  #
+  # Returns [identity, display_name, definition_name, scale]. Two
+  # containers with the same `identity` are the same part; the Stereo tab
+  # is told so through the Groups sheet's `component` column, and then
+  # sizes them together and marks them with one piece mark.
+  #
+  # The identity is built from the OUTERMOST component instance on the
+  # path, plus the ids of the containers below it:
+  #
+  #   * the outermost instance, because everything under a shared
+  #     definition is shared with it. Two copies of "Truss A" are the same
+  #     part, and so is the bay inside each of them.
+  #   * its definition name and its accumulated SCALE, because a definition
+  #     placed at two sizes is two parts -- same drawing, different steel.
+  #   * the ids of the containers below it, which are literally the same
+  #     entities for every instance (a definition's contents are shared, not
+  #     copied), so the bay inside copy 1 and the bay inside copy 2 report
+  #     one id and match without being compared.
+  #
+  # A path with no instance on it is nil: a GROUP is unique in SketchUp --
+  # editing one does not touch another -- so a group is a group, and the
+  # Stereo tab's own Make component is where two of them become one part.
+  #
+  # What this deliberately does NOT do is merge a standalone instance of a
+  # definition with one nested inside another definition. They may well be
+  # the same part; they are keyed differently here, and finding that is a
+  # job for comparing shapes rather than for reading the model tree. Erring
+  # toward two parts costs a duplicated drawing. Erring toward one sends
+  # the wrong steel.
+  def component_key(path)
+    at = path.index { |entry| entry[2] }
+    return nil if at.nil?
+    _cid, _name, defn, scale = path[at]
+    below = path[(at + 1)..] || []
+    identity = ([defn, scale] + below.map { |e| e[0] }).join('|')
+    label = ([defn] + below.map { |e| e[1] }).join(' / ')
+    [identity, label, defn, scale]
+  end
+
   # The Groups sheet's rows, from the container path of every member.
   #
-  #   [{id:, name:, parent:, rods: [member indices]}, ...]
+  #   [{id:, name:, parent:, rods: [member indices], component: name}, ...]
   #
   # One row per container that has any geometry under it, nested the way the
   # model nests it. A member belongs to its INNERMOST container, because a
@@ -238,17 +326,75 @@ module CoordinateCoordinatorTrussAppAMAC
       next if path.nil?
       (1..path.length).each do |n|
         prefix = path[0, n]
-        key = prefix.map { |cid, _| cid }
+        key = prefix.map { |e| e[0] }
         next if ids.key?(key)
-        parent = n == 1 ? nil : ids[prefix[0, n - 1].map { |cid, _| cid }]
+        parent = n == 1 ? nil : ids[prefix[0, n - 1].map { |e| e[0] }]
         ids[key] = rows.length + 1
         rows << { id: rows.length + 1, name: prefix[-1][1],
-                  parent: parent, rods: [] }
+                  parent: parent, rods: [], part: component_key(prefix) }
       end
     end
     member_paths.each_with_index do |path, i|
       next if path.nil? || path.empty?
-      rows[ids[path.map { |cid, _| cid }] - 1][:rods] << i
+      rows[ids[path.map { |e| e[0] }] - 1][:rods] << i
+    end
+    name_components(rows)
+    rows
+  end
+
+  # Turn each row's part identity into the name the Groups sheet carries.
+  #
+  # Only a row with rods OF ITS OWN gets one. A container that holds just
+  # subgroups is a branch of the tree, and the Stereo tab's rule is that a
+  # component is a group's own rods -- it refuses to make a part of a
+  # branch, so writing one here would only be refused later, having
+  # inflated the copy count in the meantime.
+  #
+  # The NAME is what the Stereo tab compares by, so it has to separate
+  # exactly what the identity separates. Two things push it apart:
+  #
+  #   * one definition placed at more than one SIZE -- then every one of
+  #     them carries its scale, so none can quietly pass for the unscaled
+  #     part;
+  #   * two different parts that would otherwise read the same, which
+  #     happens when a definition holds two sub-containers with one name
+  #     ("Truss A / Bay" twice). They are different steel, so the second
+  #     gets a number. A false merge here would have the Stereo tab size
+  #     one part from another part's loads.
+  def name_components(rows)
+    scales = {}
+    rows.each do |row|
+      next if row[:part].nil? || row[:rods].empty?
+      (scales[row[:part][2]] ||= {})[row[:part][3]] = true
+    end
+
+    wanted = {}   # identity -> label, in first-seen order
+    rows.each do |row|
+      part = row[:part]
+      next if part.nil? || row[:rods].empty?
+      identity, label, defn, scale = part
+      next if wanted.key?(identity)
+      wanted[identity] =
+        (scales[defn] || {}).length > 1 ? "#{label} [#{scale}]" : label
+    end
+
+    taken = {}
+    final = {}
+    wanted.each do |identity, label|
+      name = label
+      n = 1
+      while taken.key?(name)
+        n += 1
+        name = "#{label} ##{n}"
+      end
+      taken[name] = true
+      final[identity] = name
+    end
+
+    rows.each do |row|
+      part = row.delete(:part)
+      next if part.nil? || row[:rods].empty?
+      row[:component] = final[part[0]]
     end
     rows
   end

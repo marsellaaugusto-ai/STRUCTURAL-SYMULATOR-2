@@ -239,16 +239,17 @@ def test_an_empty_group_is_refused_not_exported(tmp_path):
 # ── the sheet itself ─────────────────────────────────────────────────────
 
 def test_the_groups_sheet_sets_no_section_values(tmp_path):
-    """Only id/name/parent/rods are written. SketchUp knows nothing about
-    steel, and a column of plausible defaults would overwrite the real
-    sections of a model being re-imported."""
+    """Only the columns that say WHERE a rod belongs are written -- which
+    part it is a copy of included. SketchUp knows nothing about steel, and
+    a column of plausible defaults would overwrite the real sections of a
+    model being re-imported."""
     import openpyxl
     from apps.stereo import stereo_groups_excel as sge
     _diag, path = _run('select', 'nested', tmp_path)
     wb = openpyxl.load_workbook(path, data_only=True)
     assert 'Groups' in wb.sheetnames
     rows = sge.read_groups_sheet(wb)
-    assert sorted(rows[0]) == ['id', 'name', 'parent', 'rods']
+    assert sorted(rows[0]) == ['component', 'id', 'name', 'parent', 'rods']
     for field, _key, _kind in sge.FIELDS:
         assert field not in rows[0]
 
@@ -276,3 +277,133 @@ def test_the_rod_lists_are_written_as_ranges(tmp_path):
     rods = [r[3] for r in wb['Groups'].iter_rows(values_only=True)
             if r and r[0] == 1]
     assert rods == ['0-2']
+
+
+# ── components arrive as shared parts ────────────────────────────────────
+
+def _parts(groups):
+    """{component name: [group names]} for the groups that are copies."""
+    from apps.stereo import stereo_components as scp
+    out = {}
+    for g in groups or ():
+        name = scp.name_of(g)
+        if name:
+            out.setdefault(name, []).append(g['name'])
+    return out
+
+
+@pytest.mark.parametrize('how', ['select', 'pick'])
+def test_three_instances_of_one_component_are_one_part(how, tmp_path):
+    """The case the whole thing is for. SketchUp's component is a shared
+    definition -- one drawing, placed three times -- and it arrives as the
+    Stereo tab's component, so the three get one section and one mark
+    rather than being sized apart."""
+    _diag, path = _run(how, 'three_copies', tmp_path)
+    _nodes, members, groups = _read(path)
+    assert len(members) == 9
+    parts = _parts(groups)
+    assert list(parts) == ['Truss A']
+    assert len(parts['Truss A']) == 3
+
+
+@pytest.mark.parametrize('how', ['select', 'pick'])
+def test_a_mirrored_instance_is_still_the_same_part(how, tmp_path):
+    """A left-hand copy is the same drawing built the other way round.
+    The Stereo tab marks the handedness itself (T1 and T1/m), so splitting
+    it here would only hide that they are one part."""
+    _diag, path = _run(how, 'mirrored_copies', tmp_path)
+    _nodes, _members, groups = _read(path)
+    parts = _parts(groups)
+    assert list(parts) == ['Truss A']
+    assert len(parts['Truss A']) == 2
+
+
+@pytest.mark.parametrize('how', ['select', 'pick'])
+def test_the_same_definition_at_two_sizes_is_two_parts(how, tmp_path):
+    """Same drawing on screen, different steel: scaling an instance
+    changes every bar length in it. Calling them one part would have the
+    Stereo tab size the small one from the big one's loads."""
+    _diag, path = _run(how, 'scaled_copies', tmp_path)
+    _nodes, _members, groups = _read(path)
+    parts = _parts(groups)
+    assert len(parts) == 2, parts
+    assert all(len(v) == 1 for v in parts.values())
+    assert all('Truss A' in k for k in parts), parts
+    assert any('0.5000' in k for k in parts), 'and the size is named'
+
+
+@pytest.mark.parametrize('how', ['select', 'pick'])
+def test_two_copies_of_a_group_are_not_a_shared_part(how, tmp_path):
+    """A SketchUp group is unique -- editing one does not touch another --
+    so two of them are two groups. Making them one part is a decision, and
+    the Stereo tab's own Make component is where it gets made."""
+    _diag, path = _run(how, 'copied_groups', tmp_path)
+    _nodes, _members, groups = _read(path)
+    assert len(groups) == 2
+    assert _parts(groups) == {}
+
+
+@pytest.mark.parametrize('how', ['select', 'pick'])
+def test_a_group_inside_a_definition_is_shared_with_it(how, tmp_path):
+    """A definition's contents are one set of entities, shared by every
+    instance rather than copied -- so the bay inside copy 1 and the bay
+    inside copy 2 are the same steel, and arrive saying so."""
+    _diag, path = _run(how, 'nested_in_component', tmp_path)
+    _nodes, _members, groups = _read(path)
+    parts = _parts(groups)
+    assert list(parts) == ['Truss A / Bay']
+    assert len(parts['Truss A / Bay']) == 2
+
+
+@pytest.mark.parametrize('how', ['select', 'pick'])
+def test_an_instance_holding_only_subgroups_is_a_branch_not_a_part(how,
+                                                                    tmp_path):
+    """The Stereo tab's rule is that a component is a group's OWN rods; it
+    refuses to make a part of a branch. Writing one here would only be
+    refused later, having inflated the copy count in between."""
+    _diag, path = _run(how, 'nested_in_component', tmp_path)
+    _nodes, _members, groups = _read(path)
+    from apps.stereo import stereo_components as scp
+    for g in groups:
+        if not g['members']:
+            assert scp.name_of(g) is None, g['name']
+
+
+@pytest.mark.parametrize('how', ['select', 'pick'])
+def test_two_sub_groups_with_one_name_are_still_two_parts(how, tmp_path):
+    """They would both read as "Truss A / Bay". They are different steel,
+    so the second is numbered -- a false merge here would have one part
+    sized from another part's loads."""
+    _diag, path = _run(how, 'twin_bays', tmp_path)
+    _nodes, _members, groups = _read(path)
+    parts = _parts(groups)
+    assert len(parts) == 2, parts
+    assert all(len(v) == 1 for v in parts.values())
+
+
+@pytest.mark.parametrize('scenario', ['flat', 'grouped', 'nested', 'mixed'])
+def test_a_model_with_no_components_names_no_parts(scenario, tmp_path):
+    """Nothing in these is a component instance, so nothing claims to be a
+    copy of anything."""
+    _diag, path = _run('select', scenario, tmp_path)
+    _nodes, _members, groups = _read(path)
+    assert _parts(groups) == {}
+
+
+def test_the_sheet_carries_the_component_column(tmp_path):
+    import openpyxl
+    from apps.stereo import stereo_groups_excel as sge
+    _diag, path = _run('select', 'three_copies', tmp_path)
+    rows = sge.read_groups_sheet(openpyxl.load_workbook(path, data_only=True))
+    assert sorted(rows[0]) == ['component', 'id', 'name', 'parent', 'rods']
+    assert {r['component'] for r in rows} == {'Truss A'}
+
+
+def test_the_export_says_how_many_shared_parts_it_found(tmp_path):
+    diag, _path = _run('select', 'three_copies', tmp_path)
+    assert '1 of them shared part(s)' in diag['messages'][-1]
+
+
+def test_a_model_with_no_components_does_not_mention_parts(tmp_path):
+    diag, _path = _run('select', 'grouped', tmp_path)
+    assert 'shared part' not in diag['messages'][-1]

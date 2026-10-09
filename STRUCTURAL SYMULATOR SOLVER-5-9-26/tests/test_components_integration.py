@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import tkinter as tk
 
 from apps.stereo import stereo_components as scp
+from apps.stereo import stereo_groups as sgp
 
 
 @pytest.fixture(autouse=True)
@@ -369,3 +370,90 @@ def test_the_component_survives_a_round_trip_through_excel(app, tmp_path,
     app._import_excel()
     assert {scp.name_of(g) for g in app.groups} == {'Gable truss'}
     assert app._component_copies(app.groups[0]['id']) == 3
+
+
+# ── a component that came from SketchUp ──────────────────────────────────
+
+def _from_sketchup(scenario, tmp_path):
+    """Run the plugin's own export against the stub SketchUp and return
+    the workbook it wrote. See tests/test_sketchup_export_groups.py."""
+    import json
+    import shutil
+    import subprocess
+    ruby = shutil.which('ruby')
+    if ruby is None:
+        pytest.skip('no ruby to run the plugin sources with')
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = str(tmp_path / ('%s.xlsx' % scenario))
+    proc = subprocess.run(
+        [ruby, '-I', os.path.join(root, 'tests', 'ruby', 'stub'),
+         os.path.join(root, 'tests', 'ruby', 'export_harness.rb'),
+         'select', scenario, out],
+        cwd=root, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    json.loads(proc.stdout.strip().splitlines()[-1])
+    return out
+
+
+def test_a_sketchup_component_arrives_usable(app, tmp_path, monkeypatch):
+    """The whole chain: three instances of one definition in SketchUp, out
+    through the plugin, in through Import from Excel, and a component the
+    Stereo tab can size as one part."""
+    from common import _ensure_openpyxl
+    if not _ensure_openpyxl():
+        pytest.skip('openpyxl unavailable')
+    path = _from_sketchup('three_copies', tmp_path)
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                        lambda **kw: path)
+    app._import_excel()
+
+    assert len(app.groups) == 3
+    assert {scp.name_of(g) for g in app.groups} == {'Truss A'}
+    first = app.groups[0]['id']
+    assert app._component_copies(first) == 3
+
+    # And it behaves like one: a section set on one copy reaches all three.
+    app._set_current_group(first, say=False)
+    app.group_profile.set('IPE 300')
+    app._group_apply_profile()
+    assert all(app.members[i]['profile'] == 'IPE 300'
+               for g in app.groups for i in g['members'])
+
+
+def test_sketchup_copies_are_lined_up_rod_for_rod(app, tmp_path, monkeypatch):
+    """Sizing over copies needs the correspondence, and the copies came in
+    as three separate sets of rods -- it has to be worked out from their
+    geometry, not from anything the workbook said."""
+    from common import _ensure_openpyxl
+    if not _ensure_openpyxl():
+        pytest.skip('openpyxl unavailable')
+    path = _from_sketchup('three_copies', tmp_path)
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                        lambda **kw: path)
+    app._import_excel()
+    rows = scp.correspondence(app.nodes, app.members, app.groups, 'Truss A')
+    assert len(rows) == 3, 'three bars to the truss'
+    assert all(len(r) == 3 for r in rows), 'three copies of each'
+    owners = sgp.owner_of_rod(app.groups)
+    for row in rows:
+        assert len({owners[i] for i in row}) == 3, 'one from each copy'
+
+
+def test_a_scaled_sketchup_instance_is_not_sized_with_the_others(app,
+                                                                  tmp_path,
+                                                                  monkeypatch):
+    """Same drawing on screen, different steel. If these came in as one
+    part the small one would be sized from the big one's loads."""
+    from common import _ensure_openpyxl
+    if not _ensure_openpyxl():
+        pytest.skip('openpyxl unavailable')
+    path = _from_sketchup('scaled_copies', tmp_path)
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                        lambda **kw: path)
+    app._import_excel()
+    names = {scp.name_of(g) for g in app.groups}
+    assert len(names) == 2
+    for g in app.groups:
+        assert app._component_copies(g['id']) == 1
+        assert sorted(app._sizing_rods(g['id'])) == sorted(
+            app._group_rods(g['id'])), 'sizing stays inside its own copy'

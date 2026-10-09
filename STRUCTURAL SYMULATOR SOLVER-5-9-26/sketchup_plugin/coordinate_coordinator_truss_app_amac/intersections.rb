@@ -47,8 +47,12 @@ module CoordinateCoordinatorTrussAppAMAC
     end
     containers.each do |ent, sub|
       inner = base ? base * ent.transformation : ent.transformation
-      each_world_segment(sub, inner,
-                         [[container_id(ent), container_name(ent)]], 1) do |p0, p1, path|
+      # The same four-part path entry each_world_segment builds, because
+      # this is the top of the walk for a selected container: id, name,
+      # the definition it is an instance of, and the size it is placed at.
+      step = [container_id(ent), container_name(ent),
+              definition_name(ent), scale_signature(inner)]
+      each_world_segment(sub, inner, [step], 1) do |p0, p1, path|
         segments << [p0, p1, path]
       end
     end

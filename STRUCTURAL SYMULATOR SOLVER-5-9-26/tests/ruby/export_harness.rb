@@ -111,6 +111,84 @@ def scenario(name)
     [Sketchup::Model.new(es, es, move(1000, 0, 0)), es,
      [[1000, 0, 0], [1100, 0, 0], [1000, 100, 0]]]
 
+  # Three instances of ONE definition: the case this is all for. They
+  # arrive as three groups sharing one component name.
+  when 'three_copies'
+    es, = triangle
+    defn = Sketchup::ComponentDefinition.new(es, 'Truss A')
+    made = (0..2).map do |k|
+      Sketchup::ComponentInstance.new(defn, move(0, 400 * k, 0))
+    end
+    [Sketchup::Model.new(made), made,
+     (0..2).flat_map { |k| [[0, 400 * k, 0], [100, 400 * k, 0],
+                            [0, 100 + 400 * k, 0]] }]
+
+  # Two instances of one definition at DIFFERENT SIZES. Same drawing on
+  # screen, different steel: they must not arrive as one part.
+  when 'scaled_copies'
+    es, = triangle
+    defn = Sketchup::ComponentDefinition.new(es, 'Truss A')
+    full = Sketchup::ComponentInstance.new(defn, move(0, 0, 0))
+    half = Sketchup::ComponentInstance.new(
+      defn, Geom::Transformation.new([[0.5, 0, 0], [0, 0.5, 0], [0, 0, 0.5]],
+                                     [0, 400, 0]))
+    [Sketchup::Model.new([full, half]), [full, half],
+     [[0, 0, 0], [100, 0, 0], [0, 100, 0],
+      [0, 400, 0], [50, 400, 0], [0, 450, 0]]]
+
+  # A MIRRORED instance is the same part built the other way round, so it
+  # keeps the component -- the Stereo tab marks the handedness itself.
+  when 'mirrored_copies'
+    es, = triangle
+    defn = Sketchup::ComponentDefinition.new(es, 'Truss A')
+    right = Sketchup::ComponentInstance.new(defn, move(0, 0, 0))
+    left = Sketchup::ComponentInstance.new(
+      defn, Geom::Transformation.new([[1, 0, 0], [0, -1, 0], [0, 0, 1]],
+                                     [0, 400, 0]))
+    [Sketchup::Model.new([right, left]), [right, left],
+     [[0, 0, 0], [100, 0, 0], [0, 100, 0],
+      [0, 400, 0], [100, 400, 0], [0, 300, 0]]]
+
+  # A GROUP copied twice is NOT a shared part: SketchUp groups are unique,
+  # editing one does not touch the other. They arrive as two plain groups.
+  when 'copied_groups'
+    a, = triangle
+    b, = triangle
+    [Sketchup::Model.new([Sketchup::Group.new(a, move(0, 0, 0), 'Bay'),
+                          Sketchup::Group.new(b, move(0, 400, 0), 'Bay')]),
+     nil,
+     [[0, 0, 0], [100, 0, 0], [0, 100, 0],
+      [0, 400, 0], [100, 400, 0], [0, 500, 0]]]
+
+  # A group NESTED INSIDE a definition. Its contents are one entity shared
+  # by every instance, so the bay inside copy 1 and the bay inside copy 2
+  # are the same part -- and the instance itself holds no rods of its own,
+  # so it is a branch rather than a part.
+  when 'nested_in_component'
+    es, = triangle
+    bay = Sketchup::Group.new(es, move(0, 0, 0), 'Bay')
+    defn = Sketchup::ComponentDefinition.new([bay], 'Truss A')
+    made = (0..1).map do |k|
+      Sketchup::ComponentInstance.new(defn, move(0, 400 * k, 0))
+    end
+    [Sketchup::Model.new(made), made,
+     (0..1).flat_map { |k| [[0, 400 * k, 0], [100, 400 * k, 0],
+                            [0, 100 + 400 * k, 0]] }]
+
+  # One definition holding TWO sub-groups that share a name. They are
+  # different steel and must not come back as one part just because
+  # "Truss A / Bay" reads the same for both.
+  when 'twin_bays'
+    left_edges, = triangle(0, 0, 0)
+    right_edges, = triangle(300, 0, 0)
+    defn = Sketchup::ComponentDefinition.new(
+      [Sketchup::Group.new(left_edges, move(0, 0, 0), 'Bay'),
+       Sketchup::Group.new(right_edges, move(0, 0, 0), 'Bay')], 'Truss A')
+    inst = Sketchup::ComponentInstance.new(defn, move(0, 0, 0))
+    [Sketchup::Model.new([inst]), [inst],
+     [[0, 0, 0], [100, 0, 0], [0, 100, 0],
+      [300, 0, 0], [400, 0, 0], [300, 100, 0]]]
+
   # Nothing in the group at all.
   when 'empty_group'
     g = Sketchup::Group.new([], move(0, 0, 0), 'Empty')
@@ -122,6 +200,7 @@ end
 
 how, name, out = ARGV
 model, selection, corners = scenario(name)
+selection ||= model.active_entities
 model.selection = selection
 Sketchup.active_model = model
 UI.save_path = out
@@ -146,6 +225,12 @@ segs = how == 'select' ? M.collect_segments(model.selection, base)
                        : M.world_segments(model.active_entities, base)
 puts JSON.generate(
   segments: segs.length,
+  # What the Groups sheet will say, straight from the library, so a
+  # failure says whether the model tree or the workbook was wrong.
+  rows: M.group_rows(segs.map { |_, _, path| path }).map { |g|
+    { name: g[:name], parent: g[:parent], component: g[:component],
+      rods: g[:rods].length }
+  },
   # Where the walk says each edge is, in world coordinates, to one
   # thousandth of an inch -- the numbers the scenario states literally.
   world: segs.map { |p0, p1, _| [p0.to_a, p1.to_a].map { |c| c.map { |v| v.round(3) } } },

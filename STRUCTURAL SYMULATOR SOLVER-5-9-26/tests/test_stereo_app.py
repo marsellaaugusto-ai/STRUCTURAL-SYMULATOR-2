@@ -9689,7 +9689,11 @@ class TestLockedGroups:
         app._undo()                         # undoes "new group"
         assert app.groups == []
         assert app._editing_gid() is None
-        assert 'Open group' in app.group_edit_btn.cget('text')
+        # Nothing is open any more, so the Done button has nothing to finish
+        # and goes away with the group it belonged to.
+        app.root.update_idletasks()
+        assert not app.group_edit_btn.winfo_ismapped()
+        assert 'Double-click' in app.group_edit_state.cget('text')
 
     def test_a_new_group_made_while_open_nests_inside_it(self, app,
                                                         monkeypatch):

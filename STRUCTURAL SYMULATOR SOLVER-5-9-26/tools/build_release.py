@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Build the two things that get handed out: the SketchUp extension (.rbz)
-and the whole-app archive (.zip).
+"""Build the three things that get handed out: the SketchUp extension
+(.rbz), the whole-app archive (.zip) and the customer archive.
 
 Both used to be assembled by hand, and the shipped .rbz had drifted out of
 step with sketchup_plugin/ as a result -- it was missing model_import.rb
@@ -10,7 +10,7 @@ script is the fix: it reads the plugin folder, so it cannot forget a file
 that is there, and it refuses to write an archive that is missing a file
 the loader requires.
 
-    python3 tools/build_release.py            # both, into the app root
+    python3 tools/build_release.py            # all three, into the app root
     python3 tools/build_release.py --rbz      # just the extension
     python3 tools/build_release.py --zip      # just the app archive
     python3 tools/build_release.py --check    # verify, write nothing
@@ -405,18 +405,29 @@ def main(argv=None):
                     help='build only the customer archive (no tests, tools '
                          'or internal reports)')
     args = ap.parse_args(argv)
-    if args.customer:
-        build_rbz(check_only=args.check)
-        build_zip(check_only=args.check, customer=True)
-        return 0
 
-    do_rbz = args.rbz or not args.zip
-    do_zip = args.zip or not args.rbz
-    if do_rbz:
+    # No selector means all three. The customer archive used to be left out
+    # of a plain build and cut by hand at release points instead, so it sat
+    # on the last release while the app archive moved on -- it was still
+    # shipping the 2026-10-03 app, and the 0.2.0 extension with it, after
+    # three weeks of work had gone into the other two. Nothing in the tree
+    # distinguished "stale" from "deliberately pinned", which is the part
+    # that made it easy to miss.
+    picked = args.rbz or args.zip or args.customer
+    do_rbz = args.rbz or not picked
+    do_zip = args.zip or not picked
+    do_customer = args.customer or not picked
+
+    # Both archives carry the extension, so it has to exist first. It is
+    # built whenever an archive is, rather than only when asked for, so an
+    # archive cannot pick up whatever stale .rbz happens to be on disk --
+    # and one build stamps all three the same.
+    if do_rbz or do_zip or do_customer:
         build_rbz(check_only=args.check)
     if do_zip:
-        # the archive carries the extension, so build that first
         build_zip(check_only=args.check)
+    if do_customer:
+        build_zip(check_only=args.check, customer=True)
     return 0
 
 

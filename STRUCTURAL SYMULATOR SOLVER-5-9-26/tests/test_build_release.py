@@ -288,3 +288,51 @@ def test_the_customer_build_stops_when_a_licence_text_is_missing(
     monkeypatch.setattr(notices, 'components', without_numpy_text)
     with pytest.raises(SystemExit, match='numpy'):
         br.build_zip(dest=str(tmp_path / 'c.zip'), customer=True)
+
+
+# ── what a build actually produces ────────────────────────────────────────
+
+def _built(monkeypatch, argv):
+    """Run main() with the two builders replaced by recorders, so the
+    selection logic can be checked without writing 13 MB of archives."""
+    seen = []
+    monkeypatch.setattr(br, 'build_rbz',
+                        lambda **kw: seen.append(('rbz', kw.get('check_only'))))
+    monkeypatch.setattr(br, 'build_zip',
+                        lambda **kw: seen.append(
+                            ('customer' if kw.get('customer') else 'zip',
+                             kw.get('check_only'))))
+    assert br.main(argv) == 0
+    return [name for name, _ in seen]
+
+
+def test_a_plain_build_produces_all_three(monkeypatch):
+    """The customer archive used to be left out of a plain build and cut by
+    hand at release points, so it sat on the last release while the other
+    two moved on -- it was still shipping the 2026-10-03 app and the 0.2.0
+    extension after three weeks of work. Nothing in the tree told "stale"
+    from "deliberately pinned", which is what made it easy to miss."""
+    assert _built(monkeypatch, []) == ['rbz', 'zip', 'customer']
+
+
+def test_a_selector_builds_only_what_it_names(monkeypatch):
+    assert _built(monkeypatch, ['--rbz']) == ['rbz']
+    assert _built(monkeypatch, ['--zip']) == ['rbz', 'zip']
+    assert _built(monkeypatch, ['--customer']) == ['rbz', 'customer']
+
+
+def test_the_extension_is_built_before_the_archives_that_carry_it(monkeypatch):
+    """Both archives embed the .rbz, so building it second would ship
+    whatever happened to be on disk from an earlier run."""
+    for argv in ([], ['--zip'], ['--customer']):
+        assert _built(monkeypatch, argv)[0] == 'rbz', argv
+
+
+def test_check_writes_nothing_for_any_of_the_three(monkeypatch):
+    seen = []
+    monkeypatch.setattr(br, 'build_rbz',
+                        lambda **kw: seen.append(kw.get('check_only')))
+    monkeypatch.setattr(br, 'build_zip',
+                        lambda **kw: seen.append(kw.get('check_only')))
+    assert br.main(['--check']) == 0
+    assert seen == [True, True, True]

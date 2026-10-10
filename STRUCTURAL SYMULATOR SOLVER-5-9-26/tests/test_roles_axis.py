@@ -244,3 +244,83 @@ def test_the_roles_panel_lists_what_the_model_has(app):
             walk(c)
     walk(app._roles_rows)
     assert 'Diagonal' in labels and 'Bottom chord' in labels
+
+
+# ── leaving rods out of the analysis by rule ─────────────────────────────
+
+def _roled(roles):
+    """One rod per role named, for the exclusion tests below."""
+    return [{'a': i, 'b': i + 1, 'role': r, 'conn': 'pin'}
+            for i, r in enumerate(roles)]
+
+
+def test_a_rule_can_leave_its_rods_out():
+    members = _roled(['top_chord', 'diagonal', 'diagonal', 'purlin'])
+    rule = sr.new_rule('No diagonals', roles={'diagonal'}, exclude=True)
+    assert rule['exclude'] is True
+    assert sr.excluded_by([rule], members) == {1, 2}
+
+
+def test_a_rule_that_does_not_say_so_leaves_nothing_out():
+    members = _roled(['diagonal', 'diagonal'])
+    rule = sr.new_rule('Diagonals', roles={'diagonal'})
+    assert rule['exclude'] is False
+    assert sr.excluded_by([rule], members) == set()
+
+
+def test_several_rules_leave_out_the_union():
+    members = _roled(['top_chord', 'diagonal', 'purlin'])
+    rules = [sr.new_rule('a', roles={'diagonal'}, exclude=True),
+             sr.new_rule('b', roles={'purlin'}, exclude=True),
+             sr.new_rule('c', roles={'top_chord'})]
+    assert sr.excluded_by(rules, members) == {1, 2}
+
+
+def test_a_rule_about_utilisation_cannot_leave_rods_out():
+    """Utilisation comes OUT of the analysis. A rule reading it to decide
+    what the analysis contains would answer differently every time, and
+    the model would solve differently depending on how often Analyze had
+    been pressed. Refused where the rule is written."""
+    rule = sr.new_rule('Overloaded', roles={'diagonal'}, util_min=1.0,
+                       exclude=True)
+    assert rule['exclude'] is False
+    assert sr.can_exclude(rule) is False
+    assert sr.asks_about_utilisation(rule) is True
+
+
+@pytest.mark.parametrize('kw', [{'util_min': 1.0}, {'util_max': 0.5},
+                                {'util_min': 0.2, 'util_max': 0.8}])
+def test_any_utilisation_bound_blocks_exclusion(kw):
+    assert sr.new_rule('r', exclude=True, **kw)['exclude'] is False
+
+
+def test_a_rule_that_got_the_flag_some_other_way_still_cannot(monkeypatch):
+    """Refused twice: once where the rule is written, and once where it
+    would do the damage. A dict edited by hand, or read from a workbook
+    someone changed, must not slip through."""
+    members = _roled(['diagonal', 'diagonal'])
+    forced = sr.new_rule('Overloaded', roles={'diagonal'}, util_min=1.0)
+    forced['exclude'] = True                  # straight past new_rule
+    assert sr.excluded_by([forced], members) == set()
+
+
+def test_excluding_is_asked_without_the_solve_results():
+    """`excluded_by` takes no checks at all, so a utilisation rule has
+    nothing to answer with even if it were let through."""
+    import inspect
+    assert 'checks' not in inspect.signature(sr.excluded_by).parameters
+
+
+def test_a_rule_scoped_to_a_group_leaves_out_that_branch():
+    members = _roled(['a', 'b', 'c', 'd'])
+    groups = [{'id': 1, 'name': 'Temp works', 'parent': None,
+               'members': {1, 2}}]
+    rule = sr.new_rule('Temporary', groups={1}, exclude=True)
+    assert sr.excluded_by([rule], members, groups) == {1, 2}
+
+
+def test_what_it_reads_as_says_it_leaves_rods_out():
+    rule = sr.new_rule('Temporary', roles={'purlin'}, exclude=True)
+    assert 'left out of the analysis' in sr.describe(rule)
+    plain = sr.new_rule('Purlins', roles={'purlin'})
+    assert 'left out' not in sr.describe(plain)

@@ -26,7 +26,7 @@ from apps.stereo import stereo_roles as srl
 SHEET = 'Rules'
 
 HEADERS = ('name', 'roles', 'groups', 'group names', 'util_min', 'util_max',
-           'conn', 'hidden')
+           'conn', 'hidden', 'leave out')
 INFO_HEADERS = ('info: reads as',)
 
 #: Group names are free text, so the separator has to be something nobody
@@ -78,6 +78,7 @@ def rule_rows(rules, groups=(), hidden=()):
             'util_max': rule.get('util_max'),
             'conn': rule.get('conn') or '',
             'hidden': 1 if (rule.get('name') in (hidden or ())) else None,
+            'leave out': 1 if rule.get('exclude') else None,
             'info: reads as': srl.describe(rule),
         })
     return rows
@@ -105,6 +106,11 @@ def write_rules_sheet(wb, rules, groups=(), hidden=()):
         'rather than silently matching everything.',
         'conn: pin or rigid. Blank means either.',
         'hidden: 1 if this rule is hiding its rods. Blank means it is not.',
+        'leave out: 1 if the analysis is solved WITHOUT these rods. They '
+        'stay in the model and in this workbook. A rule with a utilisation '
+        'band cannot do this -- utilisation comes out of the analysis, so '
+        'the rule would be changing the answer it reads -- and the column '
+        'is ignored on such a row.',
         'Columns headed "info:" are for reading and are not imported.',
     ]
     for k, text in enumerate(notes):
@@ -228,8 +234,14 @@ def build_rules(sheet_rows, members=(), groups=()):
                           'the rule asks about either.' % (name, conn))
             conn = None
 
-        rules.append(srl.new_rule(name, roles=roles, groups=gids,
-                                  util_min=lo, util_max=hi, conn=conn))
+        leave = _truthy(r.get('leave out'))
+        rule = srl.new_rule(name, roles=roles, groups=gids, util_min=lo,
+                            util_max=hi, conn=conn, exclude=leave)
+        if leave and not rule['exclude']:
+            report.append('Rule "%s" asks about utilisation, so it cannot '
+                          'leave rods out of the analysis; it was read '
+                          'without that.' % name)
+        rules.append(rule)
         if _truthy(r.get('hidden')):
             hidden.add(name)
     return rules, hidden, report

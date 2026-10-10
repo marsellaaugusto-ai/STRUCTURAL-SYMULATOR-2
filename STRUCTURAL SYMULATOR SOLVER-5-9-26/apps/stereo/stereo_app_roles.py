@@ -131,6 +131,12 @@ class StereoRolesMixin:
         self._roles_rows = tk.Frame(box, bg=BG)
         self._roles_rows.pack(fill='x', padx=4)
 
+        self.roles_left_out = tk.Label(box, text='', bg=BG, fg='#9a3412',
+                                       font=('Helvetica', 8, 'bold'),
+                                       justify='left',
+                                       wraplength=PANEL_TEXT_W - 12)
+        self.roles_left_out.pack(anchor='w', padx=4)
+
         rule = tk.Frame(box, bg=BG)
         rule.pack(fill='x', padx=4, pady=(4, 4))
         tk.Button(rule, text='Save a rule…', font=('Helvetica', 8),
@@ -142,6 +148,13 @@ class StereoRolesMixin:
         return box
 
     def _refresh_roles_list(self):
+        said = getattr(self, 'roles_left_out', None)
+        if said is not None:
+            # Rods missing from a solve with nothing on screen to say so is
+            # the failure this panel could introduce, so it is said where
+            # the rule that did it lives.
+            said.config(text=self._exclusion_note()
+                        if hasattr(self, '_exclusion_note') else '')
         rows = getattr(self, '_roles_rows', None)
         if rows is None:
             return
@@ -231,6 +244,18 @@ class StereoRolesMixin:
         tk.Label(band, text='to', font=('Helvetica', 9)).pack(side='left')
         hi = tk.Entry(band, width=6); hi.pack(side='left', padx=(4, 0))
 
+        leave = tk.BooleanVar(value=False)
+        tk.Checkbutton(win, text='Leave these rods out of the analysis',
+                       variable=leave, font=('Helvetica', 9)
+                       ).pack(anchor='w', padx=12)
+        tk.Label(win, text='They stay in the model, the drawings and the '
+                           'workbook; the solve carries on without them. '
+                           'A rule about utilisation cannot do this -- '
+                           'utilisation comes out of the analysis, so such '
+                           'a rule would be changing the answer it reads.',
+                 fg=HINT_FG, justify='left', wraplength=360,
+                 font=('Helvetica', 8)).pack(anchor='w', padx=30, pady=(0, 8))
+
         made = {}
 
         def ok():
@@ -241,8 +266,24 @@ class StereoRolesMixin:
                 except ValueError:
                     return None
             roles = {keys[i] for i in lb.curselection()}
-            made['rule'] = sr.new_rule(name.get(), roles=roles or None,
-                                       util_min=num(lo), util_max=num(hi))
+            rule = sr.new_rule(name.get(), roles=roles or None,
+                               util_min=num(lo), util_max=num(hi),
+                               exclude=leave.get())
+            # new_rule drops the flag rather than building a rule that
+            # cannot answer stably. Say so instead of letting the rule be
+            # saved looking as though it will leave anything out.
+            if leave.get() and not rule['exclude']:
+                messagebox.showinfo(
+                    'Save a rule',
+                    'A rule that asks about utilisation cannot leave rods '
+                    'out of the analysis.\n\nUtilisation is worked out BY '
+                    'the analysis, so a rule reading it to decide what the '
+                    'analysis contains would answer differently every time '
+                    'it was asked -- and the model would solve differently '
+                    'depending on how often you had pressed Analyze.\n\n'
+                    'The rule was saved without that; clear the utilisation '
+                    'band to use it.', parent=win)
+            made['rule'] = rule
             win.destroy()
 
         row = tk.Frame(win); row.pack(pady=(0, 10))
@@ -299,6 +340,8 @@ class StereoRolesMixin:
         lb = tk.Listbox(win, width=58, height=min(10, len(self.role_rules)))
         for r in self.role_rules:
             mark = '[hidden] ' if r['name'] in self._hidden_rules else ''
+            if r.get('exclude'):
+                mark += '[left out] '
             lb.insert('end', '%s%s — %s (%d now)'
                       % (mark, r['name'], sr.describe(r),
                          len(self._rule_matching(r))))

@@ -433,13 +433,48 @@ class StereoGroupViewMixin:
     # ── F1: a group left out of the analysis ──────────────────────────────
 
     def _excluded_rods(self):
-        """Rods of every group marked "leave out of the analysis" (its
-        subgroups' too)."""
+        """Every rod the next Analyze will leave out.
+
+        Two ways in, and they answer different questions. A GROUP is
+        flagged by hand: this bay, this truss, the thing in front of you.
+        A RULE is asked again every time: every rod of a role, everything
+        inside a branch, however the model grows afterwards -- so the
+        temporary works stay out without anyone remembering to flag the
+        next group.
+
+        A rule about UTILISATION can never be one of them; see
+        stereo_roles.can_exclude for why that would make the answer depend
+        on itself.
+        """
         out = set()
         for g in getattr(self, 'groups', None) or []:
             if g.get('excluded'):
                 out.update(sgp.rods_of(self.groups, g['id'], deep=True))
-        return out
+        out |= self._excluded_by_rule()
+        return {i for i in out if 0 <= i < len(self.members)}
+
+    def _excluded_by_rule(self):
+        from apps.stereo import stereo_roles as srl
+        return srl.excluded_by(getattr(self, 'role_rules', ()) or (),
+                               self.members, getattr(self, 'groups', ()) or ())
+
+    def _exclusion_note(self):
+        """One line on what is being left out, or '' when nothing is."""
+        left = self._excluded_rods()
+        if not left:
+            return ''
+        by_rule = self._excluded_by_rule()
+        bits = []
+        groups = len(left - by_rule)
+        if groups:
+            bits.append('%d by group' % groups)
+        if by_rule:
+            names = [r['name'] for r in (self.role_rules or ())
+                     if r.get('exclude')]
+            bits.append('%d by rule (%s)' % (len(by_rule),
+                                             ', '.join(names[:3])))
+        return '%d rod(s) left out of the analysis: %s.' % (len(left),
+                                                            ', '.join(bits))
 
     def _group_toggle_excluded(self, gid=False):
         """Leave the picked group out of the analysis, or put it back. The

@@ -1270,6 +1270,23 @@ class StereoModelMixin:
         # model down with it as a mechanism.
         left_out = self._excluded_rods() if hasattr(
             self, '_excluded_rods') else set()
+        # Leaving out everything is not an analysis of anything, and the
+        # solver's own answer for it ("singular") says nothing about why.
+        # A rule that matched more than whoever wrote it expected is the
+        # way this happens, so the message names the rules.
+        if left_out and len(left_out) >= len(self.members):
+            self.results = None
+            self.member_checks = None
+            self.err = ('Every rod is left out of the analysis, so there is '
+                        'nothing to solve.')
+            if not quiet:
+                messagebox.showinfo(
+                    'Analyze',
+                    self.err + '\n\n' + (self._exclusion_note()
+                                          if hasattr(self, '_exclusion_note')
+                                          else '')
+                    + '\n\nPut something back before analysing.')
+            return
         svc = slc.service_model(self.nodes, self.members,
                                 self._active_supports(), loads,
                                 member_loads, self.panels, inert=left_out)

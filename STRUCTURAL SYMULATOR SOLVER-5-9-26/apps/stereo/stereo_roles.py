@@ -20,12 +20,27 @@ A RULE is a saved question rather than a saved list:
 
     {'name': 'Overloaded diagonals',
      'roles': {'diagonal'}, 'groups': None,
-     'util_min': 1.0, 'util_max': None, 'conn': None}
+     'util_min': 1.0, 'util_max': None, 'conn': None, 'exclude': False}
 
 Stored as a question, it answers itself again after the model changes. A
 saved LIST of rod numbers would be correct the day it was made and quietly
 wrong after the next edit -- which is the same reason node membership is
 derived rather than stored (see stereo_groups).
+
+`exclude` LEAVES THE MATCHING RODS OUT OF THE ANALYSIS. A group could
+already be left out one at a time; asking the question instead means
+temporary works, or a crane's rigging, or everything of a role, drops out
+of the solve and stays out as the model grows, without anyone having to
+remember to flag the next group.
+
+    AND IT IS WHY A RULE ABOUT UTILISATION CANNOT DO IT. Utilisation comes
+    OUT of the analysis, and excluding rods changes the analysis -- so such
+    a rule would answer differently every time it was asked, and the model
+    would solve to a different answer depending on how many times Analyze
+    had been pressed. Not an error anyone would see: just a number that
+    moves. `can_exclude` refuses it where the rule is written, and
+    `excluded_by` asks without the check results at all, so the refusal
+    holds even for a rule that got the flag some other way.
 
 Kept free of Tk, so all of it is tested without a window.
 """
@@ -89,13 +104,38 @@ def rods_with_role(members, roles):
 # ── rules: a saved question, not a saved list ─────────────────────────────
 
 def new_rule(name, roles=None, groups=None, util_min=None, util_max=None,
-             conn=None):
-    return {'name': (str(name).strip() or 'Rule'),
+             conn=None, exclude=False):
+    rule = {'name': (str(name).strip() or 'Rule'),
             'roles': set(roles) if roles else None,
             'groups': set(groups) if groups else None,
             'util_min': None if util_min is None else float(util_min),
             'util_max': None if util_max is None else float(util_max),
-            'conn': conn or None}
+            'conn': conn or None,
+            'exclude': bool(exclude)}
+    # A rule that asks about utilisation can never leave rods out, however
+    # it was built -- see the note at the top of this file. Refused here
+    # rather than trusted to the caller, because every way of making a
+    # rule comes through this function.
+    if rule['exclude'] and not can_exclude(rule):
+        rule['exclude'] = False
+    return rule
+
+
+def asks_about_utilisation(rule):
+    return (rule or {}).get('util_min') is not None \
+        or (rule or {}).get('util_max') is not None
+
+
+def can_exclude(rule):
+    """Whether this rule may leave its rods out of the analysis.
+
+    Only the questions whose answer does not come out of the analysis. A
+    rule about roles, groups or connections asks about the model as drawn,
+    so it gives the same answer before and after a solve; one about
+    utilisation asks about the solve itself, and using it to change the
+    solve makes the answer depend on itself.
+    """
+    return not asks_about_utilisation(rule)
 
 
 def describe(rule):
@@ -116,7 +156,27 @@ def describe(rule):
         bits.append('utilisation under %.2f' % hi)
     if rule.get('groups'):
         bits.append('in %d group(s)' % len(rule['groups']))
-    return ', '.join(bits)
+    said = ', '.join(bits)
+    if rule.get('exclude'):
+        said += ' -- left out of the analysis'
+    return said
+
+
+def excluded_by(rules, members, groups=()):
+    """Every rod a rule leaves out of the analysis.
+
+    Asked WITHOUT the check results, deliberately. A rule about utilisation
+    must not take part -- its answer comes out of the solve it would be
+    changing -- and `matching` already returns nothing for such a rule when
+    it has no checks to read. So the circularity is refused twice: once
+    where the rule is written, and once here, where it would do the damage.
+    """
+    out = set()
+    for rule in rules or ():
+        if not rule.get('exclude') or not can_exclude(rule):
+            continue
+        out.update(matching(rule, members, groups, checks=None))
+    return out
 
 
 def matching(rule, members, groups=(), checks=None):

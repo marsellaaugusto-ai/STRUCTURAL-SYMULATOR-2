@@ -268,6 +268,14 @@ class StereoGroupsMixin:
         menu.add_command(label='Delete group and its rods',
                          command=self._group_delete_object)
         menu.add_separator()
+        # A part is a group saved to a file and placed in another model --
+        # the same "one drawing, built many times" a component is, across
+        # projects rather than within one. See stereo_partlib.
+        menu.add_command(label='Save as a part file…',
+                         command=self._part_save)
+        menu.add_command(label='Place a part file…',
+                         command=self._part_place)
+        menu.add_separator()
         menu.add_command(label='Shared joints…',
                          command=self._group_shared_nodes)
         menu.add_command(label='Do the totals add up?',

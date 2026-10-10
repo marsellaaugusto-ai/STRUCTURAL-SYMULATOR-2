@@ -152,8 +152,14 @@ def merge_models(base, part, tol=DEFAULT_TOL_M, label='part'):
                 own.add(member_map[j])
         ng = {'id': id_map[g['id']], 'name': name,
               'parent': id_map.get(g['parent']), 'members': own}
-        # what the group is (left out, its iteration tags) comes along
-        for k in ('excluded', 'iteration', 'stage', 'position'):
+        # What the group IS comes along: left out of the analysis, its
+        # iteration tags, and which fabricated part it is a copy of. The
+        # list is stereo_groups_excel's, not a second copy of it -- this
+        # one had drifted, and `component` was being dropped, so merging
+        # two models that each had components left look-alike groups that
+        # would then be sized apart.
+        from apps.stereo.stereo_groups_excel import GROUP_FLAGS
+        for k in GROUP_FLAGS:
             if g.get(k):
                 ng[k] = g[k]
         groups.append(ng)

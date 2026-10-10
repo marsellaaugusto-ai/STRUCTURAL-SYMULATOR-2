@@ -90,6 +90,7 @@ from apps.stereo.stereo_app_roles import StereoRolesMixin
 from apps.stereo.stereo_app_marks import StereoMarksMixin
 from apps.stereo.stereo_app_components import StereoComponentsMixin
 from apps.stereo.stereo_app_outliner import StereoOutlinerMixin
+from apps.stereo.stereo_app_partlib import StereoPartLibMixin
 from apps.stereo.stereo_app_groupview import StereoGroupViewMixin
 from apps.stereo.stereo_app_compare import StereoCompareMixin
 from apps.stereo.stereo_app_transform import StereoTransformMixin
@@ -106,7 +107,7 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
                 StereoInspectorMixin, StereoGroupsMixin, StereoGroupViewMixin,
                 StereoSceneMixin, StereoObjectMenuMixin, StereoRolesMixin,
                 StereoMarksMixin, StereoComponentsMixin,
-                StereoOutlinerMixin,
+                StereoOutlinerMixin, StereoPartLibMixin,
                 StereoCompareMixin,
                 StereoTransformMixin,
                 StereoClipboardMixin, StereoMechanismMixin,

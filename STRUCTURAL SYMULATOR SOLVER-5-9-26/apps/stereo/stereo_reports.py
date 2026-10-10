@@ -398,7 +398,8 @@ DEFAULT_MAX_CALC_MEMBERS = 40
 def export_excel(nodes, members, loads, supports, results, path, checks=None,
                   meta=None, max_calc_members=DEFAULT_MAX_CALC_MEMBERS,
                   profiles=None, groups=None, lifts=None, compare=None,
-                  scene=None, mark_tol_mm=None, rules=None):
+                  scene=None, mark_tol_mm=None, rules=None,
+                  mark_register=None):
     """Write a workbook with Nodes, Members, Loads, Supports, Results (if
     `results` is not None), Member Checks (if `checks` is not None) and a
     machine-parseable Model sheet. `meta` is an optional dict of free-text
@@ -437,6 +438,11 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     groups are the same assembly, and how many of each -- the list a
     fabricator works from. Left at None there is no such sheet, which is
     what every workbook written before it existed looks like.
+
+    `mark_register` (stereo_marks' register) holds the numbers to the
+    ones they were issued under, and adds the "Mark Register" sheet that
+    remembers them. Without it the marks are worked out freely, which is
+    right until drawings go out and wrong immediately afterwards.
 
     `max_calc_members` caps the Member Calculations sheet to the N most
     critical members (sorted by utilization desc), and defaults to
@@ -1039,7 +1045,8 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
             try:
                 from apps.stereo import stereo_marks as _sm
                 marks, _rows = _sm.assembly_marks(nodes, members, groups,
-                                                  mark_tol_mm)
+                                                  mark_tol_mm,
+                                                  mark_register)
             except Exception:                         # noqa: BLE001
                 marks = None
         _sge.write_groups_sheet(wb, groups, members, checks=checks,
@@ -1054,8 +1061,11 @@ def export_excel(nodes, members, loads, supports, results, path, checks=None,
     # ── Piece Marks sheet (read-only; derived, never read back) ─────────────
     if mark_tol_mm is not None:
         try:
-            from apps.stereo.stereo_marks_excel import write_marks_sheet
-            write_marks_sheet(wb, nodes, members, groups or (), mark_tol_mm)
+            from apps.stereo.stereo_marks_excel import (
+                write_marks_sheet, write_register_sheet)
+            write_marks_sheet(wb, nodes, members, groups or (), mark_tol_mm,
+                              mark_register)
+            write_register_sheet(wb, mark_register)
         except Exception:                             # noqa: BLE001
             # A schedule is an addition to the workbook, never a reason to
             # lose it -- the same rule the Scene sheet below follows.

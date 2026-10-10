@@ -409,3 +409,172 @@ def test_a_model_with_no_groups_still_lists_its_parts():
     assert s['assemblies'] == []
     assert s['mark_of_group'] == {}
     assert sum(r['qty'] for r in s['parts']) == len(members)
+
+
+# ── keeping a number across revisions ────────────────────────────────────
+
+def _shed(count_by_length, profile='IPE 200'):
+    """A model of N rods at each given length, each rod on its own."""
+    nodes, members = [], []
+    for length, count in count_by_length:
+        for _ in range(count):
+            at = len(nodes)
+            nodes.extend([(0, len(nodes), 0), (length, len(nodes), 0)])
+            members.append(bars([(at, at + 1)], profile=profile)[0])
+    return nodes, members
+
+
+def _add(nodes, members, length, count, profile='IPE 200'):
+    for _ in range(count):
+        at = len(nodes)
+        nodes.extend([(0, len(nodes), 0), (length, len(nodes), 0)])
+        members.append(bars([(at, at + 1)], profile=profile)[0])
+
+
+def _by_length(rows):
+    return {round(r['length_m'], 3): r['mark'] for r in rows}
+
+
+def test_without_a_register_a_more_numerous_part_takes_the_first_number():
+    """The behaviour the register exists to override. T1 is the most
+    repeated work, which is right until the numbers have gone out."""
+    nodes, members = _shed([(3.0, 5), (4.0, 3)])
+    before = _by_length(sm.part_marks(nodes, members)[1])
+    assert before[3.0] == 'B1'
+    _add(nodes, members, 6.0, 9)
+    after = _by_length(sm.part_marks(nodes, members)[1])
+    assert after[6.0] == 'B1'
+    assert after[3.0] != before[3.0], 'everything renumbered'
+
+
+def test_an_issued_part_keeps_its_number_whatever_arrives_after_it():
+    nodes, members = _shed([(3.0, 5), (4.0, 3)])
+    register = sm.issue(sm.schedule(nodes, members))
+    before = _by_length(sm.part_marks(nodes, members)[1])
+    _add(nodes, members, 6.0, 9)
+    after = _by_length(sm.part_marks(nodes, members, register=register)[1])
+    assert after[3.0] == before[3.0] == 'B1'
+    assert after[4.0] == before[4.0] == 'B2'
+    assert after[6.0] == 'B3', 'the new part takes the next free number'
+
+
+def test_a_number_that_went_out_is_never_given_to_another_part():
+    """Two different parts called B2 in two revisions is the failure this
+    exists to prevent, so the list has holes rather than reusing one."""
+    nodes, members = _shed([(3.0, 5), (4.0, 3), (5.0, 1)])
+    register = sm.issue(sm.schedule(nodes, members))
+    members[:] = [m for m in members
+                  if abs(sm.rod_length(nodes, m) - 4.0) > 1e-9]
+    _add(nodes, members, 7.0, 2)
+    after = _by_length(sm.part_marks(nodes, members, register=register)[1])
+    assert 'B2' not in after.values()
+    assert after[7.0] == 'B4', after
+
+
+def test_a_part_that_has_left_the_model_is_named_as_withdrawn():
+    nodes, members = _shed([(3.0, 5), (4.0, 3)])
+    register = sm.issue(sm.schedule(nodes, members))
+    members[:] = [m for m in members
+                  if abs(sm.rod_length(nodes, m) - 4.0) > 1e-9]
+    data = sm.schedule(nodes, members, register=register)
+    assert data['withdrawn'] == ['B2']
+    assert data['issued'] is True
+
+
+def test_nothing_is_withdrawn_while_every_part_is_still_built():
+    nodes, members = _shed([(3.0, 5), (4.0, 3)])
+    register = sm.issue(sm.schedule(nodes, members))
+    assert sm.schedule(nodes, members, register=register)['withdrawn'] == []
+
+
+def test_issuing_again_keeps_what_was_already_held():
+    """A second issue adds the new parts and leaves the old entries as
+    they were, or the first revision's numbers would move."""
+    nodes, members = _shed([(3.0, 5)])
+    first = sm.issue(sm.schedule(nodes, members))
+    _add(nodes, members, 6.0, 9)
+    second = sm.issue(sm.schedule(nodes, members, register=first), first)
+    assert first[sm.PART_PREFIX].items() <= second[sm.PART_PREFIX].items()
+    marks = _by_length(sm.part_marks(nodes, members, register=second)[1])
+    assert marks[3.0] == 'B1' and marks[6.0] == 'B2'
+
+
+def test_assemblies_keep_their_numbers_too():
+    nodes, members, groups = _three_trusses(third_mirrored=False)
+    register = sm.issue(sm.schedule(nodes, members, groups))
+    before = sm.assembly_marks(nodes, members, groups)[0]
+    # Add a part that is more numerous, which would otherwise take T1.
+    extra = []
+    for k in range(5):
+        at = len(nodes)
+        nodes.extend(placed(CHIRAL_PTS, offset=(0, 90 + 20 * k, 0)))
+        first = len(members)
+        members.extend(bars([(a + at, b + at) for a, b in CHIRAL_BARS],
+                            profile='IPE 400'))
+        groups.append({'id': 100 + k, 'name': 'Other %d' % k,
+                       'parent': None,
+                       'members': set(range(first, len(members)))})
+        extra.append(100 + k)
+    after = sm.assembly_marks(nodes, members, groups, register=register)[0]
+    assert all(after[g] == before[g] for g in before)
+    assert after[extra[0]] not in before.values()
+
+
+def test_a_mirrored_copy_does_not_change_the_number_it_is_held_to():
+    """Which copy names a bucket is an accident of the group order. A
+    signature that moved with it would lose the number whenever a copy
+    was deleted."""
+    nodes, members, groups = _three_trusses(third_mirrored=True)
+    register = sm.issue(sm.schedule(nodes, members, groups))
+    before = sm.assembly_marks(nodes, members, groups, register=register)[0]
+    # Delete the first, unmirrored copy: the mirrored one now names it.
+    gone = groups[0]['id']
+    groups[:] = [g for g in groups if g['id'] != gone]
+    after = sm.assembly_marks(nodes, members, groups, register=register)[0]
+    assert {sm.mark_number(m) for m in after.values()} == \
+        {sm.mark_number(m) for m in before.values()}
+
+
+def test_a_register_from_another_tolerance_is_reported_as_not_applying():
+    """Its signatures were computed under that tolerance, so none match.
+    Everything would be numbered again, silently, without this."""
+    nodes, members = _shed([(3.0, 5)])
+    register = sm.issue(sm.schedule(nodes, members, tol_mm=1.0))
+    assert sm.register_applies(register, 1.0)
+    assert not sm.register_applies(register, 25.0)
+    assert sm.register_applies(None, 25.0), 'no register always applies'
+
+
+def test_a_register_is_keyed_by_shape_so_it_cannot_be_wrong():
+    """The whole reason storing this does not break "a mark is derived".
+    Change the steel and the entry simply stops matching; it never names
+    the wrong part."""
+    nodes, members = _shed([(3.0, 2)])
+    register = sm.issue(sm.schedule(nodes, members))
+    assert _by_length(sm.part_marks(nodes, members, register=register)[1]) \
+        == {3.0: 'B1'}
+    for m in members:
+        m['profile'] = 'IPE 400'
+    marks = sm.part_marks(nodes, members, register=register)[1]
+    assert marks[0]['mark'] == 'B2', 'different steel, a number of its own'
+    assert sm.schedule(nodes, members, register=register)['withdrawn'] \
+        == ['B1']
+
+
+def test_every_schedule_row_carries_what_the_register_knows_it_by():
+    nodes, members, groups = _three_trusses(third_mirrored=True)
+    data = sm.schedule(nodes, members, groups)
+    assert all(r['signature'] for r in data['parts'])
+    assert all(r['signature'] for r in data['assemblies'])
+
+
+def test_a_group_we_declined_to_compare_is_never_registered():
+    """No signature means we never measured it, so there is nothing to
+    hold it to -- and it must not quietly take a held number."""
+    nodes = [(0, 0, 0), (0, 0, 0)]
+    members = bars([(0, 1)])
+    groups = [{'id': 1, 'name': 'Collapsed', 'parent': None, 'members': {0}}]
+    data = sm.schedule(nodes, members, groups)
+    assert data['assemblies'][0]['signature'] is None
+    register = sm.issue(data)
+    assert register[sm.ASSEMBLY_PREFIX] == {}

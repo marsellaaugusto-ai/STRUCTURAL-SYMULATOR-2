@@ -8,9 +8,22 @@ THE FIRST: A MARK IS DERIVED, NEVER STORED. It is recomputed from the
 geometry every time, the way a tonnage is. A mark someone could edit by
 hand is a mark that can disagree with the steel, and a stored mark survives
 the edit that made it wrong -- which is the one failure that reaches the
-shop floor. (Keeping a number stable ACROSS REVISIONS is a different and
-harder problem, and deliberately not solved here: these marks are correct
-for the model in front of you, not comparable with last week's drawing.)
+shop floor.
+
+    KEEPING A NUMBER ACROSS REVISIONS does not break that rule, and the
+    reason is worth stating because it looks as though it should. What is
+    remembered is a REGISTER: which part SIGNATURE held which number when
+    the drawings went out. It is not a mark written on a group, and it
+    cannot disagree with the steel -- a signature is the shape itself, so
+    an entry either matches a part in the model (and the same shape really
+    is the same part, so the same number is right) or it matches nothing
+    and that part is simply gone. The mark stays derived; the register
+    only decides which NUMBER the derivation hands out.
+
+    A number that has been issued is never given to a different part, even
+    once the part it named is gone. Two different trusses called T3 in two
+    revisions is exactly the failure the register exists to prevent, and
+    reusing a retired number would be the fastest way to cause it.
 
 THE SECOND: ERR TOWARD "DIFFERENT". Marking two identical trusses apart
 costs a duplicated drawing and a shrug. Marking two different trusses the
@@ -132,6 +145,24 @@ def part_key(nodes, member, tol_mm=DEFAULT_TOL_MM):
     """The identity of one rod as a piece of steel: section plus length."""
     tol = clamp_tol(tol_mm) / 1000.0
     return section_key(member) + (_q(rod_length(nodes, member), tol),)
+
+
+def _digest(what, tol_mm):
+    """A part key as a string, for the register to be keyed by.
+
+    The tolerance is part of it, as it is for an assembly: marks worked out
+    under one tolerance are not the marks of another, and a register must
+    not quietly answer for a comparison it was not made under.
+    """
+    h = hashlib.sha256()
+    h.update(b'STEREO-MARK/1|%d|' % _q(clamp_tol(tol_mm) / 1000.0, 1e-9))
+    h.update(repr(what).encode())
+    return h.hexdigest()
+
+
+def part_signature(nodes, member, tol_mm=DEFAULT_TOL_MM):
+    """What the register knows a single rod by."""
+    return _digest(part_key(nodes, member, tol_mm), tol_mm)
 
 
 # ── a group, wherever it sits and however it is turned ────────────────────
@@ -343,20 +374,43 @@ def mark_number(mark):
     return int(digits) if digits else 0
 
 
-def _numbered(buckets, prefix, order):
-    """{key: mark} for buckets sorted by `order`, numbered from 1.
+def _numbered(buckets, prefix, order, sig_of=None, register=None):
+    """{key: mark} for buckets sorted by `order`.
 
-    The most-used part is T1. A fabricator reads the list top down and the
-    repeated work should be at the top; it also means a model's headline
-    part keeps its number when something rare is added or removed.
+    Without a register, numbered from 1 in that order. The most-used part
+    is T1: a fabricator reads the list top down and the repeated work
+    belongs at the top.
+
+    With one, a part that was issued keeps the number it was issued under,
+    wherever it now sorts, and only the parts the register has never seen
+    are given numbers -- the lowest ones nothing has ever used. A number in
+    the register is reserved for good, even when the part it named has left
+    the model, because the one thing worse than a renumber is two different
+    parts called T3 in two revisions.
     """
+    held = (register or {}).get(prefix) or {}
     marks = {}
-    for n, key in enumerate(sorted(buckets, key=order), start=1):
+    keys = sorted(buckets, key=order)
+    for key in keys:
+        sig = sig_of(key) if sig_of else None
+        if sig is not None and sig in held:
+            marks[key] = '%s%d' % (prefix, held[sig])
+    # Every number the register has ever handed out, plus the ones this
+    # run has just kept: none of them is free.
+    spent = set(held.values()) | {mark_number(m) for m in marks.values()}
+    n = 0
+    for key in keys:
+        if key in marks:
+            continue
+        n += 1
+        while n in spent:
+            n += 1
+        spent.add(n)
         marks[key] = '%s%d' % (prefix, n)
     return marks
 
 
-def part_marks(nodes, members, tol_mm=DEFAULT_TOL_MM):
+def part_marks(nodes, members, tol_mm=DEFAULT_TOL_MM, register=None):
     """Marks for single rods: (by_rod, rows).
 
     `by_rod` is a list as long as `members`, each entry that rod's mark.
@@ -375,7 +429,8 @@ def part_marks(nodes, members, tol_mm=DEFAULT_TOL_MM):
         rods = buckets[key]
         return (-len(rods), -rod_length(nodes, members[rods[0]]), repr(key))
 
-    marks = _numbered(buckets, PART_PREFIX, order)
+    marks = _numbered(buckets, PART_PREFIX, order,
+                      sig_of=lambda key: _digest(key, tol), register=register)
     by_rod = [None] * len(members)
     rows = []
     for key, rods in buckets.items():
@@ -385,6 +440,7 @@ def part_marks(nodes, members, tol_mm=DEFAULT_TOL_MM):
         L = rod_length(nodes, m)
         rows.append({
             'mark': marks[key],
+            'signature': _digest(key, tol),
             'profile': str(m.get('profile') or '') or '(unnamed section)',
             'conn': str(m.get('conn') or 'pin'),
             'length_m': L,
@@ -400,7 +456,8 @@ def part_marks(nodes, members, tol_mm=DEFAULT_TOL_MM):
     return by_rod, rows
 
 
-def assembly_marks(nodes, members, groups, tol_mm=DEFAULT_TOL_MM):
+def assembly_marks(nodes, members, groups, tol_mm=DEFAULT_TOL_MM,
+                   register=None):
     """Marks for groups: (by_gid, rows).
 
     A group is compared on its OWN rods, not its subtree: a parent and its
@@ -442,6 +499,16 @@ def assembly_marks(nodes, members, groups, tol_mm=DEFAULT_TOL_MM):
         buckets.setdefault(key, []).append((gid, flipped))
         home[gid] = key
 
+    # What the register knows a bucket by. The smaller of the part's two
+    # spellings, NOT the one that happened to name the bucket: which copy
+    # came first is an accident of the group order, and a signature that
+    # flips with it would lose the number every time a copy was deleted.
+    def signature(key):
+        if key[0] != 'part':
+            return None
+        drawn, mirror = sigs[buckets[key][0][0]]
+        return min(drawn, mirror)
+
     def length_of(gid):
         return sum(rod_length(nodes, members[i]) for i in own[gid])
 
@@ -450,7 +517,8 @@ def assembly_marks(nodes, members, groups, tol_mm=DEFAULT_TOL_MM):
         gid = members_in[0][0]
         return (-len(members_in), -length_of(gid), -len(own[gid]), gid)
 
-    base = _numbered(buckets, ASSEMBLY_PREFIX, order)
+    base = _numbered(buckets, ASSEMBLY_PREFIX, order, sig_of=signature,
+                     register=register)
     by_gid, rows = {}, []
     for key, found in buckets.items():
         for gid, flipped in found:
@@ -465,6 +533,7 @@ def assembly_marks(nodes, members, groups, tol_mm=DEFAULT_TOL_MM):
             mass = sum(rod_mass_kg(nodes, members[i]) for i in rods)
             rows.append({
                 'mark': base[key] + (MIRROR_SUFFIX if flipped else ''),
+                'signature': signature(key),
                 'names': sorted({g['name'] for g in groups
                                  if g['id'] in same}),
                 'qty': len(same),
@@ -480,10 +549,89 @@ def assembly_marks(nodes, members, groups, tol_mm=DEFAULT_TOL_MM):
     return by_gid, rows
 
 
-def schedule(nodes, members, groups=(), tol_mm=DEFAULT_TOL_MM):
+def schedule(nodes, members, groups=(), tol_mm=DEFAULT_TOL_MM,
+             register=None):
     """Everything the piece-mark sheet needs, in one call."""
-    by_rod, parts = part_marks(nodes, members, tol_mm)
-    by_gid, assemblies = assembly_marks(nodes, members, groups or (), tol_mm)
+    by_rod, parts = part_marks(nodes, members, tol_mm, register)
+    by_gid, assemblies = assembly_marks(nodes, members, groups or (), tol_mm,
+                                        register)
     return {'tol_mm': clamp_tol(tol_mm),
             'part_of_rod': by_rod, 'parts': parts,
-            'mark_of_group': by_gid, 'assemblies': assemblies}
+            'mark_of_group': by_gid, 'assemblies': assemblies,
+            'issued': bool(register),
+            'register_tol_mm': (register or {}).get('tol_mm'),
+            'withdrawn': withdrawn(register, parts, assemblies)}
+
+
+def register_applies(register, tol_mm):
+    """Whether a register's numbers can be handed out at this tolerance.
+
+    A signature carries the tolerance it was computed under, so a register
+    issued at one and used at another matches nothing: every part would
+    look new, every old number would look withdrawn, and the numbering
+    would silently start again. Worth saying rather than discovering.
+    """
+    if not register:
+        return True
+    was = register.get('tol_mm')
+    return was is None or clamp_tol(was) == clamp_tol(tol_mm)
+
+
+# ── the register: what the numbers meant when the drawings went out ───────
+
+def issue(schedule_now, register=None):
+    """The register after issuing the marks in `schedule_now`.
+
+    Adds every part on the schedule under the number it currently carries,
+    and keeps everything the old register already held -- a number it has
+    handed out before stays reserved whether or not that part is still in
+    the model.
+    """
+    out = {PART_PREFIX: dict((register or {}).get(PART_PREFIX) or {}),
+           ASSEMBLY_PREFIX: dict((register or {}).get(ASSEMBLY_PREFIX) or {}),
+           'was': dict((register or {}).get('was') or {}),
+           'tol_mm': schedule_now.get('tol_mm', DEFAULT_TOL_MM)}
+    for prefix, rows in ((PART_PREFIX, schedule_now.get('parts') or ()),
+                         (ASSEMBLY_PREFIX,
+                          schedule_now.get('assemblies') or ())):
+        for row in rows:
+            sig = row.get('signature')
+            if not sig:
+                continue
+            out[prefix].setdefault(sig, mark_number(row['mark']))
+            # What the number stood for, in words, so a register entry
+            # still says something years after the part left the model.
+            # Read by nobody; a signature is 64 characters of hex and a
+            # reader deserves better.
+            out['was'].setdefault(sig, describe_row(prefix, row))
+    return out
+
+
+def describe_row(prefix, row):
+    if prefix == ASSEMBLY_PREFIX:
+        return '%d rod(s), %.3f m, %s' % (row.get('n_rods', 0),
+                                          row.get('length_m', 0.0),
+                                          ', '.join(row.get('names') or ()))
+    return '%s, %.3f m, %s' % (row.get('profile', ''),
+                               row.get('length_m', 0.0),
+                               row.get('conn', ''))
+
+
+def withdrawn(register, parts, assemblies):
+    """Marks the register holds that nothing in the model answers to.
+
+    Worth saying out loud rather than leaving as a gap in the numbering: a
+    part that was issued and is no longer built is a change the shop needs
+    told, and the number staying reserved is why the list has holes in it.
+    """
+    if not register:
+        return []
+    here = {PART_PREFIX: {r.get('signature') for r in parts},
+            ASSEMBLY_PREFIX: {r.get('signature') for r in assemblies}}
+    out = []
+    for prefix in (ASSEMBLY_PREFIX, PART_PREFIX):
+        for sig, n in sorted((register.get(prefix) or {}).items(),
+                             key=lambda kv: kv[1]):
+            if sig not in here[prefix]:
+                out.append('%s%d' % (prefix, n))
+    return out

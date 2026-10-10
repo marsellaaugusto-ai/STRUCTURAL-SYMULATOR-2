@@ -11,6 +11,7 @@ one failure that matters here is a mark that outlives the edit that made it
 wrong.
 """
 import tkinter as tk
+from tkinter import messagebox
 
 from apps.stereo import stereo_marks as sm
 from apps.stereo.stereo_app_constants import BG, PANEL_TEXT_W
@@ -25,6 +26,9 @@ class StereoMarksMixin:
     def _init_marks_state(self):
         self.marks_on = tk.BooleanVar(value=False)
         self.mark_tol = tk.StringVar(value='%g' % sm.DEFAULT_TOL_MM)
+        # What the numbers meant when the drawings went out, or None while
+        # they are still free to be worked out. See stereo_marks.
+        self.mark_register = None
 
     # ── the tolerance ──────────────────────────────────────────────────────
 
@@ -48,7 +52,8 @@ class StereoMarksMixin:
     def _marks_now(self):
         return sm.schedule(self.nodes, self.members,
                            getattr(self, 'groups', ()) or (),
-                           self._mark_tol_mm())
+                           self._mark_tol_mm(),
+                           getattr(self, 'mark_register', None))
 
     def _mark_of_group(self):
         """{gid: mark} when marks are on, {} when they are off.
@@ -61,9 +66,9 @@ class StereoMarksMixin:
         if not getattr(self, 'groups', None) or not self.members:
             return {}
         try:
-            by_gid, _rows = sm.assembly_marks(self.nodes, self.members,
-                                              self.groups,
-                                              self._mark_tol_mm())
+            by_gid, _rows = sm.assembly_marks(
+                self.nodes, self.members, self.groups, self._mark_tol_mm(),
+                getattr(self, 'mark_register', None))
         except Exception:                             # noqa: BLE001
             # A mark is a convenience on a list; never a reason the panel
             # cannot be drawn.
@@ -73,6 +78,7 @@ class StereoMarksMixin:
     def _refresh_marks(self):
         if hasattr(self, '_refresh_group_list'):
             self._refresh_group_list()
+        self._refresh_issue_button()
         self._refresh_marks_note()
 
     # ── the panel ──────────────────────────────────────────────────────────
@@ -106,11 +112,100 @@ class StereoMarksMixin:
                                    font=('Helvetica', 8), justify='left',
                                    wraplength=PANEL_TEXT_W - 12)
         self.marks_note.pack(anchor='w', padx=4, pady=(2, 1))
-        tk.Button(box, text='Schedule…', font=('Helvetica', 8),
-                  command=self._marks_dialog).pack(fill='x', padx=4,
-                                                   pady=(2, 4))
+        row2 = tk.Frame(box, bg=BG)
+        row2.pack(fill='x', padx=4, pady=(2, 4))
+        tk.Button(row2, text='Schedule…', font=('Helvetica', 8),
+                  command=self._marks_dialog).pack(side='left', expand=True,
+                                                   fill='x')
+        self.mark_issue_btn = tk.Button(row2, font=('Helvetica', 8),
+                                        command=self._marks_issue_toggle)
+        self.mark_issue_btn.pack(side='left', expand=True, fill='x',
+                                 padx=(3, 0))
+        self._refresh_issue_button()
         self._refresh_marks_note()
         return box
+
+    # ── issuing the numbers ────────────────────────────────────────────────
+
+    def _refresh_issue_button(self):
+        btn = getattr(self, 'mark_issue_btn', None)
+        if btn is not None:
+            btn.config(text='Release numbers' if self.mark_register
+                       else 'Issue numbers…')
+
+    def _marks_issue_toggle(self):
+        return self._marks_release() if self.mark_register \
+            else self._marks_issue()
+
+    def _marks_issue(self):
+        """Hold every part to the number it carries now.
+
+        A commitment rather than a setting, so it is asked for: from here
+        on the numbering has to live with its own history, and a number
+        that goes out is reserved even once its part is gone.
+        """
+        if not self.members:
+            messagebox.showinfo('Issue numbers', 'There is nothing to issue.')
+            return None
+        data = self._marks_now()
+        n = len(data['parts']) + len(data['assemblies'])
+        if not messagebox.askyesno(
+                'Issue numbers',
+                'Hold these %d mark(s) to the numbers they carry now?\n\n'
+                'Each part then keeps its number however the model changes '
+                'around it, which is what makes this revision comparable '
+                'with the next.\n\n'
+                'A number that goes out is reserved for good -- even once '
+                'the part it names is gone, nothing else is given it. The '
+                'list will have holes in it, and that is the point.'
+                % n):
+            return None
+        self._push_undo('issue marks')
+        self.mark_register = sm.issue(data, self.mark_register)
+        self._refresh_issue_button()
+        self._refresh_marks()
+        self._set_status('%d mark(s) issued. The numbers are held from '
+                         'here.' % n, 'ok')
+        return self.mark_register
+
+    def _marks_release(self):
+        """Let the numbers be worked out freely again.
+
+        Everything the register was holding is let go, so the next
+        schedule may well number differently. Said plainly, because a
+        drawing already issued does not change when this does.
+        """
+        held = len((self.mark_register or {}).get(sm.PART_PREFIX) or {}) \
+            + len((self.mark_register or {}).get(sm.ASSEMBLY_PREFIX) or {})
+        if not messagebox.askyesno(
+                'Release numbers',
+                'Let the %d held number(s) go?\n\n'
+                'Marks are worked out freely again, so this model may '
+                'number differently from the drawings already issued from '
+                'it. Those drawings do not change.' % held):
+            return None
+        self._push_undo('release marks')
+        self.mark_register = None
+        self._refresh_issue_button()
+        self._refresh_marks()
+        self._set_status('Numbers released; they are worked out freely '
+                         'again.', 'ok')
+        return None
+
+    def _register_from_workbook(self, path):
+        """The register a workbook carries, or None. Never a reason for an
+        import to fail: a model without its register is a model whose
+        numbers are free, which is how every model used to be."""
+        try:
+            import openpyxl
+            from apps.stereo.stereo_marks_excel import read_register_sheet
+            wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+            try:
+                return read_register_sheet(wb)
+            finally:
+                wb.close()
+        except Exception:                             # noqa: BLE001
+            return None
 
     def _refresh_marks_note(self):
         """The counts under the toggle -- and nothing at all until it is on.
@@ -144,7 +239,20 @@ class StereoMarksMixin:
                                           'y' if len(data['assemblies']) == 1
                                           else 'ies'))
             bits.append('%d built more than once' % repeated)
-        note.config(text=' · '.join(bits))
+        said = ' · '.join(bits)
+        if self.mark_register:
+            said += '\nNumbers issued: each part keeps the one it went out '\
+                    'under.'
+            if not sm.register_applies(self.mark_register,
+                                       self._mark_tol_mm()):
+                said += ('\nIssued at %g mm, comparing at %g mm -- none of '
+                         'the held numbers apply at this setting.'
+                         % (sm.clamp_tol(self.mark_register.get('tol_mm')),
+                            self._mark_tol_mm()))
+            if data['withdrawn']:
+                said += '\nIssued and no longer built: %s (still reserved).'\
+                    % ', '.join(data['withdrawn'][:6])
+        note.config(text=said)
 
     # ── the schedule window ────────────────────────────────────────────────
 

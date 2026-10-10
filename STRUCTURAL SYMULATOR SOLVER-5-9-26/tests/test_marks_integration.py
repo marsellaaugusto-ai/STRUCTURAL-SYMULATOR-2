@@ -346,3 +346,251 @@ def test_a_workbook_written_without_marks_has_no_such_sheet(tmp_path):
     path = str(tmp_path / 'plain.xlsx')
     sr.export_excel(nodes, members, [], [], None, path)
     assert SHEET not in openpyxl.load_workbook(path).sheetnames
+
+
+# ── issuing the numbers, so they survive the next revision ───────────────
+
+@pytest.fixture
+def issued(app, monkeypatch):
+    """Issue the marks of whatever model is in front of us."""
+    def go(answer=True):
+        monkeypatch.setattr('apps.stereo.stereo_app_marks.messagebox'
+                            '.askyesno', lambda *a, **kw: answer)
+        return app._marks_issue()
+    return go
+
+
+def by_length(app):
+    _by, rows = sm.part_marks(app.nodes, app.members, app._mark_tol_mm(),
+                              app.mark_register)
+    return {round(r['length_m'], 3): r['mark'] for r in rows}
+
+
+def add_rods(app, length, count, profile='IPE 200'):
+    for _ in range(count):
+        at = len(app.nodes)
+        app.nodes.extend([(0, len(app.nodes), 0),
+                          (length, len(app.nodes), 0)])
+        app.members.append({'a': at, 'b': at + 1, 'profile': profile,
+                            'A': 28.5, 'I': 1940.0, 'conn': 'pin',
+                            'E': 200.0, 'Fy': 235.0, 'Fu': 360.0, 'K': 1.0})
+
+
+def only_rods(app, lengths):
+    app.nodes, app.members, app.groups = [], [], []
+    for length, count in lengths:
+        add_rods(app, length, count)
+    app.loads, app.supports, app.results, app.member_checks = [], [], None, None
+
+
+def test_the_numbers_start_free(app):
+    assert app.mark_register is None
+    assert 'Issue' in app.mark_issue_btn.cget('text')
+
+
+def test_issuing_holds_each_part_to_the_number_it_carries(app, issued):
+    only_rods(app, [(3.0, 5), (4.0, 3)])
+    before = by_length(app)
+    issued()
+    assert app.mark_register is not None
+    add_rods(app, 6.0, 9)                  # would otherwise take B1
+    after = by_length(app)
+    assert after[3.0] == before[3.0] == 'B1'
+    assert after[6.0] == 'B3'
+
+
+def test_declining_the_question_issues_nothing(app, issued):
+    only_rods(app, [(3.0, 2)])
+    assert issued(answer=False) is None
+    assert app.mark_register is None
+
+
+def test_issuing_is_undoable(app, issued):
+    only_rods(app, [(3.0, 2)])
+    issued()
+    assert app.mark_register is not None
+    app._undo()
+    assert app.mark_register is None
+
+
+def test_the_button_says_which_way_it_goes(app, issued):
+    only_rods(app, [(3.0, 2)])
+    issued()
+    assert 'Release' in app.mark_issue_btn.cget('text')
+    app._undo()
+    app._refresh_issue_button()
+    assert 'Issue' in app.mark_issue_btn.cget('text')
+
+
+def test_releasing_lets_the_numbers_move_again(app, issued, monkeypatch):
+    only_rods(app, [(3.0, 5), (4.0, 3)])
+    issued()
+    add_rods(app, 6.0, 9)
+    assert by_length(app)[3.0] == 'B1'
+    monkeypatch.setattr('apps.stereo.stereo_app_marks.messagebox.askyesno',
+                        lambda *a, **kw: True)
+    app._marks_release()
+    assert app.mark_register is None
+    assert by_length(app)[6.0] == 'B1', 'free again, so the most used wins'
+
+
+def test_an_empty_model_has_nothing_to_issue(app, issued, dialogs):
+    app._clear_model()
+    assert issued() is None
+    assert app.mark_register is None
+
+
+def test_the_note_says_the_numbers_are_held(app, issued):
+    only_rods(app, [(3.0, 2)])
+    app.marks_on.set(True)
+    issued()
+    app._refresh_marks_note()
+    assert 'issued' in app.marks_note.cget('text').lower()
+
+
+def test_the_note_names_what_was_withdrawn(app, issued):
+    only_rods(app, [(3.0, 5), (4.0, 3)])
+    app.marks_on.set(True)
+    issued()
+    app.members[:] = [m for m in app.members
+                      if abs(sm.rod_length(app.nodes, m) - 4.0) > 1e-9]
+    app._refresh_marks_note()
+    text = app.marks_note.cget('text')
+    assert 'no longer built' in text and 'B2' in text
+
+
+def test_the_note_warns_when_the_tolerance_moved_under_the_register(app,
+                                                                    issued):
+    """Its signatures were computed at the issued tolerance, so at another
+    one none of them match and everything would renumber silently."""
+    only_rods(app, [(3.0, 2)])
+    app.marks_on.set(True)
+    app.mark_tol.set('1')
+    issued()
+    app.mark_tol.set('25')
+    app._refresh_marks_note()
+    assert 'none of the held numbers apply' in app.marks_note.cget('text')
+
+
+# ── the register in the workbook ─────────────────────────────────────────
+
+@pytest.mark.skipif(not _ensure_openpyxl(), reason='openpyxl unavailable')
+def test_the_register_travels_in_the_workbook(app, issued, tmp_path,
+                                              monkeypatch):
+    from apps.stereo.stereo_marks_excel import REGISTER_SHEET
+    import openpyxl
+    only_rods(app, [(3.0, 5), (4.0, 3)])
+    issued()
+    held = dict(app.mark_register[sm.PART_PREFIX])
+    path = str(tmp_path / 'r.xlsx')
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                        lambda **kw: path)
+    app._export_excel()
+    assert REGISTER_SHEET in openpyxl.load_workbook(path).sheetnames
+
+    app.mark_register = None
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                        lambda **kw: path)
+    app._import_excel()
+    assert app.mark_register is not None
+    assert app.mark_register[sm.PART_PREFIX] == held
+
+
+@pytest.mark.skipif(not _ensure_openpyxl(), reason='openpyxl unavailable')
+def test_the_numbers_hold_across_a_save_and_a_revision(app, issued, tmp_path,
+                                                        monkeypatch):
+    """The whole point: a model exported, edited and exported again must
+    not renumber the parts that did not change."""
+    only_rods(app, [(3.0, 5), (4.0, 3)])
+    issued()
+    before = by_length(app)
+    path = str(tmp_path / 'rev1.xlsx')
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                        lambda **kw: path)
+    app._export_excel()
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                        lambda **kw: path)
+    app._import_excel()
+    add_rods(app, 6.0, 9)
+    after = by_length(app)
+    assert after[3.0] == before[3.0]
+    assert after[4.0] == before[4.0]
+    assert after[6.0] not in before.values()
+
+
+@pytest.mark.skipif(not _ensure_openpyxl(), reason='openpyxl unavailable')
+def test_a_model_whose_numbers_are_free_writes_no_register(app, tmp_path,
+                                                            monkeypatch):
+    import openpyxl
+    from apps.stereo.stereo_marks_excel import REGISTER_SHEET
+    only_rods(app, [(3.0, 2)])
+    path = str(tmp_path / 'free.xlsx')
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                        lambda **kw: path)
+    app._export_excel()
+    assert REGISTER_SHEET not in openpyxl.load_workbook(path).sheetnames
+
+
+@pytest.mark.skipif(not _ensure_openpyxl(), reason='openpyxl unavailable')
+def test_importing_a_file_with_no_register_frees_the_numbers(app, issued,
+                                                              tmp_path,
+                                                              monkeypatch):
+    """The register belongs to the model, like its groups do."""
+    only_rods(app, [(3.0, 2)])
+    path = str(tmp_path / 'free.xlsx')
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                        lambda **kw: path)
+    app._export_excel()
+    issued()
+    assert app.mark_register is not None
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                        lambda **kw: path)
+    app._import_excel()
+    assert app.mark_register is None
+
+
+@pytest.mark.skipif(not _ensure_openpyxl(), reason='openpyxl unavailable')
+def test_the_register_sheet_says_what_each_number_stood_for(app, issued,
+                                                             tmp_path,
+                                                             monkeypatch):
+    """A signature is 64 characters of hex; a reader deserves better."""
+    import openpyxl
+    from apps.stereo.stereo_marks_excel import REGISTER_SHEET
+    only_rods(app, [(3.0, 5)])
+    issued()
+    path = str(tmp_path / 'r.xlsx')
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                        lambda **kw: path)
+    app._export_excel()
+    ws = openpyxl.load_workbook(path, data_only=True)[REGISTER_SHEET]
+    flat = [str(c) for row in ws.iter_rows(values_only=True) for c in row
+            if c is not None]
+    assert any('IPE 200' in s and '3.000' in s for s in flat), flat
+
+
+@pytest.mark.skipif(not _ensure_openpyxl(), reason='openpyxl unavailable')
+def test_a_damaged_register_sheet_does_not_stop_the_import(app, issued,
+                                                            tmp_path,
+                                                            monkeypatch):
+    """A model whose numbers are free is how every model used to be."""
+    import openpyxl
+    from apps.stereo.stereo_marks_excel import REGISTER_SHEET
+    only_rods(app, [(3.0, 2)])
+    issued()
+    path = str(tmp_path / 'r.xlsx')
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.asksaveasfilename',
+                        lambda **kw: path)
+    app._export_excel()
+    wb = openpyxl.load_workbook(path)
+    ws = wb[REGISTER_SHEET]
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value == 'level':
+                cell.value = 'nope'
+    wb.save(path)
+    rods = len(app.members)
+    monkeypatch.setattr('apps.stereo.stereo_app.filedialog.askopenfilename',
+                        lambda **kw: path)
+    app._import_excel()
+    assert len(app.members) == rods
+    assert app.mark_register is None

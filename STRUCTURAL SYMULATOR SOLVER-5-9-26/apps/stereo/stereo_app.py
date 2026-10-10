@@ -313,6 +313,12 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
                 # handed back supports the model no longer had reason to.
                 'column_freed': copy.deepcopy(getattr(self, '_column_freed', [])),
                 'crane_lifts': copy.deepcopy(getattr(self, '_crane_lifts', [])),
+                # The piece-mark register: which number each part went out
+                # under. Issuing is a model change like any other, and an
+                # undo that left it behind would hold the restored model to
+                # numbers it was never issued with.
+                'mark_register': copy.deepcopy(
+                    getattr(self, 'mark_register', None)),
                 'project_info': dict(getattr(self, 'project_info', None) or {})}
 
     def _restore_snapshot(self, snap):
@@ -353,6 +359,10 @@ class StereoApp(StereoShellMixin, StereoPanelsMixin, StereoModelMixin, StereoVie
         self._add_rod_first = (self._add_rod_first
                                if (self._add_rod_first or 0) < n else None)
         self.selected_members = {i for i in self.selected_members if i < nm}
+        if hasattr(self, 'mark_register'):
+            self.mark_register = snap.get('mark_register')
+            if hasattr(self, '_refresh_issue_button'):
+                self._refresh_issue_button()
         if hasattr(self, '_editing_gid'):
             self._editing_gid()          # closes an edit whose group is gone
             self._refresh_group_edit_controls()

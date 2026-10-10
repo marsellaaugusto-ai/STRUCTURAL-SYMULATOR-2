@@ -213,7 +213,9 @@ class StereoReportsMixin:
                             compare=self._compare_export(),
                             scene=self._scene_for_export(),
                             mark_tol_mm=self._mark_tol_mm(),
-                            rules=self._rules_for_export())
+                            rules=self._rules_for_export(),
+                            mark_register=getattr(self, 'mark_register',
+                                                  None))
         except Exception as exc:
             messagebox.showerror('Export failed', str(exc))
             return
@@ -273,6 +275,10 @@ class StereoReportsMixin:
         # The piece-mark tolerance, if the workbook carries one: the
         # schedule is recomputed here, but under the setting it was
         # exported with rather than ours.
+        # The mark register, if the workbook carries one: the numbers
+        # this model went out under, which the marks are held to.
+        if hasattr(self, 'mark_register'):
+            self.mark_register = self._register_from_workbook(path)
         if hasattr(self, '_set_mark_tol'):
             from apps.stereo.stereo_app_marks import META_TOL_KEY
             try:

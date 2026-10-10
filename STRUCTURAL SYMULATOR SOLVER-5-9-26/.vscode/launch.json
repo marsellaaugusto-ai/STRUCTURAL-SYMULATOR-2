@@ -1,0 +1,55 @@
+{
+  // WHY THIS FILE EXISTS, since .vscode is in most people's ignore list
+  // and this one is committed on purpose.
+  //
+  // main.py, common.py and apps/ import each other by package path, so
+  // the app only runs with the APP FOLDER as the working directory. VS
+  // Code's plain Run button uses the workspace root instead -- which is
+  // the right folder when the app folder was opened and the wrong one
+  // when the repository was, and the difference between the app starting
+  // and "the zip extracts but nothing happens".
+  //
+  // So there is one configuration per folder someone might have opened,
+  // each naming its own cwd rather than trusting the default.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Structural Simulator (app folder opened)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Structural Simulator (repository root opened)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/STRUCTURAL SYMULATOR SOLVER-5-9-26/main.py",
+      "cwd": "${workspaceFolder}/STRUCTURAL SYMULATOR SOLVER-5-9-26",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      // What to run FIRST when the app will not start: it turns a missing
+      // library into a readable message instead of a traceback.
+      "name": "Environment doctor (app folder opened)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/doctor.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Environment doctor (repository root opened)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/STRUCTURAL SYMULATOR SOLVER-5-9-26/tools/doctor.py",
+      "cwd": "${workspaceFolder}/STRUCTURAL SYMULATOR SOLVER-5-9-26",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}

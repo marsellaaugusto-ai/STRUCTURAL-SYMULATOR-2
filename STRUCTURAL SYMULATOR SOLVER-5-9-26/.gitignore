@@ -9,7 +9,15 @@ __pycache__/
 htmlcov/
 
 # Editors / OS
-.vscode/
+# .vscode holds two kinds of file. settings.json and friends are one
+# person's preferences and stay out. launch.json and tasks.json are
+# source: they set the working directory the package imports need, so
+# the Run button works whether the app folder or the repository root
+# was opened. A clone without them is a clone where Run fails, and
+# tests/test_launch_environment.py checks they are here.
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
 .idea/
 *.swp
 Thumbs.db

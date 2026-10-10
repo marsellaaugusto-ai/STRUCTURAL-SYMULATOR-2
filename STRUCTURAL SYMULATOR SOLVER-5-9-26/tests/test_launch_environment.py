@@ -98,6 +98,25 @@ def test_the_vscode_folder_and_the_doctor_ship_in_the_zip():
     assert 'REPORTS AND GUIDES/RUNNING_THE_APP.md' in shipped
 
 
+def test_the_launch_configurations_are_actually_in_the_repository():
+    """The two tests above read the files off the disk, so they pass just as
+    well when the files exist here and in nobody else's clone -- which is
+    what happened: .gitignore had a blanket .vscode/ rule, `git add` skips
+    an ignored path without a word, and `git status` stays clean, so the
+    commit went in carrying only the rebuilt archives. A clone then has no
+    launch.json and Run fails again, which is the fault these tests were
+    written for. Tracked-ness is the thing to assert, not existence."""
+    git = subprocess.run(['git', 'rev-parse', '--is-inside-work-tree'],
+                         cwd=APP, capture_output=True, text=True)
+    if git.returncode != 0:
+        import pytest
+        pytest.skip('not a git checkout (the shipped zip has no .git)')
+    for rel in ('.vscode/launch.json', '.vscode/tasks.json'):
+        p = subprocess.run(['git', 'ls-files', '--error-unmatch', rel],
+                           cwd=APP, capture_output=True, text=True)
+        assert p.returncode == 0, f'{rel} exists on disk but is not committed'
+
+
 # ── the startup check ─────────────────────────────────────────────────────
 # Restored 2026-09-30 after a user reported "the zip extracts but nothing
 # happens when I run main.py". An earlier version of this check was removed

@@ -217,10 +217,21 @@ Two gaps were found by this audit, not by the test suite:
    and a new test asserts **tracked-ness** rather than existence, because
    reading from disk can never catch this.
 
-2. **`USER_GUIDE.html` documents none of it** (open). The guide was last
-   touched 2026-10-03, before this work, and is hand-written rather than
-   generated. Piece marks, the outliner, part files and components have no
-   user-facing documentation.
+2. **`USER_GUIDE.html` documented none of it** (fixed, `0b70d48`). The
+   guide was last touched 2026-10-03, before this work, and is hand-written
+   rather than generated, so nothing had carried the new features into it:
+   piece marks, the outliner, rules, components and part files were all
+   undocumented for the end user. Section 5 now covers them, section 6
+   lists what each sheet is for, and the SketchUp bullet states that the
+   round trip needs 0.5.0.
+
+   Writing it against the code rather than from memory caught four errors
+   in my own first draft -- the menu items are `Make component…` and
+   `Make unique (detach this copy)`, the button is `Issue numbers…`, and
+   dropping a group on *Ungrouped* does **not** move it to the top:
+   `_may_drop` refuses that target, and the way up is to drop clear of the
+   rows. A guide that names a control wrongly is worse than no guide, so
+   each claim was checked against the widget that implements it.
 
 ## Known limits
 

@@ -332,6 +332,42 @@ def reexpress(quantity, value, src, dst):
     return dst.from_si(quantity, src.to_si(quantity, value))
 
 
+# ── which design code the CHECKS come from ──────────────────────────────
+#
+# The selector above is named after design codes, and that is honest about
+# the UNITS -- each entry really is the convention that code tabulates in.
+# It is NOT honest about the checks, and nothing on screen said so: the
+# resistance factors, the nominal strengths and the weld rules every tab
+# applies come from `cirsoc_301.py` whichever entry is picked, so choosing
+# "AISC 360 (US customary)" changed kN to kip and nothing else.
+#
+# Two ways to fix that. Renaming the entries to "AISC units (kip, ft, in)"
+# would make the selector truthful by saying less. Saying which code
+# governs makes it truthful by saying more, and for a tool whose users are
+# learning how codes work, "these are CIRSOC factors shown in AISC units"
+# is itself worth knowing. Hence this.
+#
+# When a second code is implemented, give it a key here and the caveat
+# disappears for the conventions it covers. `CHECKS_CODE` is the one place
+# the name lives; `cirsoc_301.CIRSOC_301` is the object it names.
+CHECKS_CODE = 'CIRSOC 301-2018'
+#: Unit systems whose own code is the one the checks actually use.
+CHECKS_NATIVE_TO = ('cirsoc',)
+
+
+def checks_note(key=None):
+    """One line for the units bar: which code the strength checks come
+    from, and whether that is the one the chosen convention is named after.
+
+    None when they agree, so the bar stays quiet in the common case.
+    """
+    key = key or current().key
+    if key in CHECKS_NATIVE_TO:
+        return None
+    return ('Strength checks use %s factors — only the units follow %s.'
+            % (CHECKS_CODE, SYSTEMS[key].name))
+
+
 DEFAULT_SYSTEM = 'cirsoc'
 
 # Display order for the selector: the app's own convention first, the other

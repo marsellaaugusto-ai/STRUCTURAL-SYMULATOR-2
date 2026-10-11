@@ -79,7 +79,7 @@ from .truss_math import (analyze, compute_diagrams, find_zero_crossings, plate_n
                           deformed_shape_points, deformed_point_at,
                           compute_fiber_stress, compute_node_design_actions)
 from .truss_reports import export_excel, import_excel_model
-from . import truss_plates, truss_guides
+from . import truss_plates, truss_guides, truss_loadpath
 from .truss_app_learn import TrussLearnMixin
 from .truss_app_design import TrussDesignMixin
 from .truss_app_play import TrussPlayMixin
@@ -151,6 +151,9 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self.cad_angle      = tk.DoubleVar(value=0.0)
         self.ruler_active   = tk.BooleanVar(value=False)
         self._space_pan     = False   # space held down -> drag pans
+        self._lp = None               # the load-path trace being shown
+        self._lp_phase = 0.0          # chevron travel, 0..1
+        self._lp_job = None
         self.ruler_start    = None   # world (wx,wy) or None
         self._mouse_wx      = 0.0   # live world cursor position
         self._mouse_wy      = 0.0
@@ -247,10 +250,16 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self.show_contraflexure = tk.BooleanVar(value=True)
         self.show_node_moments = tk.BooleanVar(value=False)
         self.show_force_labels = tk.BooleanVar(value=True)
+        self.letter_joints = tk.BooleanVar(value=True)
+        self.show_load_path = tk.BooleanVar(value=False)
         # Twelve separate checkboxes and buttons made a beginner read
         # fifteen labels to find Analyze. As one menu they read as one.
         self._menu_button(view_g, 'View ▾', [
             ('check', 'Force on each member', self.show_force_labels, self._draw),
+            ('check', 'Letter the joints (A, B, C…)', self.letter_joints,
+             self._draw),
+            ('check', 'Trace where one load goes', self.show_load_path,
+             self._toggle_load_path),
             ('check', 'Deformed shape', self.show_deform, self._draw),
             ('check', '○ Inflection points (M = 0)',
              self.show_contraflexure, self._draw),
@@ -676,24 +685,52 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                  bg='#f0f0ee', fg='#666', font=('Helvetica',8),
                  justify='left', wraplength=PANEL_W-55).grid(
                      row=0, column=0, columnspan=2, sticky='w', pady=(0,4))
+        # Presets, because "E = 200" is not a thing an architecture student
+        # knows and "steel" is. The boxes stay editable underneath: the
+        # preset fills them, it does not replace them.
+        tk.Label(mf, text='Material:', bg='#f0f0ee',
+                 font=('Helvetica',10)).grid(row=1, column=0, sticky='w')
+        self.mat_preset = tk.StringVar(value='')
+        mat_box = ttk.Combobox(mf, textvariable=self.mat_preset, width=15,
+                               state='readonly', font=('Helvetica', 9),
+                               values=[n for n, _E in self.MATERIAL_PRESETS])
+        mat_box.grid(row=1, column=1, sticky='e', padx=4)
+        mat_box.bind('<<ComboboxSelected>>', self._apply_material_preset)
+        self._bind_widget_tooltip(mat_box,
+            'Fills E with a typical stiffness for that material. It changes '
+            'how far the truss deflects, never the member forces of a '
+            'pin-jointed one.')
+
+        tk.Label(mf, text='Section:', bg='#f0f0ee',
+                 font=('Helvetica',10)).grid(row=2, column=0, sticky='w')
+        self.sec_preset = tk.StringVar(value='')
+        sec_box = ttk.Combobox(mf, textvariable=self.sec_preset, width=15,
+                               state='readonly', font=('Helvetica', 9),
+                               values=[n for n, _A, _I in self.SECTION_PRESETS])
+        sec_box.grid(row=2, column=1, sticky='e', padx=4)
+        sec_box.bind('<<ComboboxSelected>>', self._apply_section_preset)
+        self._bind_widget_tooltip(sec_box,
+            'Fills A and I with the catalogue values for that rolled '
+            'section (IPE, strong axis).')
+
         self.unit_label(tk.Label(mf, bg='#f0f0ee', font=('Helvetica',10)),
                         lambda: f'E ({self.u("modulus")}):'
-                        ).grid(row=1,column=0,sticky='w')
+                        ).grid(row=3,column=0,sticky='w')
         self.mat_E = self.unit_var(tk.DoubleVar(value=200.0), 'modulus')
         tk.Entry(mf, textvariable=self.mat_E, width=8,
-                 font=('Helvetica',10)).grid(row=1,column=1,sticky='e',padx=4)
+                 font=('Helvetica',10)).grid(row=3,column=1,sticky='e',padx=4)
         self.unit_label(tk.Label(mf, bg='#f0f0ee', font=('Helvetica',10)),
                         lambda: f'A ({self.u("area")}):'
-                        ).grid(row=2,column=0,sticky='w')
+                        ).grid(row=4,column=0,sticky='w')
         self.mat_A = self.unit_var(tk.DoubleVar(value=10.0), 'area')
         tk.Entry(mf, textvariable=self.mat_A, width=8,
-                 font=('Helvetica',10)).grid(row=2,column=1,sticky='e',padx=4)
+                 font=('Helvetica',10)).grid(row=4,column=1,sticky='e',padx=4)
         self.unit_label(tk.Label(mf, bg='#f0f0ee', font=('Helvetica',10)),
                         lambda: f'I ({self.u("inertia")}, rigid only):'
-                        ).grid(row=3,column=0,sticky='w')
+                        ).grid(row=5,column=0,sticky='w')
         self.mat_I = self.unit_var(tk.DoubleVar(value=8000.0), 'inertia')
         tk.Entry(mf, textvariable=self.mat_I, width=8,
-                 font=('Helvetica',10)).grid(row=3,column=1,sticky='e',padx=4)
+                 font=('Helvetica',10)).grid(row=5,column=1,sticky='e',padx=4)
 
         # load editor
         self.load_frame = tk.LabelFrame(panel, text='Load on node —', bg='#f0f0ee',
@@ -722,12 +759,31 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         # support editor
         self.sup_frame = tk.LabelFrame(panel, text='Support on node —', bg='#f0f0ee',
                                        font=('Helvetica',10,'bold'), padx=6, pady=4)
-        tk.Label(self.sup_frame, text='Type:', bg='#f0f0ee',
-                 font=('Helvetica',10)).grid(row=0,column=0,sticky='w')
+        # Four SYMBOLS, not four words. A support type has a universally
+        # recognised drawing, the tab already draws all four
+        # (`_draw_support`), and a student learns the symbol by picking it.
+        # `sup_type` still holds 'pin' / 'rollerX' / ... -- every saved
+        # model and workbook uses those keys.
         self.sup_type = tk.StringVar(value='pin')
-        ttk.Combobox(self.sup_frame, textvariable=self.sup_type, width=12,
-                     values=['pin','rollerX','rollerY','fixed'], state='readonly',
-                     font=('Helvetica',10)).grid(row=0,column=1,padx=4)
+        self.sup_btns = {}
+        picker = tk.Frame(self.sup_frame, bg='#f0f0ee')
+        picker.grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 2))
+        for col, key in enumerate(('pin', 'rollerX', 'rollerY', 'fixed')):
+            cell = tk.Frame(picker, bg='#f0f0ee', bd=2, relief='flat')
+            cell.grid(row=0, column=col, padx=2)
+            cv = tk.Canvas(cell, width=44, height=46, bg='#f0f0ee',
+                           highlightthickness=0, cursor='hand2')
+            cv.pack()
+            self._draw_support(cv, 22, 8, key)
+            lb = tk.Label(cell, text=self.support_label(key), bg='#f0f0ee',
+                          font=('Helvetica', 7), fg='#555', wraplength=56)
+            lb.pack()
+            for w in (cv, lb, cell):
+                w.bind('<Button-1>', lambda _e, k=key: self._pick_support(k))
+            self._bind_widget_tooltip(
+                cv, self.support_label(key, short=False))
+            self.sup_btns[key] = cell
+        self._refresh_support_picker()
         tk.Button(self.sup_frame, text='Apply support', bg='#1a6bbd', fg='white',
                   font=('Helvetica',10,'bold'), relief='flat',
                   command=self._apply_support).grid(row=1,column=0,columnspan=2,
@@ -2030,6 +2086,10 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                    for i in range(len(loop)))
 
     def _invalidate_results(self):
+        # The trace is a reading of a solve that no longer exists.
+        if getattr(self, '_lp', None) is not None:
+            self._stop_load_path()
+
         self.results = None
         self.diagrams = None
         self.plate_checks = []
@@ -2375,7 +2435,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
             res = self.results['node_res'][ni] if self.results else None
             rxn = self.results['reactions'].get(ni) if self.results else None
             nm_x, nm_y = self._world_to_metres(n[0], n[1])
-            lines = [f'Node {ni}  ({nm_x:.3f}, {nm_y:.3f}) m']
+            lines = [f'{self.joint_text(ni)}  ({nm_x:.3f}, {nm_y:.3f}) m']
             F = self.u('force')
             if sup: lines.append(f'Support: {self.support_label(sup["type"])}')
             if ld:  lines.append(f'Load  Fx={self.show("force", ld["fx"]):g}  '
@@ -2477,6 +2537,244 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
     def support_label(self, stype, short=True):
         table = self.SUPPORT_SHORT if short else self.SUPPORT_LABELS
         return table.get(stype, stype)
+
+    #: Typical Young's modulus, in the GPa this tab stores `modulus` in.
+    #: Round working values, not design minima -- they set how far the
+    #: truss deflects, and for a PIN-JOINTED truss they do not affect the
+    #: member forces at all, which is the thing worth noticing.
+    MATERIAL_PRESETS = (
+        ('Steel (any grade)', 200.0),
+        ('Stainless steel', 193.0),
+        ('Aluminium 6061-T6', 70.0),
+        ('Reinforced concrete', 30.0),
+        ('Glulam GL24h (along)', 11.5),
+        ('Softwood C24 (along)', 11.0),
+    )
+
+    #: Catalogue A and I for a few rolled IPE sections, strong axis, in the
+    #: cm2 / cm4 this tab stores them in. A short list on purpose: it is
+    #: here so a student can see what a real section is worth, not to be a
+    #: steel catalogue.
+    SECTION_PRESETS = (
+        ('IPE 160', 20.1, 869.0),
+        ('IPE 200', 28.5, 1943.0),
+        ('IPE 240', 39.1, 3892.0),
+        ('IPE 300', 53.8, 8356.0),
+        ('IPE 400', 84.5, 23130.0),
+    )
+
+    @staticmethod
+    def joint_letter(i):
+        """0 -> A, 25 -> Z, 26 -> AA. The classic drawing convention."""
+        i = int(i)
+        out = ''
+        while True:
+            out = chr(ord('A') + i % 26) + out
+            i = i // 26 - 1
+            if i < 0:
+                return out
+
+    def joint_label(self, i):
+        """What the DRAWING calls a joint.
+
+        On the canvas a joint number and a member number sit a few pixels
+        apart and look identical -- "2" next to "2" is one of them, and
+        nothing says which. Lettering the joints is how every structures
+        textbook separates them, and it costs nothing: the index is
+        unchanged underneath, and every text surface still says "Node 2"
+        so the drawing and the tables can still be matched up.
+        """
+        if getattr(self, 'letter_joints', None) is None or self.letter_joints.get():
+            return self.joint_letter(i)
+        return str(i)
+
+    def joint_text(self, i):
+        """What a SENTENCE calls a joint: 'Node 2 · joint C' while
+        lettering is on, so the reader can map the two without having to
+        count round the drawing."""
+        if getattr(self, 'letter_joints', None) is not None and self.letter_joints.get():
+            return 'Node %d \u00b7 joint %s' % (i, self.joint_letter(i))
+        return 'Node %d' % i
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Where does this load go?
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    # The one reading the numbers do not hand you. apps/truss/truss_loadpath
+    # does it by SUPERPOSITION -- the same model solved with this load and
+    # nothing else -- so the shares it reports are the reactions of that
+    # solve and cannot disagree with statics. See that module for why the
+    # obvious joint-walking version was thrown away.
+
+    def _toggle_load_path(self):
+        if not self.show_load_path.get():
+            self._stop_load_path()
+            self._draw()
+            return
+        self._compute_load_path()
+        self._draw()
+
+    def _loaded_node_to_trace(self):
+        """The joint to trace: the selected one if it carries a load, else
+        the biggest load in the model, so the feature does something
+        useful the first time it is switched on."""
+        loaded = {l['node']: math.hypot(l.get('fx', 0.0), l.get('fy', 0.0))
+                  for l in self.loads}
+        loaded = {n: m for n, m in loaded.items() if m > 1e-9}
+        if not loaded:
+            return None
+        for ni in self.selected_nodes:
+            if ni in loaded:
+                return ni
+        return max(loaded, key=lambda n: loaded[n])
+
+    def _compute_load_path(self):
+        self._lp = None
+        if not self.results:
+            self.status_var.set('Run ▶ Analyze first, then trace a load.')
+            return
+        ni = self._loaded_node_to_trace()
+        if ni is None:
+            self.status_var.set('There is no load to trace yet — add one '
+                                'with the Load tool.')
+            return
+        self._lp = truss_loadpath.trace(
+            self.nodes, self.rods, self.supports, self.plates,
+            self.loads, ni, analyze)
+        self.status_var.set(truss_loadpath.summary(
+            self._lp, joint_name=self.joint_label,
+            force_fmt=lambda v: self.fmt('force', v, sign=True)))
+        self._start_load_path_anim()
+
+    def _start_load_path_anim(self):
+        if self._lp_job is not None:
+            return
+        self._lp_step()
+
+    def _stop_load_path(self):
+        if self._lp_job is not None:
+            try:
+                self.root.after_cancel(self._lp_job)
+            except Exception:
+                pass
+            self._lp_job = None
+        self._lp = None
+
+    def _lp_step(self):
+        """One frame of travel. Only the phase moves -- the trace itself is
+        solved once, not per frame."""
+        if not self.show_load_path.get() or self._lp is None:
+            self._lp_job = None
+            return
+        self._lp_phase = (self._lp_phase + 0.06) % 1.0
+        self._draw()
+        try:
+            self._lp_job = self.root.after(60, self._lp_step)
+        except Exception:
+            self._lp_job = None
+
+    def _draw_load_path(self, c, w2s, z):
+        """Chevrons running away from the traced load, along every member
+        that carries a measurable part of it, sized by its share."""
+        lp = self._lp
+        if not lp or not lp.get('share'):
+            return
+        LP = '#0F8A7E'
+        start = lp['start']
+        for ri, share in lp['share'].items():
+            if ri >= len(self.rods):
+                continue
+            rod = self.rods[ri]
+            a, b = self.nodes[rod['a']], self.nodes[rod['b']]
+            ux, uy = truss_loadpath.flow_direction(
+                self.nodes, self.rods, ri, lp['forces'], start)
+            # flow_direction works in world coords, where y grows DOWNWARD
+            # on this canvas exactly as it does in the model, so no flip.
+            sx0, sy0 = w2s(a[0], a[1])
+            sx1, sy1 = w2s(b[0], b[1])
+            if (ux * (b[0] - a[0]) + uy * (b[1] - a[1])) < 0:
+                sx0, sy0, sx1, sy1 = sx1, sy1, sx0, sy0
+            dx, dy = sx1 - sx0, sy1 - sy0
+            L = math.hypot(dx, dy)
+            if L < 1:
+                continue
+            dx, dy = dx / L, dy / L
+            px, py = -dy, dx
+            size = 4 + 7 * share
+            n = max(2, int(L // 34))
+            for k in range(n):
+                t = ((k + self._lp_phase) / n) * L
+                if t < 10 or t > L - 10:
+                    continue
+                cx, cy = sx0 + dx * t, sy0 + dy * t
+                c.create_line(cx - dx*size + px*size, cy - dy*size + py*size,
+                              cx, cy,
+                              cx - dx*size - px*size, cy - dy*size - py*size,
+                              fill=LP, width=max(1.5, 1.0 + 2.0 * share),
+                              capstyle='round', joinstyle='round')
+        # mark where it lands
+        for node, frac in lp.get('supports', {}).items():
+            if node >= len(self.nodes):
+                continue
+            nx, ny = self.nodes[node]
+            sx, sy = w2s(nx, ny)
+            c.create_oval(sx-16, sy-16, sx+16, sy+16, outline=LP, width=2)
+            # Beside the joint, not under it: the support glyph and its
+            # hatching occupy everything directly below. The halo is
+            # because the reaction arrow and its label land here too, and
+            # the share is the one number this mode exists to show.
+            pct = '%.0f%%' % (frac * 100)
+            for ddx, ddy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                c.create_text(sx+21+ddx, sy+2+ddy, text=pct, fill='white',
+                              anchor='w', font=('Helvetica', 10, 'bold'))
+            c.create_text(sx+21, sy+2, text=pct,
+                          fill=LP, anchor='w', font=('Helvetica', 10, 'bold'))
+        n0 = lp['start']
+        if n0 < len(self.nodes):
+            sx, sy = w2s(*self.nodes[n0][:2])
+            c.create_text(sx, sy - 34, text='load traced from here',
+                          fill=LP, font=('Helvetica', 8, 'bold'))
+
+    def _pick_support(self, key):
+        self.sup_type.set(key)
+        self._refresh_support_picker()
+
+    def _refresh_support_picker(self):
+        """Ring the chosen symbol. A radio dot beside a drawing would say
+        the same thing twice; the frame itself is the indicator."""
+        for key, cell in getattr(self, 'sup_btns', {}).items():
+            chosen = key == self.sup_type.get()
+            try:
+                cell.configure(relief='solid' if chosen else 'flat',
+                               bg='#dce9f7' if chosen else '#f0f0ee',
+                               highlightbackground='#1a6bbd')
+                for child in cell.winfo_children():
+                    child.configure(bg='#dce9f7' if chosen else '#f0f0ee')
+            except Exception:
+                pass
+
+    def _apply_material_preset(self, _event=None):
+        """Fill E from the chosen material. The box stays editable: a
+        preset is a starting point, not a lock."""
+        for name, E in self.MATERIAL_PRESETS:
+            if name == self.mat_preset.get():
+                self.mat_E.set(self.show('modulus', E))
+                self.status_var.set(
+                    '%s — E = %s. For a pin-jointed truss this changes the '
+                    'deflection, not the member forces.'
+                    % (name, self.fmt('modulus', E)))
+                return
+
+    def _apply_section_preset(self, _event=None):
+        """Fill A and I from the chosen rolled section."""
+        for name, A, I in self.SECTION_PRESETS:
+            if name == self.sec_preset.get():
+                self.mat_A.set(self.show('area', A))
+                self.mat_I.set(self.show('inertia', I))
+                self.status_var.set(
+                    '%s — A = %s, I = %s (strong axis).'
+                    % (name, self.fmt('area', A), self.fmt('inertia', I)))
+                return
 
     def _refresh_tool_buttons(self):
         act = self.tool.get()
@@ -2774,7 +3072,11 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                     self.sup_frame['text'] = f'Support on {len(self.pending_sup)} node(s)'
                     if len(self.pending_sup) == 1:
                         ex = next((s for s in self.supports if s['node']==ni), None)
-                        if ex: self.sup_type.set(ex['type'])
+                        if ex:
+                            self.sup_type.set(ex['type'])
+                            # the symbol picker is the control now, so it
+                            # has to show what this node already has
+                            self._refresh_support_picker()
                     self.load_frame.pack_forget()
                     self.sup_frame.pack(fill='x', padx=8, pady=4, before=self.sel_frame)
                     self.status_var.set(f'Configure support for {len(self.pending_sup)} node(s) →')
@@ -3369,7 +3671,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
             f_ = lambda v: self.show('force', v)
             l_ = lambda v: self.show('length', v)
             d_ = lambda v: self.show('deflection', v)
-            t.insert('end', f'Node {ni}  ({l_(n[0]//SNAP):.2f}, '
+            t.insert('end', f'{self.joint_text(ni)}  ({l_(n[0]//SNAP):.2f}, '
                             f'{l_(-n[1]//SNAP):.2f}) {self.u("length")}\n')
             if sup: t.insert('end',f'Support: {sup["type"]}\n')
             if ld:  t.insert('end', f'Load Fx={f_(ld["fx"]):g} '
@@ -3678,6 +3980,10 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                                 mx+px*off, my+py*off, lbl,
                                 color if color!=CZ else '#555', 'rod_label'))
 
+        # The load-path chevrons go on top of the members they travel
+        # along, and under the joints, loads and reactions.
+        self._draw_load_path(c, w2s, z)
+
         # supports
         for s in self.supports:
             n=self.nodes[s['node']]; sx,sy=w2s(n[0],n[1])
@@ -3720,7 +4026,8 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
             r    = 9 if (is_sel or is_start) else 6      # constant on-screen size
             fill = CS if (is_sel or is_start) else CN
             c.create_oval(sx-r,sy-r,sx+r,sy+r,fill=fill,outline='#aaa',width=1)
-            label_queue.append((1e12, sx, sy-r-4, str(i), '#555', 'node_label'))
+            label_queue.append((1e12, sx, sy-r-4, self.joint_label(i),
+                                '#555', 'node_label'))
             if is_pload:
                 c.create_oval(sx-13,sy-13,sx+13,sy+13,outline=CL,width=2,dash=(3,2))
             if is_psup:
@@ -5113,7 +5420,11 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
             else:
                 eqs.append(r'$\mathrm{Vierendeel\ moment:}\ \ N/A\ \mathrm{-\ pinned\ connection,\ no\ bending}$')
             for eq in eqs:
-                img = render_math(eq, fontsize=12, color='#222222') if have_math else None
+                # master=win: the image must belong to the interpreter of
+                # the window showing it, not to whichever root happens to
+                # be tkinter's default. See common.render_math.
+                img = (render_math(eq, fontsize=12, color='#222222', master=win)
+                       if have_math else None)
                 if img is not None:
                     win._math_refs.append(img)
                     tk.Label(calc_col, image=img, bg='#ffffff').pack(anchor='w', pady=2)

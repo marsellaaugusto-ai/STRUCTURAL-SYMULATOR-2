@@ -133,6 +133,7 @@ from tkinter import ttk
 import units
 import about
 import appinfo
+from common import TextScale
 
 from apps.truss.truss_app import TrussApp
 from apps.beam.beam_app import BeamApp
@@ -176,11 +177,38 @@ class App:
         self.units_note = tk.Label(self.units_bar, text=units.current().note,
                                     bg='#ebebea', fg='#666', font=('Helvetica', 8))
         self.units_note.pack(side='left', padx=10)
+        # The selector is named after design codes, which is honest about the
+        # units and silent about the checks: every tab's resistance factors
+        # come from cirsoc_301.py whichever entry is chosen. This says so,
+        # and only when it needs to -- see units.checks_note.
+        self.checks_note = tk.Label(self.units_bar, text='', bg='#ebebea',
+                                    fg='#9a5b00', font=('Helvetica', 8, 'bold'))
+        self.checks_note.pack(side='left', padx=(0, 10))
         self.about_btn = tk.Button(self.units_bar, text='About…',
                                    font=('Helvetica', 8), relief='flat',
                                    bg='#ebebea',
                                    command=lambda: about.show_about(root))
         self.about_btn.pack(side='right', padx=8, pady=2)
+
+        # Text size, app-wide, beside the other app-wide setting. The
+        # explanatory text in these panels is 7 and 8 point: fine on the
+        # machine it was written on, unreadable on a projector, which is
+        # where a teaching tool spends much of its life. See
+        # common.TextScale for why this walks the tree instead of the
+        # hundreds of font literals being changed.
+        self.text_scale = None          # built after the tabs exist
+        self.text_size_var = tk.StringVar(value='100%')
+        self.text_size_box = ttk.Combobox(
+            self.units_bar, textvariable=self.text_size_var, state='readonly',
+            width=6, values=['100%', '125%', '150%', '175%'])
+        self.text_size_box.pack(side='right', padx=(2, 8), pady=3)
+        tk.Label(self.units_bar, text='Text:', bg='#ebebea',
+                 font=('Helvetica', 9, 'bold')).pack(side='right', pady=3)
+        self.text_size_box.bind('<<ComboboxSelected>>',
+                                lambda _e: self._apply_text_size())
+
+        def _refresh_checks_note():
+            self.checks_note.config(text=units.checks_note() or '')
 
         def _on_units_change(_event=None):
             name = self.units_var.get()
@@ -188,7 +216,10 @@ class App:
                 if units.SYSTEMS[key].name == name:
                     units.set_current(key)
                     self.units_note.config(text=units.SYSTEMS[key].note)
+                    _refresh_checks_note()
                     break
+
+        _refresh_checks_note()
 
         self.units_box.bind('<<ComboboxSelected>>', _on_units_change)
 
@@ -240,6 +271,43 @@ class App:
         self._build_info = appinfo.build_info()
         nb.bind('<<NotebookTabChanged>>', lambda _e: self.refresh_title())
         self.refresh_title()
+
+        # Only now: TextScale records each widget's ORIGINAL size the first
+        # time it sees it, so it has to meet a fully built window or the
+        # tabs made after it would be measured already-scaled.
+        self.text_scale = TextScale(root)
+
+    def _apply_text_size(self):
+        """Apply the chosen percentage to the whole window."""
+        if self.text_scale is None:
+            return
+        try:
+            pct = int(str(self.text_size_var.get()).rstrip('%'))
+        except ValueError:
+            return
+        self.text_scale.apply(pct / 100.0)
+        self._refit_panels()
+
+    def _refit_panels(self):
+        """Bigger text needs a wider panel, or the controls it describes
+        go under the horizontal scrollbar.
+
+        A panel whose width the user has already set by dragging the sash
+        is left exactly where they put it -- the setting is theirs, and
+        changing the text size is not a reason to take it back.
+        """
+        for _name, app in getattr(self, 'tab_apps', ()):
+            shell = getattr(app, 'shell', None)
+            panel = getattr(app, 'panel_outer', None)
+            if shell is None or panel is None:
+                continue
+            try:
+                if shell.user_set_the_width():
+                    continue
+                panel.fit_to_content(max_width=640)
+                shell.set_panel_width(panel.base_width, remember=True)
+            except Exception:
+                pass
 
     def current_title(self):
         try:

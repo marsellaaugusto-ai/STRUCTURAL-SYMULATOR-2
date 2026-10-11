@@ -112,13 +112,23 @@ def _ensure_matplotlib():
     """PDF reports and the equation images in the guides."""
     return _importable('matplotlib', 'PIL')
 
-def render_math(tex, fontsize=13, color='#1a1a1a', dpi=200):
+def render_math(tex, fontsize=13, color='#1a1a1a', dpi=200, master=None):
     """
     Renders a math string in matplotlib's mathtext (a LaTeX-lookalike typesetter
     built into matplotlib — no separate TeX/LaTeX installation required) to a
     Tk-displayable PhotoImage. `tex` must be wrapped in $...$.
     Returns None if matplotlib/Pillow aren't available, so callers can fall
     back to a plain-text rendering instead.
+
+    PASS `master`: the widget the image will be shown in. A Tk image belongs
+    to one interpreter, and without a master Pillow binds it to
+    `tkinter._default_root` -- the first root the process ever made, which is
+    not necessarily the window being built. Show such an image in a second
+    root and Tk refuses it with `image "pyimage1" doesn't exist`, because
+    that name exists in the other interpreter. One process with two roots is
+    rare in normal use and routine in a test suite, which is where this
+    surfaced (tests/test_truss_layout.py, the Rod Calculations report), but
+    the bug is the binding, not the test.
     """
     try:
         import matplotlib
@@ -139,7 +149,7 @@ def render_math(tex, fontsize=13, color='#1a1a1a', dpi=200):
         plt.close(fig)
         buf.seek(0)
         img = Image.open(buf).convert('RGBA')
-        return ImageTk.PhotoImage(img)
+        return ImageTk.PhotoImage(img, master=master)
     except Exception:
         return None
 
@@ -1623,6 +1633,158 @@ class AppShell(tk.Frame):
         want = min(self._panel_base,
                    max(self.PANEL_MIN, int(window_width * max_share)))
         self.set_panel_width(want)
+
+
+class TextScale:
+    """One control that makes every word in the app bigger.
+
+    WHY. This project writes its fonts as literals -- `font=('Helvetica',
+    8)` and `font=('Helvetica', 7)` appear hundreds of times, and much of
+    the explanatory text is 7 or 8 point grey. That is legible on the
+    machine it was written on and not on a projector, which is where a
+    teaching tool spends a good deal of its life. Rather than touch every
+    literal, this walks the built widget tree and re-sizes what it finds.
+
+    TWO KINDS OF FONT, and both have to be covered or the window comes out
+    half-scaled:
+
+    * **Named fonts** (TkDefaultFont, TkTextFont, ...). ttk widgets --
+      Combobox, Treeview, Notebook tabs -- take their font from the style,
+      not from a widget option, so the only way to reach them is to resize
+      the named font itself.
+    * **Literal fonts** set on a widget. Those are read back, scaled, and
+      written again.
+
+    The ORIGINAL size is remembered the first time a widget is touched, and
+    every later change is computed from that original rather than from the
+    current value. Scaling the current value compounds: 1.25 twice would be
+    1.56, and stepping back to 1.0 would not return where it started.
+
+        scale = TextScale(root)
+        scale.apply(1.25)        # everything 25% larger
+        scale.apply(1.0)         # exactly back to the original
+    """
+
+    #: The named fonts worth touching. Others exist (TkCaptionFont,
+    #: TkSmallCaptionFont) but belong to window decoration, not content.
+    NAMED = ('TkDefaultFont', 'TkTextFont', 'TkFixedFont', 'TkMenuFont',
+             'TkHeadingFont', 'TkTooltipFont')
+
+    MIN_SIZE = 6        # below this, text stops being text
+
+    def __init__(self, root):
+        self.root = root
+        self.factor = 1.0
+        self._named_base = {}
+
+    # -- public ---------------------------------------------------------------
+    def apply(self, factor):
+        """Re-size everything under `root` to `factor` times its original."""
+        try:
+            factor = float(factor)
+        except (TypeError, ValueError):
+            return self.factor
+        if factor <= 0:
+            return self.factor
+        self.factor = factor
+        self._apply_named(factor)
+        self._walk(self.root, factor)
+        return factor
+
+    def refresh(self):
+        """Re-apply the current factor to widgets built since the last
+        call -- a dialog opened later is still built at 1.0."""
+        if abs(self.factor - 1.0) > 1e-9:
+            self._walk(self.root, self.factor)
+
+    # -- named fonts ----------------------------------------------------------
+    def _apply_named(self, factor):
+        try:
+            from tkinter import font as tkfont
+        except Exception:
+            return
+        for name in self.NAMED:
+            try:
+                f = tkfont.nametofont(name, root=self.root)
+            except Exception:
+                continue
+            if name not in self._named_base:
+                try:
+                    self._named_base[name] = int(f.cget('size'))
+                except Exception:
+                    continue
+            base = self._named_base[name]
+            # A NEGATIVE Tk font size is a measurement in pixels rather than
+            # points. Both scale, but the sign has to survive or the font
+            # silently changes units and jumps.
+            size = max(self.MIN_SIZE, int(round(abs(base) * factor)))
+            try:
+                f.configure(size=-size if base < 0 else size)
+            except Exception:
+                pass
+
+    # -- literal fonts --------------------------------------------------------
+    def _walk(self, widget, factor):
+        self._scale_one(widget, factor)
+        try:
+            children = widget.winfo_children()
+        except Exception:
+            return
+        for child in children:
+            self._walk(child, factor)
+
+    def _scale_one(self, widget, factor):
+        base = getattr(widget, '_textscale_base', None)
+        if base is None:
+            try:
+                spec = widget.cget('font')
+            except Exception:
+                widget._textscale_base = False      # no font option at all
+                return
+            base = self._parse(spec)
+            widget._textscale_base = base if base else False
+        if not base:
+            return
+        family, size, rest = base
+        new = max(self.MIN_SIZE, int(round(abs(size) * factor)))
+        try:
+            widget.configure(font=(family, -new if size < 0 else new, *rest))
+        except Exception:
+            pass
+
+    def _parse(self, spec):
+        """('Helvetica', 9, ('bold',)) from whatever Tk hands back, or None.
+
+        A NAMED font is left alone: `_apply_named` already resizes it, and
+        rewriting it as a literal here would detach the widget from the
+        name and freeze it at one size.
+        """
+        if not spec:
+            return None
+        # Tk hands this back as a str, a tuple, or a Tcl_Obj depending on
+        # the widget and how the font was set. Only the first two are
+        # iterable, so anything else goes through str() first.
+        if not isinstance(spec, (str, list, tuple)):
+            spec = str(spec)
+        if isinstance(spec, str):
+            if spec in self.NAMED or spec.startswith('Tk'):
+                return None
+            parts = spec.split()
+        else:
+            parts = list(spec)
+        if len(parts) < 2:
+            return None
+        # The family may be several words ('DejaVu Sans Mono 9'), so the
+        # size is the first part that reads as an integer.
+        for i, part in enumerate(parts):
+            try:
+                size = int(part)
+            except (TypeError, ValueError):
+                continue
+            family = ' '.join(str(p) for p in parts[:i])
+            rest = tuple(str(p) for p in parts[i + 1:])
+            return (family, size, rest) if family else None
+        return None
 
 
 # ═════════════════════════════════════════════════════════════════════════════

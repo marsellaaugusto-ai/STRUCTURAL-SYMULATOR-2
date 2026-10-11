@@ -183,16 +183,29 @@ class TrussDesignMixin:
             return None
         from . import truss_pdf
         try:
+            # Hand over what ▶ Analyze already computed -- the diagrams,
+            # the plates and their checks -- rather than letting the
+            # report re-derive them. It CAN re-derive them (a script
+            # exporting a report gets the same sheets), but re-running
+            # them here would be a second solve of the same model that
+            # could disagree with what is on screen.
             out = truss_pdf.export_pdf(
                 path, self.nodes, self.rods, self._active_supports(),
                 self._design_loads(), self.results, self.rod_checks,
-                self.profiles, title=self._report_title())
+                self.profiles, title=self._report_title(),
+                diagrams=self.diagrams, plates=self.plates,
+                plate_checks=getattr(self, 'plate_checks', None),
+                stability=getattr(self, '_stab', None))
         except Exception as exc:                # noqa: BLE001
             messagebox.showerror('Export PDF', 'The report could not be '
                                  'written:\n%s' % exc)
             return None
-        self.status_var.set('Wrote a %d-sheet report to %s.'
-                            % (out['sheets'], os.path.basename(path)))
+        self.status_var.set(
+            'Wrote a %d-sheet report to %s — %s.'
+            % (out['sheets'], os.path.basename(path),
+               'with shear, moment and a card for every rod that bends'
+               if out.get('rod_detail') else
+               'no shear or moment anywhere, so those sheets are left out'))
         return out
 
     # ── steel sections for the families ───────────────────────────────────

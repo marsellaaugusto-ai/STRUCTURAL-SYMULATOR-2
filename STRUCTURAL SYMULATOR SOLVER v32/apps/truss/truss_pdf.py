@@ -29,6 +29,10 @@ LOAD = '#222222'
 REACTION = '#1e8f4e'
 ROWS_PER_SHEET = 26
 EXPLAIN_RODS = 2
+#: Lines of a step-by-step check that fit one column of an Explain sheet
+#: above the title block. Measured, not guessed: 6.0 pt monospace from
+#: y 0.790 down to y 0.175 on an A4 landscape sheet.
+EXPLAIN_LINES = 49
 APP_NAME = 'Truss'
 
 
@@ -40,13 +44,18 @@ def _xy(p):
 class _Report:
 
     def __init__(self, nodes, rods, supports, loads, results, checks,
-                 profiles, title, units):
+                 profiles, title, units, diagrams=None, plates=None,
+                 plate_checks=None, stability=None):
         from apps.stereo.stereo_reports import ReportUnits
         self.nodes, self.rods = nodes, rods
         self.supports, self.loads = supports, loads
         self.res, self.checks = results, checks or []
         self.profiles, self.title = profiles or {}, title
         self.u = units or ReportUnits()
+        self.diagrams = diagrams or []
+        self.plates = plates or []
+        self.plate_checks = plate_checks or []
+        self.stability = stability
         self.pts = [_xy(p) for p in nodes]
         xs = [p[0] for p in self.pts]
         ys = [p[1] for p in self.pts]
@@ -55,7 +64,34 @@ class _Report:
                         1e-9)
         self.defl = td.deflection(nodes, supports, results['node_res'])
         self.score = ts.score(nodes, rods, results, self.checks)
+        #: Filled in by `buckling()`; the cover reads it, so the sheets
+        #: are built in an order that puts the cover last and renumbers
+        #: nothing (`new_sheet` appends, `cover` inserts at 0).
+        self.buckling_factors = []
         self.sheets = []
+
+    # ── does anything bend? ───────────────────────────────────────────────
+    def bends(self):
+        """True when any rod carries shear or moment.
+
+        THE REASON THIS EXISTS. A classic truss -- every rod pinned, every
+        load at a joint -- has NO shear and NO moment anywhere: the axial
+        force is the whole result, which is the single most important
+        thing the tab teaches. Printing a Shear sheet, a Moment sheet and
+        a per-rod V/M card for such a model is three or four pages of
+        flat zero lines that say nothing and bury the pages that do.
+        Those sheets are skipped, and the cover says why instead.
+        """
+        if getattr(self, '_bends', None) is None:
+            self._bends = any(
+                max((abs(v) for v in list(d.get('V', ())) +
+                     list(d.get('M', ()))), default=0.0) > 1e-9
+                for d in self.diagrams)
+        return self._bends
+
+    def _peak(self, key):
+        return max((max((abs(v) for v in d.get(key, ())), default=0.0)
+                    for d in self.diagrams), default=0.0)
 
     # ── sheet furniture ───────────────────────────────────────────────────
     def meta(self):
@@ -160,6 +196,111 @@ class _Report:
                         % (self.u.f('force', m, 1), self.u.lab('force')),
                         fontsize=6.5, color=LOAD, va='bottom', zorder=7)
 
+    # ── shear and moment, as silhouettes along the members ────────────────
+    def draw_band(self, ax, ri, values, xs, amp, face, edge, lw=0.8):
+        """One rod's V or M, drawn as a filled band off the member.
+
+        The offset direction is the member's own local transverse axis,
+        (nx, ny) = (-dy/L, dx/L) on this sheet's y-up points -- the same
+        convention the tab's Vierendeel view uses on its y-down canvas,
+        so a positive lobe lands on the same visual side of the member in
+        the report as it does on screen. Getting that wrong would put the
+        sagging lobe of every horizontal rod on the wrong face, which
+        looks entirely plausible and is exactly backwards.
+
+        The band is SPLIT at every sign change, so a lobe that crosses
+        zero draws as two polygons meeting on the member rather than one
+        bow-tie across it.
+        """
+        rod = self.rods[ri]
+        (xa, ya), (xb, yb) = self.pts[rod['a']], self.pts[rod['b']]
+        L = math.hypot(xb - xa, yb - ya) or 1.0
+        nx, ny = -(yb - ya) / L, (xb - xa) / L
+        span = xs[-1] if xs and xs[-1] > 1e-12 else 1.0
+        samples = [(x / span, v) for x, v in zip(xs, values)]
+        if len(samples) < 2:
+            return
+        segs, cur = [], [samples[0]]
+        for i in range(1, len(samples)):
+            f0, v0 = samples[i - 1]
+            f1, v1 = samples[i]
+            if v0 * v1 < 0:
+                fc = f0 + (f1 - f0) * (-v0) / (v1 - v0)
+                cur.append((fc, 0.0))
+                segs.append(cur)
+                cur = [(fc, 0.0)]
+            cur.append((f1, v1))
+        segs.append(cur)
+        from matplotlib.patches import Polygon
+        for seg in segs:
+            if len(seg) < 2:
+                continue
+            base = [(xa + (xb - xa) * f, ya + (yb - ya) * f) for f, _ in seg]
+            off = [(px + nx * v * amp, py + ny * v * amp)
+                   for (px, py), (_, v) in zip(base, seg)]
+            ax.add_patch(Polygon(base + off[::-1], closed=True,
+                                 facecolor=face, edgecolor=edge,
+                                 linewidth=lw, alpha=0.85, zorder=4))
+
+    def _action_sheet(self, heading, key, face, edge, unit, what):
+        """The Shear sheet and the Moment sheet, which are the same sheet
+        twice over different data.
+
+        TWO SHEETS AND NOT ONE. The tab draws them side by side, which
+        halves the width each gets; on a 30-bay truss that is the
+        difference between reading a lobe and guessing at it. On paper
+        there is no reason to pay that: each gets the whole sheet.
+        """
+        fig = self.new_sheet(heading)
+        ax = self.drawing_axes(fig)
+        self.draw_rods(ax, color=GHOST, width=1.2)
+        self.draw_nodes(ax)
+        self.draw_supports(ax)
+        peak = self._peak(key)
+        # 0.10 and not 0.18 of the span: on a Vierendeel every bay bends,
+        # so neighbouring lobes reach into each other and a band big
+        # enough to read on its own is too big to read in a row of six.
+        amp = (0.10 * self.span / peak) if peak > 1e-12 else 0.0
+        hits = []
+        for ri, d in enumerate(self.diagrams):
+            vals, xs = list(d.get(key, ())), list(d.get('xs', ()))
+            if len(vals) < 2 or max((abs(v) for v in vals), default=0.0) <= 1e-9:
+                continue
+            self.draw_band(ax, ri, vals, xs, amp, face, edge)
+            j = max(range(len(vals)), key=lambda k: abs(vals[k]))
+            hits.append((abs(vals[j]), ri, vals[j]))
+        hits.sort(reverse=True)
+        for _a, ri, v in hits[:6]:
+            rod = self.rods[ri]
+            (xa, ya), (xb, yb) = self.pts[rod['a']], self.pts[rod['b']]
+            ax.text((xa + xb) / 2, (ya + yb) / 2,
+                    '%d: %s' % (ri, self.u.f(unit, v, 2, sign=True)),
+                    fontsize=6.4, color=edge, ha='center', va='center',
+                    zorder=8, bbox=dict(boxstyle='round,pad=0.12', fc='white',
+                                        ec='none', alpha=0.85))
+        self.scale_bar(ax)
+        if hits:
+            line = ('%s. Biggest %s %s in rod %d; the band is drawn off each '
+                    'member, proportional to the value, and labelled on the '
+                    'six largest.'
+                    % (what, self.u.f(unit, hits[0][2], 2, sign=True),
+                       self.u.lab(unit), hits[0][1]))
+        else:
+            line = '%s. Every rod reads zero.' % what
+        fig.text(0.05, 0.945, _wrap(line, 160), fontsize=8, color=INK,
+                 va='top')
+        return [ri for _a, ri, _v in hits]
+
+    def shear(self):
+        return self._action_sheet(
+            'Shear V', 'V', '#e8a49c', '#c0392b', 'force',
+            'Shear force V along every rigid rod')
+
+    def moment(self):
+        return self._action_sheet(
+            'Moment M', 'M', '#9fc0e0', '#2c5f9e', 'moment',
+            'Bending moment M along every rigid rod (sagging positive)')
+
     # ── the sheets ────────────────────────────────────────────────────────
     def cover(self, contents):
         fig = self.new_sheet('Cover')
@@ -199,21 +340,64 @@ class _Report:
                 self.u.lab('deflection'),
                 '%.0f' % d['L_over'] if d['L_over'] < 1e7 else '∞',
                 td.DEFLECTION_LIMIT, 'OK' if d['ok'] else 'TOO MUCH')))
+        # THE WHOLE VERDICT, on the first page. Everything ▶ Analyze puts
+        # on screen used to be spread over the sheets that follow, or --
+        # for the stability line and the plate checks -- nowhere in the
+        # report at all. A reader who only ever sees page one should see
+        # what the app said.
+        if self.stability and self.stability.get('text'):
+            rows.append(('Stability', self.stability['text']))
+        gov = td.governing(self.checks)
+        if gov:
+            i, c = gov
+            rows.append(('Most used rod', 'rod %d at %.2f (%s)%s' % (
+                i, c['util'], c.get('governing') or c.get('mode') or '',
+                '' if c['ok'] else ' — OVER CAPACITY')))
+            over = sum(1 for ch in self.checks
+                       if ch.get('checked') and not ch.get('ok'))
+            rows.append(('Rods over capacity', '%d of %d checked' % (
+                over, sum(1 for ch in self.checks if ch.get('checked')))))
+        elif self.checks:
+            rows.append(('Rod checks',
+                         'none — no family has a steel section yet'))
+        if self.buckling_factors:
+            rows.append(('Buckling', 'λ₁ = %.2f%s' % (
+                self.buckling_factors[0],
+                ' — BELOW 1, it buckles before the full load is on'
+                if self.buckling_factors[0] < 1.0 else '')))
+        if self.plates:
+            ok = sum(1 for c in self.plate_checks
+                     if c and c.get('ok', True))
+            bad = sum(1 for c in self.plate_checks
+                      if c and not c.get('ok', True))
+            rows.append(('Plates', '%d checked, %d over%s' % (
+                ok + bad, bad,
+                ' (%d could not be checked)' % (len(self.plates) - ok - bad)
+                if len(self.plates) > ok + bad else '')))
+        rows.append(('Shear and moment',
+                     'present — see the Shear, Moment and Rod detail sheets'
+                     if self.bends() else
+                     'none: every rod is pinned and loaded only at its '
+                     'nodes, so the axial force is the whole result'))
         y -= 0.07
         for k, v in rows:
             fig.text(0.06, y, k, fontsize=9, color='#7a8087')
-            fig.text(0.24, y, v, fontsize=9, color=INK)
-            y -= 0.034
+            fig.text(0.24, y, _wrap(v, 62), fontsize=9, color=INK,
+                     va='top')
+            y -= 0.034 * (1 + v.count('\n') + len(v) // 62)
         fig.text(0.62, 0.85, 'Contents', fontsize=11, fontweight='bold',
                  color=INK)
         for i, c in enumerate(contents):
-            fig.text(0.62, 0.81 - 0.03 * i, '%d. %s' % (i + 2, c),
+            fig.text(0.62, 0.81 - 0.026 * i, '%d. %s' % (i + 2, c),
                      fontsize=9, color=INK)
-        fig.text(0.06, 0.20, 'Results are an aid to a qualified '
-                 'professional, who must check them. Rod checks to CIRSOC '
-                 '301 as implemented; first-order analysis; joints and '
-                 'connections are not checked here.', fontsize=7.5,
-                 color='#666', wrap=True)
+        # y 0.235 and not 0.145: the ISO title block owns everything
+        # below 0.158 from x 0.414 rightwards, and a full-width line down
+        # there loses its right half behind it.
+        fig.text(0.06, 0.235, _wrap(
+            'Results are an aid to a qualified professional, who must '
+            'check them. Rod checks to CIRSOC 301 as implemented; '
+            'first-order analysis; joints and connections are not checked '
+            'here.', 150), fontsize=7.5, color='#666', va='top')
 
     def geometry(self):
         fig = self.new_sheet('Geometry')
@@ -276,9 +460,158 @@ class _Report:
                                     self.u.f('force', big, 1)),
                  fontsize=8, color=INK)
 
-    def deformed(self):
-        fig = self.new_sheet('Deformed shape')
-        ax = self.drawing_axes(fig)
+    def deflection_and_stress(self):
+        """Three graphs on one sheet, divided: the deflected shape, the
+        elastic curve through the joints, and the fibre stress in every
+        rod.
+
+        ONE SHEET BECAUSE THEY ARE ONE QUESTION. "How far does it move
+        and how hard is the material working" was three sheets --
+        a drawing, a number buried in a caption, and nothing at all for
+        the stress. They answer each other: the shape says WHERE it
+        moves, the curve says HOW MUCH against the limit, and the fibre
+        stress says what that costs the steel. Read together they take
+        one page; read apart they take three and lose the connection.
+        """
+        fig = self.new_sheet('Deflection and stress')
+        self._deformed_panel(fig, rect=(0.04, 0.47, 0.92, 0.45))
+        # The dividers. A sheet carrying three graphs has to say so with
+        # a line, or the eye reads the nearest axis label as the caption
+        # of the picture above it. One across, under the drawing, and
+        # one down between the two graphs -- NOT a second across one,
+        # which at this height could only run through their captions or
+        # under the title block.
+        _hrule(fig, 0.455)
+        _vrule(fig, 0.505, 0.19, 0.44)
+        self._elastic_curve_panel(fig, rect=(0.075, 0.255, 0.355, 0.155))
+        self._fibre_stress_panel(fig, rect=(0.575, 0.255, 0.355, 0.155))
+        return self.deform_factor
+
+    @staticmethod
+    def _panel_title(fig, x, y, text, note=''):
+        fig.text(x, y, text, fontsize=8.5, fontweight='bold', color=INK)
+        if note:
+            fig.text(x + 0.150, y, note, fontsize=7, color='#777')
+
+    def _elastic_curve_panel(self, fig, rect):
+        """Every joint's vertical deflection against its position along
+        the span, with the span/300 limit drawn.
+
+        The deflection used to be ONE NUMBER in a caption -- the largest.
+        A single number cannot show whether the truss sags evenly or
+        dips at one panel point, which is the difference between a
+        member that is too small and a truss that is too shallow.
+        """
+        self._panel_title(fig, rect[0], rect[1] + rect[3] + 0.018,
+                          'Elastic deformation',
+                          'vertical movement of every joint')
+        ax = fig.add_axes(rect)
+        nr = self.res['node_res']
+        rows = sorted(((self.pts[i][0], -r['uy'])
+                       for i, r in enumerate(nr)), key=lambda t: t[0])
+        xs = [x for x, _d in rows]
+        ds = [d for _x, d in rows]
+        ax.plot(xs, ds, '-o', color='#1D9E75', lw=1.3, ms=2.6,
+                label='joints, in order along the span')
+        ax.axhline(0, color='#bbb', lw=0.7)
+        d = self.defl
+        if d and d['limit_mm'] > 0:
+            ax.axhline(-d['limit_mm'], color='#b03a2e', lw=0.9, ls='--')
+            ax.text(xs[0] if xs else 0, -d['limit_mm'],
+                    ' limit L/%d = %s %s' % (
+                        td.DEFLECTION_LIMIT,
+                        self.u.f('deflection', d['limit_mm'], 1),
+                        self.u.lab('deflection')),
+                    fontsize=6, color='#b03a2e', va='top')
+            worst = min(ds) if ds else 0.0
+            if worst < -d['limit_mm']:
+                ax.set_ylim(min(worst * 1.15, -d['limit_mm'] * 1.3),
+                            max(max(ds) * 1.15 if ds else 1.0, 1.0))
+        ax.set_xlabel('position along the span (%s)' % self.u.lab('length'),
+                      fontsize=6.5)
+        ax.set_ylabel('uy (%s, down −)' % self.u.lab('deflection'),
+                      fontsize=6.5)
+        ax.tick_params(labelsize=6)
+        for sp in ('top', 'right'):
+            ax.spines[sp].set_visible(False)
+        if d and d['span_m'] > 0:
+            fig.text(rect[0], rect[1] - 0.062, _wrap(
+                'Largest %s %s at joint %d = L/%s. %s' % (
+                    self.u.f('deflection', d['deflection_mm'], 2),
+                    self.u.lab('deflection'), d['node'],
+                    '%.0f' % d['L_over'] if d['L_over'] < 1e7 else '∞',
+                    'Within the limit.' if d['ok'] else 'OVER the limit.'),
+                82), fontsize=6.8, color='#555', va='top')
+
+    def _fibre_stress_panel(self, fig, rect):
+        """The stress at the two extreme fibres of every rod.
+
+        A pinned rod has no bending, so both fibres carry the same N/A
+        and the two bars coincide -- which is the point, and is said in
+        the note rather than hidden by drawing only one of them. A rigid
+        rod separates: N/A ± M·c/I, and the gap between the pair IS the
+        bending.
+        """
+        from .truss_math import compute_fiber_stress
+        self._panel_title(fig, rect[0], rect[1] + rect[3] + 0.018,
+                          'Fibre stress',
+                          'N/A ± M·c/I at each rod\'s extreme fibres')
+        ax = fig.add_axes(rect)
+        rod_res = self.res['rod_res']
+        rows = []
+        for ri, rod in enumerate(self.rods):
+            if ri >= len(rod_res):
+                continue
+            Ms = (self.diagrams[ri].get('M', [0.0])
+                  if ri < len(self.diagrams) else [0.0])
+            try:
+                neg, pos = compute_fiber_stress(rod, rod_res[ri], Ms)
+            except Exception:
+                continue
+            lo = min(list(neg) + list(pos)) if neg or pos else 0.0
+            hi = max(list(neg) + list(pos)) if neg or pos else 0.0
+            rows.append((ri, lo, hi))
+        if not rows:
+            ax.axis('off')
+            ax.text(0, 0.5, 'No fibre stress to show.', fontsize=7,
+                    color='#777')
+            return
+        rows.sort(key=lambda t: -max(abs(t[1]), abs(t[2])))
+        rows = rows[:16]
+        ys = list(range(len(rows)))[::-1]
+        for y, (ri, lo, hi) in zip(ys, rows):
+            ax.plot([lo, hi], [y, y], color='#9aa3ab', lw=0.8, zorder=1)
+            ax.plot([lo], [y], 'o', ms=3.4, color=CC if lo < 0 else CT,
+                    zorder=3)
+            ax.plot([hi], [y], 'o', ms=3.4, color=CT if hi > 0 else CC,
+                    zorder=3)
+        ax.axvline(0, color='#bbb', lw=0.7)
+        fys = {self.profiles.get(r.get('profile', 'Default'), {}).get('Fy')
+               for r in self.rods}
+        fys.discard(None)
+        if len(fys) == 1:
+            fy = fys.pop()
+            for sign in (1, -1):
+                ax.axvline(sign * fy, color='#b03a2e', lw=0.9, ls='--')
+            ax.text(fy, len(rows) - 0.4, ' Fy = %g MPa' % fy, fontsize=6,
+                    color='#b03a2e', va='top')
+        ax.set_yticks(ys)
+        ax.set_yticklabels(['Rod %d' % ri for ri, _l, _h in rows],
+                           fontsize=6)
+        ax.set_xlabel('stress (MPa, tension +)', fontsize=6.5)
+        ax.tick_params(axis='x', labelsize=6)
+        for sp in ('top', 'right'):
+            ax.spines[sp].set_visible(False)
+        note = ('The %d most stressed rods; the bar between a rod\'s two '
+                'dots is its bending.' % len(rows))
+        if not self.bends():
+            note = ('Every rod is pinned, so its two fibres carry the same '
+                    'N/A and coincide: no bending opens the pair.')
+        fig.text(rect[0], rect[1] - 0.062, _wrap(note, 82), fontsize=6.8,
+                 color='#555', va='top')
+
+    def _deformed_panel(self, fig, rect):
+        ax = self.drawing_axes(fig, rect=rect)
         nr = self.res['node_res']
         dmax_m = max((math.hypot(r['ux'], r['uy']) for r in nr),
                      default=0.0) / 1000.0
@@ -310,7 +643,8 @@ class _Report:
                          self.u.f('deflection', d['limit_mm'], 1),
                          self.u.lab('deflection'),
                          'OK' if d['ok'] else 'TOO MUCH'))
-        fig.text(0.05, 0.945, line, fontsize=8, color=INK)
+        fig.text(0.05, 0.945, _wrap(line, 160), fontsize=8, color=INK,
+                 va='top')
         self.deform_factor = k
 
     def reactions(self):
@@ -482,6 +816,7 @@ class _Report:
         factors = result['factors']
         modes = result['modes']
         n = min(len(factors), 3)
+        self.buckling_factors = list(factors[:n])
         width = 0.90 / max(n, 1)
         for j in range(n):
             ax = fig.add_axes((0.05 + j * width, 0.52, width * 0.94, 0.30))
@@ -603,6 +938,59 @@ class _Report:
                  'the first mode\'s shape.' % curve.get('bow0_mm', 0.0), 86),
                  fontsize=6.8, color='#555', va='top')
 
+    def plate_table(self):
+        """Every plate's check, when the model has plates.
+
+        A SHEET THAT USUALLY DOES NOT EXIST. Most teaching models have
+        no plates at all, so this costs nothing in the common case and
+        is the only place the plate checks appear when it does -- they
+        were in the panel on screen and nowhere in the report.
+
+        A panel's shear-BUCKLING utilisation is printed on the same row
+        as its yield one, never separately: a thin plate buckles long
+        before it yields, so a comfortable tau on its own is the most
+        misleading number this feature can produce.
+        """
+        if not self.plates:
+            return 0
+        head = ['Plate', 'Where', 't (mm)', 'Governing', 'Yield',
+                'Buckling', 'Use', '']
+        body = []
+        for i, plate in enumerate(self.plates):
+            chk = (self.plate_checks[i]
+                   if i < len(self.plate_checks) else None)
+            kind = plate.get('kind', '?')
+            if kind == 'panel':
+                where = 'nodes ' + '-'.join(str(n)
+                                            for n in plate.get('nodes', []))
+            else:
+                where = 'node %s' % plate.get('node', '?')
+            if not chk or chk.get('valid') is False:
+                body.append([str(i), where, '—',
+                             (chk or {}).get('reason', 'not checked'),
+                             '—', '—', '—', ''])
+                continue
+            u = chk.get('util')
+            body.append([
+                str(i), where, '%.1f' % chk.get('t_mm', 0.0),
+                str(chk.get('governing') or '')[:30],
+                '%.2f' % chk['util_yield'] if 'util_yield' in chk else '—',
+                '%.2f' % chk['util_buckling']
+                if chk.get('util_buckling') is not None else '—',
+                '%.2f' % u if u is not None else '—',
+                '' if u is None or u <= 1 + 1e-9 else 'OVER'])
+        fig = self.new_sheet('Plates')
+        ax = fig.add_axes((0.05, 0.22, 0.90, 0.68))
+        ax.axis('off')
+        _table(ax, [head] + body, over_col=7)
+        fig.text(0.05, 0.945, _wrap(
+            'Gusset and shear-panel checks to CIRSOC 301. A panel\'s '
+            'shear-BUCKLING utilisation is shown beside its yield one: a '
+            'thin plate buckles long before it yields, so a comfortable '
+            'tau on its own would be the most misleading number here.',
+            160), fontsize=8, color=INK, va='top')
+        return 1
+
     def rod_table(self):
         F = self.u.lab('force')
         Lb = self.u.lab('length')
@@ -634,25 +1022,197 @@ class _Report:
             _table(ax, [head] + chunk, over_col=8)
         return len(pages)
 
+    # ── one card per rod, with its own shear and moment ───────────────────
+    def thumbnail(self, ax, ri, lw=0.7):
+        """The whole truss, small, with rod `ri` picked out in red.
+
+        WHY EVERY CARD CARRIES ONE. "Rod 13 is at 0.63" is a sentence
+        about a rod the reader cannot place. On a 17-rod Pratt there is
+        no way to know which member that is without counting along the
+        Geometry sheet, and on a 60-rod model nobody does. A 3 cm
+        thumbnail answers it in no time at all, and costs almost no
+        space because it shares the card it labels.
+        """
+        for k, r in enumerate(self.rods):
+            (xa, ya), (xb, yb) = self.pts[r['a']], self.pts[r['b']]
+            on = (k == ri)
+            ax.plot([xa, xb], [ya, yb],
+                    color='#c0392b' if on else '#cdd3d8',
+                    lw=2.0 if on else lw, zorder=3 if on else 2,
+                    solid_capstyle='round')
+        for sp in self.supports:
+            x, y = self.pts[sp['node']]
+            d = 0.045 * self.span
+            ax.plot([x], [y], marker='^', ms=2.6, color=SUPPORT, zorder=4)
+        ax.set_aspect('equal', adjustable='datalim')
+        ax.axis('off')
+
+    def rod_detail(self, rods_per_sheet=6):
+        """Every rod's own card: where it is, what it carries, and its
+        shear and moment along its length.
+
+        This is the sheet the Rods TABLE cannot be. A table row gives
+        the peak of V and M; a card gives their shape, which is what
+        tells you whether a rod is bending in single or double curvature
+        and where to look for the problem. It is only produced when
+        something actually bends -- on a pinned truss every card would
+        be two flat lines (see `bends`).
+        """
+        order = sorted(range(len(self.rods)),
+                       key=lambda i: -max(
+                           (abs(v) for v in
+                            list(self.diagrams[i].get('M', ()))
+                            + list(self.diagrams[i].get('V', ())))
+                           if i < len(self.diagrams) else [0.0], default=0.0))
+        order = [i for i in order
+                 if i < len(self.diagrams) and max(
+                     (abs(v) for v in list(self.diagrams[i].get('M', ()))
+                      + list(self.diagrams[i].get('V', ()))), default=0.0)
+                 > 1e-9]
+        if not order:
+            return []
+        # THE GRID, in figure fractions, written out because every
+        # number in it is load-bearing. A card is laid out DOWNWARD from
+        # its own top: title, subtitle, numbers, thumbnail, then the two
+        # charts, whose tick labels hang below them. Laying it out
+        # upward from a baseline (the first attempt) put the second
+        # row's title through the first row's x-axis labels, because the
+        # ticks are outside the axes box and nothing accounted for them.
+        cols = 3
+        card_w = 0.295
+        col_x = [0.045 + c * 0.315 for c in range(cols)]
+        row_top = (0.900, 0.520)         # the top of each row's cards
+        per = cols * len(row_top) if rods_per_sheet is None else rods_per_sheet
+        pages = [order[i:i + per] for i in range(0, len(order), per)]
+        for pno, chunk in enumerate(pages):
+            fig = self.new_sheet('Rod detail' + (
+                ' (%d/%d)' % (pno + 1, len(pages)) if len(pages) > 1 else ''))
+            fig.text(0.05, 0.955, _wrap(
+                'One card per rod that bends, worst first: where it is in '
+                'the truss, what it carries, and its shear and moment '
+                'along its own length. The rods that carry no shear or '
+                'moment are in the Rods table only.', 160),
+                fontsize=8, color=INK, va='top')
+            for k, ri in enumerate(chunk):
+                r, c = divmod(k, cols)
+                self._rod_card(fig, ri, col_x[c], row_top[r], card_w)
+                if c:
+                    _vrule(fig, col_x[c] - 0.016, row_top[r] - 0.345,
+                           row_top[r] + 0.012)
+            if len(chunk) > cols:
+                _hrule(fig, 0.545, 0.045, 0.955)
+        return order
+
+    def _rod_card(self, fig, ri, x0, top, w):
+        rod = self.rods[ri]
+        d = self.diagrams[ri]
+        c = self.checks[ri] if ri < len(self.checks) else {}
+        p = self.profiles.get(rod.get('profile', 'Default'), {})
+        N = self.res['rod_res'][ri]['force']
+        L = td.rod_length_m(self.nodes, rod)
+
+        fig.text(x0, top, 'Rod %d' % ri, fontsize=10,
+                 fontweight='bold', color=INK, va='top')
+        # Its own line. Beside the heading it ran into "Rod 11", whose
+        # two digits are wider than the offset a one-digit rod needed.
+        fig.text(x0, top - 0.019,
+                 '%d–%d · %s · %s %s' % (
+                     rod['a'], rod['b'], p.get('catalog') or 'no section',
+                     self.u.f('length', L, 2), self.u.lab('length')),
+                 fontsize=7, color='#777', va='top')
+        bits = ['N = %s %s' % (self.u.f('force', _z(N), 2, sign=True),
+                               self.u.lab('force'))]
+        for key, unit in (('V', 'force'), ('M', 'moment')):
+            vals = list(d.get(key, ()))
+            if vals:
+                j = max(range(len(vals)), key=lambda k: abs(vals[k]))
+                bits.append('%s max %s %s' % (
+                    key, self.u.f(unit, vals[j], 2, sign=True),
+                    self.u.lab(unit)))
+        if c.get('checked'):
+            bits.append('use %.2f%s' % (c['util'], '' if c['ok'] else ' OVER'))
+        fig.text(x0, top - 0.038, '   '.join(bits), fontsize=7, va='top',
+                 color='#b03a2e' if c.get('checked') and not c['ok'] else INK)
+
+        tx = fig.add_axes((x0, top - 0.152, w * 0.52, 0.090))
+        self.thumbnail(tx, ri)
+        for n, (key, face, edge, unit) in enumerate(
+                (('V', '#e8a49c', '#c0392b', 'force'),
+                 ('M', '#9fc0e0', '#2c5f9e', 'moment'))):
+            ax = fig.add_axes((x0 + n * (w / 2 + 0.008), top - 0.325,
+                               w / 2 - 0.014, 0.150))
+            xs, vals = list(d.get('xs', ())), list(d.get(key, ()))
+            if len(vals) >= 2:
+                ax.fill_between(xs, vals, 0, color=face, alpha=0.85)
+                ax.plot(xs, vals, color=edge, lw=0.9)
+            ax.axhline(0, color='#999', lw=0.6)
+            ax.set_title('%s (%s)' % (key, self.u.lab(unit)), fontsize=6.5,
+                         color=edge, pad=2)
+            ax.tick_params(labelsize=5.5)
+            for sp in ('top', 'right'):
+                ax.spines[sp].set_visible(False)
+
+    # ── the step-by-step checks, grouped ──────────────────────────────────
     def explain(self):
+        """The CIRSOC 301 check of the most used rods, two to a sheet.
+
+        It was ONE ROD PER SHEET -- a column of monospace down the left
+        half of a landscape A4 with the right half empty. Two columns
+        side by side halve the page count and lose nothing, and each
+        gets the thumbnail that says which rod it is talking about.
+        """
         from apps.stereo import stereo_explain as sx
         ranked = sorted((i for i, c in enumerate(self.checks)
                          if c.get('checked') and c.get('util') is not None),
                         key=lambda i: -self.checks[i]['util'])
-        for i in ranked[:EXPLAIN_RODS]:
-            m = td.member_for(self.nodes, self.rods[i], self.profiles)
-            text = sx.as_text(sx.explain(m, self.res['rod_res'][i]['force'],
-                                         self.checks[i],
-                                         length_m=m['_length_m']),
-                              'Rod %d' % i)
-            lines = text.splitlines()
-            per = 58
-            for k in range(0, max(len(lines), 1), per):
-                fig = self.new_sheet('Explain rod %d' % i)
-                fig.text(0.05, 0.93, '\n'.join(lines[k:k + per]),
-                         fontsize=6.6, family='DejaVu Sans Mono', va='top',
-                         color=INK)
-        return ranked[:EXPLAIN_RODS]
+        chosen = ranked[:EXPLAIN_RODS]
+        for k in range(0, len(chosen), 2):
+            pair = chosen[k:k + 2]
+            fig = self.new_sheet('Explain rod %s'
+                                 % ' and '.join(str(i) for i in pair))
+            if len(pair) > 1:
+                fig.add_artist(__import__('matplotlib').lines.Line2D(
+                    [0.5, 0.5], [0.17, 0.93], color='#ccd2d8',
+                    linewidth=0.9, transform=fig.transFigure))
+            for col, i in enumerate(pair):
+                x0 = 0.05 + col * 0.47
+                m = td.member_for(self.nodes, self.rods[i], self.profiles)
+                text = sx.as_text(
+                    sx.explain(m, self.res['rod_res'][i]['force'],
+                               self.checks[i], length_m=m['_length_m']),
+                    'Rod %d' % i)
+                tx = fig.add_axes((x0, 0.815, 0.20, 0.10))
+                self.thumbnail(tx, i)
+                fig.text(x0 + 0.215, 0.910, 'Rod %d' % i, fontsize=11,
+                         fontweight='bold', color=INK, va='top')
+                fig.text(x0 + 0.215, 0.882, 'utilisation %.2f%s'
+                         % (self.checks[i]['util'],
+                            '' if self.checks[i]['ok'] else '  OVER'),
+                         fontsize=8,
+                         color=INK if self.checks[i]['ok'] else '#b03a2e',
+                         va='top')
+                fig.text(x0 + 0.215, 0.860,
+                         self.checks[i].get('governing')
+                         or self.checks[i].get('mode') or '',
+                         fontsize=7, color='#777', va='top')
+                # EXPLAIN_LINES and not "as many as fit": the RIGHT
+                # column sits over the title block's x range, so a column
+                # that runs past y 0.175 loses its last lines behind it --
+                # and the left column, which does not, would then show
+                # more of the same check than the right one. The overflow
+                # note is part of the text so it cannot be the line that
+                # falls off.
+                lines = text.splitlines()
+                if len(lines) > EXPLAIN_LINES:
+                    # Kept SHORT and on one line: the note is monospace
+                    # at the column's own width, and a long one ran
+                    # straight across the divider into the other column.
+                    lines = lines[:EXPLAIN_LINES - 1] + [
+                        '... %d more lines; the verdict is in the heading.'
+                        % (len(lines) - EXPLAIN_LINES + 1)]
+                fig.text(x0, 0.790, '\n'.join(lines), fontsize=6.0,
+                         family='DejaVu Sans Mono', va='top', color=INK)
+        return chosen
 
 
 def _wrap(text, chars):
@@ -679,6 +1239,31 @@ def _round_factor(k):
         if m * e <= k:
             return m * e
     return e
+
+
+def _vrule(fig, x, y0, y1, color='#ccd2d8'):
+    """`_hrule` the other way, for two graphs side by side."""
+    from matplotlib.lines import Line2D
+    line = Line2D([x, x], [y0, y1], color=color, linewidth=0.9,
+                  transform=fig.transFigure, zorder=1)
+    fig.add_artist(line)
+    return line
+
+
+def _hrule(fig, y, x0=0.04, x1=0.96, color='#ccd2d8'):
+    """A divider across a sheet that carries more than one graph.
+
+    A line and not just white space: without it the eye reads the axis
+    label of the graph below as the caption of the picture above it.
+
+    `transform=fig.transFigure` is not optional -- an artist added to a
+    figure otherwise draws in display pixels and lands off the paper.
+    """
+    from matplotlib.lines import Line2D
+    line = Line2D([x0, x1], [y, y], color=color, linewidth=0.9,
+                  transform=fig.transFigure, zorder=1)
+    fig.add_artist(line)
+    return line
 
 
 def _rect(x, y, w, h):
@@ -731,38 +1316,85 @@ def buckling_for(nodes, rods, supports, loads, results, n_modes=3):
 
 
 def export_pdf(path, nodes, rods, supports, loads, results, checks,
-               profiles, title='', units=None, buckling=True):
-    """Write the report to `path`. Returns {'sheets': n, 'explained':
-    [rod...], 'deform_factor': k, 'utilised': [rod...], 'buckling':
-    [lambda...]}.
+               profiles, title='', units=None, buckling=True,
+               diagrams=None, plates=None, plate_checks=None,
+               stability=None):
+    """Write the report to `path`.
 
-    `buckling=False` leaves the buckling sheet out -- it costs an
-    eigenproblem, which is wasted on a test that is not about it.
+    EVERYTHING ▶ ANALYZE PRODUCES, IN AS FEW SHEETS AS IT TAKES. What
+    the button computes is the axial forces, the deflected shape, the
+    reactions, the CIRSOC checks, the shear and moment diagrams, the
+    fibre stress, the stability verdict, the plate checks and the score.
+    Four of those were not in the report at all, and the ones that were
+    had a sheet each whether or not they had anything to say.
+
+    So the sheets are packed by SUBJECT rather than by data structure:
+    the deflected shape, the elastic curve and the fibre stress are one
+    sheet, because they are one question; the explain pages are two to a
+    sheet instead of one; the per-rod cards are six to a sheet. And the
+    three sheets that only make sense for a bending model -- Shear,
+    Moment, Rod detail -- are produced only when something bends, which
+    on a classic pinned truss is never. A Pratt truss's report is 9
+    sheets; the same model with rigid rods is 12.
+
+    `diagrams`, `plates`, `plate_checks` and `stability` come from the
+    tab when it has them and are computed here when it does not, so a
+    report written by a script carries the same sheets as one exported
+    from the window.
+
+    Returns {'sheets', 'headings', 'explained', 'deform_factor',
+    'utilised', 'buckling', 'rod_detail'}.
     """
     from matplotlib.backends.backend_pdf import PdfPages
     if results is None:
         raise ValueError('analyse the truss first')
+    if diagrams is None:
+        try:
+            from .truss_math import compute_diagrams
+            diagrams = compute_diagrams(nodes, rods, loads, results)
+        except Exception:
+            diagrams = []
+    if stability is None:
+        try:
+            from . import truss_stability as tstab
+            stability = tstab.check(nodes, rods, supports, plates)
+        except Exception:
+            stability = None
+    if plates and plate_checks is None:
+        try:
+            from . import truss_plates as tpl
+            plate_checks = tpl.check_all(nodes, rods, plates, results)
+        except Exception:
+            plate_checks = None
+
     rep = _Report(nodes, rods, supports, loads, results, checks, profiles,
-                  title, units)
-    contents = ['Geometry', 'Axial forces', 'Deformed shape', 'Reactions',
-                'Utilisation']
-    if buckling:
-        contents.append('Buckling (λ₁, λ₂, λ₃)')
-    contents.append('Rods')
-    if any(c.get('checked') for c in rep.checks):
-        contents.append('Explain the most used rods')
-    rep.cover(contents)
+                  title, units, diagrams=diagrams, plates=plates,
+                  plate_checks=plate_checks, stability=stability)
+
     rep.geometry()
     rep.forces()
-    rep.deformed()
+    rep.deflection_and_stress()
     rep.reactions()
     utilised = rep.utilisation()
     factors = []
     if buckling:
         result, curve = buckling_for(nodes, rods, supports, loads, results)
         factors = rep.buckling(result, curve)
+    if rep.bends():
+        rep.shear()
+        rep.moment()
     rep.rod_table()
+    rep.plate_table()
+    detail = rep.rod_detail() if rep.bends() else []
     explained = rep.explain()
+
+    # The cover LAST, because it reports on what the other sheets found
+    # (the buckling factors above all), then moved to the front. Writing
+    # it first meant it could only describe what was already known
+    # before the report was built, which is how the stability line and
+    # the plate checks came to be missing from it.
+    rep.cover([h for _f, h in rep.sheets])
+    rep.sheets.insert(0, rep.sheets.pop())
     rep.frame()
     with PdfPages(path) as pdf:
         d = pdf.infodict()
@@ -773,4 +1405,5 @@ def export_pdf(path, nodes, rods, supports, loads, results, checks,
     return {'sheets': len(rep.sheets), 'explained': explained,
             'deform_factor': rep.deform_factor,
             'utilised': utilised, 'buckling': factors,
+            'rod_detail': detail,
             'headings': [h for _f, h in rep.sheets]}

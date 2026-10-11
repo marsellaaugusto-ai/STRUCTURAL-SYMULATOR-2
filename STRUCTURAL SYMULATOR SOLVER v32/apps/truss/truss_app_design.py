@@ -36,10 +36,12 @@ class TrussDesignMixin:
         self._bind_widget_tooltip(sw,
             'Add every rod\'s own weight (A × L × 78.5 kN/m³, half to each '
             'end) to the loads.')
-        cu = tk.Checkbutton(row2, text='Colour by utilisation',
-                            variable=self.color_util, bg=BG,
+        # A display switch, so it lives with the other display switches in
+        # "What to show" rather than beside the Buckling button.
+        cu = tk.Checkbutton(self.show_frame, text='Colour by utilisation',
+                            variable=self.color_util, bg=BG, anchor='w',
                             font=('Helvetica', 9), command=self._draw)
-        cu.pack(side='left')
+        cu.pack(fill='x')
         self._bind_widget_tooltip(cu,
             'Green = little used, red = at capacity (CIRSOC 301). Rods whose '
             'family has no steel section stay grey.')

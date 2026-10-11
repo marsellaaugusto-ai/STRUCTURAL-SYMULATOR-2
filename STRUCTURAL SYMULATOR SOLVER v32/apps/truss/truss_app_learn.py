@@ -70,11 +70,14 @@ class TrussLearnMixin:
         # `Live` used to sit here, to the left of this box. It is on the
         # toolbar now, beside Analyze, where Stereo keeps it: it switches
         # the Analyze button on and off, so it belongs next to it rather
-        # than two rows below.
-        hz = tk.Checkbutton(row, text='Hide zero-force rods',
-                            variable=self.hide_zero, bg=BG,
+        # than two rows below. And `Hide zero-force rods` is a display
+        # switch, so it joined the other five in "What to show" -- one box
+        # for everything that changes what is DRAWN, rather than two of
+        # them three rows apart.
+        hz = tk.Checkbutton(self.show_frame, text='Hide zero-force rods',
+                            variable=self.hide_zero, bg=BG, anchor='w',
                             font=('Helvetica', 9), command=self._draw)
-        hz.pack(side='left')
+        hz.pack(fill='x')
         self._bind_widget_tooltip(hz,
             'Rods that carry no force are drawn dashed; tick this to hide '
             'them and see the path the load actually takes.')

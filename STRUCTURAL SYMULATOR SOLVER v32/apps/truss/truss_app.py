@@ -280,7 +280,20 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self._bind_widget_tooltip(self.undo_btn, 'Undo the last change  (Ctrl+Z)')
         self._bind_widget_tooltip(self.redo_btn, 'Redo  (Ctrl+Y or Ctrl+Shift+Z)')
 
-        # LOOK: what is drawn on top of the model, and how big.
+        # LOOK: what is drawn on top of the model.
+        #
+        # The six display switches USED TO LIVE HERE, in a `Display ▾`
+        # menu. They are in the Analyse mode's panel now ("What to show"),
+        # because that is where you are standing when you want them: you
+        # press Analyze, look at the result, and only then ask to see the
+        # deformed shape or the joint letters. Reaching back up to a menu
+        # on the toolbar to change what the drawing in front of you shows
+        # is a trip, and the panel can show all six at once with the
+        # deflection scale beside the switch it belongs to.
+        #
+        # `Advanced tools` stays: it is not about what is DRAWN, it is
+        # about which controls exist, and it has to be reachable from
+        # every mode including the ones it adds sections to.
         self.toolbar_flow.separator()
         view_g = self.toolbar_flow.group()
         self.show_deform = tk.BooleanVar(value=False)
@@ -289,33 +302,15 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self.show_force_labels = tk.BooleanVar(value=True)
         self.letter_joints = tk.BooleanVar(value=True)
         self.show_load_path = tk.BooleanVar(value=False)
-        # Twelve separate checkboxes and buttons made a beginner read
-        # fifteen labels to find Analyze. As one menu they read as one.
-        # Called `Display ▾` because that is what Stereo calls the same
-        # menu, and two names for one thing is one name too many.
+        self.def_scale = tk.IntVar(value=50)
         self._menu_button(view_g, 'Display ▾', [
-            ('check', 'Force on each member', self.show_force_labels, self._draw),
-            ('check', 'Letter the joints (A, B, C…)', self.letter_joints,
-             self._draw),
-            ('check', 'Trace where one load goes', self.show_load_path,
-             self._toggle_load_path),
-            ('check', 'Deformed shape', self.show_deform, self._draw),
-            ('check', '○ Inflection points (M = 0)',
-             self.show_contraflexure, self._draw),
-            ('check', 'Moment at rigid joints', self.show_node_moments, self._draw),
-            ('sep',),
             # Simple shows what a first truss needs; Advanced adds the CAD
             # bar, construction geometry, arrays, plates and rod families.
             ('check', 'Advanced tools', self.advanced, self._apply_mode),
+            ('sep',),
+            ('What to show on the drawing →  Analyse',
+             lambda: self._show_mode('analyse')),
         ])
-        tk.Label(view_g, text='×', bg='#ebebea', fg='#777',
-                 font=('Helvetica', 11))
-        self.def_scale = tk.IntVar(value=50)
-        tk.Scale(view_g, from_=1, to=300, orient='horizontal',
-                 variable=self.def_scale, length=74, showvalue=True,
-                 bg='#ebebea', bd=0, highlightthickness=0, relief='flat',
-                 font=('Helvetica',8),
-                 command=lambda _: self._draw())
 
         # OUT: everything that leaves the app.
         self.toolbar_flow.separator()
@@ -594,6 +589,11 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self._init_design(analyse)
         self._init_play(analyse, after=self._design_rows[-1])
         self.rail.select(self.DEFAULT_MODE)
+        # The Selection box was BLANK on a fresh tab -- its "click a
+        # node/rod" text is written by _show_sel, which until now first
+        # ran on the first click, which is the one moment you did not
+        # need telling.
+        self._show_sel()
 
     # -- toolbar helpers ------------------------------------------------------
     def _menu_button(self, parent, text, items, fg='#333333'):
@@ -751,6 +751,46 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         # is for, that is the first thing they need and the last thing they
         # could find. TrussLearnMixin._init_learn packs the stability line
         # directly after it, which is where that belongs too.
+        # ── every mode's own tools, always on screen ─────────────────────────
+        #
+        # WHAT WAS WRONG. The rail's modes held only the per-click editors
+        # and the Advanced-only sections, so most of them were EMPTY:
+        #
+        #       Simple   Advanced
+        #   Build   0        2      Node and Rod had no controls at all
+        #   Support 0        0      empty in BOTH
+        #   Load    0        2
+        #   Results 0        0      until something was solved
+        #
+        # Picking the Node tool took you to a Build pane with nothing in
+        # it. Reported 11-10-26 as "the support tools and the rod and node
+        # tools do not appear in their respective tabs". A mode that can
+        # be empty is a mode that cannot explain itself, so each one now
+        # opens with a card naming its tools -- as buttons that pick them
+        # -- and saying in one line what to do with them. The per-click
+        # editors still appear underneath when a joint is picked.
+        self.mode_tool_btns = {}
+        self._build_mode_card(
+            m_build, 'Draw the truss',
+            (('node', 'Node', 'Place a joint. Click the canvas; it snaps '
+                              'to the grid.'),
+             ('rod', 'Rod', 'Join two joints with a member. Click one, '
+                            'then the other.')),
+            'Joints first, then members between them. Everything else — '
+            'supports, loads, sections — hangs off what you draw here.',
+            extra=self._build_card_extra)
+        self._build_mode_card(
+            m_support, 'Hold it down',
+            (('support', 'Support', 'Click a joint, then Apply support.'),),
+            'Pick the kind of support here, then click the joints it goes '
+            'on. A plane truss needs at least three restraints, or it is '
+            'a mechanism.')
+        self._build_mode_card(
+            m_load, 'What it carries',
+            (('load', 'Load', 'Click a joint, then set Fx / Fy.'),),
+            'Click a joint to put a force on it. Span loads and point '
+            'loads along a member are under Advanced tools.')
+
         self.analyze_btn = tk.Button(
             m_analyse, text='▶  Analyze structure', bg='#9e9e9e', fg='white',
             activebackground='#15559a', activeforeground='white',
@@ -762,6 +802,75 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         tk.Label(m_analyse, textvariable=self.res_var, bg='#f0f0ee',
                  font=('Helvetica', 10), justify='left',
                  wraplength=PANEL_W - 20).pack(fill='x', padx=12, pady=2)
+
+        # ── what to show on the drawing ──────────────────────────────────────
+        # The old `Display ▾` menu, opened out. Six switches you could
+        # only see one at a time, three rows away from the result they
+        # describe, are six switches in front of the result instead -- and
+        # the deflection scale sits beside the switch it magnifies rather
+        # than beside a menu that no longer mentions it.
+        #
+        # `_init_learn` and `_init_design` pack their own two display
+        # switches (Hide zero-force rods, Colour by utilisation) in here
+        # too, so every "what is drawn" control is in one box.
+        self.show_frame = tk.LabelFrame(
+            m_analyse, text='What to show', bg='#f0f0ee',
+            font=('Helvetica', 10, 'bold'), padx=6, pady=2)
+        self.show_frame.pack(fill='x', padx=8, pady=(6, 4))
+        for text, var, cmd, tip in (
+                ('Force on each member', self.show_force_labels, self._draw,
+                 'The axial force N written along every rod.'),
+                ('Letter the joints (A, B, C…)', self.letter_joints,
+                 self._draw,
+                 'Joints get letters and members get numbers, so "2" next '
+                 'to "2" stops being two different things.'),
+                ('Trace where one load goes', self.show_load_path,
+                 self._toggle_load_path,
+                 'Pick a loaded joint and watch its own share of the '
+                 'structure light up, member by member.'),
+                ('○ Inflection points (M = 0)', self.show_contraflexure,
+                 self._draw,
+                 'Where the bending moment crosses zero on a rigid rod.'),
+                ('Moment at rigid joints', self.show_node_moments,
+                 self._draw,
+                 'The moment each rigid rod hands its joint.')):
+            cb = tk.Checkbutton(self.show_frame, text=text, variable=var,
+                                bg='#f0f0ee', font=('Helvetica', 9),
+                                anchor='w', command=cmd)
+            cb.pack(fill='x')
+            self._bind_widget_tooltip(cb, tip)
+        # Deformed shape keeps its magnification next to it: the number is
+        # meaningless without the switch and the switch is hard to read
+        # without the number.
+        self.def_row = tk.Frame(self.show_frame, bg='#f0f0ee')
+        self.def_row.pack(fill='x')
+        dcb = tk.Checkbutton(self.def_row, text='Deformed shape',
+                             variable=self.show_deform, bg='#f0f0ee',
+                             font=('Helvetica', 9), command=self._draw)
+        dcb.pack(side='left')
+        self._bind_widget_tooltip(dcb,
+            'The deflected shape, drawn over the model and magnified by '
+            'the × factor beside it -- real deflections are millimetres '
+            'on a drawing metres across.')
+        tk.Label(self.def_row, text='×', bg='#f0f0ee', fg='#777',
+                 font=('Helvetica', 10)).pack(side='left', padx=(6, 0))
+        tk.Scale(self.def_row, from_=1, to=300, orient='horizontal',
+                 variable=self.def_scale, length=86, showvalue=True,
+                 bg='#f0f0ee', bd=0, highlightthickness=0, relief='flat',
+                 font=('Helvetica', 8),
+                 command=lambda _: self._draw()).pack(side='left')
+
+        # Results mode was empty until something was solved, which is
+        # exactly when a beginner goes looking for it. The placeholder
+        # says what is missing and hides itself once the boxes below have
+        # something in them (`_show_results_placeholder`).
+        self.res_placeholder = tk.Label(
+            m_results, bg='#f0f0ee', fg='#666', font=('Helvetica', 9),
+            justify='left', anchor='w', wraplength=PANEL_W - 30,
+            text='Nothing solved yet.\n\nPress ▶ Analyze — on the toolbar, '
+                 'or at the top of Analyse — and the rod forces, the '
+                 'support reactions and the plate check appear here.')
+        self.res_placeholder.pack(fill='x', padx=12, pady=(10, 4))
 
         self.rod_res_frame = tk.LabelFrame(m_results, text='Rod forces', bg='#f0f0ee',
                                            font=('Helvetica',10,'bold'), padx=4, pady=4)
@@ -893,17 +1002,23 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         # (`_draw_support`), and a student learns the symbol by picking it.
         # `sup_type` still holds 'pin' / 'rollerX' / ... -- every saved
         # model and workbook uses those keys.
+        #
+        # The picker sits in the MODE CARD, not in this editor: which kind
+        # of support you are placing is a setting of the Support tool, and
+        # this editor is `pack_forget`-ed until a joint is clicked -- which
+        # is how Support mode came to be empty until you had already
+        # guessed what to click.
         self.sup_type = tk.StringVar(value='pin')
         self.sup_btns = {}
-        picker = tk.Frame(self.sup_frame, bg='#f0f0ee')
-        picker.grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 2))
+        picker = tk.Frame(self._mode_cards['support'], bg='#f0f0ee')
+        picker.pack(fill='x', pady=(2, 0))
         for col, key in enumerate(('pin', 'rollerX', 'rollerY', 'fixed')):
             cell = tk.Frame(picker, bg='#f0f0ee', bd=2, relief='flat')
             cell.grid(row=0, column=col, padx=2)
-            cv = tk.Canvas(cell, width=44, height=46, bg='#f0f0ee',
+            cv = tk.Canvas(cell, width=46, height=40, bg='#f0f0ee',
                            highlightthickness=0, cursor='hand2')
             cv.pack()
-            self._draw_support(cv, 22, 8, key)
+            self._draw_support(cv, 23, 4, key, label=False)
             lb = tk.Label(cell, text=self.support_label(key), bg='#f0f0ee',
                           font=('Helvetica', 7), fg='#555', wraplength=56)
             lb.pack()
@@ -915,11 +1030,11 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self._refresh_support_picker()
         tk.Button(self.sup_frame, text='Apply support', bg='#1a6bbd', fg='white',
                   font=('Helvetica',10,'bold'), relief='flat',
-                  command=self._apply_support).grid(row=1,column=0,columnspan=2,
-                                                     sticky='ew',pady=(6,2))
+                  command=self._apply_support).grid(row=0,column=0,columnspan=2,
+                                                     sticky='ew',pady=(2,2))
         tk.Button(self.sup_frame, text='Remove support', relief='flat',
                   font=('Helvetica',10),
-                  command=self._remove_support).grid(row=2,column=0,columnspan=2,
+                  command=self._remove_support).grid(row=1,column=0,columnspan=2,
                                                       sticky='ew',pady=2)
 
         # selection
@@ -3154,11 +3269,86 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
             n += 1
         return '%s (%d)' % (base, n)
 
+    def _show_results_placeholder(self):
+        """"Nothing solved yet" shows only while that is true."""
+        boxes = (getattr(self, 'rod_res_frame', None),
+                 getattr(self, 'rxn_frame', None),
+                 getattr(self, 'plate_res_frame', None))
+        has = any(b is not None and b.winfo_manager() for b in boxes)
+        ph = getattr(self, 'res_placeholder', None)
+        if ph is None:
+            return
+        try:
+            if has:
+                ph.pack_forget()
+            elif not ph.winfo_manager():
+                ph.pack(fill='x', padx=12, pady=(10, 4),
+                        before=self.rod_res_frame)
+        except Exception:
+            pass
+
+    # ── the mode cards ────────────────────────────────────────────────────
+    def _build_mode_card(self, parent, title, tools, hint, extra=None):
+        """The box at the top of a mode: its tools, and what to do.
+
+        The tool buttons are the SAME tools as the toolbar's -- they set
+        `self.tool` and light up with it -- not a second set that could
+        disagree. They are repeated here because the toolbar says what
+        the tab can do and the panel says what THIS mode is for, and a
+        beginner reads the panel.
+        """
+        card = tk.LabelFrame(parent, text=title, bg='#f0f0ee',
+                             font=('Helvetica', 10, 'bold'), padx=6, pady=4)
+        card.pack(fill='x', padx=8, pady=(8, 4))
+        if not hasattr(self, '_mode_cards'):
+            self._mode_cards = {}
+        row = tk.Frame(card, bg='#f0f0ee')
+        row.pack(fill='x')
+        for key, label, tip in tools:
+            b = tk.Button(row, text=label, relief='flat', bd=0, padx=10,
+                          pady=5, font=('Helvetica', 10, 'bold'),
+                          command=lambda v=key: self._set_tool(v))
+            b.pack(side='left', padx=(0, 4))
+            self.mode_tool_btns[key] = b
+            self._bind_widget_tooltip(b, tip)
+        tk.Label(card, text=hint, bg='#f0f0ee', fg='#666',
+                 font=('Helvetica', 8), justify='left', anchor='w',
+                 wraplength=PANEL_W - 55).pack(fill='x', pady=(4, 0))
+        # Keyed by the FIRST tool, which is the mode's own: the support
+        # picker is packed into this card after the fact.
+        self._mode_cards[tools[0][0] if tools else title] = card
+        if extra is not None:
+            extra(card)
+        return card
+
+    def _build_card_extra(self, card):
+        """Build mode's card also carries the two things you reach for
+        straight after drawing: the grid step you are snapping to, and a
+        way to undo a wrong joint without hunting for the key."""
+        row = tk.Frame(card, bg='#f0f0ee')
+        row.pack(fill='x', pady=(6, 0))
+        tk.Button(row, text='Delete selected', relief='flat',
+                  font=('Helvetica', 9),
+                  command=self._on_delete).pack(side='left')
+        tk.Button(row, text='Clear all', relief='flat',
+                  font=('Helvetica', 9),
+                  command=self._clear_all).pack(side='left', padx=(4, 0))
+        tk.Label(card, text='The grid is 1 m. Advanced tools adds the CAD '
+                            'bar above the drawing: exact coordinates, '
+                            'polar entry, construction geometry and arrays.',
+                 bg='#f0f0ee', fg='#666', font=('Helvetica', 8),
+                 justify='left', anchor='w',
+                 wraplength=PANEL_W - 55).pack(fill='x', pady=(4, 0))
+
     def _refresh_tool_buttons(self):
         act = self.tool.get()
         for k, b in self.tool_btns.items():
             b.configure(bg='#1a6bbd' if k==act else '#ebebea',
                         fg='white'   if k==act else '#333333')
+        # The panel's copies of the same tools, lit the same way.
+        for k, b in getattr(self, 'mode_tool_btns', {}).items():
+            b.configure(bg='#1a6bbd' if k == act else '#dfe3e6',
+                        fg='white' if k == act else '#333333')
 
     def _reset_view(self):
         self.zc.reset_view()
@@ -4025,6 +4215,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                     f'Rx={rx:+7.2f}  Ry={ry:+7.2f} {F}\n')
         self.rxn_text.configure(state='disabled')
         self.rxn_frame.pack(fill='x', padx=8, pady=4)
+        self._show_results_placeholder()
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Selection panel
@@ -4770,7 +4961,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                                   fill='#33526b', anchor='w',
                                   font=('Helvetica', max(6, int(7 * z))))
 
-    def _draw_support(self, c, x, y, stype, z=1):
+    def _draw_support(self, c, x, y, stype, z=1, label=True):
         sc=1.0   # constant on-screen size regardless of zoom
         pts=[x,y, x-14*sc,y+22*sc, x+14*sc,y+22*sc]
         c.create_polygon(pts,fill='#cccccc',outline=CSP,width=1.5*sc)
@@ -4789,8 +4980,14 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         # Name it the way the panel names it. 'rollerX' told the reader
         # nothing about which way it slides -- the only thing a roller
         # symbol is for.
-        c.create_text(x, y+36*sc, text=self.support_label(stype),
-                      fill='#777', font=('Helvetica', 8))
+        #
+        # `label=False` for the picker in the Support card: its cells
+        # carry a wrapped Tk label of their own, and drawing the caption
+        # here too printed the name twice, the canvas copy clipped by the
+        # bottom edge and overlapping the symbol.
+        if label:
+            c.create_text(x, y+36*sc, text=self.support_label(stype),
+                          fill='#777', font=('Helvetica', 8))
 
     def _draw_load(self, c, x, y, fx, fy, z=1, scale=None):
         mag=math.hypot(fx,fy)
@@ -5994,6 +6191,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self.load_frame.pack_forget();self.sup_frame.pack_forget()
         self.rod_res_frame.pack_forget();self.rxn_frame.pack_forget()
         self.plate_res_frame.pack_forget()
+        self._show_results_placeholder()
         self.res_var.set('')
         self.show_deform.set(False)
         self.shell.hide_lower()

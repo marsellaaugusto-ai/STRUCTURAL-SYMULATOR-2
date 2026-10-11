@@ -94,6 +94,8 @@
 <h2 id="truss">4. The Truss tab, step by step</h2>
 <h3>Start from an example</h3>
 <p><strong>Examples ▾ → Browse the library…</strong> opens a library of nine trusses: Warren, Pratt, Howe, king-post, Fink, a wall bracket, a Vierendeel girder, and two that make a point (a missing diagonal, and idle rods). Each comes with steel sections already chosen and a short lesson: what to look at and what to try. The lesson card sits over the drawing; close it with ×.</p>
+<h3>The mode rail</h3>
+<p>The column down the left edge of the panel — <em>Build</em>, <em>Support</em>, <em>Load</em>, <em>Section</em>, <em>Analyse</em>, <em>Results</em> — holds one mode at a time, so only the controls for what you are doing are on screen. <strong>Alt+1</strong> to <strong>Alt+6</strong> jump between them, and picking a tool takes you to that tool's mode. Each mode opens with a card naming its own tools and what to do with them; the <em>Selection</em> box at the foot of the panel stays in every mode, because what is selected is true in all of them.</p>
 <h3>Or draw your own</h3>
 <ol>
   <li><strong>Node</strong>: click to place joints on the grid (one square is one metre).</li>
@@ -108,7 +110,8 @@
   <li>Red rods are pulled (tension), blue rods are pushed (compression). Dashed rods carry nothing; <em>Hide zero-force rods</em> removes them to show the path the load takes.</li>
   <li><strong>Live</strong> re-solves a moment after every edit on small models.</li>
   <li>Right-click a support to switch it off and see what happens without it.</li>
-  <li><strong>Simple / Advanced</strong> (<em>Display ▾ → Advanced tools</em>) shows or hides the drafting tools, plates and span loads.</li>
+  <li><strong>What to show</strong> (in <em>Analyse</em>) is every switch that changes the drawing in one box: the force on each member, joint letters, the load path, the deformed shape with its magnification, inflection points, moments at rigid joints, hiding zero-force rods and colouring by utilisation.</li>
+  <li><strong>Simple / Advanced</strong> (<em>Display ▾ → Advanced tools</em>) shows or hides the drafting tools, plates and span loads. It is the only thing left in that menu; everything else moved into <em>Analyse</em>.</li>
 </ul>
 <h3>Is it strong enough?</h3>
 <ol>

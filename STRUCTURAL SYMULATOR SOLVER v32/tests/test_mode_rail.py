@@ -397,3 +397,229 @@ def test_nothing_on_the_bar_is_drawn_under_the_camera_buttons(truss):
                     'buttons' % (width, right - cam_left))
     root.geometry('1366x820+0+0')
     _settle(root, 4)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  No mode is empty
+#
+#  Reported 11-10-26: "the support tools and the rod and node tools do not
+#  appear in their respective tabs in the basic or advanced modes". They
+#  did not. Measured before the fix, packed top-level sections per mode:
+#
+#           Simple   Advanced
+#    Build     0         2     Node and Rod had no controls at all
+#    Support   0         0     empty in BOTH
+#    Load      0         2
+#    Section   2         4
+#    Analyse   8         8
+#    Results   0         0     until something was solved
+#
+#  A mode the rail can take you to and leave blank is worse than no rail:
+#  it reads as a broken tab.
+# ═════════════════════════════════════════════════════════════════════════════
+def _packed_sections(app, key):
+    return [w for w in app._mode_frames[key].winfo_children()
+            if w.winfo_manager()]
+
+
+@pytest.mark.parametrize('advanced', [False, True])
+def test_no_mode_is_ever_empty(truss, advanced):
+    root, app = truss
+    app.advanced.set(advanced)
+    app._apply_mode()
+    _settle(root, 2)
+    for key, _g, label, _t in app.MODES:
+        app.rail.select(key)
+        _settle(root, 2)
+        got = _packed_sections(app, key)
+        assert got, (
+            '%s mode is empty in %s -- the rail can take you there and '
+            'show you nothing' % (label, 'Advanced' if advanced else 'Simple'))
+
+
+@pytest.mark.parametrize('tool,mode', [('node', 'build'), ('rod', 'build'),
+                                       ('support', 'support'),
+                                       ('load', 'load')])
+def test_each_tool_has_a_button_in_its_own_mode(truss, tool, mode):
+    """Not a copy of the toolbar's: the SAME tool, set through the same
+    `_set_tool`, lit by the same `_refresh_tool_buttons`."""
+    root, app = truss
+    assert tool in app.mode_tool_btns
+    btn = app.mode_tool_btns[tool]
+    assert btn.master.winfo_toplevel() is root
+    app.rail.select(mode)
+    _settle(root, 2)
+    assert btn.winfo_ismapped(), (
+        'the %s button is not on screen in %s mode' % (tool, mode))
+    app._set_tool('select')
+    _settle(root, 2)
+    btn.invoke()
+    _settle(root, 2)
+    assert app.tool.get() == tool
+    assert app.rail.active() == mode
+
+
+def test_the_panel_tool_buttons_light_with_the_toolbar_ones(truss):
+    root, app = truss
+    app._set_tool('rod')
+    _settle(root, 2)
+    assert app.mode_tool_btns['rod'].cget('bg') == \
+        app.tool_btns['rod'].cget('bg')
+    assert app.mode_tool_btns['node'].cget('bg') != \
+        app.mode_tool_btns['rod'].cget('bg')
+
+
+def test_the_support_picker_is_visible_before_any_joint_is_clicked(truss):
+    """It used to live inside the per-node editor, which is
+    `pack_forget`-ed until a joint is clicked -- so Support mode was
+    blank until you had already guessed what to click."""
+    root, app = truss
+    app.rail.select('support')
+    _settle(root, 2)
+    assert app.sup_frame.winfo_manager() == '', (
+        'this test is meaningless if the editor is already showing')
+    for key, cell in app.sup_btns.items():
+        assert cell.winfo_ismapped(), '%s is not on screen' % key
+
+
+def test_picking_a_support_symbol_still_sets_the_type(truss):
+    root, app = truss
+    app.rail.select('support')
+    _settle(root, 2)
+    app._pick_support('fixed')
+    assert app.sup_type.get() == 'fixed'
+    app._pick_support('rollerY')
+    assert app.sup_type.get() == 'rollerY'
+
+
+def test_the_support_symbols_are_not_captioned_twice(truss):
+    """The canvas drew the name AND the cell packed a label under it, so
+    each symbol said its name twice with the canvas copy clipped."""
+    _root, app = truss
+    for key, cell in app.sup_btns.items():
+        canvas = next(w for w in cell.winfo_children()
+                      if w.winfo_class() == 'Canvas')
+        texts = [canvas.itemcget(i, 'text')
+                 for i in canvas.find_all()
+                 if canvas.type(i) == 'text']
+        assert texts == [], '%s draws its own caption as well: %s' % (key,
+                                                                      texts)
+
+
+def test_results_says_what_is_missing_before_anything_is_solved(truss):
+    root, app = truss
+    app._clear_all()
+    app.rail.select('results')
+    _settle(root, 2)
+    assert app.res_placeholder.winfo_ismapped()
+    assert 'Analyze' in app.res_placeholder.cget('text')
+    app._load_example()
+    app._run_analysis()
+    _settle(root, 2)
+    assert not app.res_placeholder.winfo_ismapped(), (
+        'the placeholder is still up with results underneath it')
+    assert app.rod_res_frame.winfo_manager() == 'pack'
+
+
+def test_the_selection_box_explains_itself_on_a_fresh_tab(truss):
+    """It was blank until the first click, which is the one moment you
+    do not need telling what to click."""
+    _root, app = truss
+    assert 'Click a node/rod' in app.sel_text.get('1.0', 'end')
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  The display switches moved into Analyse
+# ═════════════════════════════════════════════════════════════════════════════
+def _menu_of(app, label):
+    """Walked recursively: a FlowBar group that is wider than the bar
+    wraps its own children into extra frames, so the Menubutton is not
+    always a grandchild of the bar."""
+    found = []
+
+    def walk(w):
+        for ch in w.winfo_children():
+            if ch.winfo_class() == 'Menubutton' and ch.cget('text') == label:
+                found.append(ch)
+            walk(ch)
+    walk(app.toolbar_flow.bar)
+    if not found:
+        return None
+    return found[0].nametowidget(found[0].cget('menu'))
+
+
+def _menu_labels(menu):
+    out = []
+    for i in range(menu.index('end') + 1):
+        if menu.type(i) != 'separator':
+            out.append(menu.entrycget(i, 'label'))
+    return out
+
+
+def test_display_keeps_only_the_advanced_toggle(truss):
+    root, app = truss
+    root.geometry('1600x900+0+0')
+    _settle(root, 6)
+    menu = _menu_of(app, 'Display ▾')
+    assert menu is not None, 'the Display menu is gone'
+    labels = _menu_labels(menu)
+    assert 'Advanced tools' in labels
+    for gone in ('Force on each member', 'Deformed shape',
+                 'Moment at rigid joints', 'Letter the joints (A, B, C…)'):
+        assert gone not in labels, (
+            '%r is still in the Display menu; it belongs in Analyse' % gone)
+    root.geometry('1366x820+0+0')
+    _settle(root, 4)
+
+
+@pytest.mark.parametrize('attr', ['show_force_labels', 'letter_joints',
+                                  'show_load_path', 'show_deform',
+                                  'show_contraflexure', 'show_node_moments',
+                                  'hide_zero', 'color_util'])
+def test_every_display_switch_is_in_the_analyse_panel(truss, attr):
+    """One box, in front of the result it describes, instead of a menu
+    three rows up that shows one switch at a time."""
+    root, app = truss
+    app.rail.select('analyse')
+    _settle(root, 2)
+    var = str(getattr(app, attr))
+    boxes = [w for w in app.show_frame.winfo_children()
+             if w.winfo_class() == 'Checkbutton']
+    boxes += [w for f in app.show_frame.winfo_children()
+              if f.winfo_class() == 'Frame'
+              for w in f.winfo_children() if w.winfo_class() == 'Checkbutton']
+    assert any(str(b.cget('variable')) == var for b in boxes), (
+        '%s has no switch in "What to show"' % attr)
+    assert all(b.winfo_ismapped() for b in boxes)
+
+
+def test_the_deflection_scale_sits_with_the_deformed_shape_switch(truss):
+    """The number is meaningless without the switch, and the switch is
+    hard to read without the number. They were a menu and a slider at
+    opposite ends of the toolbar."""
+    root, app = truss
+    app.rail.select('analyse')
+    _settle(root, 2)
+    kinds = [w.winfo_class() for w in app.def_row.winfo_children()]
+    assert 'Checkbutton' in kinds and 'Scale' in kinds
+    assert app.def_row.winfo_ismapped()
+    scale = next(w for w in app.def_row.winfo_children()
+                 if w.winfo_class() == 'Scale')
+    assert str(scale.cget('variable')) == str(app.def_scale)
+
+
+def test_a_switch_in_the_panel_still_redraws(truss):
+    root, app = truss
+    app._load_example()
+    app._run_analysis()
+    app.rail.select('analyse')
+    _settle(root, 2)
+    app.show_deform.set(False)
+    app._draw()
+    _settle(root, 2)
+    before = len(app.zc.canvas.find_all())
+    app.show_deform.set(True)
+    app._draw()
+    _settle(root, 2)
+    assert len(app.zc.canvas.find_all()) > before, (
+        'ticking Deformed shape drew nothing new')

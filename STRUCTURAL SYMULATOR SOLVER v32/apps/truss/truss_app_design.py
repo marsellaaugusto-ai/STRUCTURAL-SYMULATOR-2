@@ -10,21 +10,9 @@ from . import truss_design as td
 
 BG = '#f0f0ee'
 
-
-def util_color(u):
-    """Green (unused) to amber to red (at capacity and over)."""
-    if u is None:
-        return '#b0b0b0'
-    u = max(0.0, min(u, 1.2))
-    if u <= 0.6:
-        t = u / 0.6
-        r, g, b = int(46 + t * (240 - 46)), int(160 + t * (180 - 160)), 60
-    elif u <= 1.0:
-        t = (u - 0.6) / 0.4
-        r, g, b = 240, int(180 - t * 150), 40
-    else:
-        r, g, b = 160, 0, 0
-    return '#%02x%02x%02x' % (r, g, b)
+#: The canvas and the PDF's utilisation sheet must agree on what amber
+#: means, so the ramp lives in the Tk-free module and both read it there.
+util_color = td.util_color
 
 
 class TrussDesignMixin:

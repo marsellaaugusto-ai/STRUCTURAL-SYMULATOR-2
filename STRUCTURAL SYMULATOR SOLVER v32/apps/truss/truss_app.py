@@ -778,7 +778,15 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self.rxn_text.pack(fill='both')
 
         # material
-        mf = tk.LabelFrame(m_section, text='Assumed material (all rods)', bg='#f0f0ee',
+        # TITLE. It said "Assumed material (all rods)" and applied to NO
+        # rods: mat_E / mat_A / mat_I are read at rod CREATION only, so
+        # picking a section here with rods selected changed nothing while
+        # the status bar announced the new A and I. Reported 11-10-26 as
+        # "the array does not update properly and the information does not
+        # change", and it was exactly that. Everything in this box now
+        # reaches the rods -- the selected ones, or all of them -- and the
+        # title says which.
+        mf = tk.LabelFrame(m_section, text='Material and section', bg='#f0f0ee',
                            font=('Helvetica',10,'bold'), padx=6, pady=4)
         mf.pack(fill='x', padx=8, pady=(8,4))
         # Was a nine-line paragraph; the two facts a student needs fit in two.
@@ -809,7 +817,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self.sec_preset = tk.StringVar(value='')
         sec_box = ttk.Combobox(mf, textvariable=self.sec_preset, width=15,
                                state='readonly', font=('Helvetica', 9),
-                               values=[n for n, _A, _I in self.SECTION_PRESETS])
+                               values=list(self.SECTION_PRESETS))
         sec_box.grid(row=2, column=1, sticky='e', padx=4)
         sec_box.bind('<<ComboboxSelected>>', self._apply_section_preset)
         self._bind_widget_tooltip(sec_box,
@@ -834,6 +842,24 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self.mat_I = self.unit_var(tk.DoubleVar(value=8000.0), 'inertia')
         tk.Entry(mf, textvariable=self.mat_I, width=8,
                  font=('Helvetica',10)).grid(row=5,column=1,sticky='e',padx=4)
+        # Hand-typed E, A and I need a way onto the rods that already
+        # exist. A button and not a <FocusOut>: clicking into a field and
+        # out again must not quietly rewrite whatever happens to be
+        # selected at that moment.
+        self.mat_apply_btn = tk.Button(
+            mf, text='Apply E, A, I to all rods', bg='#1a6bbd', fg='white',
+            font=('Helvetica', 9, 'bold'), relief='flat',
+            command=self._apply_material_to_rods)
+        self.mat_apply_btn.grid(row=6, column=0, columnspan=2, sticky='ew',
+                                pady=(6, 2))
+        self._bind_widget_tooltip(self.mat_apply_btn,
+            'Writes the three boxes above onto the rods -- the selected '
+            'ones, or every rod when nothing is selected. They are also '
+            'what a NEW rod is drawn with.')
+        self.mat_target_hint = tk.Label(
+            mf, text='', bg='#f0f0ee', fg='#666', font=('Helvetica', 8),
+            justify='left', anchor='w', wraplength=PANEL_W-55)
+        self.mat_target_hint.grid(row=7, column=0, columnspan=2, sticky='w')
 
         # load editor
         self.load_frame = tk.LabelFrame(m_load, text='Load on node —', bg='#f0f0ee',
@@ -2659,17 +2685,23 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         ('Softwood C24 (along)', 11.0),
     )
 
-    #: Catalogue A and I for a few rolled IPE sections, strong axis, in the
-    #: cm2 / cm4 this tab stores them in. A short list on purpose: it is
-    #: here so a student can see what a real section is worth, not to be a
-    #: steel catalogue.
-    SECTION_PRESETS = (
-        ('IPE 160', 20.1, 869.0),
-        ('IPE 200', 28.5, 1943.0),
-        ('IPE 240', 39.1, 3892.0),
-        ('IPE 300', 53.8, 8356.0),
-        ('IPE 400', 84.5, 23130.0),
-    )
+    #: A few rolled IPE sections, by NAME ONLY. A short list on purpose:
+    #: it is here so a student can see what a real section is worth, not
+    #: to be a steel catalogue -- the whole 101-section catalogue is behind
+    #: "Manage profiles… -> Steel section…".
+    #:
+    #: These used to carry their own A and I, copied from a handbook, and
+    #: that second table disagreed with apps/stereo/stereo_profiles by 3-5 %
+    #: (the catalogue computes from the plate geometry and has no root
+    #: fillets). Two numbers for one section is one too many, and the
+    #: handbook A paired with the catalogue's own r_gyr in a check would be
+    #: incoherent -- so the names are the whole table now and every property
+    #: comes from the catalogue, which is also what the CIRSOC check reads.
+    SECTION_PRESETS = ('IPE 160', 'IPE 200', 'IPE 240', 'IPE 300', 'IPE 400')
+
+    #: The steel grade a quick-picked section is given. The other grade
+    #: (F36 / A992) is offered in the full section picker.
+    PRESET_STEEL = 'F24 (CIRSOC) / A36'
 
     @staticmethod
     def joint_letter(i):
@@ -2889,28 +2921,238 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
             except Exception:
                 pass
 
+    # ── material and section, onto the rods ───────────────────────────────
+    #
+    # THE BUG THIS REPLACES. mat_E / mat_A / mat_I are read in exactly two
+    # places, both of them rod CREATION, so this whole box applied to no
+    # existing rod. Selecting rods and picking "IPE 240" filled the boxes,
+    # printed "IPE 240 -- A = 39.10 cm2, I = 3892.00 cm4" in the status
+    # bar, left every rod exactly as it was, and left the solved results
+    # standing so not one number on screen moved. Reported 11-10-26.
+    #
+    # WHO IS THE TARGET. The selected rods when there are any, every rod
+    # when there are none. That is the rule for the whole box, it is
+    # written on the button, and `_material_target` is the single place it
+    # is decided so the button, the hint and the action cannot disagree.
+
+    def _material_target(self):
+        """(rod indices, phrase) -- what this box would act on right now."""
+        if self.selected_rods:
+            n = len(self.selected_rods)
+            return (sorted(self.selected_rods),
+                    '%d selected rod%s' % (n, '' if n == 1 else 's'))
+        return list(range(len(self.rods))), 'all rods'
+
+    def _refresh_material_target(self):
+        """Keep the button honest about what it is about to change."""
+        _rods, phrase = self._material_target()
+        try:
+            self.mat_apply_btn.configure(text='Apply E, A, I to %s' % phrase)
+            self.mat_target_hint.configure(
+                text='Picking a material or a section above changes %s at '
+                     'once. Nothing selected means every rod.' % phrase)
+        except Exception:
+            pass
+
+    def _after_section_change(self, message):
+        """One tail for every change in this box: the old results describe
+        a truss that no longer exists, so they go, and the panel, the
+        drawing and the diagrams are all re-made.
+
+        Re-solving rather than only clearing, when the truss was already
+        solved: the complaint was that "the information does not change",
+        and a cleared result panel is still not the new numbers."""
+        was_solved = self.results is not None
+        self.results = None
+        self.diagrams = None
+        self.rod_checks = None
+        if was_solved and self.rods:
+            self._run_analysis(quiet=True)
+        else:
+            self._draw()
+            self._draw_diagrams_only()
+        self._show_sel()
+        self._refresh_material_target()
+        self.status_var.set(message)
+
+    def _apply_material_to_rods(self):
+        """The three boxes, written onto the target rods."""
+        rods, phrase = self._material_target()
+        if not rods:
+            self.status_var.set('There are no rods to apply a material to.')
+            return
+        self._push_undo('material')
+        E = self.unit_value(self.mat_E)
+        A = self.unit_value(self.mat_A)
+        I = self.unit_value(self.mat_I)
+        over = sorted({self.rods[ri].get('profile', 'Default') for ri in rods
+                       if self.profiles.get(
+                           self.rods[ri].get('profile', 'Default'),
+                           {}).get('catalog')})
+        for ri in rods:
+            self.rods[ri].update(E=E, A=A, I=I)
+        note = ''
+        if over:
+            # Said, not prevented. Typing an area over a catalogue section
+            # is a reasonable thing to try; finding out later that the
+            # check was still using the catalogue's radius of gyration is
+            # not.
+            note = (' This overrides the section of %s — the check still '
+                    'uses that section\'s Fy and radius of gyration.'
+                    % ', '.join('"%s"' % f for f in over))
+        self._after_section_change(
+            'E = %s, A = %s, I = %s on %s.%s'
+            % (self.fmt('modulus', E), self.fmt('area', A),
+               self.fmt('inertia', I), phrase, note))
+
     def _apply_material_preset(self, _event=None):
-        """Fill E from the chosen material. The box stays editable: a
-        preset is a starting point, not a lock."""
+        """Fill E from the chosen material, and put it on the rods.
+
+        The box stays editable: a preset is a starting point, not a lock.
+        E is the one property a non-steel material shares with this box --
+        there is no timber or aluminium catalogue here -- so this writes E
+        and leaves A and I alone."""
         for name, E in self.MATERIAL_PRESETS:
-            if name == self.mat_preset.get():
-                self.mat_E.set(self.show('modulus', E))
+            if name != self.mat_preset.get():
+                continue
+            self.mat_E.set(self.show('modulus', E))
+            rods, phrase = self._material_target()
+            if not rods:
                 self.status_var.set(
-                    '%s — E = %s. For a pin-jointed truss this changes the '
-                    'deflection, not the member forces.'
-                    % (name, self.fmt('modulus', E)))
+                    '%s — E = %s. It is what the next rod will be drawn '
+                    'with.' % (name, self.fmt('modulus', E)))
                 return
+            self._push_undo('material preset')
+            for ri in rods:
+                self.rods[ri]['E'] = E
+            self._after_section_change(
+                '%s — E = %s on %s. For a pin-jointed truss this changes '
+                'the deflection, not the member forces.'
+                % (name, self.fmt('modulus', E), phrase))
+            return
 
     def _apply_section_preset(self, _event=None):
-        """Fill A and I from the chosen rolled section."""
-        for name, A, I in self.SECTION_PRESETS:
-            if name == self.sec_preset.get():
-                self.mat_A.set(self.show('area', A))
-                self.mat_I.set(self.show('inertia', I))
-                self.status_var.set(
-                    '%s — A = %s, I = %s (strong axis).'
-                    % (name, self.fmt('area', A), self.fmt('inertia', I)))
-                return
+        """Fill A and I from the chosen rolled section, and put the whole
+        section on the rods.
+
+        The WHOLE section, not just A and I: a rod is only checked once it
+        has Fy and a radius of gyration, and those live on its family
+        (truss_design.member_for). Writing A and I alone would move the
+        forces and still leave every utilisation reading "no steel
+        section", which is its own kind of silent failure."""
+        name = self.sec_preset.get()
+        if name not in self.SECTION_PRESETS:
+            return
+        A, I = self._section_AI(name)
+        if A is not None:
+            # Rounded for the BOX only. The catalogue computes A and I from
+            # the plate geometry, so they arrive as 37.184800000000003, and
+            # an entry field full of digits nobody typed reads as noise.
+            # The rods get the full value below, not this.
+            self.mat_A.set(round(self.show('area', A), 2))
+            self.mat_I.set(round(self.show('inertia', I), 1))
+        rods, phrase = self._material_target()
+        if not rods:
+            self.status_var.set(
+                '%s — A = %s, I = %s (strong axis). It is what the next '
+                'rod will be drawn with; select rods to put it on them.'
+                % (name, self.fmt('area', A), self.fmt('inertia', I)))
+            return
+        self._apply_section_to_rods(name, self.PRESET_STEEL, rods, phrase)
+
+    def _section_AI(self, name):
+        """(A, I) of a catalogue section, in this tab's cm2 / cm4."""
+        try:
+            from apps.stereo import stereo_profiles as sp
+            props = sp.section_to_props(sp.CATALOG[name],
+                                        sp.MATERIALS[self.PRESET_STEEL])
+            return props['A'], props['I']
+        except Exception:
+            return None, None
+
+    def _apply_section_to_rods(self, section_name, material_name, rods,
+                               phrase=None):
+        """Give `rods` a catalogue section, families and all.
+
+        WHY THIS IS NOT A ONE-LINER. A section lives on a FAMILY in this
+        tab, not on a rod: the rod carries E, A and I, and the family
+        carries Fy, Fu and the radius of gyration the check needs. So
+        putting a section on three of the seven rods of the "Default"
+        family cannot just write it onto "Default" -- that would silently
+        re-section the other four as well.
+
+          * the selection IS a whole family  -> that family takes it, and
+            no new family appears for nothing;
+          * the selection is part of one      -> the selected rods move
+            into a family of their own, named after the section.
+        """
+        from apps.stereo import stereo_profiles as sp
+        if not rods:
+            return
+        if phrase is None:
+            _r, phrase = self._material_target()
+        self._push_undo('steel section')
+        chosen = set(rods)
+        families = {self.rods[ri].get('profile', 'Default') for ri in chosen}
+        whole = len(families) == 1 and not any(
+            i not in chosen
+            for i, r in enumerate(self.rods)
+            if r.get('profile', 'Default') in families)
+        if whole:
+            family = next(iter(families))
+            moved = ''
+        else:
+            family = self._free_family_name(section_name)
+            for ri in chosen:
+                self.rods[ri]['profile'] = family
+            moved = ' in a new family "%s"' % family
+        props = sp.section_to_props(sp.CATALOG[section_name],
+                                    sp.MATERIALS[material_name])
+        prof = self.profiles.setdefault(family, {})
+        prof.update({k: props[k] for k in ('E', 'A', 'I', 'Fy', 'Fu',
+                                           'r_gyr', 'c_cm')})
+        prof.update(catalog=section_name, material=material_name)
+        for ri in chosen:
+            self.rods[ri].update(E=prof['E'], A=prof['A'], I=prof['I'])
+        self._refresh_profile_combo()
+        self.active_profile.set(family)
+        self._after_section_change(
+            '%s, %s on %s%s — A = %s, I = %s.'
+            % (section_name, material_name, phrase, moved,
+               self.fmt('area', prof['A']), self.fmt('inertia', prof['I'])))
+
+    def _rod_section_name(self, ri):
+        """What a rod is made of, in one phrase for the Selection box."""
+        try:
+            rod = self.rods[ri]
+        except (IndexError, TypeError):
+            return '—'
+        prof = self.profiles.get(rod.get('profile', 'Default'), {})
+        cat = prof.get('catalog')
+        if cat:
+            # A rod carries its own E, A and I; its FAMILY carries the
+            # section. Hand-typing an area over a catalogue section leaves
+            # the two disagreeing, and the check would then pair that area
+            # with the catalogue's radius of gyration. The app allows it --
+            # overriding one number of a section is a legitimate thing to
+            # try -- so the Selection box says it out loud instead.
+            pa = prof.get('A')
+            if pa and abs(rod.get('A', pa) - pa) > 1e-6 * max(abs(pa), 1.0):
+                return '%s (A overridden)' % cat
+            return cat
+        # No catalogue section is not a detail: it is the reason that rod
+        # has no utilisation, so the Selection box says it rather than
+        # leaving a blank the reader has to interpret.
+        return 'none (A and I only — not checked)'
+
+    def _free_family_name(self, base):
+        """`base`, or "base (2)", "base (3)"... -- never an existing one."""
+        if base not in self.profiles:
+            return base
+        n = 2
+        while '%s (%d)' % (base, n) in self.profiles:
+            n += 1
+        return '%s (%d)' % (base, n)
 
     def _refresh_tool_buttons(self):
         act = self.tool.get()
@@ -3788,6 +4030,10 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
     #  Selection panel
     # ══════════════════════════════════════════════════════════════════════════
     def _show_sel(self):
+        # The Material-and-section box acts on the selection, so its button
+        # has to be relabelled whenever the selection moves -- this is the
+        # one function every selection change already passes through.
+        self._refresh_material_target()
         t=self.sel_text
         t.configure(state='normal'); t.delete('1.0','end')
         n_sel_nodes = len(self.selected_nodes)
@@ -3843,6 +4089,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
             t.insert('end',f'Rod {ri}  ({rod["a"]} → {rod["b"]})\n')
             t.insert('end', f'L={self.show("length", L):.2f} {self.u("length")}  '
                             f'family="{rod.get("profile","Default")}"\n')
+            t.insert('end', f'Section: {self._rod_section_name(ri)}\n')
             t.insert('end',f'Connection: {"Rigid (moment)" if conn=="rigid" else "Pinned (axial)"}\n')
             if conn == 'rigid':
                 t.insert('end', f'(E={self.fmt("modulus", rod["E"])} '
@@ -3876,11 +4123,21 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
             if n_sel_rods:
                 fams = {self.rods[ri].get('profile','Default') for ri in self.selected_rods}
                 t.insert('end', f'Families: {", ".join(sorted(fams))}\n')
+                # The sections, not only the families. Changing them is
+                # the whole point of selecting several rods, and without
+                # this line the panel looked identical before and after.
+                secs = {self._rod_section_name(ri) for ri in self.selected_rods}
+                t.insert('end', f'Sections: {", ".join(sorted(secs))}\n')
+                areas = {round(self.show('area', self.rods[ri]['A']), 2)
+                         for ri in self.selected_rods}
+                t.insert('end', 'A = %s %s\n'
+                                % (', '.join('%g' % a for a in sorted(areas)),
+                                   self.u('area')))
                 conns = {self.rods[ri].get('conn','pin') for ri in self.selected_rods}
                 t.insert('end', f'Connections: {", ".join(sorted(conns))}\n')
-                t.insert('end', '\nUse "Rod family / profile" or\n'
-                                '"Connection type" below to bulk-\n'
-                                'assign to these rods.')
+                t.insert('end', '\nUse "Material and section" or\n'
+                                '"Connection type" to change all\n'
+                                'of these at once.')
             t.insert('end', '\n\n[Delete] to remove all selected')
         t.configure(state='disabled')
 

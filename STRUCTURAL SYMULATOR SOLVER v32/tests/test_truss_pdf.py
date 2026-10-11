@@ -169,3 +169,211 @@ def test_the_tab_solves_first_when_needed(app, tmp_path):
     assert app.results is None
     out = app._export_pdf_report(path=str(tmp_path / 'k.pdf'))
     assert out is not None and app.results is not None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Utilisation and buckling
+#
+#  Asked for on 11-10-26: "add to the truss pdf the utilization and the
+#  buckling under the three variations of lambda". The rod table already
+#  carried a Use column; what was missing was the PICTURE of it, and
+#  buckling was not in the report at all.
+# ═════════════════════════════════════════════════════════════════════════════
+def _fig(rep, heading):
+    return next(f for f, h in rep.sheets if h == heading)
+
+
+def _texts(fig):
+    out = [t.get_text() for t in fig.texts]
+    for ax in fig.axes:
+        out.append(ax.get_title())
+        out.extend(t.get_text() for t in ax.texts)
+    return [t for t in out if t]
+
+
+def test_the_report_carries_a_utilisation_and_a_buckling_sheet(tmp_path):
+    m, res, ch = _solved('pratt')
+    out = tp.export_pdf(str(tmp_path / 'r.pdf'), m['nodes'], m['rods'],
+                        m['supports'], m['loads'], res, ch, m['profiles'])
+    assert 'Utilisation' in out['headings']
+    assert 'Buckling' in out['headings']
+    assert _pages(tmp_path / 'r.pdf') == out['sheets']
+
+
+def test_the_utilisation_sheet_ranks_the_rods_worst_first(tmp_path):
+    m, res, ch = _solved('pratt')
+    out = tp.export_pdf(str(tmp_path / 'r.pdf'), m['nodes'], m['rods'],
+                        m['supports'], m['loads'], res, ch, m['profiles'],
+                        buckling=False)
+    ranked = out['utilised']
+    assert ranked, 'nothing was ranked on a model whose rods are checked'
+    utils = [ch[i]['util'] for i in ranked]
+    assert utils == sorted(utils, reverse=True)
+    assert ranked[0] == td.governing(ch)[0], (
+        'the top of the ranking must be the governing rod the rest of the '
+        'app names')
+
+
+def test_the_utilisation_sheet_colours_a_rod_by_how_hard_it_works():
+    """The same ramp as the canvas, so a sheet and the screen cannot
+    disagree about what amber means."""
+    m, res, ch = _solved('pratt')
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'p', None)
+    rep.utilisation()
+    fig = _fig(rep, 'Utilisation')
+    drawn = {tuple(round(v, 4) for v in l.get_color())
+             if not isinstance(l.get_color(), str) else l.get_color()
+             for ax in fig.axes for l in ax.lines}
+    worst = td.governing(ch)[1]['util']
+    assert td.util_color(worst) in drawn, (
+        'no rod is drawn in the governing rod\'s utilisation colour')
+    assert td.util_color(0.0) != td.util_color(1.1)
+
+
+def test_an_over_capacity_rod_is_named_on_the_utilisation_sheet():
+    """A sheet that only colours the problem makes the reader hunt for
+    it; this one has to say which rod."""
+    m, res, ch = _solved('pratt')
+    ch = [dict(c) for c in ch]
+    ch[2].update(checked=True, util=1.4, ok=False, governing='made up')
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'p', None)
+    rep.utilisation()
+    said = ' '.join(_texts(_fig(rep, 'Utilisation')))
+    assert 'OVER capacity' in said
+    assert 'rod 2' in said.lower()
+
+
+def test_unchecked_rods_are_counted_rather_than_quietly_left_grey():
+    m, res, _ch = _solved('pratt')
+    bare = {k: {'E': p['E'], 'A': p['A']} for k, p in m['profiles'].items()}
+    ch = td.check_rods(m['nodes'], m['rods'], bare, res)
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, bare, 'p', None)
+    assert rep.utilisation() == []
+    said = ' '.join(_texts(_fig(rep, 'Utilisation')))
+    assert 'No rod is checked' in said and 'grey' in said
+
+
+# ── buckling ──────────────────────────────────────────────────────────────
+def test_three_lambdas_are_reported_each_with_its_own_shape():
+    """"the buckling under the three variations of lambda" -- three
+    modes, ascending, each drawn and each naming what moves."""
+    pytest.importorskip('scipy')
+    m, res, ch = _solved('pratt')
+    result, curve = tp.buckling_for(m['nodes'], m['rods'], m['supports'],
+                                    m['loads'], res)
+    assert 'error' not in result, result
+    assert len(result['factors']) == 3
+    assert result['factors'] == sorted(result['factors'])
+    assert len(result['modes']) == len(result['factors'])
+
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'p', None)
+    got = rep.buckling(result, curve)
+    assert got == result['factors'][:3]
+    said = ' '.join(_texts(_fig(rep, 'Buckling')))
+    for j, lam in enumerate(result['factors'][:3], start=1):
+        assert 'Mode %d:  λ = %.2f' % (j, lam) in said, said
+
+
+def test_a_lambda_below_one_is_called_out_as_such():
+    """A truss that buckles before its own load is on is the one case a
+    reader must not be able to skim past."""
+    pytest.importorskip('scipy')
+    m, res, ch = _solved('warren')
+    result, curve = tp.buckling_for(m['nodes'], m['rods'], m['supports'],
+                                    m['loads'], res)
+    assert result['factors'][0] < 1.0, (
+        'this fixture is meant to buckle below its own load; it now gives '
+        '%.3f, so the test no longer tests what it says' % result['factors'][0])
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'w', None)
+    rep.buckling(result, curve)
+    said = ' '.join(_texts(_fig(rep, 'Buckling')))
+    assert 'BELOW 1' in said
+
+
+def test_the_sheet_says_lambda_is_an_upper_bound():
+    """It is elastic buckling of an ideal truss. A sheet that hands an
+    architecture student 3.5 without that sentence is teaching a number
+    they will believe."""
+    pytest.importorskip('scipy')
+    m, res, ch = _solved('pratt')
+    result, curve = tp.buckling_for(m['nodes'], m['rods'], m['supports'],
+                                    m['loads'], res)
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'p', None)
+    rep.buckling(result, curve)
+    said = ' '.join(_texts(_fig(rep, 'Buckling')))
+    assert 'UPPER bound' in said
+    assert 'out of the plane' in said.lower()
+
+
+def test_equal_lambdas_are_explained_rather_than_left_looking_broken():
+    """Four identical compressed members buckle at one load, so the
+    report shows the same number three times. That is the reading, not a
+    bug, and the sheet has to say so."""
+    pytest.importorskip('scipy')
+    m, res, ch = _solved('pratt')
+    result, curve = tp.buckling_for(m['nodes'], m['rods'], m['supports'],
+                                    m['loads'], res)
+    f = result['factors']
+    assert f[1] <= f[0] * 1.001, (
+        'this fixture is meant to be degenerate; it now gives %s' % f)
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'p', None)
+    rep.buckling(result, curve)
+    said = ' '.join(_texts(_fig(rep, 'Buckling')))
+    assert 'modes share that λ' in said
+
+
+def test_a_truss_with_nothing_in_compression_says_why_instead_of_a_blank():
+    m, res, ch = _solved('pratt')
+    flat = {'rod_res': [dict(r, force=abs(r['force'])) for r in res['rod_res']],
+            'node_res': res['node_res'], 'reactions': res['reactions']}
+    result, curve = tp.buckling_for(m['nodes'], m['rods'], m['supports'],
+                                    m['loads'], flat)
+    assert 'error' in result
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'p', None)
+    assert rep.buckling(result, curve) == []
+    said = ' '.join(_texts(_fig(rep, 'Buckling')))
+    assert 'compression' in said
+
+
+def test_buckling_can_be_switched_off(tmp_path):
+    m, res, ch = _solved('pratt')
+    out = tp.export_pdf(str(tmp_path / 'r.pdf'), m['nodes'], m['rods'],
+                        m['supports'], m['loads'], res, ch, m['profiles'],
+                        buckling=False)
+    assert 'Buckling' not in out['headings']
+    assert out['buckling'] == []
+
+
+def test_every_caption_stays_inside_the_drawn_frame():
+    """matplotlib's own wrap=True wraps at the FIGURE edge, and these
+    sheets have a frame 2.6 % inside it -- an auto-wrapped caption runs
+    its first line over the rule and off the paper."""
+    pytest.importorskip('scipy')
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from apps.stereo import stereo_reports as sr
+    m, res, ch = _solved('pratt')
+    result, curve = tp.buckling_for(m['nodes'], m['rods'], m['supports'],
+                                    m['loads'], res)
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'p', None)
+    rep.utilisation()
+    rep.buckling(result, curve)
+    _x0, _y0, x1, y1 = sr.PDF_FRAME
+    for fig, heading in rep.sheets:
+        canvas = FigureCanvasAgg(fig)
+        canvas.draw()
+        w, h = fig.get_size_inches() * fig.dpi
+        for t in fig.texts:
+            bb = t.get_window_extent(canvas.get_renderer())
+            assert bb.x1 / w <= x1 + 0.005, (
+                '%s: a caption runs %.3f past the frame'
+                % (heading, bb.x1 / w - x1))
+            assert bb.y1 / h <= y1 + 0.005, heading

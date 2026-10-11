@@ -82,10 +82,28 @@ def test_a_material_preset_fills_E(app):
 
 
 def test_a_section_preset_fills_A_and_I(app):
+    """From the CATALOGUE, which is also what the CIRSOC check reads.
+
+    These used to be a second, hand-copied table of A and I that
+    disagreed with apps/stereo/stereo_profiles by 3-5 % (the catalogue
+    computes from the plate geometry and has no root fillets). The
+    numbers are asserted against the catalogue now, so the two can no
+    longer drift apart -- a handbook area paired with the catalogue's own
+    radius of gyration inside one check is not a section that exists.
+    """
+    from apps.stereo import stereo_profiles as sp
+    props = sp.section_to_props(sp.CATALOG['IPE 300'],
+                                sp.MATERIALS[app.PRESET_STEEL])
     app.sec_preset.set('IPE 300')
     app._apply_section_preset()
-    assert app.mat_A.get() == pytest.approx(53.8)
-    assert app.mat_I.get() == pytest.approx(8356.0)
+    # The BOX is rounded -- an entry field reading 51.880600000000001 is
+    # noise -- so this is a display tolerance, not a slack one. What the
+    # rods get is the full value, which test_truss_section_apply covers.
+    assert app.mat_A.get() == pytest.approx(props['A'], abs=0.005)
+    assert app.mat_I.get() == pytest.approx(props['I'], abs=0.05)
+    # and sane for an IPE 300, whichever source they came from
+    assert 45 < props['A'] < 60
+    assert 7000 < props['I'] < 9000
 
 
 def test_timber_is_far_softer_than_steel(app):
@@ -100,12 +118,24 @@ def test_timber_is_far_softer_than_steel(app):
 def test_sections_grow_monotonically(app):
     """A deeper IPE must have more area AND more inertia, and inertia must
     grow faster -- that is the whole reason sections are deep."""
-    rows = list(app.SECTION_PRESETS)
-    for (n0, a0, i0), (n1, a1, i1) in zip(rows, rows[1:]):
-        assert a1 > a0, f'{n1} has no more area than {n0}'
-        assert i1 > i0, f'{n1} has no more inertia than {n0}'
-        assert i1 / i0 > a1 / a0, (
+    from apps.stereo import stereo_profiles as sp
+    mat = sp.MATERIALS[app.PRESET_STEEL]
+    rows = [(n, sp.section_to_props(sp.CATALOG[n], mat))
+            for n in app.SECTION_PRESETS]
+    for (n0, p0), (n1, p1) in zip(rows, rows[1:]):
+        assert p1['A'] > p0['A'], f'{n1} has no more area than {n0}'
+        assert p1['I'] > p0['I'], f'{n1} has no more inertia than {n0}'
+        assert p1['I'] / p0['I'] > p1['A'] / p0['A'], (
             f'{n1} vs {n0}: inertia should grow faster than area')
+
+
+def test_every_quick_pick_section_is_a_real_catalogue_section(app):
+    """The shortlist is names only now, so a typo in it would be a
+    KeyError the moment a student picked it."""
+    from apps.stereo import stereo_profiles as sp
+    for name in app.SECTION_PRESETS:
+        assert name in sp.CATALOG, name
+    assert app.PRESET_STEEL in sp.MATERIALS
 
 
 def test_a_preset_fills_the_boxes_in_the_shown_convention(app):

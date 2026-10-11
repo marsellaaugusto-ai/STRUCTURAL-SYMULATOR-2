@@ -356,6 +356,253 @@ class _Report:
                  'supports push on the truss; Ry positive upwards. The sums '
                  'balance the loads.', fontsize=8, color=INK)
 
+    def utilisation(self):
+        """How hard each rod is working, drawn and ranked.
+
+        The rod table already carries the utilisation as a column of
+        numbers, and a column of numbers is not how anyone finds the rod
+        that is in trouble. This is the same information as a picture:
+        the truss in the Tab's own green-amber-red ramp, and the rods
+        ranked beside it so the worst one is the top bar.
+
+        Rods whose family has no steel section are GREY and are said to
+        be grey, rather than being left out: "no section" is a state of
+        the model the reader has to know about, not a gap in the drawing.
+        """
+        checked = [(i, c['util']) for i, c in enumerate(self.checks)
+                   if c.get('checked') and c.get('util') is not None]
+        fig = self.new_sheet('Utilisation')
+        ax = self.drawing_axes(fig, rect=(0.05, 0.19, 0.56, 0.74))
+        util = {i: u for i, u in checked}
+
+        def col(i):
+            return td.util_color(util.get(i))
+        self.draw_rods(ax, color=col, width=3.0)
+        self.draw_supports(ax)
+        self.draw_loads(ax, label=False)
+        for i, u in checked:
+            r = self.rods[i]
+            (xa, ya), (xb, yb) = self.pts[r['a']], self.pts[r['b']]
+            ax.text((xa + xb) / 2, (ya + yb) / 2, '%.2f' % u, fontsize=6.2,
+                    color=INK, ha='center', va='center', zorder=8,
+                    bbox=dict(boxstyle='round,pad=0.12', fc='white',
+                              ec='none', alpha=0.85))
+        self.scale_bar(ax)
+        self._util_key(fig)
+
+        if not checked:
+            fig.text(0.05, 0.945, 'No rod is checked: no family has a steel '
+                     'section yet, so every rod is drawn grey. Give one a '
+                     'section (Section → Material and section) and the '
+                     'utilisations appear here.', fontsize=8, color=INK)
+            return []
+
+        # The ranking, worst first: the only order worth reading.
+        order = sorted(checked, key=lambda t: -t[1])
+        show = order[:18]
+        bx = fig.add_axes((0.66, 0.235, 0.29, 0.675))
+        ys = list(range(len(show)))[::-1]
+        bx.barh(ys, [u for _i, u in show],
+                color=[td.util_color(u) for _i, u in show], height=0.72)
+        bx.axvline(1.0, color='#b03a2e', lw=1.0, ls='--')
+        bx.text(1.0, len(show) - 0.2, ' capacity', fontsize=6.5,
+                color='#b03a2e', va='top')
+        bx.set_yticks(ys)
+        bx.set_yticklabels(['Rod %d' % i for i, _u in show], fontsize=6.5)
+        bx.set_xlim(0, max(1.15, min(1.6, max(u for _i, u in show) * 1.12)))
+        bx.tick_params(axis='x', labelsize=6.5)
+        bx.set_xlabel('utilisation (demand / capacity)', fontsize=7)
+        for spine in ('top', 'right'):
+            bx.spines[spine].set_visible(False)
+        for y, (_i, u) in zip(ys, show):
+            bx.text(u, y, ' %.2f' % u, fontsize=6.2, va='center', color=INK)
+
+        worst_i, worst_u = order[0]
+        gov = self.checks[worst_i].get('governing') or \
+            self.checks[worst_i].get('mode') or ''
+        over = [i for i, u in order if u > 1.0]
+        line = ('Utilisation: demand over CIRSOC 301 capacity. Most used '
+                'rod %d at %.2f (%s).' % (worst_i, worst_u, gov))
+        if over:
+            line += ('  %d rod(s) OVER capacity: %s.'
+                     % (len(over), ', '.join(str(i) for i in over[:10])))
+        else:
+            line += '  Every checked rod is within capacity.'
+        n_grey = len(self.rods) - len(checked)
+        if n_grey:
+            line += ('  %d rod(s) are grey: their family has no steel '
+                     'section, so they are not checked.' % n_grey)
+        fig.text(0.05, 0.945, _wrap(line, 160), fontsize=8, color=INK,
+                 va='top')
+        if len(order) > len(show):
+            fig.text(0.66, 0.195, 'The %d most used of %d checked rods; '
+                     'the rest are in the Rods table.'
+                     % (len(show), len(order)), fontsize=6.5, color='#777')
+        return [i for i, _u in order]
+
+    def _util_key(self, fig):
+        """The colour ramp, with what each end means written on it."""
+        import numpy as np
+        from matplotlib.colors import ListedColormap
+        # x < 0.414 and y > 0.158, which is the strip the ISO title
+        # block (stereo_reports.PDF_TITLE_W/H) leaves free.
+        kx = fig.add_axes((0.05, 0.088, 0.30, 0.022))
+        steps = np.linspace(0.0, 1.2, 120)
+        cmap = ListedColormap([td.util_color(u) for u in steps])
+        kx.imshow(steps.reshape(1, -1), aspect='auto', cmap=cmap,
+                  extent=(0.0, 1.2, 0.0, 1.0))
+        kx.set_yticks([])
+        kx.set_xticks([0.0, 0.6, 1.0, 1.2])
+        kx.set_xticklabels(['0', '0.6', '1.0 capacity', '1.2+'], fontsize=6.5)
+        kx.tick_params(length=2)
+        fig.text(0.05, 0.048, 'grey = no steel section, not checked',
+                 fontsize=6.5, color='#777')
+
+    def buckling(self, result, curve):
+        """The three lowest buckling factors, their shapes, and the
+        second-order curve.
+
+        WHY THREE. One number ("it buckles at 3.7x") says whether there is
+        room; three say how much room there is BETWEEN the modes. Modes at
+        3.7, 3.8 and 3.9 mean a structure with no single weak link and
+        nothing much to gain by bracing one rod, while 1.4, 6.0 and 6.2
+        means one member decides everything -- and that is a design
+        reading, not a number.
+
+        Elastic and ideal, so each lambda is an UPPER bound; that is said
+        on the sheet rather than left for the reader to remember.
+        """
+        fig = self.new_sheet('Buckling')
+        if not result or 'error' in (result or {}):
+            fig.text(0.05, 0.93, 'Buckling', fontsize=13, color=INK)
+            fig.text(0.05, 0.86, (result or {}).get(
+                'error', 'Buckling was not computed for this report.'),
+                fontsize=9, color=INK, wrap=True)
+            return []
+        factors = result['factors']
+        modes = result['modes']
+        n = min(len(factors), 3)
+        width = 0.90 / max(n, 1)
+        for j in range(n):
+            ax = fig.add_axes((0.05 + j * width, 0.52, width * 0.94, 0.30))
+            self._draw_mode(ax, modes[j])
+            lam = factors[j]
+            tone = '#b03a2e' if lam < 1.0 else INK
+            where = modes[j]['peak']
+            what = ('rod %d bows' % where[1] if where[0] == 'mid'
+                    else 'node %d moves most' % where[1])
+            ax.set_title('Mode %d:  λ = %.2f\n%s' % (j + 1, lam, what),
+                         fontsize=8.5, color=tone)
+        head = 'λ is the factor on the load as it stands. '
+        if factors[0] < 1.0:
+            head += ('λ₁ = %.2f is BELOW 1: it buckles before the full load '
+                     'is on.' % factors[0])
+        else:
+            head += ('λ₁ = %.2f, so the load can grow %.1f× before it '
+                     'buckles.' % (factors[0], factors[0]))
+        if n >= 2:
+            gap = factors[1] / factors[0] if factors[0] > 1e-9 else 0.0
+            same = sum(1 for lam in factors if lam <= factors[0] * 1.001)
+            head += '  '
+            if same >= 2:
+                # Equal eigenvalues are not a numerical accident here:
+                # identical members under identical force buckle at
+                # identical load, and saying so is the reading. Bracing
+                # one of them moves nothing; all of them have to go.
+                head += ('%d modes share that λ: that many equal members '
+                         'buckle at the same load, so stiffening one of '
+                         'them buys nothing.' % same)
+            elif gap > 1.3:
+                head += ('Mode 2 is %.2f, %.0f %% higher: one member '
+                         'decides the buckling load.'
+                         % (factors[1], 100 * (gap - 1)))
+            else:
+                head += ('Mode 2 is %.2f, only %.0f %% higher: no single '
+                         'member decides it.'
+                         % (factors[1], 100 * (gap - 1)))
+        fig.text(0.05, 0.945, _wrap(head, 160), fontsize=8, color=INK,
+                 va='top')
+        self._load_deflection(fig, curve)
+        fig.text(0.45, 0.325, _wrap(
+                 'Elastic buckling of the IDEAL truss, so every λ is an '
+                 'UPPER bound: imperfections, residual stresses and '
+                 'yielding are not modelled, and each rod is cut in two so '
+                 'it can bow between its joints. Buckling OUT of the plane '
+                 'is the rod check\'s job (CIRSOC 301 E3, minor radius) and '
+                 'is in the Utilisation and Rods sheets, not here. A mode '
+                 'has a shape, not a size: the shapes are drawn '
+                 'exaggerated.', 88), fontsize=6.6, color='#777', va='top')
+        return factors[:n]
+
+    def _draw_mode(self, ax, mode):
+        """One buckling shape: the truss in grey, the mode in red.
+
+        The mode's (dx, dy) are metres in the CANVAS frame, y down
+        (truss_buckling.Model), and this sheet's points are y up -- hence
+        the minus on dy. Getting that wrong flips the shape vertically,
+        which for a mode (±φ are the same mode) looks plausible and is
+        still wrong next to the loads and supports.
+        """
+        amp = 0.07 * self.span
+        moved = [(x + amp * dx, y - amp * dy)
+                 for (x, y), (dx, dy) in zip(self.pts, mode['nodes'])]
+        for r in self.rods:
+            (xa, ya), (xb, yb) = self.pts[r['a']], self.pts[r['b']]
+            ax.plot([xa, xb], [ya, yb], color=GHOST, lw=1.1, zorder=2)
+        for k, r in enumerate(self.rods):
+            (xa, ya) = moved[r['a']]
+            (xb, yb) = moved[r['b']]
+            mx0 = (self.pts[r['a']][0] + self.pts[r['b']][0]) / 2
+            my0 = (self.pts[r['a']][1] + self.pts[r['b']][1]) / 2
+            dx, dy = mode['mids'][k]
+            mx, my = mx0 + amp * dx, my0 - amp * dy
+            # Three points through a quadratic Bezier, so a bowing rod
+            # reads as a bow and not as two straight segments.
+            ts = [i / 12.0 for i in range(13)]
+            xs = [(1 - t) ** 2 * xa + 2 * (1 - t) * t * (2 * mx - (xa + xb) / 2)
+                  + t ** 2 * xb for t in ts]
+            ys = [(1 - t) ** 2 * ya + 2 * (1 - t) * t * (2 * my - (ya + yb) / 2)
+                  + t ** 2 * yb for t in ts]
+            ax.plot(xs, ys, color='#c0392b', lw=1.6, zorder=3)
+        for sp in self.supports:
+            x, y = self.pts[sp['node']]
+            s = 0.03 * self.span
+            ax.fill([x, x - s, x + s], [y, y - 1.6 * s, y - 1.6 * s],
+                    color=SUPPORT, zorder=4)
+        ax.set_aspect('equal', adjustable='datalim')
+        ax.axis('off')
+
+    def _load_deflection(self, fig, curve):
+        """The second-order curve: how the bow runs away as λ nears λ_cr."""
+        ax = fig.add_axes((0.08, 0.24, 0.30, 0.26))
+        if not curve or 'error' in curve or not curve.get('factors'):
+            ax.axis('off')
+            ax.text(0.0, 0.5, (curve or {}).get(
+                'error', 'No second-order curve.'), fontsize=7, color='#777')
+            return
+        lcr = curve['lambda_cr']
+        ax.plot(curve['first_mm'], curve['factors'], color='#888', lw=1.0,
+                label='first order (straight)')
+        ax.plot(curve['node_mm'], curve['factors'], color='#1a6bbd', lw=1.4,
+                label='second order')
+        ax.plot(curve['bow_mm'], curve['factors'], color='#c0392b', lw=1.4,
+                ls='--', label='bow of the rod that buckles')
+        ax.axhline(lcr, color='#c0392b', lw=0.8, ls=':')
+        ax.text(0.0, lcr, ' λ_cr = %.2f' % lcr, fontsize=6.5,
+                color='#c0392b', va='bottom')
+        ax.set_xlabel('movement (mm)', fontsize=7)
+        ax.set_ylabel('load factor λ', fontsize=7)
+        ax.tick_params(labelsize=6.5)
+        ax.legend(fontsize=6, frameon=False, loc='lower right')
+        for spine in ('top', 'right'):
+            ax.spines[spine].set_visible(False)
+        fig.text(0.45, 0.495, _wrap('The second-order line bends away from the '
+                 'first-order one and runs off as λ nears λ_cr: that gap IS '
+                 'the amplification every second-order design rule is '
+                 'about. Started from an initial bow of L/1000 = %.2f mm in '
+                 'the first mode\'s shape.' % curve.get('bow0_mm', 0.0), 86),
+                 fontsize=6.8, color='#555', va='top')
+
     def rod_table(self):
         F = self.u.lab('force')
         Lb = self.u.lab('length')
@@ -408,6 +655,16 @@ class _Report:
         return ranked[:EXPLAIN_RODS]
 
 
+def _wrap(text, chars):
+    """Hard-wrap at `chars`, because matplotlib's own `wrap=True` wraps at
+    the FIGURE edge and these sheets have a drawn frame 2.6 % inside it --
+    so an auto-wrapped caption runs its first line over the frame rule and
+    off the paper."""
+    import textwrap
+    return '\n'.join(textwrap.fill(para, chars)
+                     for para in text.split('\n'))
+
+
 def _z(v):
     """No "-0.00" in a table: a force below half a hundredth is zero."""
     return 0.0 if abs(v) < 0.005 else v
@@ -447,17 +704,51 @@ def _table(ax, rows, over_col=None):
     return t
 
 
+def buckling_for(nodes, rods, supports, loads, results, n_modes=3):
+    """(the lowest `n_modes` buckling factors and shapes, the second-order
+    curve) for the report, or ({'error': ...}, {'error': ...}).
+
+    Computed here rather than taken from the app so a report written by a
+    script has the same sheets as one exported from the window. It is one
+    eigenproblem on a handful of degrees of freedom.
+    """
+    try:
+        from . import truss_buckling as tb
+    except Exception as exc:                    # noqa: BLE001
+        err = {'error': 'Buckling needs numpy (%s).' % exc}
+        return err, err
+    try:
+        result = tb.buckling(nodes, rods, supports, results, n_modes=n_modes)
+    except Exception as exc:                    # noqa: BLE001
+        result = {'error': 'The buckling analysis failed: %s' % exc}
+    if 'error' in result:
+        return result, {'error': result['error']}
+    try:
+        curve = tb.load_deflection(nodes, rods, supports, loads, results)
+    except Exception as exc:                    # noqa: BLE001
+        curve = {'error': 'The second-order curve failed: %s' % exc}
+    return result, curve
+
+
 def export_pdf(path, nodes, rods, supports, loads, results, checks,
-               profiles, title='', units=None):
+               profiles, title='', units=None, buckling=True):
     """Write the report to `path`. Returns {'sheets': n, 'explained':
-    [rod...], 'deform_factor': k}."""
+    [rod...], 'deform_factor': k, 'utilised': [rod...], 'buckling':
+    [lambda...]}.
+
+    `buckling=False` leaves the buckling sheet out -- it costs an
+    eigenproblem, which is wasted on a test that is not about it.
+    """
     from matplotlib.backends.backend_pdf import PdfPages
     if results is None:
         raise ValueError('analyse the truss first')
     rep = _Report(nodes, rods, supports, loads, results, checks, profiles,
                   title, units)
     contents = ['Geometry', 'Axial forces', 'Deformed shape', 'Reactions',
-                'Rods']
+                'Utilisation']
+    if buckling:
+        contents.append('Buckling (λ₁, λ₂, λ₃)')
+    contents.append('Rods')
     if any(c.get('checked') for c in rep.checks):
         contents.append('Explain the most used rods')
     rep.cover(contents)
@@ -465,6 +756,11 @@ def export_pdf(path, nodes, rods, supports, loads, results, checks,
     rep.forces()
     rep.deformed()
     rep.reactions()
+    utilised = rep.utilisation()
+    factors = []
+    if buckling:
+        result, curve = buckling_for(nodes, rods, supports, loads, results)
+        factors = rep.buckling(result, curve)
     rep.rod_table()
     explained = rep.explain()
     rep.frame()
@@ -476,4 +772,5 @@ def export_pdf(path, nodes, rods, supports, loads, results, checks,
             pdf.savefig(fig)
     return {'sheets': len(rep.sheets), 'explained': explained,
             'deform_factor': rep.deform_factor,
+            'utilised': utilised, 'buckling': factors,
             'headings': [h for _f, h in rep.sheets]}

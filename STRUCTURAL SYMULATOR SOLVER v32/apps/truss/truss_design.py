@@ -24,6 +24,27 @@ _SECTION_KEYS = ('Fy', 'Fu', 'r_gyr', 'c_cm', 'Iw', 'cw_cm', 'J', 'K',
                  'catalog', 'material')
 
 
+def util_color(u):
+    """Green (unused) to amber to red (at capacity and over).
+
+    Here rather than in truss_app_design because the PDF's utilisation
+    sheet draws the same ramp, and importing a Tk module to get a colour
+    would pull tkinter into a report that has no window.
+    """
+    if u is None:
+        return '#b0b0b0'
+    u = max(0.0, min(u, 1.2))
+    if u <= 0.6:
+        t = u / 0.6
+        r, g, b = int(46 + t * (240 - 46)), int(160 + t * (180 - 160)), 60
+    elif u <= 1.0:
+        t = (u - 0.6) / 0.4
+        r, g, b = 240, int(180 - t * 150), 40
+    else:
+        r, g, b = 160, 0, 0
+    return '#%02x%02x%02x' % (r, g, b)
+
+
 def rod_length_m(nodes, rod):
     (xa, ya), (xb, yb) = nodes[rod['a']], nodes[rod['b']]
     return math.hypot(xb - xa, yb - ya) / PX_PER_M

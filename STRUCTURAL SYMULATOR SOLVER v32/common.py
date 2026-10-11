@@ -750,14 +750,26 @@ class FlowBar:
 
     `on_relayout` runs after every relayout -- use it for anything else that
     depends on the current width (e.g. resizing a sidebar to match).
+
+    `reserve` is a widget packed into the same bar with side='right' and
+    NOT registered as a group -- the camera verbs, typically, which belong
+    at the far end rather than in the sentence. A right-packed sibling is
+    invisible to the wrap arithmetic, so without this the last group is
+    laid out into space the sibling already occupies and the two are drawn
+    on top of one another (measured: Truss at 1366 px lost `Export` under
+    `Fit / Reset view`). Set it after building that frame:
+
+        flow.reserve = cam
     """
 
-    def __init__(self, bar, on_relayout=None, group_gap=6, item_pad=2):
+    def __init__(self, bar, on_relayout=None, group_gap=6, item_pad=2,
+                 reserve=None):
         self.bar = bar
         self.groups = []
         self.on_relayout = on_relayout
         self.group_gap = group_gap
         self.item_pad = item_pad
+        self.reserve = reserve
         self._pending = False
         self._running = False
 
@@ -812,6 +824,27 @@ class FlowBar:
         except Exception:
             self._pending = False
 
+    def _reserved(self):
+        """Width a right-packed, unregistered sibling is already using.
+
+        Only counted on the FIRST row, which is where a side='right'
+        sibling sits; later rows have the full width. That refinement is
+        not worth the bookkeeping here -- reserving on every row costs a
+        little width and never overlaps, while the other way round draws
+        two controls in one place.
+        """
+        w = self.reserve
+        if w is None:
+            return 0
+        try:
+            if not w.winfo_exists():
+                return 0
+            # winfo_width() is 1 until the frame has been mapped once, so
+            # fall back to what it asked for.
+            return max(w.winfo_width(), w.winfo_reqwidth(), 1)
+        except Exception:
+            return 0
+
     def relayout(self):
         # Responsive layout must be re-entrant safe. Changing pack geometry
         # generates <Configure> events; never let those recursively rebuild
@@ -826,7 +859,7 @@ class FlowBar:
         self._pending = False
         self._running = True
         try:
-            available = max(1, self.bar.winfo_width() - 10)
+            available = max(1, self.bar.winfo_width() - 10 - self._reserved())
             # NOTE: deliberately NOT cached on `available`. A cache keyed only
             # on "the width did not change" once locked in a WRONG layout
             # here: the first call (from after_idle, before the window's
@@ -1514,10 +1547,23 @@ class AppShell(tk.Frame):
                 padx=8, pady=3)
             self.status_label.pack(side='bottom', fill='x', padx=6, pady=(4, 6))
 
-        self.body = tk.PanedWindow(self, orient='horizontal', bg='#d8d8d4',
+        # A host between the shell and the paned body, so a mode rail can
+        # sit OUTSIDE the sash. The rail is a fixed strip of the window
+        # chrome, not a resizable pane: dragging the divider should move
+        # the boundary between the controls and the drawing, and leave the
+        # rail where it is.
+        self.body_host = tk.Frame(self, bg=bg)
+        self.body_host.pack(fill='both', expand=True, padx=6, pady=(6, 0))
+        #: Pack a common.ModeRail in here, side='left', to get Stereo's
+        #: shape. Empty and zero-width until something is put in it.
+        self.rail_host = tk.Frame(self.body_host, bg=bg)
+        self.rail_host.pack(side='left', fill='y')
+
+        self.body = tk.PanedWindow(self.body_host, orient='horizontal',
+                                   bg='#d8d8d4',
                                    sashwidth=7, sashrelief='raised', sashpad=0,
                                    borderwidth=0, opaqueresize=False)
-        self.body.pack(fill='both', expand=True, padx=6, pady=(6, 0))
+        self.body.pack(side='left', fill='both', expand=True)
 
         self.panel = ScrollPanel(self.body, width=panel_width, bg=panel_bg,
                                  bd=1, relief='solid')
@@ -1633,6 +1679,159 @@ class AppShell(tk.Frame):
         want = min(self._panel_base,
                    max(self.PANEL_MIN, int(window_width * max_share)))
         self.set_panel_width(want)
+
+
+class ModeRail(tk.Frame):
+    """A column of modes down the left edge; exactly one is active.
+
+    Lifted from the Stereo tab, whose `stereo_app_shell` put it best: you
+    are always doing exactly ONE thing -- building the structure, or
+    restraining it, or loading it, or reading what came out -- and only
+    that thing's controls belong on screen. Before it, that tab stacked
+    every section in one scroll and spent 196 px of chrome before drawing
+    a rod.
+
+    It lives here rather than in Stereo so the Truss tab can be the same
+    shape instead of a copy that drifts. Stereo keeps its own, older
+    version for now; this one is what new adopters use.
+
+        rail = ModeRail(parent, [('build', '▦', 'Build', 'what it is made of'),
+                                 ('load',  '↓', 'Load',  'what it carries')],
+                        on_change=self._on_mode)
+        rail.pack(side='left', fill='y')
+        body = tk.Frame(host)                 # one frame per mode
+        rail.register('build', body)
+        rail.select('build')
+
+    The caller owns the frames and builds into them; the rail only shows
+    one at a time and marks which. Frames are `pack_forget`-ed rather than
+    hidden, so nothing off-screen keeps claiming width from the drawing.
+
+    GLYPHS are plain Unicode, not an icon font: Tk has no icon font, a
+    bitmap set would have to be shipped and kept in step, and these render
+    on every platform the rest of the app already runs on.
+    """
+
+    WIDTH = 76
+    ITEM_H = 60
+
+    BG = '#eef2f6'
+    ACTIVE_BG = '#ffffff'
+    STRIPE = '#1a6bbd'
+    ICON = '#7a8794'
+    ICON_ACTIVE = '#1a6bbd'
+    TEXT = '#4b555e'
+    TEXT_ACTIVE = '#1d2328'
+    RULE = '#ccd4db'
+
+    def __init__(self, master, modes, on_change=None, on_hint=None,
+                 width=None, **kw):
+        super().__init__(master, bg=self.BG, width=width or self.WIDTH,
+                         highlightbackground=self.RULE, highlightthickness=1,
+                         **kw)
+        self.pack_propagate(False)
+        self.modes = tuple(modes)
+        self._on_change = on_change
+        self._on_hint = on_hint
+        self._items = {}
+        self._frames = {}
+        self._active = None
+
+        for n, (key, glyph, label, tip) in enumerate(self.modes, start=1):
+            # The hint carries the shortcut: a key nobody is told about is
+            # a key nobody presses.
+            hint = f'{tip}   (Alt+{n})' if n <= 9 else tip
+            item = tk.Frame(self, bg=self.BG, height=self.ITEM_H,
+                            cursor='hand2')
+            item.pack(fill='x', pady=(4, 0))
+            item.pack_propagate(False)
+            stripe = tk.Frame(item, bg=self.BG, width=4)
+            stripe.pack(side='left', fill='y')
+            body = tk.Frame(item, bg=self.BG)
+            body.pack(side='left', fill='both', expand=True)
+            icon = tk.Label(body, text=glyph, bg=self.BG, fg=self.ICON,
+                            font=('Helvetica', 15, 'bold'))
+            icon.pack(pady=(8, 0))
+            name = tk.Label(body, text=label, bg=self.BG, fg=self.TEXT,
+                            font=('Helvetica', 8))
+            name.pack()
+            self._items[key] = (item, stripe, body, icon, name)
+            for w in (item, body, icon, name):
+                w.bind('<Button-1>', lambda _e, k=key: self.select(k))
+                if self._on_hint is not None:
+                    w.bind('<Enter>', lambda _e, t=hint: self._on_hint(t))
+                    w.bind('<Leave>', lambda _e: self._on_hint(''))
+
+    # -- wiring ---------------------------------------------------------------
+    def register(self, key, frame):
+        """Hand the rail the frame holding that mode's controls."""
+        self._frames[key] = frame
+        if key != self._active:
+            try:
+                frame.pack_forget()
+            except Exception:
+                pass
+        return frame
+
+    def bind_hotkeys(self, toplevel):
+        """Alt+1..9 jump straight to a mode, in rail order.
+
+        Alt and not the bare digit: half the work in these tabs is typing
+        numbers into entry fields, and a bare digit would be swallowed by
+        whichever one has focus. Bound on the TOPLEVEL because a mode
+        switch is meaningful wherever focus happens to be -- including
+        inside the entry you were just editing, which is exactly when you
+        want to move on.
+        """
+        for n, (key, _g, _l, _t) in enumerate(self.modes, start=1):
+            if n > 9:
+                break
+            toplevel.bind(f'<Alt-Key-{n}>',
+                          lambda _e, k=key: self._hotkey(k), add='+')
+
+    def _hotkey(self, key):
+        # 'break' stops the keypress also reaching the widget that had
+        # focus, so Alt+4 switches mode instead of typing a 4 as well.
+        self.select(key)
+        return 'break'
+
+    # -- state ----------------------------------------------------------------
+    def active(self):
+        return self._active
+
+    def label_of(self, key):
+        for k, _g, label, _t in self.modes:
+            if k == key:
+                return label
+        return key
+
+    def select(self, key):
+        if key not in self._items:
+            return
+        self._active = key
+        for k, (item, stripe, body, icon, name) in self._items.items():
+            on = (k == key)
+            bg = self.ACTIVE_BG if on else self.BG
+            for w in (item, body, icon, name):
+                w.configure(bg=bg)
+            stripe.configure(bg=self.STRIPE if on else bg)
+            icon.configure(fg=self.ICON_ACTIVE if on else self.ICON)
+            name.configure(
+                fg=self.TEXT_ACTIVE if on else self.TEXT,
+                font=('Helvetica', 8, 'bold') if on else ('Helvetica', 8))
+        for k, frame in self._frames.items():
+            try:
+                if k == key:
+                    frame.pack(fill='both', expand=True)
+                else:
+                    frame.pack_forget()
+            except Exception:
+                pass
+        if self._on_change is not None:
+            try:
+                self._on_change(key)
+            except Exception:
+                pass
 
 
 class TextScale:

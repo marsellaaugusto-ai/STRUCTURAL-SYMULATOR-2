@@ -42,6 +42,16 @@ import pytest
 
 WIDTHS = (1600, 1200, 1000, 900, 800, 700, 600)
 
+#: Read off the app rather than hard-coded, so a seventh mode cannot be
+#: added without this sweep covering it. Guarded like the tkinter import
+#: above: the app module imports tkinter unconditionally, and collection
+#: must not fail where it is missing -- the tests themselves skip.
+try:
+    from apps.truss.truss_app import TrussApp as _TrussApp
+    MODE_KEYS = _TrussApp.MODES
+except Exception:
+    MODE_KEYS = (('analyse',),)
+
 CONTROL_CLASSES = ('Button', 'TButton', 'Checkbutton', 'TCheckbutton',
                    'Radiobutton', 'TRadiobutton', 'TCombobox', 'Entry',
                    'TEntry', 'Scale', 'Listbox')
@@ -111,9 +121,11 @@ def truss_app():
     # Both context editors are only packed by the Load / Support tool's click
     # handler; pack them here so their controls are measured too -- otherwise
     # seven of the tab's controls are "unmapped" for a legitimate reason and
-    # a real disappearance would hide among them.
-    app.load_frame.pack(fill='x', padx=8, pady=4, before=app.sel_frame)
-    app.sup_frame.pack(fill='x', padx=8, pady=4, before=app.sel_frame)
+    # a real disappearance would hide among them. They live inside their own
+    # mode frame now, so they are packed there rather than before the
+    # Selection box, which is no longer their sibling.
+    app.load_frame.pack(fill='x', padx=8, pady=4)
+    app.sup_frame.pack(fill='x', padx=8, pady=4)
     _settle(root)
     try:
         yield root, host, app
@@ -167,17 +179,57 @@ def _deliberately_hidden(app):
     is what this file is guarding, so it is subtracted precisely rather than
     the assertion being softened to a threshold.
     """
-    hidden = 0
+    hidden = set()
     for key, row in getattr(app, '_guide_rows', {}).items():
         if row.winfo_manager():
             continue
-        hidden += sum(1 for c in row.winfo_children()
+        hidden.update(str(c) for c in row.winfo_children()
                       if c.winfo_class() in CONTROL_CLASSES)
+    # A SET, not a running total: the construction-geometry rows live
+    # inside the Build mode frame, so while any other mode is showing,
+    # every one of their fields is hidden for BOTH reasons and adding the
+    # two counts subtracts nine controls that only exist once.
+    hidden.update(_hidden_by_mode(app))
+    return len(hidden)
+
+
+def _hidden_by_mode(app):
+    """The controls belonging to a mode the rail is not showing.
+
+    The panel is a mode rail now: Build, Support, Load, Section, Analyse,
+    Results, one at a time. Five of the six frames are `pack_forget`-ed
+    at any moment BY DESIGN -- that is the whole point of the rail -- so
+    counting them as lost would make this test fail on the feature rather
+    than on a bug. They are subtracted precisely, and the test below then
+    runs the full width sweep once PER MODE, so every control is still
+    measured at every width; none is let off.
+    """
+    frames = getattr(app, '_mode_frames', None)
+    if not frames:
+        return set()
+    active = app.rail.active()
+    hidden = set()
+    for key, frame in frames.items():
+        if key == active:
+            continue
+        kids = []
+        _all_widgets(frame, kids)
+        hidden.update(str(w) for w in kids
+                      if w.winfo_class() in CONTROL_CLASSES)
     return hidden
 
 
-def test_no_control_is_dropped_or_pushed_off_as_the_window_narrows(truss_app):
+@pytest.mark.parametrize('mode', [m[0] for m in MODE_KEYS])
+def test_no_control_is_dropped_or_pushed_off_as_the_window_narrows(
+        truss_app, mode):
+    """Once per mode, because the panel shows one mode at a time.
+
+    Running this on the active mode alone would leave five sixths of the
+    panel unmeasured, and the clipping this file exists to catch would
+    simply move into whichever mode nobody looked at.
+    """
     root, host, _app = truss_app
+    _app.rail.select(mode)
     seen = {}
     for width in WIDTHS:
         root.geometry('%dx950+0+0' % width)
@@ -191,17 +243,19 @@ def test_no_control_is_dropped_or_pushed_off_as_the_window_narrows(truss_app):
     for width in WIDTHS:
         mapped, unmapped, overflowing = seen[width]
         assert unmapped == 0, (
-            'at %d px, %d control(s) are not mapped at all, over and above '
-            'the guide fields the panel hides on purpose. Before T-1 the '
-            'whole right panel vanished below 850 px; check the pack order in '
-            '_build_ui -- the ScrollPanel must be packed BEFORE the expanding '
-            'ZoomCanvas.' % (width, unmapped))
+            'in %s mode at %d px, %d control(s) are not mapped at all, over '
+            'and above the guide fields and the other modes the panel hides '
+            'on purpose. Before T-1 the whole right panel vanished below '
+            '850 px; check the pack order in _build_ui -- the ScrollPanel '
+            'must be packed BEFORE the expanding ZoomCanvas.'
+            % (mode, width, unmapped))
         assert mapped == widest, (
-            'at %d px only %d of %d controls are mapped -- the count must not '
-            'fall as the window narrows' % (width, mapped, widest))
+            'in %s mode at %d px only %d of %d controls are mapped -- the '
+            'count must not fall as the window narrows'
+            % (mode, width, mapped, widest))
         assert not overflowing, (
-            'at %d px these controls sit past the window edge: %s' %
-            (width, ', '.join('%s (%+d px)' % t for t in overflowing)))
+            'in %s mode at %d px these controls sit past the window edge: %s'
+            % (mode, width, ', '.join('%s (%+d px)' % t for t in overflowing)))
 
 
 def test_toolbar_wraps_to_more_rows_as_the_window_narrows(truss_app):

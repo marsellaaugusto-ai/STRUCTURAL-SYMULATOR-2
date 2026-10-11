@@ -32,7 +32,16 @@ class TrussLearnMixin:
 
     # ── construction ──────────────────────────────────────────────────────
     def _build_learn_toolbar(self):
-        """Called while the toolbar is built, before its FlowBar starts."""
+        """State the toolbar and the drawing both need, set before either.
+
+        It used to end by packing an `Advanced tools` checkbox into a
+        group of its own at the tail of the bar. That group was the one
+        that pushed the toolbar onto a second row at 1366 px, and a lone
+        checkbox after Export read as an afterthought rather than a
+        display choice. The box is now a tick in `Display ▾`, with the
+        other display choices, and this runs FIRST so `self.advanced` and
+        `self.live_var` exist by the time that menu is built.
+        """
         self.advanced = tk.BooleanVar(value=False)
         # State the drawing code reads; set here, the earliest point in
         # __init__, so a redraw can never find it missing.
@@ -45,13 +54,6 @@ class TrussLearnMixin:
         self._live_sig = None
         self._stab_sig = None
         self._stab = None
-        g = self.toolbar_flow.group()
-        cb = tk.Checkbutton(g, text='Advanced tools', variable=self.advanced,
-                            bg='#ebebea', font=('Helvetica', 10),
-                            command=self._apply_mode)
-        self._bind_widget_tooltip(cb,
-            'Simple shows what a first truss needs. Advanced adds the CAD '
-            'bar, construction geometry, arrays, plates and rod families.')
 
     def _init_learn(self, panel):
         """Called once the panel and the canvas exist."""
@@ -65,17 +67,14 @@ class TrussLearnMixin:
         row = tk.Frame(panel, bg=BG)
         row.pack(fill='x', padx=8, after=self.stability_label)
         self._learn_row = row
-        live = tk.Checkbutton(row, text='Live', variable=self.live_var,
-                              bg=BG, font=('Helvetica', 9),
-                              command=self._on_live_toggle)
-        live.pack(side='left')
-        self._bind_widget_tooltip(live,
-            'Re-solve a quarter of a second after every edit (models up to '
-            '%d rods), so the forces move with the drawing.' % LIVE_MAX_RODS)
+        # `Live` used to sit here, to the left of this box. It is on the
+        # toolbar now, beside Analyze, where Stereo keeps it: it switches
+        # the Analyze button on and off, so it belongs next to it rather
+        # than two rows below.
         hz = tk.Checkbutton(row, text='Hide zero-force rods',
                             variable=self.hide_zero, bg=BG,
                             font=('Helvetica', 9), command=self._draw)
-        hz.pack(side='left', padx=(6, 0))
+        hz.pack(side='left')
         self._bind_widget_tooltip(hz,
             'Rods that carry no force are drawn dashed; tick this to hide '
             'them and see the path the load actually takes.')
@@ -90,7 +89,11 @@ class TrussLearnMixin:
         self._cad_pack = self._pack_opts(self.cad_bar)
 
         self.zc.canvas.bind('<Button-3>', self._on_support_right_click, add='+')
-        self._fold_long_hints(panel)
+        # The WHOLE panel, not just the frame this mixin was handed. Since
+        # the panel became a mode rail, `panel` here is the Analyse mode's
+        # own frame, and folding only inside it left every long hint in the
+        # other five modes -- which is most of them -- unfolded.
+        self._fold_long_hints(self.panel_outer.interior)
         self._apply_mode()
 
     @staticmethod
@@ -112,7 +115,11 @@ class TrussLearnMixin:
             show = adv or (rigid and f in (self.dload_frame, self.pload_frame))
             packed = f.winfo_manager() == 'pack'
             if show and not packed:
-                f.pack(before=self._next_packed_after(f), **opts)
+                before = self._next_packed_after(f)
+                if before is not None:
+                    f.pack(before=before, **opts)
+                else:
+                    f.pack(**opts)
             elif not show and packed:
                 f.pack_forget()
         cad_packed = self.cad_bar.winfo_manager() == 'pack'
@@ -128,14 +135,30 @@ class TrussLearnMixin:
         # section showing, so Advanced never needs it wider than it is.
 
     def _next_packed_after(self, frame):
+        """The section this one should be packed BEFORE, or None.
+
+        Only SIBLINGS count. The advanced sections used to share one
+        parent and could be ordered against each other freely; they are
+        spread across the mode rail's frames now (guides and arrays under
+        Build, the two span loads under Load, plates and families under
+        Section), and `before=` a widget in another parent is a TclError.
+        None means "append at the end of your own frame", which is where
+        each of these belongs anyway -- they are the last section in every
+        mode that has one.
+        """
+        parent = frame.winfo_parent()
         seen = False
         for f, _opts in self._adv_sections:
             if f is frame:
                 seen = True
                 continue
-            if seen and f.winfo_manager() == 'pack':
+            if (seen and f.winfo_manager() == 'pack'
+                    and f.winfo_parent() == parent):
                 return f
-        return self._adv_anchor
+        anchor = self._adv_anchor
+        if anchor is not None and anchor.winfo_parent() == parent:
+            return anchor
+        return None
 
     # ── folding long grey explanations ────────────────────────────────────
     def _fold_long_hints(self, widget):

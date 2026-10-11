@@ -22,7 +22,7 @@ from common import (
     UnitsMixin,
     CT, CC, CZ, CD, CN, CS, CL, CSP, CG, CG_MINOR, CG_MICRO, CV, CM, CR, CMOM,
     _beam_gauss_solve, ZoomCanvas, FlowBar, ScrollPanel, LoadScale,
-    AppShell, CollapsibleSection,
+    AppShell, CollapsibleSection, ModeRail,
 )
 gauss_solve = _beam_gauss_solve  # truss's analyze() historically calls this
                                   # name; both solvers are the same algorithm
@@ -80,7 +80,7 @@ from .truss_math import (analyze, compute_diagrams, find_zero_crossings, plate_n
                           compute_fiber_stress, compute_node_design_actions)
 from .truss_reports import export_excel, import_excel_model
 from . import truss_plates, truss_guides, truss_loadpath
-from .truss_app_learn import TrussLearnMixin
+from .truss_app_learn import TrussLearnMixin, LIVE_MAX_RODS
 from .truss_app_design import TrussDesignMixin
 from .truss_app_play import TrussPlayMixin
 from .truss_app_buckling import TrussBucklingMixin
@@ -188,12 +188,24 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self.shell.pack(fill='both', expand=True)
         tb = self.shell.toolbar
         self.toolbar_flow = FlowBar(tb)
+        # State only -- no widgets. Run first so `self.advanced` and
+        # `self.live_var` exist for the groups below, which now own the
+        # controls that read them.
+        self._build_learn_toolbar()
 
-        # Five groups in a fixed order -- TOOLS, EDIT, VIEW, ANALYZE, OUT --
-        # modelled on the Stereo tab, which carries four groups and about
-        # eleven controls and reads as one sentence: what to build, edit it,
-        # how to look at it, get it out. The same order is meant for every
-        # tab, so a student who learns this one can already drive the next.
+        # The groups, in Stereo's order, because Stereo's bar reads as a
+        # sentence and this one did not: MAKE it -> RUN it -> FIX it ->
+        # LOOK at it -> GET IT OUT, with the drawing tools up front
+        # because that is the one thing Truss does that Stereo does not.
+        # Stereo's own order is Generate, Analyze, Live, Clear, undo/redo,
+        # Display, Export, and every name that means the same thing in
+        # both tabs is now spelt the same way (`Display ▾`, not `View ▾`),
+        # so a student who learns one bar can already drive the other.
+        mark_g = self.toolbar_flow.group()
+        tk.Label(mark_g, text='TRUSS', bg='#ebebea', fg='#1a6bbd',
+                 font=('Helvetica', 11, 'bold')).pack(side='left',
+                                                      padx=(4, 8))
+
         tools_g = self.toolbar_flow.group()
         self.tool_btns = {}
         for label, val, tip in [
@@ -205,14 +217,56 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                 ('Pan', 'pan', 'Drag the canvas with the left mouse button to move the view. '
                                'The middle button still pans from any tool -- this is here '
                                'because most laptop trackpads do not have one.')]:
-            b = tk.Button(tools_g, text=label, width=7, relief='flat', bd=0,
-                          padx=8, pady=4, font=('Helvetica',11),
+            # No fixed `width`: six buttons padded out to seven characters
+            # each cost about 150 px of nothing, which was the difference
+            # between this bar fitting on one row at 1366 px and not.
+            b = tk.Button(tools_g, text=label, relief='flat', bd=0,
+                          padx=9, pady=4, font=('Helvetica',11),
                           command=lambda v=val: self._set_tool(v))
             self.tool_btns[val] = b
             self._bind_widget_tooltip(b, tip)
 
+        # MAKE: where a model comes from. Stereo's `Generate ▾` sits in
+        # exactly this slot.
+        self.toolbar_flow.separator()
+        make_g = self.toolbar_flow.group()
+        # The library holds nine trusses with a lesson each (the Vierendeel
+        # girder among them); the first entry stays the one-click Warren.
+        self._menu_button(make_g, 'Examples ▾', [
+            ('Warren truss — how triangles carry load', self._load_example),
+            ('sep',),
+            ('Browse the library…', self._open_examples),
+        ])
+
+        # RUN: the one verb that commits to something, and the switch that
+        # makes it automatic. Live was two rows down in the panel; it
+        # turns this button on and off, so it belongs beside it.
+        self.toolbar_flow.separator()
+        run_g = self.toolbar_flow.group()
+        # Green, outlined, like Stereo's: the one verb on the bar that
+        # commits to something, and the only control with a border.
+        self.analyze_btn_bar = tk.Button(
+            run_g, text='▶ Analyze', bg='#eaf6ec', fg='#1a7a3a',
+            activebackground='#d8eedd', activeforeground='#145c2c',
+            font=('Helvetica', 11, 'bold'), relief='solid', bd=1,
+            padx=12, pady=3, command=self._run_analysis)
+        self._bind_widget_tooltip(self.analyze_btn_bar,
+            'Solve the structure. The same button sits at the top of the '
+            'panel; it is in both places because it is the one control that '
+            'must never need scrolling to reach.')
+        live_cb = tk.Checkbutton(run_g, text='Live', variable=self.live_var,
+                                 bg='#ebebea', font=('Helvetica', 10),
+                                 command=self._on_live_toggle)
+        self._bind_widget_tooltip(live_cb,
+            'Re-solve a quarter of a second after every edit (models up to '
+            '%d rods), so the forces move with the drawing.' % LIVE_MAX_RODS)
+
+        # FIX: undo the last thing, or start again.
         self.toolbar_flow.separator()
         model_g = self.toolbar_flow.group()
+        tk.Button(model_g, text='Clear', relief='flat', bd=0, padx=8, pady=4,
+                  font=('Helvetica',11),
+                  command=self._clear_all)
         self.undo_btn = tk.Button(model_g, text='↶', relief='flat', bd=0,
                                   padx=9, pady=4, font=('Helvetica', 13),
                                   command=self._undo)
@@ -225,27 +279,10 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         # back.
         self._bind_widget_tooltip(self.undo_btn, 'Undo the last change  (Ctrl+Z)')
         self._bind_widget_tooltip(self.redo_btn, 'Redo  (Ctrl+Y or Ctrl+Shift+Z)')
-        # The library holds nine trusses with a lesson each (the Vierendeel
-        # girder among them); the first entry stays the one-click Warren.
-        self._menu_button(model_g, 'Examples ▾', [
-            ('Warren truss — how triangles carry load', self._load_example),
-            ('sep',),
-            ('Browse the library…', self._open_examples),
-        ])
-        tk.Button(model_g, text='Clear', relief='flat', bd=0, padx=8, pady=4,
-                  font=('Helvetica',11),
-                  command=self._clear_all)
 
+        # LOOK: what is drawn on top of the model, and how big.
         self.toolbar_flow.separator()
         view_g = self.toolbar_flow.group()
-        fit_btn = tk.Button(view_g, text='Fit', relief='flat', bd=0, padx=8, pady=4,
-                            font=('Helvetica', 11), command=self._fit_view)
-        self._bind_widget_tooltip(fit_btn,
-            'Zoom and centre so the whole model fits on screen. "Reset view" '
-            'goes back to the ORIGIN, which is not the same thing once you '
-            'have built away from it.')
-        tk.Button(view_g, text='Reset view', relief='flat', bd=0, padx=8, pady=4,
-                  font=('Helvetica',11), command=self._reset_view)
         self.show_deform = tk.BooleanVar(value=False)
         self.show_contraflexure = tk.BooleanVar(value=True)
         self.show_node_moments = tk.BooleanVar(value=False)
@@ -254,7 +291,9 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self.show_load_path = tk.BooleanVar(value=False)
         # Twelve separate checkboxes and buttons made a beginner read
         # fifteen labels to find Analyze. As one menu they read as one.
-        self._menu_button(view_g, 'View ▾', [
+        # Called `Display ▾` because that is what Stereo calls the same
+        # menu, and two names for one thing is one name too many.
+        self._menu_button(view_g, 'Display ▾', [
             ('check', 'Force on each member', self.show_force_labels, self._draw),
             ('check', 'Letter the joints (A, B, C…)', self.letter_joints,
              self._draw),
@@ -264,43 +303,56 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
             ('check', '○ Inflection points (M = 0)',
              self.show_contraflexure, self._draw),
             ('check', 'Moment at rigid joints', self.show_node_moments, self._draw),
+            ('sep',),
+            # Simple shows what a first truss needs; Advanced adds the CAD
+            # bar, construction geometry, arrays, plates and rod families.
+            ('check', 'Advanced tools', self.advanced, self._apply_mode),
         ])
-        tk.Label(view_g, text='Scale:', bg='#ebebea', font=('Helvetica',11))
+        tk.Label(view_g, text='×', bg='#ebebea', fg='#777',
+                 font=('Helvetica', 11))
         self.def_scale = tk.IntVar(value=50)
         tk.Scale(view_g, from_=1, to=300, orient='horizontal',
-                 variable=self.def_scale, length=90, showvalue=True,
+                 variable=self.def_scale, length=74, showvalue=True,
                  bg='#ebebea', bd=0, highlightthickness=0, relief='flat',
-                 font=('Helvetica',9),
+                 font=('Helvetica',8),
                  command=lambda _: self._draw())
 
-        self.toolbar_flow.separator()
-        run_g = self.toolbar_flow.group()
-        self.analyze_btn_bar = tk.Button(
-            run_g, text='▶  Analyze', bg='#1a6bbd', fg='white',
-            activebackground='#15559a', activeforeground='white',
-            font=('Helvetica', 11, 'bold'), relief='flat', bd=0,
-            padx=12, pady=4, command=self._run_analysis)
-        self._bind_widget_tooltip(self.analyze_btn_bar,
-            'Solve the structure. The same button sits at the top of the '
-            'panel; it is in both places because it is the one control that '
-            'must never need scrolling to reach.')
-
+        # OUT: everything that leaves the app.
         self.toolbar_flow.separator()
         io_g = self.toolbar_flow.group()
-        self._menu_button(io_g, 'Report ▾', [
+        # One Export menu, as Stereo has, instead of a Report menu and an
+        # Excel menu competing for the same corner of the bar.
+        self._menu_button(io_g, 'Export ▾', [
             ('Node force vectors…', self._show_node_vectors_report),
             ('Show me the working (rod calculations)…',
              self._show_rod_calculations_report),
             ('sep',),
             ('Export PDF report…', self._export_pdf_report),
-        ], fg='#1a6bbd')
-        self._menu_button(io_g, 'Excel ▾', [
-            ('Export model and results…', self._export_excel),
-            ('Import model…', self._import_excel),
+            ('sep',),
+            ('Export model and results to Excel…', self._export_excel),
+            ('Import model from Excel…', self._import_excel),
         ], fg='#1a6bbd')
 
-        self.toolbar_flow.separator()
-        self._build_learn_toolbar()
+        # The camera verbs, right-aligned. They change nothing about the
+        # structure, so they sit apart from everything that does.
+        cam = tk.Frame(tb, bg='#ebebea')
+        cam.pack(side='right', padx=(0, 6))
+        tk.Button(cam, text='Reset view', relief='flat', bd=0, padx=8, pady=4,
+                  font=('Helvetica', 11), bg='#ebebea',
+                  command=self._reset_view).pack(side='right')
+        fit_btn = tk.Button(cam, text='Fit', relief='flat', bd=0, padx=8,
+                            pady=4, font=('Helvetica', 11), bg='#ebebea',
+                            command=self._fit_view)
+        fit_btn.pack(side='right')
+        self._bind_widget_tooltip(fit_btn,
+            'Zoom and centre so the whole model fits on screen. "Reset '
+            'view" goes back to the ORIGIN, which stops being the model as '
+            'soon as you build away from it.')
+        # `cam` is packed to the right and is NOT a flow group, so the
+        # wrap arithmetic cannot see it. Tell it, or the last group is
+        # placed into space `cam` already holds and the two are drawn on
+        # top of one another.
+        self.toolbar_flow.reserve = cam
 
         # ── main area: the shell's work pane ─────────────────────────────────
         main = self.shell.work
@@ -534,9 +586,14 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
 
         self._refresh_tool_buttons()
         self._refresh_undo_buttons()
-        self._init_learn(self.panel_outer.interior)
-        self._init_design(self.panel_outer.interior)
-        self._init_play(self.panel_outer.interior, after=self._design_rows[-1])
+        # These three pack themselves in a chain anchored on analyze_btn
+        # (stability after it, the learn row after that, and so on), so
+        # they go into the SAME frame it is in or every `after=` fails.
+        analyse = self._mode_frames['analyse']
+        self._init_learn(analyse)
+        self._init_design(analyse)
+        self._init_play(analyse, after=self._design_rows[-1])
+        self.rail.select(self.DEFAULT_MODE)
 
     # -- toolbar helpers ------------------------------------------------------
     def _menu_button(self, parent, text, items, fg='#333333'):
@@ -638,7 +695,53 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         except Exception:
             pass
 
+    #: The rail down the left edge, in the order the work is done.
+    #: Modelled on the Stereo tab (see common.ModeRail): you are always
+    #: doing exactly one thing, and only that thing's controls belong on
+    #: screen. The alternative -- which this tab had -- is eleven sections
+    #: in one scroll, none louder than any other, and Analyze somewhere in
+    #: the middle of them.
+    MODES = (
+        ('build',   '▦', 'Build',   'guides and arrays to build onto'),
+        ('support', '△', 'Support', 'where the truss stands'),
+        ('load',    '↓', 'Load',    'what it carries'),
+        ('section', '▤', 'Section', 'what it is made of, and how it is joined'),
+        ('analyse', '◑', 'Analyse', 'solve it, and watch it work'),
+        ('results', 'Σ', 'Results', 'what came out'),
+    )
+    DEFAULT_MODE = 'analyse'
+
+    #: Which mode each tool belongs to, so picking the Load tool takes you
+    #: to the load controls rather than leaving you to find them.
+    TOOL_MODE = {'node': 'build', 'rod': 'build',
+                 'support': 'support', 'load': 'load'}
+
     def _build_panel(self, panel):
+        # ── the mode rail, and one frame per mode ────────────────────────────
+        self.rail = ModeRail(self.shell.rail_host, self.MODES,
+                             on_change=self._on_mode_change,
+                             on_hint=self._on_mode_hint)
+        self.rail.pack(side='left', fill='y')
+        self.rail.bind_hotkeys(self.root.winfo_toplevel())
+
+        self.mode_title = tk.StringVar(value='')
+        tk.Label(panel, textvariable=self.mode_title, bg='#f0f0ee',
+                 fg='#8a949c', anchor='w',
+                 font=('Helvetica', 8, 'bold')).pack(fill='x', padx=10,
+                                                     pady=(6, 0))
+
+        self._mode_frames = {}
+        for key, _glyph, _label, _tip in self.MODES:
+            fr = tk.Frame(panel, bg='#f0f0ee')
+            self._mode_frames[key] = fr
+            self.rail.register(key, fr)
+        m_build = self._mode_frames['build']
+        m_support = self._mode_frames['support']
+        m_load = self._mode_frames['load']
+        m_section = self._mode_frames['section']
+        m_analyse = self._mode_frames['analyse']
+        m_results = self._mode_frames['results']
+
         # ── RUN + RESULTS, pinned at the top ─────────────────────────────────
         # This used to sit below material, selection, connection type, two
         # load editors, construction geometry, arrays, plates with its
@@ -649,25 +752,25 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         # could find. TrussLearnMixin._init_learn packs the stability line
         # directly after it, which is where that belongs too.
         self.analyze_btn = tk.Button(
-            panel, text='▶  Analyze structure', bg='#9e9e9e', fg='white',
+            m_analyse, text='▶  Analyze structure', bg='#9e9e9e', fg='white',
             activebackground='#15559a', activeforeground='white',
             font=('Helvetica', 11, 'bold'), relief='flat', pady=6,
             command=self._run_analysis)
         self.analyze_btn.pack(fill='x', padx=8, pady=(8, 2))
 
         self.res_var = tk.StringVar(value='')
-        tk.Label(panel, textvariable=self.res_var, bg='#f0f0ee',
+        tk.Label(m_analyse, textvariable=self.res_var, bg='#f0f0ee',
                  font=('Helvetica', 10), justify='left',
                  wraplength=PANEL_W - 20).pack(fill='x', padx=12, pady=2)
 
-        self.rod_res_frame = tk.LabelFrame(panel, text='Rod forces', bg='#f0f0ee',
+        self.rod_res_frame = tk.LabelFrame(m_results, text='Rod forces', bg='#f0f0ee',
                                            font=('Helvetica',10,'bold'), padx=4, pady=4)
         self.rod_res_text = tk.Text(self.rod_res_frame, width=22, height=7,
                                     relief='flat', bg='#f0f0ee',
                                     font=('Courier',9), state='disabled')
         self.rod_res_text.pack(fill='both')
 
-        self.rxn_frame = tk.LabelFrame(panel, text='Support reactions', bg='#f0f0ee',
+        self.rxn_frame = tk.LabelFrame(m_results, text='Support reactions', bg='#f0f0ee',
                                        font=('Helvetica',10,'bold'), padx=4, pady=4)
         self.rxn_text  = tk.Text(self.rxn_frame, width=22, height=5,
                                   relief='flat', bg='#f0f0ee',
@@ -675,7 +778,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self.rxn_text.pack(fill='both')
 
         # material
-        mf = tk.LabelFrame(panel, text='Assumed material (all rods)', bg='#f0f0ee',
+        mf = tk.LabelFrame(m_section, text='Assumed material (all rods)', bg='#f0f0ee',
                            font=('Helvetica',10,'bold'), padx=6, pady=4)
         mf.pack(fill='x', padx=8, pady=(8,4))
         # Was a nine-line paragraph; the two facts a student needs fit in two.
@@ -733,7 +836,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                  font=('Helvetica',10)).grid(row=5,column=1,sticky='e',padx=4)
 
         # load editor
-        self.load_frame = tk.LabelFrame(panel, text='Load on node —', bg='#f0f0ee',
+        self.load_frame = tk.LabelFrame(m_load, text='Load on node —', bg='#f0f0ee',
                                         font=('Helvetica',10,'bold'), padx=6, pady=4)
         self.unit_label(tk.Label(self.load_frame, bg='#f0f0ee', font=('Helvetica',10)),
                         lambda: f'Fx ({self.u("force")}, →+):'
@@ -757,7 +860,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                                                    sticky='ew',pady=2)
 
         # support editor
-        self.sup_frame = tk.LabelFrame(panel, text='Support on node —', bg='#f0f0ee',
+        self.sup_frame = tk.LabelFrame(m_support, text='Support on node —', bg='#f0f0ee',
                                        font=('Helvetica',10,'bold'), padx=6, pady=4)
         # Four SYMBOLS, not four words. A support type has a universally
         # recognised drawing, the tab already draws all four
@@ -796,7 +899,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         # selection
         self.sel_frame = tk.LabelFrame(panel, text='Selection', bg='#f0f0ee',
                                        font=('Helvetica',10,'bold'), padx=6, pady=4)
-        self.sel_frame.pack(fill='x', padx=8, pady=4)
+        self.sel_frame.pack(side='bottom', fill='x', padx=8, pady=4)
         self.sel_text = tk.Text(self.sel_frame, width=22, height=12, relief='flat',
                                 bg='#f0f0ee', font=('Helvetica',9), state='disabled')
         self.sel_text.pack(fill='x')
@@ -804,7 +907,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         # connection type (rigid = Vierendeel-style moment connection, vs
         # pin = classic truss bar) — bulk-applies to selected rods, so you
         # can drag a selection box over many members at once
-        self.conn_frame = tk.LabelFrame(panel, text='Connection type (selected rods)',
+        self.conn_frame = tk.LabelFrame(m_section, text='Connection type (selected rods)',
                                         bg='#f0f0ee', font=('Helvetica',10,'bold'),
                                         padx=6, pady=4)
         self.conn_frame.pack(fill='x', padx=8, pady=4)
@@ -826,7 +929,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         # uniformly distributed load along selected rods --
         # only meaningful on rigid rods, so applying one auto-converts the
         # selected rods to Rigid if they weren't already
-        self.dload_frame = tk.LabelFrame(panel, text='Distributed load (selected rods)',
+        self.dload_frame = tk.LabelFrame(m_load, text='Distributed load (selected rods)',
                                          bg='#f0f0ee', font=('Helvetica',10,'bold'),
                                          padx=6, pady=4)
         self.dload_frame.pack(fill='x', padx=8, pady=4)
@@ -890,7 +993,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                   command=self._clear_udl).pack(side='left', fill='x', expand=True, padx=(2,0))
 
         # point load on selected rods
-        self.pload_frame = tk.LabelFrame(panel, text='Point load on selected rods',
+        self.pload_frame = tk.LabelFrame(m_load, text='Point load on selected rods',
                                           bg='#f0f0ee', font=('Helvetica',10,'bold'),
                                           padx=6, pady=4)
         self.pload_frame.pack(fill='x', padx=8, pady=4)
@@ -922,7 +1025,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                   command=self._clear_point_loads).pack(side='left', fill='x', expand=True, padx=(2,0))
 
         # construction geometry (guides) — drawing aids, never structure
-        self.guide_frame = tk.LabelFrame(panel, text='Construction geometry',
+        self.guide_frame = tk.LabelFrame(m_build, text='Construction geometry',
                                           bg='#f0f0ee', font=('Helvetica',10,'bold'),
                                           padx=6, pady=4)
         self.guide_frame.pack(fill='x', padx=8, pady=4)
@@ -1050,7 +1153,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                        command=self._draw).pack(anchor='w')
 
         # arrays
-        self.array_frame = tk.LabelFrame(panel, text='Arrays', bg='#f0f0ee',
+        self.array_frame = tk.LabelFrame(m_build, text='Arrays', bg='#f0f0ee',
                                           font=('Helvetica',10,'bold'),
                                           padx=6, pady=4)
         self.array_frame.pack(fill='x', padx=8, pady=4)
@@ -1134,7 +1237,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                   font=('Helvetica',9), command=self._array_polar).pack(fill='x', pady=(2,0))
 
         # plates — a gusset at a joint, or a shear panel filling a bay
-        self.plate_frame = tk.LabelFrame(panel, text='Plates', bg='#f0f0ee',
+        self.plate_frame = tk.LabelFrame(m_section, text='Plates', bg='#f0f0ee',
                                           font=('Helvetica',10,'bold'),
                                           padx=6, pady=4)
         self.plate_frame.pack(fill='x', padx=8, pady=4)
@@ -1257,7 +1360,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                   font=('Helvetica',9),
                   command=self._remove_plates).pack(fill='x', pady=(2,0))
 
-        self.plate_res_frame = tk.LabelFrame(panel, text='Plate checks', bg='#f0f0ee',
+        self.plate_res_frame = tk.LabelFrame(m_results, text='Plate checks', bg='#f0f0ee',
                                               font=('Helvetica',10,'bold'),
                                               padx=4, pady=4)
         self.plate_res_text = tk.Text(self.plate_res_frame, width=22, height=8,
@@ -1266,7 +1369,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self.plate_res_text.pack(fill='both')
 
         # rod family / profile management
-        self.family_frame = tk.LabelFrame(panel, text='Rod family / profile', bg='#f0f0ee',
+        self.family_frame = tk.LabelFrame(m_section, text='Rod family / profile', bg='#f0f0ee',
                                           font=('Helvetica',10,'bold'), padx=6, pady=4)
         self.family_frame.pack(fill='x', padx=8, pady=4)
         tk.Label(self.family_frame, text='Profile:', bg='#f0f0ee',
@@ -2516,6 +2619,11 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         except Exception:
             pass
         self.load_frame.pack_forget(); self.sup_frame.pack_forget()
+        # Picking a tool takes you to its controls rather than leaving you
+        # to find them -- the whole point of the rail.
+        mode = self.TOOL_MODE.get(t)
+        if mode:
+            self._show_mode(mode)
         self._refresh_tool_buttons(); self._draw()
 
     #: What each support type is called on screen. The stored keys stay as
@@ -2734,6 +2842,34 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
             sx, sy = w2s(*self.nodes[n0][:2])
             c.create_text(sx, sy - 34, text='load traced from here',
                           fill=LP, font=('Helvetica', 8, 'bold'))
+
+    # ── the mode rail ────────────────────────────────────────────────────
+    def _on_mode_change(self, key):
+        """Retitle the panel and re-measure it: each mode is a different
+        height, and the scrolled panel has to be told."""
+        self.mode_title.set(self.rail.label_of(key).upper())
+        try:
+            self.panel_outer.interior.update_idletasks()
+            self.panel_outer._sync()
+        except Exception:
+            pass
+
+    def _on_mode_hint(self, text):
+        """The rail's hover text goes to the status bar, which is where
+        this tab already explains itself."""
+        if text:
+            self._status_before_hint = self.status_var.get()
+            self.status_var.set(text)
+        elif getattr(self, '_status_before_hint', None) is not None:
+            self.status_var.set(self._status_before_hint)
+            self._status_before_hint = None
+
+    def _show_mode(self, key):
+        """Switch the rail from code -- when a tool is picked, or when a
+        result arrives that the student should be looking at."""
+        rail = getattr(self, 'rail', None)
+        if rail is not None and rail.active() != key:
+            rail.select(key)
 
     def _pick_support(self, key):
         self.sup_type.set(key)
@@ -3030,13 +3166,13 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                 self.pending_load = (self.pending_load | node_ids) if shift else node_ids
                 self.load_frame['text'] = f'Load on {len(self.pending_load)} node(s)'
                 self.sup_frame.pack_forget()
-                self.load_frame.pack(fill='x', padx=8, pady=4, before=self.sel_frame)
+                self.load_frame.pack(fill='x', padx=8, pady=4)
                 self.status_var.set(f'{len(self.pending_load)} node(s) selected for load →')
             elif t == 'support':
                 self.pending_sup = (self.pending_sup | node_ids) if shift else node_ids
                 self.sup_frame['text'] = f'Support on {len(self.pending_sup)} node(s)'
                 self.load_frame.pack_forget()
-                self.sup_frame.pack(fill='x', padx=8, pady=4, before=self.sel_frame)
+                self.sup_frame.pack(fill='x', padx=8, pady=4)
                 self.status_var.set(f'{len(self.pending_sup)} node(s) selected for support →')
             self.zc.canvas.focus_set()
         else:
@@ -3078,7 +3214,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                             # has to show what this node already has
                             self._refresh_support_picker()
                     self.load_frame.pack_forget()
-                    self.sup_frame.pack(fill='x', padx=8, pady=4, before=self.sel_frame)
+                    self.sup_frame.pack(fill='x', padx=8, pady=4)
                     self.status_var.set(f'Configure support for {len(self.pending_sup)} node(s) →')
 
             elif t == 'load':
@@ -3096,7 +3232,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                         self.set_unit_value(self.led_fx, ex['fx'] if ex else 0.0)
                         self.set_unit_value(self.led_fy, ex['fy'] if ex else 10.0)
                     self.sup_frame.pack_forget()
-                    self.load_frame.pack(fill='x', padx=8, pady=4, before=self.sel_frame)
+                    self.load_frame.pack(fill='x', padx=8, pady=4)
                     self.status_var.set(f'Set load for {len(self.pending_load)} node(s) →')
 
         self._press_sx = self._press_sy = None

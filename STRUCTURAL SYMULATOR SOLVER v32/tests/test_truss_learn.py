@@ -66,20 +66,45 @@ def _bboxes(c, tag):
             if c.itemcget(i, 'fill') != 'white']
 
 
+def _slot(frame):
+    """(parent, index) -- where a section sits among its own siblings.
+
+    Its own siblings, because the panel is a mode rail: the Advanced
+    sections are spread across the Build, Load and Section frames now and
+    share no single pack order to be in. What has to hold is that each one
+    goes back EXACTLY where it was, which is this pair.
+    """
+    parent = frame.master
+    return str(parent), parent.pack_slaves().index(frame)
+
+
 def test_the_tab_opens_simple_and_advanced_restores_every_section_in_place(app):
     order = [f for f, _ in app._adv_sections]
     assert not app.advanced.get()
     assert app.cad_bar.winfo_manager() == ''
     assert all(f.winfo_manager() == '' for f in order)
+
     app.advanced.set(True)
     app._apply_mode()
     assert app.cad_bar.winfo_manager() == 'pack'
-    slaves = app.panel_outer.interior.pack_slaves()
-    pos = [slaves.index(f) for f in order + [app.analyze_btn]]
-    assert pos == sorted(pos), 'Advanced must put the sections back in order'
+    assert all(f.winfo_manager() == 'pack' for f in order)
+    where = [_slot(f) for f in order]
+
+    # Analyze stays the first thing in its own frame: Simple mode hiding
+    # the sections above it must not reshuffle what is left.
+    assert app.analyze_btn.master.pack_slaves()[0] is app.analyze_btn
+
     app.advanced.set(False)
     app._apply_mode()
     assert all(f.winfo_manager() == '' for f in order)
+
+    # ...and back, to exactly the same slots. This is the round trip the
+    # old flat-panel version of this test could only check one way.
+    app.advanced.set(True)
+    app._apply_mode()
+    assert [_slot(f) for f in order] == where, (
+        'Advanced must put every section back where it was, not merely '
+        'back on screen')
 
 
 def test_simple_mode_still_offers_span_loads_once_a_rod_is_rigid(app):
@@ -188,6 +213,17 @@ def test_no_two_numbers_are_drawn_on_top_of_each_other(app):
         assert c.find_withtag('labels_hidden')
 
 
+def _mode_of(app, widget):
+    """Which mode frame a panel widget lives under, or None."""
+    for key, frame in getattr(app, '_mode_frames', {}).items():
+        w = widget
+        while w is not None:
+            if w is frame:
+                return key
+            w = getattr(w, 'master', None)
+    return None
+
+
 def test_long_grey_hints_fold_and_unfold(app):
     folded = []
 
@@ -198,10 +234,31 @@ def test_long_grey_hints_fold_and_unfold(app):
             walk(ch)
     walk(app.panel_outer.interior)
     assert folded, 'no long hint was folded'
-    lbl = folded[0]
-    assert lbl.cget('text').endswith('more…')
+    assert all(l.cget('text').endswith('more…') for l in folded)
+
+    # The panel is a mode rail now, and <Button-1> on an unmapped widget
+    # does nothing: a hint has to be BROUGHT UP before it can be clicked.
+    # Advanced, because several of these sections are Advanced-only, then
+    # the hint's own mode.
+    app.advanced.set(True)
+    app._apply_mode()
+    lbl = None
+    for cand in folded:
+        mode = _mode_of(app, cand)
+        if mode is not None:
+            app.rail.select(mode)
+        app.panel_outer.update_idletasks()
+        app.panel_outer.update()
+        if cand.winfo_ismapped():
+            lbl = cand
+            break
+    assert lbl is not None, (
+        'not one of the %d folded hints could be brought on screen -- a '
+        'hint nobody can click is a hint nobody can read' % len(folded))
     lbl.event_generate('<Button-1>')
     assert lbl.cget('text').startswith(lbl._hint_full)
+    lbl.event_generate('<Button-1>')
+    assert lbl.cget('text').endswith('more…'), 'it must fold back, too'
 
 
 def test_a_family_with_a_steel_section_gets_checked_and_coloured(app):

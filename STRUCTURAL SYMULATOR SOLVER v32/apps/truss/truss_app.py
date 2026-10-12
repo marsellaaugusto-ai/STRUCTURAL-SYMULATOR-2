@@ -2895,7 +2895,10 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self.lp_row = row
         tk.Label(row, text='   Load:', bg=bg, fg='#0F8A7E',
                  font=('Helvetica', 9, 'bold')).pack(side='left')
-        self.lp_choice = tk.StringVar(value='')
+        # Tied to this window: a variable with no master binds to Tk's
+        # default root, which is a different (or destroyed) interpreter
+        # whenever more than one window has been made in the process.
+        self.lp_choice = tk.StringVar(master=row, value='')
         box = ttk.Combobox(row, textvariable=self.lp_choice, width=18,
                            state='readonly', font=('Helvetica', 9))
         box.pack(side='left', padx=(4, 2))
@@ -4680,8 +4683,10 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
             # Once solved, the rod's axial force sits beside its number --
             # the one result a truss is about, readable without opening a
             # report.  The sign follows the legend: + tension, - compression.
+            # "Force on each member" switches the force off and leaves the
+            # number: the rods still have to be told apart.
             lbl = str(i)
-            if res:
+            if res and self.show_force_labels.get():
                 lbl = '%d: %+.1f' % (i, self.show('force', res['force']))
             label_queue.append((1.0 + (abs(res['force']) if res else 0.0),
                                 mx+px*off, my+py*off, lbl,
@@ -4938,7 +4943,9 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                               font=('Helvetica', 8), tags=('force_key',))
             x = c.bbox(t)[2] + 12
         c.create_text(x, y, anchor='w', fill='#888', font=('Helvetica', 8),
-                      text='rod labels: number: axial force N (%s)' % F,
+                      text=('rod labels: number: axial force N (%s)' % F
+                            if self.show_force_labels.get()
+                            else 'rod labels: number'),
                       tags=('force_key',))
 
     def _show_plate_checks(self):

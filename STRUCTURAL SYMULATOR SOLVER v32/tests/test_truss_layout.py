@@ -190,6 +190,11 @@ def _deliberately_hidden(app):
     # every one of their fields is hidden for BOTH reasons and adding the
     # two counts subtracts nine controls that only exist once.
     hidden.update(_hidden_by_mode(app))
+    # The load chooser shows only while "Trace where one load goes" is on.
+    lp = getattr(app, 'lp_row', None)
+    if lp is not None and not lp.winfo_manager():
+        hidden.update(str(c) for c in lp.winfo_children()
+                      if c.winfo_class() in CONTROL_CLASSES)
     return len(hidden)
 
 

@@ -219,9 +219,11 @@ def _on(app):
 
 
 def test_the_chooser_lists_every_load_and_appears_with_the_switch(app):
-    assert not app.lp_row.winfo_ismapped()
+    # Packed or not -- not "on screen", which also depends on which mode
+    # the rail happens to be showing.
+    assert not app.lp_row.winfo_manager()
     _on(app)
-    assert app.lp_row.winfo_ismapped()
+    assert app.lp_row.winfo_manager()
     values = list(app.lp_box['values'])
     assert len(values) == len(app._traceable_loads()) == 3
     assert all('↓' in v and 'kN' in v for v in values)
@@ -229,7 +231,7 @@ def test_the_chooser_lists_every_load_and_appears_with_the_switch(app):
     app.show_load_path.set(False)
     app._toggle_load_path()
     app.root.update()
-    assert not app.lp_row.winfo_ismapped()
+    assert not app.lp_row.winfo_manager()
 
 
 def test_picking_a_load_in_the_list_traces_that_load(app):
@@ -290,3 +292,32 @@ def test_a_chosen_load_that_is_deleted_falls_back_to_another(app):
     app._run_analysis(quiet=True)
     assert app._lp['start'] in nodes[1:]
     assert len(app.lp_box['values']) == 2
+
+
+# ── "Force on each member" (v32 t 11) ─────────────────────────────────────
+#  Asked on 12-10-26: "are you sure the force on each member button is
+#  working properly??" It was not: the switch was declared and wired to a
+#  redraw, and nothing ever read it, so the forces stayed on regardless.
+def _rod_labels(app):
+    c = app.zc.canvas
+    return [c.itemcget(i, 'text') for i in c.find_withtag('rod_label')
+            if c.itemcget(i, 'fill') != 'white']
+
+
+def test_force_on_each_member_switches_the_forces_off_and_back_on(app):
+    app.show_force_labels.set(True)
+    app._draw()
+    on = _rod_labels(app)
+    assert on and all(':' in t for t in on)
+    app.show_force_labels.set(False)
+    app._draw()
+    off = _rod_labels(app)
+    assert off, 'the rod numbers must stay, to tell the rods apart'
+    assert all(t.isdigit() for t in off), off
+    key = [app.zc.canvas.itemcget(i, 'text')
+           for i in app.zc.canvas.find_withtag('force_key')
+           if app.zc.canvas.type(i) == 'text']
+    assert 'rod labels: number' in key
+    app.show_force_labels.set(True)
+    app._draw()
+    assert all(':' in t for t in _rod_labels(app))

@@ -169,3 +169,124 @@ def test_tracing_does_not_disturb_the_model():
     assert [dict(r) for r in rods] == before[1]
     assert [dict(s) for s in supports] == before[2]
     assert [dict(l) for l in loads] == before[3]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Choosing the load (v32 t 11)
+#
+#  Asked for on 12-10-26: "i would like to be able to select the force that
+#  it is describing the path of". The trace used to choose for you -- the
+#  selected joint if it was loaded, else the biggest load -- and only at the
+#  moment it was switched on.
+# ═════════════════════════════════════════════════════════════════════════════
+@pytest.fixture()
+def app(monkeypatch):
+    import gc
+    import time
+    tk = pytest.importorskip('tkinter')
+    from tkinter import messagebox
+    for name in ('showerror', 'showwarning', 'showinfo'):
+        monkeypatch.setattr(messagebox, name, lambda *a, **k: None)
+    from apps.truss.truss_app import TrussApp
+    root = None
+    for attempt in range(4):
+        try:
+            root = tk.Tk()
+            break
+        except Exception:
+            gc.collect()
+            time.sleep(0.25 * (attempt + 1))
+    if root is None:
+        pytest.skip('no display')
+    root.geometry('1440x900+0+0')
+    host = tk.Frame(root)
+    host.pack(fill='both', expand=True)
+    a = TrussApp(host)
+    root.update()
+    a._load_library_example('pratt')          # three loads, at G, H and I
+    a._run_analysis(quiet=True)
+    try:
+        yield a
+    finally:
+        root.destroy()
+        gc.collect()
+
+
+def _on(app):
+    app.show_load_path.set(True)
+    app._toggle_load_path()
+    app.root.update()
+
+
+def test_the_chooser_lists_every_load_and_appears_with_the_switch(app):
+    assert not app.lp_row.winfo_ismapped()
+    _on(app)
+    assert app.lp_row.winfo_ismapped()
+    values = list(app.lp_box['values'])
+    assert len(values) == len(app._traceable_loads()) == 3
+    assert all('↓' in v and 'kN' in v for v in values)
+    assert app.lp_choice.get() in values, 'the traced load is not shown'
+    app.show_load_path.set(False)
+    app._toggle_load_path()
+    app.root.update()
+    assert not app.lp_row.winfo_ismapped()
+
+
+def test_picking_a_load_in_the_list_traces_that_load(app):
+    _on(app)
+    for i, node in enumerate(app._lp_choices):
+        app.lp_box.current(i)
+        app._on_load_path_choice()
+        assert app._lp['start'] == node
+        assert app.joint_label(node) in app.status_var.get()
+
+
+def test_the_arrows_step_through_the_loads_and_wrap_round(app):
+    _on(app)
+    nodes = list(app._traceable_loads())
+    app._trace_load_at(nodes[0])
+    seen = []
+    for _ in range(len(nodes)):
+        app._step_load_path(1)
+        seen.append(app._lp['start'])
+    assert seen == nodes[1:] + nodes[:1]
+    app._step_load_path(-1)
+    assert app._lp['start'] == nodes[-1]
+
+
+def test_clicking_a_loaded_joint_traces_it(app):
+    _on(app)
+    target = list(app._traceable_loads())[-1]
+    app._trace_load_at(list(app._traceable_loads())[0])
+    app._set_tool('select')
+    wx, wy = app.nodes[target][:2]
+    app._press_wx, app._press_wy = wx, wy
+    app._press_sx, app._press_sy = 0, 0
+    app._dragging_box, app._box_cur = False, None
+
+    class E:
+        state = 0
+        x = y = 0
+    app._on_release(E())
+    assert app._lp['start'] == target
+
+
+def test_the_chosen_load_survives_an_edit_and_a_fresh_solve(app):
+    _on(app)
+    target = list(app._traceable_loads())[1]
+    app._trace_load_at(target)
+    app._invalidate_results()                 # an edit drops the trace
+    assert app._lp is None
+    app._run_analysis(quiet=True)
+    assert app._lp is not None and app._lp['start'] == target
+
+
+def test_a_chosen_load_that_is_deleted_falls_back_to_another(app):
+    _on(app)
+    nodes = list(app._traceable_loads())
+    app._trace_load_at(nodes[0])
+    app.loads = [l for l in app.loads if l['node'] != nodes[0]]
+    app._invalidate_results()
+    app._run_analysis(quiet=True)
+    assert app._lp['start'] in nodes[1:]
+    assert len(app.lp_box['values']) == 2

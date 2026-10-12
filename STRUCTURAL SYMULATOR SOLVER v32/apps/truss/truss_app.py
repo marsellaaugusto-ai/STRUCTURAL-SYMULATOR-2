@@ -154,6 +154,7 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self._lp = None               # the load-path trace being shown
         self._lp_phase = 0.0          # chevron travel, 0..1
         self._lp_job = None
+        self._lp_node = None          # the load picked to trace, by joint
         self.ruler_start    = None   # world (wx,wy) or None
         self._mouse_wx      = 0.0   # live world cursor position
         self._mouse_wy      = 0.0
@@ -840,6 +841,9 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                                 anchor='w', command=cmd)
             cb.pack(fill='x')
             self._bind_widget_tooltip(cb, tip)
+            if var is self.show_load_path:
+                self._lp_check = cb
+        self._build_load_path_chooser()
         # Deformed shape keeps its magnification next to it: the number is
         # meaningless without the switch and the switch is hard to read
         # without the number.
@@ -2865,41 +2869,149 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
     def _toggle_load_path(self):
         if not self.show_load_path.get():
             self._stop_load_path()
+            self._show_load_path_chooser(False)
             self._draw()
             return
         self._compute_load_path()
         self._draw()
 
+    # ── which load: the chooser ───────────────────────────────────────────
+    #
+    # Asked for on 12-10-26: "i would like to be able to select the force
+    # that it is describing the path of". The trace used to pick for you
+    # -- the selected joint if it was loaded, else the biggest load -- and
+    # only at the moment it was switched on. Now there is a list of every
+    # load right under the switch, ‹ › to step through them, and clicking
+    # a loaded joint on the drawing picks that one. One load per joint is
+    # how the Load tool stores them, so a joint names a load.
+
+    #: Screen-direction arrows, 45° apart, starting at "right" and turning
+    #: clockwise as y grows downward on the canvas.
+    LP_ARROWS = '→↘↓↙←↖↑↗'
+
+    def _build_load_path_chooser(self):
+        bg = '#f0f0ee'
+        row = tk.Frame(self.show_frame, bg=bg)
+        self.lp_row = row
+        tk.Label(row, text='   Load:', bg=bg, fg='#0F8A7E',
+                 font=('Helvetica', 9, 'bold')).pack(side='left')
+        self.lp_choice = tk.StringVar(value='')
+        box = ttk.Combobox(row, textvariable=self.lp_choice, width=18,
+                           state='readonly', font=('Helvetica', 9))
+        box.pack(side='left', padx=(4, 2))
+        box.bind('<<ComboboxSelected>>', self._on_load_path_choice)
+        self.lp_box = box
+        for text, step in (('‹', -1), ('›', 1)):
+            b = tk.Button(row, text=text, width=2, relief='flat', bd=0,
+                          bg='#e2e6e4', font=('Helvetica', 10, 'bold'),
+                          command=lambda d=step: self._step_load_path(d))
+            b.pack(side='left', padx=1)
+        self._bind_widget_tooltip(
+            box, 'The load whose path is drawn. Or click a loaded joint '
+            'on the drawing.')
+        self.lp_hint = tk.Label(self.show_frame, text='      or click a '
+                                'loaded joint on the drawing', bg=bg,
+                                fg='#777', font=('Helvetica', 8),
+                                anchor='w')
+
+    def _show_load_path_chooser(self, on):
+        if not hasattr(self, 'lp_row'):
+            return
+        if on:
+            if not self.lp_row.winfo_ismapped():
+                self.lp_row.pack(fill='x', after=self._lp_check)
+                self.lp_hint.pack(fill='x', after=self.lp_row)
+        else:
+            self.lp_row.pack_forget()
+            self.lp_hint.pack_forget()
+
+    def _traceable_loads(self):
+        """{joint: (fx, fy)} for every non-zero load, in joint order."""
+        out = {}
+        for l in self.loads:
+            fx, fy = l.get('fx', 0.0), l.get('fy', 0.0)
+            if math.hypot(fx, fy) > 1e-9:
+                out[l['node']] = (fx, fy)
+        return dict(sorted(out.items()))
+
+    def _load_path_label(self, ni, fx, fy):
+        ang = math.atan2(fy, fx)            # screen: y down, so clockwise
+        arrow = self.LP_ARROWS[int(round(ang / (math.pi / 4))) % 8]
+        return '%s  %s  %s' % (self.joint_label(ni), arrow,
+                               self.fmt('force', math.hypot(fx, fy)))
+
+    def _refresh_load_path_chooser(self, current):
+        if not hasattr(self, 'lp_box'):
+            return
+        loads = self._traceable_loads()
+        self._lp_choices = list(loads)
+        self.lp_box['values'] = [self._load_path_label(n, *f)
+                                 for n, f in loads.items()]
+        if current in loads:
+            self.lp_box.current(self._lp_choices.index(current))
+        else:
+            self.lp_choice.set('')
+        self._show_load_path_chooser(True)
+
+    def _on_load_path_choice(self, _event=None):
+        i = self.lp_box.current()
+        if 0 <= i < len(getattr(self, '_lp_choices', [])):
+            self._trace_load_at(self._lp_choices[i])
+
+    def _step_load_path(self, step):
+        nodes = list(self._traceable_loads())
+        if not nodes:
+            return
+        cur = self._lp['start'] if self._lp else self._lp_node
+        i = nodes.index(cur) if cur in nodes else -step
+        self._trace_load_at(nodes[(i + step) % len(nodes)])
+
+    def _trace_load_at(self, ni):
+        """Trace the load at joint `ni` -- from the list, ‹ ›, or a click."""
+        self._lp_node = ni
+        if not self.show_load_path.get():
+            self.show_load_path.set(True)
+        self._compute_load_path()
+        self._draw()
+
     def _loaded_node_to_trace(self):
-        """The joint to trace: the selected one if it carries a load, else
-        the biggest load in the model, so the feature does something
-        useful the first time it is switched on."""
-        loaded = {l['node']: math.hypot(l.get('fx', 0.0), l.get('fy', 0.0))
-                  for l in self.loads}
-        loaded = {n: m for n, m in loaded.items() if m > 1e-9}
+        """The joint to trace: the one picked in the chooser (or clicked)
+        while it still carries a load; else the selected joint if it
+        carries one; else the biggest load in the model, so the feature
+        does something useful the first time it is switched on."""
+        loaded = {n: math.hypot(*f)
+                  for n, f in self._traceable_loads().items()}
         if not loaded:
             return None
+        if self._lp_node in loaded:
+            return self._lp_node
         for ni in self.selected_nodes:
             if ni in loaded:
                 return ni
         return max(loaded, key=lambda n: loaded[n])
 
-    def _compute_load_path(self):
+    def _compute_load_path(self, announce=True):
         self._lp = None
+        self._refresh_load_path_chooser(None)
         if not self.results:
-            self.status_var.set('Run ▶ Analyze first, then trace a load.')
+            if announce:
+                self.status_var.set('Run ▶ Analyze first, then trace a load.')
             return
         ni = self._loaded_node_to_trace()
         if ni is None:
-            self.status_var.set('There is no load to trace yet — add one '
-                                'with the Load tool.')
+            if announce:
+                self.status_var.set('There is no load to trace yet — add '
+                                    'one with the Load tool.')
             return
+        self._lp_node = ni
+        self._refresh_load_path_chooser(ni)
         self._lp = truss_loadpath.trace(
             self.nodes, self.rods, self.supports, self.plates,
             self.loads, ni, analyze)
-        self.status_var.set(truss_loadpath.summary(
-            self._lp, joint_name=self.joint_label,
-            force_fmt=lambda v: self.fmt('force', v, sign=True)))
+        if announce:
+            self.status_var.set(truss_loadpath.summary(
+                self._lp, joint_name=self.joint_label,
+                force_fmt=lambda v: self.fmt('force', v, sign=True)))
         self._start_load_path_anim()
 
     def _start_load_path_anim(self):
@@ -3618,7 +3730,12 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                         else: self.selected_nodes.add(ni)
                     else:
                         self.selected_nodes = {ni}; self.selected_rods = set()
-                    self.zc.canvas.focus_set(); self._show_sel(); self._draw()
+                    self.zc.canvas.focus_set(); self._show_sel()
+                    if (not shift and self.show_load_path.get()
+                            and ni in self._traceable_loads()):
+                        self._trace_load_at(ni)    # draws
+                    else:
+                        self._draw()
                     self._press_sx=self._press_sy=None; self._dragging_box=False
                     return
                 ri = near_rod(self.nodes, self.rods, wx, wy, 7/self.zc.zoom)
@@ -4158,6 +4275,11 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                 f'{n_c} compression{zero}{self._load_note()}.{off}{design_note} '
                 f'Reactions and diagrams shown. Scroll/zoom both canvases freely.')
         if self.selected_nodes or self.selected_rods: self._show_sel()
+        if self.show_load_path.get():
+            # An edit dropped the old trace (_invalidate_results); the
+            # switch is still on, so trace the same load in the new solve.
+            self._compute_load_path(announce=False)
+            self._draw()
 
     def _show_analysis_text(self):
         """The three result panels, written in the selected convention.

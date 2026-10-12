@@ -242,6 +242,33 @@ class _Report:
                                  facecolor=face, edgecolor=edge,
                                  linewidth=lw, alpha=0.85, zorder=4))
 
+    def band_reach(self):
+        """How far off its member the biggest V or M lobe reaches, metres.
+
+        MATCHED TO THE SCREEN, MEASURED. The tab's Vierendeel view puts
+        its biggest lobe at 0.16 of the smaller canvas dimension, which
+        on the Vierendeel example comes to 5.1 % of the truss's width at
+        1366x768 and 3.6 % at 1920x1080 -- 14-20 % of one bay. The first
+        version of this sheet used 10 % of the span, two to three times
+        that, and on a Vierendeel, where every bay bends, the lobes of
+        neighbouring members reached into each other.
+
+        Two limits, and the smaller one wins:
+
+          * 4 % of the span -- the middle of what the screen draws, for
+            a truss of a few long members;
+          * 20 % of the MEDIAN member length -- for a truss of many short
+            ones, where 4.5 % of a long span would still be wider than a
+            bay and the lobes would overlap again.
+
+        The median and not the shortest member: one short stub (a
+        vertical at a support, say) would otherwise shrink every lobe in
+        the drawing to nothing.
+        """
+        lens = sorted(td.rod_length_m(self.nodes, r) for r in self.rods)
+        median = lens[len(lens) // 2] if lens else self.span
+        return min(0.040 * self.span, 0.20 * median)
+
     def _action_sheet(self, heading, key, face, edge, unit, what):
         """The Shear sheet and the Moment sheet, which are the same sheet
         twice over different data.
@@ -252,15 +279,23 @@ class _Report:
         there is no reason to pay that: each gets the whole sheet.
         """
         fig = self.new_sheet(heading)
-        ax = self.drawing_axes(fig)
+        # pad 0.10, not the 0.24 the other drawings use: that margin is for
+        # dimension lines and load arrows, neither of which is on this
+        # sheet, and a lobe now reaches at most 4.5 % of the span. With the
+        # wide margin a long truss came out a narrow strip across the
+        # middle of the sheet; this way it uses the width, and the lobes
+        # keep the screen's proportion to it.
+        ax = self.drawing_axes(fig, pad=0.10)
+        # A strip more at the bottom for the scale bar, which with the
+        # tighter margin otherwise sat under the labels of the bottom
+        # chord's lobes.
+        lo, hi = ax.get_ylim()
+        ax.set_ylim(lo - 0.10 * self.span, hi)
         self.draw_rods(ax, color=GHOST, width=1.2)
         self.draw_nodes(ax)
         self.draw_supports(ax)
         peak = self._peak(key)
-        # 0.10 and not 0.18 of the span: on a Vierendeel every bay bends,
-        # so neighbouring lobes reach into each other and a band big
-        # enough to read on its own is too big to read in a row of six.
-        amp = (0.10 * self.span / peak) if peak > 1e-12 else 0.0
+        amp = (self.band_reach() / peak) if peak > 1e-12 else 0.0
         hits = []
         for ri, d in enumerate(self.diagrams):
             vals, xs = list(d.get(key, ())), list(d.get('xs', ()))
@@ -268,16 +303,33 @@ class _Report:
                 continue
             self.draw_band(ax, ri, vals, xs, amp, face, edge)
             j = max(range(len(vals)), key=lambda k: abs(vals[k]))
-            hits.append((abs(vals[j]), ri, vals[j]))
+            frac = xs[j] / xs[-1] if xs and xs[-1] > 1e-12 else 0.5
+            # A value that does not change along the rod -- the shear of
+            # a rod with no load on its span -- has no peak to point at:
+            # "the first station" is the joint, where the label landed in
+            # the next member's band. Mid-length says the same number and
+            # says unambiguously which rod it belongs to.
+            if max(vals) - min(vals) <= 0.05 * abs(vals[j]):
+                frac = 0.5
+            hits.append((abs(vals[j]), ri, vals[j], frac))
         hits.sort(reverse=True)
-        for _a, ri, v in hits[:6]:
+        for _a, ri, v, frac in hits[:6]:
+            # AT THE PEAK, just past the tip of the lobe -- as the tab
+            # writes them. At the member's midpoint, which is where a
+            # Vierendeel member's moment crosses ZERO, the label sat on
+            # the one point of the rod with nothing to report, and on a
+            # vertical it was hard to tell which member it belonged to.
             rod = self.rods[ri]
             (xa, ya), (xb, yb) = self.pts[rod['a']], self.pts[rod['b']]
-            ax.text((xa + xb) / 2, (ya + yb) / 2,
+            L = math.hypot(xb - xa, yb - ya) or 1.0
+            nx, ny = -(yb - ya) / L, (xb - xa) / L
+            px, py = xa + (xb - xa) * frac, ya + (yb - ya) * frac
+            out = v * amp + math.copysign(0.03 * self.span, v)
+            ax.text(px + nx * out, py + ny * out,
                     '%d: %s' % (ri, self.u.f(unit, v, 2, sign=True)),
                     fontsize=6.4, color=edge, ha='center', va='center',
                     zorder=8, bbox=dict(boxstyle='round,pad=0.12', fc='white',
-                                        ec='none', alpha=0.85))
+                                        ec='none', alpha=0.9))
         self.scale_bar(ax)
         if hits:
             line = ('%s. Biggest %s %s in rod %d; the band is drawn off each '
@@ -289,7 +341,7 @@ class _Report:
             line = '%s. Every rod reads zero.' % what
         fig.text(0.05, 0.945, _wrap(line, 160), fontsize=8, color=INK,
                  va='top')
-        return [ri for _a, ri, _v in hits]
+        return [ri for _a, ri, _v, _f in hits]
 
     def shear(self):
         return self._action_sheet(
@@ -1012,145 +1064,247 @@ class _Report:
                          self.u.f('length', td.rod_length_m(self.nodes, r), 2),
                          self.u.f('force', _z(N), 2, sign=True), gov, use,
                          ok])
-        pages = [body[i:i + ROWS_PER_SHEET]
-                 for i in range(0, len(body), ROWS_PER_SHEET)] or [[]]
+        # TWO TABLES TO A SHEET, side by side. The table is under half the
+        # sheet's width, so one per sheet left the right half empty -- and
+        # a model just past ROWS_PER_SHEET rods got a second sheet carrying
+        # eleven rows and nothing else.
+        per = 2 * ROWS_PER_SHEET
+        pages = [body[i:i + per] for i in range(0, len(body), per)] or [[]]
         for k, chunk in enumerate(pages):
             fig = self.new_sheet('Rods' + (' (%d/%d)' % (k + 1, len(pages))
                                            if len(pages) > 1 else ''))
-            ax = fig.add_axes((0.05, 0.17, 0.90, 0.76))
-            ax.axis('off')
-            _table(ax, [head] + chunk, over_col=8)
+            halves = [chunk[:ROWS_PER_SHEET], chunk[ROWS_PER_SHEET:]]
+            for h, rows in enumerate(halves):
+                if not rows and h:
+                    continue
+                ax = fig.add_axes((0.05 + 0.46 * h, 0.17, 0.44, 0.76))
+                ax.axis('off')
+                _table(ax, [head] + rows, over_col=8)
         return len(pages)
 
     # ── one card per rod, with its own shear and moment ───────────────────
-    def thumbnail(self, ax, ri, lw=0.7):
+    #: The position thumbnails. The rest of the truss at a mid grey that
+    #: still reads on a laser print, and the rod itself in a saturated red
+    #: three times as thick. The first version used #cdd3d8 at 0.7 pt
+    #: against #c0392b at 2 pt: on screen it looked fine, on paper the
+    #: truss was barely there and the red did not stand out from it.
+    THUMB_REST = '#6f7880'
+    THUMB_ROD = '#e0001b'
+
+    def thumbnail(self, ax, ri, lw=1.0):
         """The whole truss, small, with rod `ri` picked out in red.
 
         WHY EVERY CARD CARRIES ONE. "Rod 13 is at 0.63" is a sentence
         about a rod the reader cannot place. On a 17-rod Pratt there is
         no way to know which member that is without counting along the
-        Geometry sheet, and on a 60-rod model nobody does. A 3 cm
-        thumbnail answers it in no time at all, and costs almost no
-        space because it shares the card it labels.
+        Geometry sheet, and on a 60-rod model nobody does. A thumbnail
+        answers it at once, and costs almost no space because it shares
+        the row it labels.
+
+        Drawn with the rod LAST, on top, and with a white casing under
+        it, so where it crosses another member it is never the one that
+        disappears.
         """
         for k, r in enumerate(self.rods):
+            if k == ri:
+                continue
             (xa, ya), (xb, yb) = self.pts[r['a']], self.pts[r['b']]
-            on = (k == ri)
-            ax.plot([xa, xb], [ya, yb],
-                    color='#c0392b' if on else '#cdd3d8',
-                    lw=2.0 if on else lw, zorder=3 if on else 2,
-                    solid_capstyle='round')
+            ax.plot([xa, xb], [ya, yb], color=self.THUMB_REST, lw=lw,
+                    zorder=2, solid_capstyle='round')
+        r = self.rods[ri]
+        (xa, ya), (xb, yb) = self.pts[r['a']], self.pts[r['b']]
+        ax.plot([xa, xb], [ya, yb], color='white', lw=5.2, zorder=3,
+                solid_capstyle='round')
+        ax.plot([xa, xb], [ya, yb], color=self.THUMB_ROD, lw=3.0, zorder=4,
+                solid_capstyle='round')
         for sp in self.supports:
             x, y = self.pts[sp['node']]
-            d = 0.045 * self.span
-            ax.plot([x], [y], marker='^', ms=2.6, color=SUPPORT, zorder=4)
+            ax.plot([x], [y], marker='^', ms=3.4, color='#222222', zorder=5)
         ax.set_aspect('equal', adjustable='datalim')
         ax.axis('off')
 
-    def rod_detail(self, rods_per_sheet=6):
-        """Every rod's own card: where it is, what it carries, and its
-        shear and moment along its length.
+    #: The Rod detail grid: two columns of eight rows, sixteen rods to a
+    #: sheet. Eight rows of 0.091 from y 0.905 end at 0.177, clear of the
+    #: ISO title block (0.158). TWO columns because one gave each V and
+    #: M panel 4.3 : 1 -- a long thin strip -- where the tab's own panels
+    #: are 2.6 : 1; two columns bring them to 2.5 : 1 and halve the
+    #: sheet count (37 bending rods: 5 sheets -> 3).
+    DETAIL_ROWS = 8
+    DETAIL_COLS = 2
+    DETAIL_ROW_H = 0.091
+    DETAIL_COL_X = (0.045, 0.515)
 
-        This is the sheet the Rods TABLE cannot be. A table row gives
-        the peak of V and M; a card gives their shape, which is what
-        tells you whether a rod is bending in single or double curvature
-        and where to look for the problem. It is only produced when
-        something actually bends -- on a pinned truss every card would
-        be two flat lines (see `bends`).
+    def rod_detail(self):
+        """One ROW per rod that bends -- its numbers, where it is, and its
+        shear and moment along its length -- the way the tab's diagram
+        pane lays them out.
+
+        THE FIRST VERSION WAS CARDS, three across and two down, each with
+        two charts a seventh of the sheet wide and a sixth tall. Six rods
+        to a sheet with charts bigger than the truss drawing they belong
+        to: the information was right and the proportions were not. The
+        screen draws one row per member with the V and M panels at about
+        2.6 : 1, and a row reads left to right like a table; this does the
+        same, eight rods to a sheet.
+
+        Each panel is scaled to ITS OWN rod, as on screen, so a lightly
+        loaded rod's shape is still readable -- and its peak is written at
+        the peak, so the size of the curve is never mistaken for the size
+        of the force. It is only produced when something actually bends:
+        on a pinned truss every row would be two flat lines (see `bends`).
         """
-        order = sorted(range(len(self.rods)),
-                       key=lambda i: -max(
-                           (abs(v) for v in
-                            list(self.diagrams[i].get('M', ()))
-                            + list(self.diagrams[i].get('V', ())))
-                           if i < len(self.diagrams) else [0.0], default=0.0))
-        order = [i for i in order
-                 if i < len(self.diagrams) and max(
-                     (abs(v) for v in list(self.diagrams[i].get('M', ()))
-                      + list(self.diagrams[i].get('V', ()))), default=0.0)
-                 > 1e-9]
+        def peak_of(i):
+            if i >= len(self.diagrams):
+                return 0.0
+            d = self.diagrams[i]
+            return max((abs(v) for v in list(d.get('M', ()))
+                        + list(d.get('V', ()))), default=0.0)
+        order = [i for i in sorted(range(len(self.rods)),
+                                   key=lambda i: -peak_of(i))
+                 if peak_of(i) > 1e-9]
         if not order:
             return []
-        # THE GRID, in figure fractions, written out because every
-        # number in it is load-bearing. A card is laid out DOWNWARD from
-        # its own top: title, subtitle, numbers, thumbnail, then the two
-        # charts, whose tick labels hang below them. Laying it out
-        # upward from a baseline (the first attempt) put the second
-        # row's title through the first row's x-axis labels, because the
-        # ticks are outside the axes box and nothing accounted for them.
-        cols = 3
-        card_w = 0.295
-        col_x = [0.045 + c * 0.315 for c in range(cols)]
-        row_top = (0.900, 0.520)         # the top of each row's cards
-        per = cols * len(row_top) if rods_per_sheet is None else rods_per_sheet
+        rows, ncol = self.DETAIL_ROWS, self.DETAIL_COLS
+        per = rows * ncol
         pages = [order[i:i + per] for i in range(0, len(order), per)]
+        top0 = 0.905
         for pno, chunk in enumerate(pages):
             fig = self.new_sheet('Rod detail' + (
                 ' (%d/%d)' % (pno + 1, len(pages)) if len(pages) > 1 else ''))
-            fig.text(0.05, 0.955, _wrap(
-                'One card per rod that bends, worst first: where it is in '
-                'the truss, what it carries, and its shear and moment '
-                'along its own length. The rods that carry no shear or '
-                'moment are in the Rods table only.', 160),
-                fontsize=8, color=INK, va='top')
-            for k, ri in enumerate(chunk):
-                r, c = divmod(k, cols)
-                self._rod_card(fig, ri, col_x[c], row_top[r], card_w)
-                if c:
-                    _vrule(fig, col_x[c] - 0.016, row_top[r] - 0.345,
-                           row_top[r] + 0.012)
-            if len(chunk) > cols:
-                _hrule(fig, 0.545, 0.045, 0.955)
+            fig.text(0.05, 0.958, _wrap(
+                'One row per rod that bends, worst first, down the left '
+                'column and then the right. The thumbnail shows where the '
+                'rod is; each diagram is scaled to its own rod, as on '
+                'screen, with its largest value written at the peak. Rods '
+                'with no shear or moment are in the Rods table.',
+                165), fontsize=7.5, color=INK, va='top')
+            used = (len(chunk) + rows - 1) // rows      # columns in use
+            for col in range(used):
+                cols = self._detail_columns(self.DETAIL_COL_X[col])
+                x_lo = self.DETAIL_COL_X[col]
+                x_hi = x_lo + 0.44
+                # Column headings once per column, as a table has, instead
+                # of a title over every small chart.
+                for key, x, label in (
+                        ('where', cols['thumb'][0], 'Where'),
+                        ('V', cols['V'][0],
+                         'Shear V (%s)' % self.u.lab('force')),
+                        ('M', cols['M'][0],
+                         'Moment M (%s)' % self.u.lab('moment'))):
+                    fig.text(x, top0 + 0.006, label, fontsize=6.8,
+                             fontweight='bold', va='bottom',
+                             color={'V': '#c0392b',
+                                    'M': '#2c5f9e'}.get(key, INK))
+                _hrule(fig, top0, x_lo, x_hi)
+                for k, ri in enumerate(chunk[col * rows:(col + 1) * rows]):
+                    top = top0 - k * self.DETAIL_ROW_H
+                    self._rod_row(fig, ri, top, cols)
+                    _hrule(fig, top - self.DETAIL_ROW_H, x_lo, x_hi,
+                           color='#e3e7ea')
+            if used > 1:
+                n_right = len(chunk) - rows
+                _vrule(fig, 0.497,
+                       top0 - max(rows, n_right) * self.DETAIL_ROW_H,
+                       top0 + 0.02)
         return order
 
-    def _rod_card(self, fig, ri, x0, top, w):
+    @staticmethod
+    def _detail_columns(x0=0.045):
+        """x0, width of each part of a Rod detail row, figure fractions,
+        for the column starting at `x0`. The V and M panels are 0.115 by
+        0.063 -- 1.34 by 0.52 inches, 2.6 : 1, the tab's own proportion."""
+        return {'text': (x0, 0.105), 'thumb': (x0 + 0.110, 0.072),
+                'V': (x0 + 0.193, 0.115), 'M': (x0 + 0.320, 0.115)}
+
+    def _rod_row(self, fig, ri, top, cols):
         rod = self.rods[ri]
         d = self.diagrams[ri]
         c = self.checks[ri] if ri < len(self.checks) else {}
         p = self.profiles.get(rod.get('profile', 'Default'), {})
         N = self.res['rod_res'][ri]['force']
         L = td.rod_length_m(self.nodes, rod)
+        h = self.DETAIL_ROW_H
+        x0 = cols['text'][0]
 
-        fig.text(x0, top, 'Rod %d' % ri, fontsize=10,
+        over = c.get('checked') and not c.get('ok', True)
+        fig.text(x0, top - 0.010, 'Rod %d' % ri, fontsize=8.6,
                  fontweight='bold', color=INK, va='top')
-        # Its own line. Beside the heading it ran into "Rod 11", whose
-        # two digits are wider than the offset a one-digit rod needed.
-        fig.text(x0, top - 0.019,
-                 '%d–%d · %s · %s %s' % (
-                     rod['a'], rod['b'], p.get('catalog') or 'no section',
-                     self.u.f('length', L, 2), self.u.lab('length')),
-                 fontsize=7, color='#777', va='top')
-        bits = ['N = %s %s' % (self.u.f('force', _z(N), 2, sign=True),
-                               self.u.lab('force'))]
-        for key, unit in (('V', 'force'), ('M', 'moment')):
-            vals = list(d.get(key, ()))
-            if vals:
-                j = max(range(len(vals)), key=lambda k: abs(vals[k]))
-                bits.append('%s max %s %s' % (
-                    key, self.u.f(unit, vals[j], 2, sign=True),
-                    self.u.lab(unit)))
         if c.get('checked'):
-            bits.append('use %.2f%s' % (c['util'], '' if c['ok'] else ' OVER'))
-        fig.text(x0, top - 0.038, '   '.join(bits), fontsize=7, va='top',
-                 color='#b03a2e' if c.get('checked') and not c['ok'] else INK)
+            fig.text(x0 + 0.050, top - 0.012, 'use %.2f%s'
+                     % (c['util'], ' OVER' if over else ''),
+                     fontsize=6.4, va='top',
+                     color='#b03a2e' if over else '#555')
+        fig.text(x0, top - 0.030,
+                 '%d–%d · %s %s' % (rod['a'], rod['b'],
+                                    self.u.f('length', L, 2),
+                                    self.u.lab('length')),
+                 fontsize=6.0, color='#666', va='top')
+        fig.text(x0, top - 0.045, (p.get('catalog') or 'no section')[:20],
+                 fontsize=6.0, color='#666', va='top')
+        fig.text(x0, top - 0.062, 'N %s %s'
+                 % (self.u.f('force', _z(N), 2, sign=True),
+                    self.u.lab('force')), fontsize=6.4, va='top', color=INK)
 
-        tx = fig.add_axes((x0, top - 0.152, w * 0.52, 0.090))
-        self.thumbnail(tx, ri)
-        for n, (key, face, edge, unit) in enumerate(
-                (('V', '#e8a49c', '#c0392b', 'force'),
-                 ('M', '#9fc0e0', '#2c5f9e', 'moment'))):
-            ax = fig.add_axes((x0 + n * (w / 2 + 0.008), top - 0.325,
-                               w / 2 - 0.014, 0.150))
-            xs, vals = list(d.get('xs', ())), list(d.get(key, ()))
-            if len(vals) >= 2:
-                ax.fill_between(xs, vals, 0, color=face, alpha=0.85)
-                ax.plot(xs, vals, color=edge, lw=0.9)
-            ax.axhline(0, color='#999', lw=0.6)
-            ax.set_title('%s (%s)' % (key, self.u.lab(unit)), fontsize=6.5,
-                         color=edge, pad=2)
-            ax.tick_params(labelsize=5.5)
-            for sp in ('top', 'right'):
-                ax.spines[sp].set_visible(False)
+        tx, tw = cols['thumb']
+        ax = fig.add_axes((tx, top - h + 0.012, tw, h - 0.024))
+        self.thumbnail(ax, ri)
+
+        xs = list(d.get('xs', ()))
+        for key, face, edge, unit in (('V', '#e8a49c', '#c0392b', 'force'),
+                                      ('M', '#9fc0e0', '#2c5f9e', 'moment')):
+            cx, cw = cols[key]
+            ax = fig.add_axes((cx, top - h + 0.014, cw, h - 0.028))
+            self._mini_diagram(ax, xs, list(d.get(key, ())), face, edge,
+                               unit)
+
+    def _mini_diagram(self, ax, xs, vals, face, edge, unit):
+        """One rod's V or M in the style of the tab's own panels: a light
+        frame, the zero line, the filled curve, and the peak written at
+        the peak. No tick labels -- at this size they were most of the
+        ink and none of the information, and the values that matter are
+        written on the curve."""
+        for sp in ax.spines.values():
+            sp.set_color('#dddddd')
+            sp.set_linewidth(0.6)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.axhline(0, color='#bbbbbb', lw=0.6, zorder=1)
+        if len(vals) < 2 or len(xs) != len(vals):
+            return
+        big = max((abs(v) for v in vals), default=0.0)
+        if big <= 1e-12:
+            ax.text(0.5, 0.5, 'zero', transform=ax.transAxes, fontsize=6,
+                    color='#999', ha='center', va='center')
+            return
+        ax.fill_between(xs, vals, 0, color=face, alpha=0.75, lw=0, zorder=2)
+        ax.plot(xs, vals, color=edge, lw=0.9, zorder=3)
+        # A little headroom so the peak label never sits on the frame.
+        ax.set_ylim(-big * 1.45, big * 1.45)
+        ax.set_xlim(xs[0], xs[-1] if xs[-1] > xs[0] else xs[0] + 1.0)
+        j = max(range(len(vals)), key=lambda k: abs(vals[k]))
+        # Anchored to the side the peak is on. Centred on a peak at the
+        # very end of the rod -- where a joint moment always is -- half
+        # the label hung outside the frame.
+        span = (xs[-1] - xs[0]) or 1.0
+        f = (xs[j] - xs[0]) / span
+        ha = 'left' if f < 0.15 else 'right' if f > 0.85 else 'center'
+        ax.text(xs[j], vals[j] + (0.12 if vals[j] >= 0 else -0.12) * big,
+                self.u.f(unit, vals[j], 2, sign=True), fontsize=6.2,
+                color=edge, fontweight='bold', ha=ha,
+                va='bottom' if vals[j] >= 0 else 'top', zorder=4)
+        # The other end too, when it says something the peak does not:
+        # for a rigid rod the two ends are the joint moments, which is
+        # what a connection is designed for. NOT when it repeats the peak
+        # -- a constant shear wrote the same number at both ends.
+        for k, ha in ((0, 'left'), (len(vals) - 1, 'right')):
+            if k == j or abs(vals[k]) <= 0.15 * big:
+                continue
+            if abs(vals[k] - vals[j]) <= 0.02 * big:
+                continue
+            ax.text(xs[k], vals[k] + (0.12 if vals[k] >= 0 else -0.12) * big,
+                    self.u.f(unit, vals[k], 1, sign=True),
+                    fontsize=5.8, color=edge, ha=ha,
+                    va='bottom' if vals[k] >= 0 else 'top', zorder=4)
 
     # ── the step-by-step checks, grouped ──────────────────────────────────
     def explain(self):

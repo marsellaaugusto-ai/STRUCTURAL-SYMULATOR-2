@@ -1,6 +1,7 @@
 """The Truss tab's PDF report (apps/truss/truss_pdf): the sheets it
 promises, drawings to scale, numbers that balance."""
 import gc
+import math
 import re
 import sys
 import time
@@ -53,11 +54,32 @@ def test_the_report_has_every_promised_sheet(tmp_path):
 
 
 def test_a_long_rod_table_runs_onto_more_sheets(tmp_path, monkeypatch):
+    """Two tables of ROWS_PER_SHEET to a sheet, side by side: the table
+    is under half the sheet's width, and one per sheet left the right
+    half empty."""
     monkeypatch.setattr(tp, 'ROWS_PER_SHEET', 5)
-    m, res, ch = _solved('pratt')                     # 17 rods -> 4 sheets
+    m, res, ch = _solved('pratt')               # 17 rods, 10 a sheet -> 2
     out = tp.export_pdf(str(tmp_path / 'r.pdf'), m['nodes'], m['rods'],
-                        m['supports'], m['loads'], res, ch, m['profiles'])
-    assert sum(1 for h in out['headings'] if h.startswith('Rods')) == 4
+                        m['supports'], m['loads'], res, ch, m['profiles'],
+                        buckling=False)
+    assert sum(1 for h in out['headings'] if h.startswith('Rods')) == 2
+
+
+def test_the_two_rod_tables_on_a_sheet_do_not_overlap(tmp_path, monkeypatch):
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    monkeypatch.setattr(tp, 'ROWS_PER_SHEET', 9)
+    m, res, ch = _solved('pratt')               # 17 rods: 9 left, 8 right
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'p', None)
+    assert rep.rod_table() == 1
+    fig = rep.sheets[0][0]
+    canvas = FigureCanvasAgg(fig)
+    canvas.draw()
+    boxes = [tab.get_window_extent(canvas.get_renderer())
+             for ax in fig.axes for tab in ax.tables]
+    assert len(boxes) == 2
+    left, right = sorted(boxes, key=lambda b: b.x0)
+    assert left.x1 <= right.x0, 'the two halves of the rod table overlap'
 
 
 def test_without_sections_there_is_nothing_to_explain(tmp_path):
@@ -417,6 +439,16 @@ def _bending_model():
     return m, res, ch, dg
 
 
+def _thumbnails(fig, m):
+    """The axes on a sheet that are position thumbnails: every other rod
+    in the thumbnail grey, and one in the thumbnail red."""
+    rest, rod = tp._Report.THUMB_REST, tp._Report.THUMB_ROD
+    return [a for a in fig.axes
+            if sum(1 for l in a.lines if l.get_color() == rest)
+            == len(m['rods']) - 1
+            and sum(1 for l in a.lines if l.get_color() == rod) == 1]
+
+
 def _report(m, res, ch, dg=None, **kw):
     return tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
                       ch, m['profiles'], 'r', None, diagrams=dg, **kw)
@@ -543,26 +575,25 @@ def test_every_rod_card_carries_a_thumbnail_locating_the_rod():
     assert shown
     fig = _fig(rep, [h for _f, h in rep.sheets][0])
     # a thumbnail draws every rod, so its axes has len(rods) lines
-    # A thumbnail is the only axes drawing every rod in grey with
-    # exactly one picked out in red.
-    thumbs = [a for a in fig.axes
-              if sum(1 for l in a.lines if l.get_color() == '#cdd3d8')
-              == len(m['rods']) - 1]
-    assert thumbs, 'no card has a thumbnail of the truss'
+    thumbs = _thumbnails(fig, m)
+    assert thumbs, 'no row has a thumbnail of the truss'
     for t in thumbs:
-        red = [l for l in t.lines if l.get_color() == '#c0392b']
-        assert len(red) == 1, 'a card does not pick out exactly one rod'
-    assert len(thumbs) == len(shown[:6])
+        red = [l for l in t.lines if l.get_color() == tp._Report.THUMB_ROD]
+        assert len(red) == 1, 'a row does not pick out exactly one rod'
+    assert len(thumbs) == min(len(shown),
+                              tp._Report.DETAIL_ROWS * tp._Report.DETAIL_COLS)
 
 
-def test_a_rod_card_carries_its_own_shear_and_moment():
+def test_a_rod_row_carries_its_own_shear_and_moment():
     m, res, ch, dg = _bending_model()
     rep = _report(m, res, ch, dg)
-    rep.rod_detail()
+    shown = rep.rod_detail()
     fig = rep.sheets[0][0]
-    titles = [a.get_title() for a in fig.axes if a.get_title()]
-    assert sum(1 for t in titles if t.startswith('V (')) >= 1
-    assert sum(1 for t in titles if t.startswith('M (')) >= 1
+    said = _flat(fig)
+    assert 'Shear V (' in said and 'Moment M (' in said
+    # two filled diagrams per row
+    filled = [a for a in fig.axes if a.collections]
+    assert len(filled) == 2 * min(len(shown), 16)
 
 
 def test_the_cards_are_ordered_worst_first():
@@ -597,10 +628,8 @@ def test_two_rods_share_an_explain_sheet_with_their_thumbnails():
     said = ' '.join(_texts(fig))
     for i in chosen:
         assert 'Rod %d' % i in said
-    thumbs = [a for a in fig.axes
-              if sum(1 for l in a.lines if l.get_color() == '#cdd3d8')
-              == len(m['rods']) - 1]
-    assert len(thumbs) == 2, 'each column needs its own thumbnail'
+    assert len(_thumbnails(fig, m)) == 2, (
+        'each column needs its own thumbnail')
 
 
 def test_an_explain_column_never_runs_under_the_title_block():
@@ -697,3 +726,141 @@ def test_an_unchecked_plate_says_why_instead_of_a_blank_row():
              for tab in ax.tables
              for t in [c.get_text() for c in tab.get_celld().values()]]
     assert 'panel not solved' in cells
+
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Scale: the screen's proportions, whatever the size of the model
+#
+#  Reported 11-10-26 after t 06: "the graphs of the rods and in the
+#  vierendeel case ... are too big ... I prefer similar scales to the ones
+#  in the display". They were. The Vierendeel lobes reached 10 % of the
+#  span where the screen draws them at 3.6-5.1 %, and the per-rod charts
+#  were a seventh of the sheet wide and a sixth tall each.
+# ═════════════════════════════════════════════════════════════════════════════
+def _vierendeel_bays(bays, bay=3.0, h=2.5):
+    from common import PX_PER_M
+    base = tx.get('vierendeel')[1]
+    rod = {k: base['rods'][0][k] for k in ('E', 'A', 'I', 'profile', 'conn')}
+    nodes = ([[i * bay * PX_PER_M, 0.0] for i in range(bays + 1)]
+             + [[i * bay * PX_PER_M, -h * PX_PER_M] for i in range(bays + 1)])
+    top = lambda i: bays + 1 + i
+    rods = []
+    for i in range(bays):
+        rods += [dict(rod, a=i, b=i + 1), dict(rod, a=top(i), b=top(i + 1))]
+    rods += [dict(rod, a=i, b=top(i)) for i in range(bays + 1)]
+    m = dict(nodes=nodes, rods=rods, profiles=base['profiles'],
+             loads=[{'node': top(i), 'fx': 0, 'fy': 12}
+                    for i in range(1, bays)],
+             supports=[{'node': 0, 'type': 'pin'},
+                       {'node': bays, 'type': 'rollerX'}])
+    res, err = analyze(m['nodes'], m['rods'], m['loads'], m['supports'])
+    assert err is None
+    dg = compute_diagrams(m['nodes'], m['rods'], m['loads'], res)
+    ch = td.check_rods(m['nodes'], m['rods'], m['profiles'], res, dg)
+    return m, res, ch, dg
+
+
+@pytest.mark.parametrize('bays', [1, 4, 12])
+def test_a_lobe_reaches_the_screen_s_proportion_not_more(bays):
+    """At most 4 % of the span (the screen measured 3.6-5.1 %) and at
+    most 20 % of the typical member, so that a truss of many short bays
+    does not get lobes wider than a bay."""
+    m, res, ch, dg = _vierendeel_bays(bays)
+    rep = _report(m, res, ch, dg)
+    reach = rep.band_reach()
+    lens = sorted(td.rod_length_m(m['nodes'], r) for r in m['rods'])
+    median = lens[len(lens) // 2]
+    assert reach <= 0.040 * rep.span + 1e-9
+    assert reach <= 0.20 * median + 1e-9
+    assert reach > 0
+
+
+def test_the_biggest_lobe_drawn_is_the_reach_and_no_further():
+    """Measured on the drawing, not read off the formula: the moment
+    sheet's biggest lobe, measured perpendicular to its OWN member (a
+    lobe at a joint touches the next member, so distance to the nearest
+    member would read zero there)."""
+    from matplotlib.figure import Figure
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg)
+    peak = rep._peak('M')
+    ri = max(range(len(dg)), key=lambda i: max(
+        (abs(v) for v in dg[i].get('M', ())), default=0.0))
+    ax = Figure().add_subplot()
+    rep.draw_band(ax, ri, list(dg[ri]['M']), list(dg[ri]['xs']),
+                  rep.band_reach() / peak, '#9fc0e0', '#2c5f9e')
+    rod = m['rods'][ri]
+    (xa, ya), (xb, yb) = rep.pts[rod['a']], rep.pts[rod['b']]
+    L = math.hypot(xb - xa, yb - ya)
+    far = 0.0
+    for poly in ax.patches:
+        for x, y in poly.get_xy():
+            far = max(far, abs((x - xa) * (yb - ya) - (y - ya) * (xb - xa)) / L)
+    assert far == pytest.approx(rep.band_reach(), rel=0.01)
+
+
+def test_a_rod_detail_panel_has_the_screen_s_proportions():
+    """The tab's own V and M panels are 330 by 128 px, 2.6 : 1. The first
+    rod cards were 1.6 : 1 and the single-column rows 4.3 : 1."""
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg)
+    rep.rod_detail()
+    fig = rep.sheets[0][0]
+    W, H = fig.get_size_inches()
+    panels = [a for a in fig.axes if a.collections]
+    assert panels
+    for a in panels:
+        b = a.get_position()
+        ratio = (b.width * W) / (b.height * H)
+        assert 2.0 <= ratio <= 3.2, 'a panel is %.1f : 1' % ratio
+        # and small: well under a tenth of the sheet each
+        assert b.width * b.height < 0.012
+
+
+def test_sixteen_rods_fit_one_rod_detail_sheet():
+    m, res, ch, dg = _vierendeel_bays(6)       # 6 bays: 19 rods
+    rep = _report(m, res, ch, dg)
+    shown = rep.rod_detail()
+    per = tp._Report.DETAIL_ROWS * tp._Report.DETAIL_COLS
+    assert per == 16
+    assert len(rep.sheets) == -(-len(shown) // per)
+
+
+def test_the_thumbnail_rod_stands_out_from_the_rest():
+    """"the pictures of the references of position of the rods need more
+    contrast". The rest of the truss was #cdd3d8 at 0.7 pt against the
+    rod at 2 pt: on paper the truss was barely there."""
+    def lum(hexcol):
+        r, g, b = (int(hexcol[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    rest, rod = tp._Report.THUMB_REST, tp._Report.THUMB_ROD
+    assert lum(rest) < 0.55, 'the rest of the truss is too pale to read'
+    r, g, b = (int(rod[i:i + 2], 16) for i in (1, 3, 5))
+    assert r > 200 and g < 40 and b < 60, 'the rod is not a strong red'
+
+    m, res, ch = _solved('pratt')
+    from matplotlib.figure import Figure
+    ax = Figure().add_subplot()
+    rep = _report(m, res, ch)
+    rep.thumbnail(ax, 3)
+    reds = [l for l in ax.lines if l.get_color() == rod]
+    greys = [l for l in ax.lines if l.get_color() == rest]
+    assert len(reds) == 1
+    assert reds[0].get_linewidth() >= 2.5 * greys[0].get_linewidth()
+    assert reds[0].get_zorder() > max(l.get_zorder() for l in greys), (
+        'the rod must be drawn on top, or a crossing member hides it')
+    casing = [l for l in ax.lines if l.get_color() == 'white']
+    assert casing and casing[0].get_zorder() < reds[0].get_zorder()
+
+
+def test_a_mechanism_says_why_there_is_no_report(app, tmp_path):
+    """"Analyze the truss first" to someone who just did sends them round
+    in a circle. The One Diagonal Missing example exists to land here."""
+    app._load_library_example('missing_diagonal')
+    app._run_analysis(quiet=True)
+    assert app.results is None, 'the fixture is meant to be a mechanism'
+    out = app._export_pdf_report(str(tmp_path / 'r.pdf'))
+    assert out is None
+    assert not (tmp_path / 'r.pdf').exists()
+    assert 'mechanism' in app.status_var.get()

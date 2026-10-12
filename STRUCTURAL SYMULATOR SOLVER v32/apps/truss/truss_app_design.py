@@ -172,8 +172,23 @@ class TrussDesignMixin:
         if self.results is None and self.rods:
             self._run_analysis(quiet=True)
         if self.results is None:
-            messagebox.showinfo('Export PDF', 'Analyze the truss first: the '
-                                'report is of a solved truss.')
+            # A MECHANISM is not "not analysed yet": it was analysed, and
+            # it has no solution. Telling someone who just pressed Analyze
+            # to press Analyze sends them round in a circle; the One
+            # Diagonal Missing example exists precisely to land here.
+            st = getattr(self, '_stab', None)
+            if self.rods and st and st.get('verdict') == 'mechanism':
+                messagebox.showinfo(
+                    'Export PDF', 'This truss is a mechanism: it can move '
+                    'without stretching any rod, so there are no forces to '
+                    'report.\n\n' + st.get('text', '') + '\n\n▶ Analyze '
+                    'shows how it moves. Add the rod or support it is '
+                    'missing, and the report will follow.')
+                self.status_var.set('No report: the truss is a mechanism, '
+                                    'so it has no solution to report.')
+            else:
+                messagebox.showinfo('Export PDF', 'Analyze the truss first: '
+                                    'the report is of a solved truss.')
             return None
         if path is None:
             path = filedialog.asksaveasfilename(

@@ -50,7 +50,7 @@ APP_VERSION = 32
 # round number, date. Two builds of v32 a week apart are otherwise
 # indistinguishable by name. Bump APP_ITERATION for each round; reset it
 # to 1 when APP_VERSION changes.
-APP_ITERATION = 7
+APP_ITERATION = 8
 ITERATION_LETTER = 't'          # t = Truss, s = Stereo, ...
 
 

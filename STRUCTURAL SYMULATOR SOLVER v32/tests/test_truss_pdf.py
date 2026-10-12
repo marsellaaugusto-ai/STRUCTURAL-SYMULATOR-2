@@ -519,10 +519,10 @@ def test_deflection_and_stress_is_one_sheet_with_three_graphs():
     rep.deflection_and_stress()
     assert [h for _f, h in rep.sheets] == ['Deflection and stress']
     fig = rep.sheets[0][0]
-    said = ' '.join(_texts(fig))
-    assert 'Elastic deformation' in said
+    said = _flat(fig)
+    assert 'Elastic line' in said
+    assert 'Deflection along the span' in said
     assert 'Fibre stress' in said
-    assert 'Deflected shape' in said
     # the drawing plus the two graphs
     assert len([a for a in fig.axes if a.get_position().width > 0.1]) >= 3
 
@@ -864,3 +864,217 @@ def test_a_mechanism_says_why_there_is_no_report(app, tmp_path):
     assert out is None
     assert not (tmp_path / 'r.pdf').exists()
     assert 'mechanism' in app.status_var.get()
+
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  The elastic line, with its points of contraflexure
+#
+#  Reported 12-10-26 with a screenshot of the canvas: "it still does not
+#  have the elastic deformation graph with the contraflexural points". It
+#  drew straight segments between the displaced joints -- exact for a pin
+#  bar, and for a rigid rod it threw away the S-bend and the M = 0 point
+#  the canvas marks with a circle.
+# ═════════════════════════════════════════════════════════════════════════════
+def test_a_rigid_rod_is_drawn_as_the_curve_it_bends_into():
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg)
+    rep.deflection_and_stress()
+    ax = rep.sheets[0][0].axes[0]
+    green = [l for l in ax.lines if l.get_color() == '#1D9E75'
+             and l.get_linestyle() == '-']
+    curved = [l for l in green if len(l.get_xdata()) > 2]
+    rigid = sum(1 for r in m['rods'] if r.get('conn') == 'rigid')
+    assert len(curved) == rigid, (
+        '%d rigid rods but %d curves' % (rigid, len(curved)))
+    # and it really bends: the middle of some curve is off the chord
+    off = 0.0
+    for l in curved:
+        xs, ys = l.get_xdata(), l.get_ydata()
+        (x0, y0), (x1, y1) = (xs[0], ys[0]), (xs[-1], ys[-1])
+        L = math.hypot(x1 - x0, y1 - y0) or 1.0
+        k = len(xs) // 2
+        off = max(off, abs((xs[k] - x0) * (y1 - y0)
+                           - (ys[k] - y0) * (x1 - x0)) / L)
+    assert off > 1e-3, 'every "curve" is a straight line'
+
+
+def test_every_contraflexure_point_is_where_the_moment_changes_sign():
+    """From the same M(x) the Moment sheet draws, so a circle on the
+    elastic line always sits where the moment diagram crosses zero."""
+    from apps.truss.truss_math import find_zero_crossings
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg)
+    rep.deflection_and_stress()
+    pts = rep.flex_points
+    assert pts, 'a Vierendeel has double curvature and so contraflexure'
+    for ri, t, _xy in pts:
+        assert m['rods'][ri].get('conn') == 'rigid'
+        assert 0.02 <= t <= 0.98
+        crossings = [x / dg[ri]['Lm']
+                     for x in find_zero_crossings(dg[ri]['xs'], dg[ri]['M'])]
+        assert any(abs(c - t) < 1e-9 for c in crossings)
+    ax = rep.sheets[0][0].axes[0]
+    circles = [l for l in ax.lines if l.get_marker() == 'o'
+               and l.get_markerfacecolor() == 'white']
+    assert len(circles) == len(pts)
+    assert ('point of contraflexure' in _flat(rep.sheets[0][0]))
+
+
+def test_a_pinned_truss_has_straight_members_and_says_why():
+    m, res, ch = _solved('pratt')
+    rep = _report(m, res, ch, compute_diagrams(m['nodes'], m['rods'],
+                                               m['loads'], res))
+    rep.deflection_and_stress()
+    assert rep.flex_points == []
+    assert 'every member stays straight' in _flat(rep.sheets[0][0])
+
+
+def test_the_report_uses_the_screen_s_magnification_when_given_it(tmp_path):
+    """The owner compares the sheet against the canvas at its own slider
+    setting; an automatic factor made a different picture."""
+    m, res, ch, dg = _bending_model()
+    out = tp.export_pdf(str(tmp_path / 'r.pdf'), m['nodes'], m['rods'],
+                        m['supports'], m['loads'], res, ch, m['profiles'],
+                        diagrams=dg, deform_scale=50, buckling=False)
+    assert out['deform_factor'] == 50
+    out2 = tp.export_pdf(str(tmp_path / 's.pdf'), m['nodes'], m['rods'],
+                         m['supports'], m['loads'], res, ch, m['profiles'],
+                         diagrams=dg, buckling=False)
+    assert out2['deform_factor'] > 0
+
+
+def test_a_big_magnification_stays_on_the_drawing():
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg, deform_scale=300)
+    rep.deflection_and_stress()
+    ax = rep.sheets[0][0].axes[0]
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    for l in ax.lines:
+        for x, y in zip(l.get_xdata(), l.get_ydata()):
+            assert x0 <= x <= x1 and y0 <= y <= y1
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Which face the moment is drawn on
+#
+#  Found while building the Joints sheet: the tab draws M on the face it
+#  puts in TENSION (sagging below a horizontal rod), and the t 06 / t 07
+#  Moment and Shear sheets drew every lobe on the OPPOSITE face -- the
+#  tab's normal (-dy/L, dx/L) applied to y-UP points flips it.
+# ═════════════════════════════════════════════════════════════════════════════
+def test_a_sagging_moment_is_drawn_on_the_tension_face():
+    from matplotlib.figure import Figure
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg)
+    # rod 0 runs left to right along the bottom chord
+    (xa, ya), (xb, yb) = rep.pts[m['rods'][0]['a']], rep.pts[m['rods'][0]['b']]
+    assert xb > xa and abs(yb - ya) < 1e-9
+    ax = Figure().add_subplot()
+    rep.draw_band(ax, 0, [1.0, 1.0], [0.0, 1.0], 0.5, 'b', 'b')
+    ys = [y for poly in ax.patches for _x, y in poly.get_xy()]
+    assert min(ys) < ya - 0.4, 'a sagging lobe is not BELOW its rod'
+    assert max(ys) <= ya + 1e-9, 'a sagging lobe reaches ABOVE its rod'
+
+
+def test_the_report_puts_each_lobe_on_the_same_side_as_the_screen():
+    """The tab's own rule, applied in its own y-down frame, against the
+    report's, mapped back: they must agree for every rod, whatever its
+    direction."""
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg)
+    for ri, rod in enumerate(m['rods']):
+        (ax_, ay), (bx, by) = m['nodes'][rod['a']], m['nodes'][rod['b']]
+        L = math.hypot(bx - ax_, by - ay)
+        screen = (-(by - ay) / L, (bx - ax_) / L)        # y down
+        nx, ny = rep.normal(ri)                          # y up
+        assert screen[0] == pytest.approx(nx, abs=1e-9)
+        assert screen[1] == pytest.approx(-ny, abs=1e-9)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  The joints
+#
+#  "there is not a sheet dedicated to the nodes, the nature of the maximum
+#  moment they experience and the sign".
+# ═════════════════════════════════════════════════════════════════════════════
+def test_a_bending_model_gets_a_joints_sheet_and_a_pinned_one_does_not(
+        tmp_path):
+    m, res, ch, dg = _bending_model()
+    out = tp.export_pdf(str(tmp_path / 'r.pdf'), m['nodes'], m['rods'],
+                        m['supports'], m['loads'], res, ch, m['profiles'],
+                        diagrams=dg, buckling=False)
+    assert 'Joints' in out['headings']
+    assert out['joints']
+    m2, res2, ch2 = _solved('pratt')
+    out2 = tp.export_pdf(str(tmp_path / 's.pdf'), m2['nodes'], m2['rods'],
+                         m2['supports'], m2['loads'], res2, ch2,
+                         m2['profiles'], buckling=False)
+    assert 'Joints' not in out2['headings']
+
+
+def test_a_joint_reports_the_largest_single_rod_moment_not_the_sum():
+    """By equilibrium the rods' moments at a free joint cancel, so the
+    SUM reads ~0 at exactly the joints working hardest."""
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg)
+    rows = rep.joint_moments()
+    assert rows == sorted(rows, key=lambda e: -e['max_abs'])
+    for e in rows:
+        members = res['node_moments'][e['node']]['members']
+        assert e['max_abs'] == pytest.approx(
+            max(abs(x['moment']) for x in members))
+        if e['support'] != 'fixed':
+            assert abs(e['net']) < 1e-6, 'a free joint is not in equilibrium'
+        assert e['max_abs'] > 10 * abs(e['net']) + 1e-9
+
+
+def test_the_sense_follows_the_sign_and_the_arrow_turns_that_way():
+    """Anticlockwise for +, clockwise for -, as on the canvas."""
+    from matplotlib.figure import Figure
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg)
+    for m_ in (+5.0, -5.0):
+        ax = Figure().add_subplot()
+        rep._moment_arc(ax, 0.0, 0.0, m_, 1.0, 'k')
+        xs, ys = ax.lines[0].get_xdata(), ax.lines[0].get_ydata()
+        # signed area of the swept polyline: > 0 means anticlockwise
+        area = sum(xs[i] * ys[i + 1] - xs[i + 1] * ys[i]
+                   for i in range(len(xs) - 1))
+        assert (area > 0) == (m_ > 0)
+    rep.joints()
+    cells = [t.get_text() for ax in rep.sheets[-1][0].axes for tab in ax.tables
+             for t in [c.get_text() for c in tab.get_celld().values()]]
+    for e in rep.joint_moments():
+        want = 'anticlockwise' if e['signed'] > 0 else 'clockwise'
+        assert want in cells
+
+
+def test_the_tension_face_agrees_with_the_moment_sheet():
+    """The table's "tension face" and the Moment sheet's lobe are the
+    same fact said two ways; they must point the same way."""
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg)
+    for e in rep.joint_moments():
+        ri = e['rod']
+        rod = m['rods'][ri]
+        M = dg[ri]['M']
+        m_int = M[0] if rod['a'] == e['node'] else M[-1]
+        nx, ny = rep.normal(ri)
+        lobe = (nx * m_int, ny * m_int)          # where the band is drawn
+        word = {'top': (0, 1), 'bottom': (0, -1),
+                'right': (1, 0), 'left': (-1, 0)}[e['face']]
+        assert lobe[0] * word[0] + lobe[1] * word[1] > 0, (
+            'joint %d: table says %s, the lobe points the other way'
+            % (e['node'], e['face']))
+
+
+def test_the_cover_names_the_biggest_joint_moment():
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg)
+    rep.cover(['Geometry'])
+    said = _flat(rep.sheets[0][0])
+    top = rep.joint_moments()[0]
+    assert 'Joint moment' in said
+    assert 'joint %d' % top['node'] in said

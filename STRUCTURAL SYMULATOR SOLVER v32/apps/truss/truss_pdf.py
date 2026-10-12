@@ -45,7 +45,7 @@ class _Report:
 
     def __init__(self, nodes, rods, supports, loads, results, checks,
                  profiles, title, units, diagrams=None, plates=None,
-                 plate_checks=None, stability=None):
+                 plate_checks=None, stability=None, deform_scale=None):
         from apps.stereo.stereo_reports import ReportUnits
         self.nodes, self.rods = nodes, rods
         self.supports, self.loads = supports, loads
@@ -56,6 +56,7 @@ class _Report:
         self.plates = plates or []
         self.plate_checks = plate_checks or []
         self.stability = stability
+        self.deform_scale = deform_scale
         self.pts = [_xy(p) for p in nodes]
         xs = [p[0] for p in self.pts]
         ys = [p[1] for p in self.pts]
@@ -68,6 +69,7 @@ class _Report:
         #: are built in an order that puts the cover last and renumbers
         #: nothing (`new_sheet` appends, `cover` inserts at 0).
         self.buckling_factors = []
+        self.flex_points = []
         self.sheets = []
 
     # ── does anything bend? ───────────────────────────────────────────────
@@ -197,16 +199,35 @@ class _Report:
                         fontsize=6.5, color=LOAD, va='bottom', zorder=7)
 
     # ── shear and moment, as silhouettes along the members ────────────────
+    def normal(self, ri):
+        """The member's local +v direction, in THIS SHEET'S y-up frame.
+
+        The tab defines +v as (-dy/L, dx/L) on its y-DOWN canvas: for a
+        rod drawn left to right that points DOWN, and it is the side a
+        positive (sagging) moment puts in tension -- so the screen draws
+        the moment diagram on the TENSION face, the usual convention in
+        Argentina.
+
+        The same formula applied to this sheet's y-UP points points the
+        OTHER way. t 06 and t 07 did exactly that, with a docstring
+        claiming it matched the screen: every lobe on the Shear and
+        Moment sheets sat on the opposite face of its member to the
+        tab's. Flipping y flips the normal, so here it is
+        ((yb - ya)/L, -(xb - xa)/L). `test_a_sagging_moment_is_drawn_on_
+        the_tension_face` pins it.
+        """
+        rod = self.rods[ri]
+        (xa, ya), (xb, yb) = self.pts[rod['a']], self.pts[rod['b']]
+        L = math.hypot(xb - xa, yb - ya) or 1.0
+        return (yb - ya) / L, -(xb - xa) / L
+
     def draw_band(self, ax, ri, values, xs, amp, face, edge, lw=0.8):
         """One rod's V or M, drawn as a filled band off the member.
 
-        The offset direction is the member's own local transverse axis,
-        (nx, ny) = (-dy/L, dx/L) on this sheet's y-up points -- the same
-        convention the tab's Vierendeel view uses on its y-down canvas,
-        so a positive lobe lands on the same visual side of the member in
-        the report as it does on screen. Getting that wrong would put the
-        sagging lobe of every horizontal rod on the wrong face, which
-        looks entirely plausible and is exactly backwards.
+        The offset is along `normal(ri)`, the member's local +v side as
+        the tab defines it, so a positive lobe lands on the same face of
+        the member on paper as on screen: a sagging moment below a
+        horizontal rod, on the face it puts in tension.
 
         The band is SPLIT at every sign change, so a lobe that crosses
         zero draws as two polygons meeting on the member rather than one
@@ -214,8 +235,7 @@ class _Report:
         """
         rod = self.rods[ri]
         (xa, ya), (xb, yb) = self.pts[rod['a']], self.pts[rod['b']]
-        L = math.hypot(xb - xa, yb - ya) or 1.0
-        nx, ny = -(yb - ya) / L, (xb - xa) / L
+        nx, ny = self.normal(ri)
         span = xs[-1] if xs and xs[-1] > 1e-12 else 1.0
         samples = [(x / span, v) for x, v in zip(xs, values)]
         if len(samples) < 2:
@@ -321,8 +341,7 @@ class _Report:
             # vertical it was hard to tell which member it belonged to.
             rod = self.rods[ri]
             (xa, ya), (xb, yb) = self.pts[rod['a']], self.pts[rod['b']]
-            L = math.hypot(xb - xa, yb - ya) or 1.0
-            nx, ny = -(yb - ya) / L, (xb - xa) / L
+            nx, ny = self.normal(ri)
             px, py = xa + (xb - xa) * frac, ya + (yb - ya) * frac
             out = v * amp + math.copysign(0.03 * self.span, v)
             ax.text(px + nx * out, py + ny * out,
@@ -351,7 +370,9 @@ class _Report:
     def moment(self):
         return self._action_sheet(
             'Moment M', 'M', '#9fc0e0', '#2c5f9e', 'moment',
-            'Bending moment M along every rigid rod (sagging positive)')
+            'Bending moment M along every rigid rod, drawn on the face it '
+            'puts in TENSION, as on screen (sagging positive: below a '
+            'horizontal rod)')
 
     # ── the sheets ────────────────────────────────────────────────────────
     def cover(self, contents):
@@ -427,10 +448,19 @@ class _Report:
                 ' (%d could not be checked)' % (len(self.plates) - ok - bad)
                 if len(self.plates) > ok + bad else '')))
         rows.append(('Shear and moment',
-                     'present — see the Shear, Moment and Rod detail sheets'
-                     if self.bends() else
+                     'present — see the Shear, Moment, Joints and Rod '
+                     'detail sheets' if self.bends() else
                      'none: every rod is pinned and loaded only at its '
                      'nodes, so the axial force is the whole result'))
+        jm = self.joint_moments()
+        if jm:
+            e = jm[0]
+            rows.append(('Joint moment', 'largest %s %s at joint %d (%s, '
+                         'from rod %s)' % (
+                             self.u.f('moment', e['signed'], 2, sign=True),
+                             self.u.lab('moment'), e['node'],
+                             'anticlockwise' if e['signed'] > 0
+                             else 'clockwise', e['rod'])))
         y -= 0.07
         for k, v in rows:
             fig.text(0.06, y, k, fontsize=9, color='#7a8087')
@@ -555,7 +585,7 @@ class _Report:
         member that is too small and a truss that is too shallow.
         """
         self._panel_title(fig, rect[0], rect[1] + rect[3] + 0.018,
-                          'Elastic deformation',
+                          'Deflection along the span',
                           'vertical movement of every joint')
         ax = fig.add_axes(rect)
         nr = self.res['node_res']
@@ -662,17 +692,101 @@ class _Report:
         fig.text(rect[0], rect[1] - 0.062, _wrap(note, 82), fontsize=6.8,
                  color='#555', va='top')
 
+    def contraflexure(self, k):
+        """[(rod, x/L, (x, y) on the deformed curve)] for every point where
+        a rigid rod's moment changes sign along its span.
+
+        From the SAME M(x) the Moment sheet draws (`find_zero_crossings`
+        on `diagrams[i]['M']`), placed on the SAME Hermite curve the tab
+        draws (`deformed_point_at`), so a marker here always sits where
+        the moment diagram crosses zero and where the curve changes the
+        way it bends. Crossings within 2 % of an end are left out, as on
+        screen: zero moment AT a joint is a pinned-looking end, not a
+        reversal of curvature along the span.
+        """
+        from .truss_math import find_zero_crossings, deformed_point_at
+        out = []
+        nr, rr_all = self.res['node_res'], self.res['rod_res']
+        for i, rod in enumerate(self.rods):
+            if rod.get('conn') != 'rigid' or i >= len(self.diagrams):
+                continue
+            d = self.diagrams[i]
+            Lm = d.get('Lm', 0.0)
+            if Lm <= 0 or not d.get('M'):
+                continue
+            for xc in find_zero_crossings(d['xs'], d['M']):
+                t = max(0.0, min(1.0, xc / Lm))
+                if t < 0.02 or t > 0.98:
+                    continue
+                px, py = deformed_point_at(
+                    self.nodes[rod['a']], self.nodes[rod['b']],
+                    nr[rod['a']], nr[rod['b']],
+                    rr_all[i] if i < len(rr_all) else None, k, t)
+                out.append((i, t, _xy((px, py))))
+        return out
+
     def _deformed_panel(self, fig, rect):
+        """The ELASTIC LINE: the deflected shape with every rigid rod
+        drawn as the curve it actually bends into, and its points of
+        contraflexure marked.
+
+        WHAT IT WAS. Straight segments between the displaced joints. For
+        a pinned truss that is exact -- a pin bar does not bend -- but
+        for a rigid rod it threw away the whole point: a Vierendeel
+        member bends in DOUBLE curvature, S-shaped, and the place where
+        it changes the way it bends (M = 0) is what the tab marks with a
+        ○ and what the owner asked for by name.
+
+        WHAT IT IS. `truss_math.deformed_shape_points`, the tab's own
+        function: the Euler-Bernoulli cubic of each rigid rod driven by
+        its solved end displacements AND end rotations, straight lines
+        for pin rods. Magnified by the same factor k for both, which at
+        a joint reduces exactly to the displaced node, so the curves meet
+        where the joints are.
+        """
+        from .truss_math import deformed_shape_points
         ax = self.drawing_axes(fig, rect=rect)
         nr = self.res['node_res']
         dmax_m = max((math.hypot(r['ux'], r['uy']) for r in nr),
                      default=0.0) / 1000.0
-        k = (0.08 * self.span / dmax_m) if dmax_m > 1e-12 else 1.0
-        k = _round_factor(k)
+        # THE SCREEN'S MAGNIFICATION when the tab hands it over: the
+        # owner compared this sheet against the canvas at its own slider
+        # setting (×50 by default), and at an automatic ×20 a Vierendeel
+        # member's double curvature was too flat to see. A report written
+        # by a script has no slider, and gets enough to put the biggest
+        # movement at 12 % of the span -- where an S-bend reads.
+        if self.deform_scale:
+            k = float(self.deform_scale)
+        else:
+            k = (0.12 * self.span / dmax_m) if dmax_m > 1e-12 else 1.0
+            k = _round_factor(k)
         moved = [(x + k * r['ux'] / 1000.0, y - k * r['uy'] / 1000.0)
                  for (x, y), r in zip(self.pts, nr)]
         self.draw_rods(ax, color=GHOST, width=1.0)
-        self.draw_rods(ax, color='#1D9E75', width=1.8, pts=moved)
+        curves = deformed_shape_points(self.nodes, self.rods, nr,
+                                       self.res['rod_res'], k)
+        # A big slider value can throw the shape past the margin the
+        # drawing was sized for; widen the view to hold it rather than
+        # clip it. Equal aspect is kept, so it stays to scale.
+        allx = [p[0] for c_ in curves for p in (_xy(q) for q in c_)]
+        ally = [p[1] for c_ in curves for p in (_xy(q) for q in c_)]
+        if allx:
+            m_ = 0.06 * self.span
+            x0, x1 = ax.get_xlim()
+            y0, y1 = ax.get_ylim()
+            ax.set_xlim(min(x0, min(allx) - m_), max(x1, max(allx) + m_))
+            ax.set_ylim(min(y0, min(ally) - m_), max(y1, max(ally) + m_))
+        for pts in curves:
+            xy = [_xy(p) for p in pts]
+            ax.plot([p[0] for p in xy], [p[1] for p in xy],
+                    color='#1D9E75', lw=1.9, zorder=4,
+                    solid_capstyle='round')
+        ax.plot([p[0] for p in moved], [p[1] for p in moved], 'o',
+                ms=3.0, color='#1D9E75', zorder=5)
+        flex = self.contraflexure(k)
+        for _i, _t, (x, y) in flex:
+            ax.plot([x], [y], 'o', ms=5.6, mfc='white', mec='#1D9E75',
+                    mew=1.6, zorder=6)
         self.draw_supports(ax)
         d = self.defl
         if d:
@@ -685,8 +799,15 @@ class _Report:
                 fontsize=7, color=INK,
                 arrowprops=dict(arrowstyle='-', color=INK, lw=0.6))
         self.scale_bar(ax)
-        line = ('Deflected shape (green) over the truss (grey). Geometry to '
-                'scale; displacements magnified × %g.' % k)
+        line = ('Elastic line: the deflected shape (green) over the truss '
+                '(grey), every rigid rod drawn as the curve it bends into. '
+                'Geometry to scale; displacements magnified × %g.' % k)
+        if flex:
+            line += ('  ○ = point of contraflexure (M = 0), where a rod '
+                     'changes the way it bends: %d of them.' % len(flex))
+        elif not self.bends():
+            line += ('  Every rod is pinned, so every member stays straight: '
+                     'there is no curvature, and no contraflexure.')
         if d and d['span_m'] > 0:
             line += ('  Largest vertical deflection %s %s against the limit '
                      'L/%d = %s %s: %s.' % (
@@ -695,9 +816,10 @@ class _Report:
                          self.u.f('deflection', d['limit_mm'], 1),
                          self.u.lab('deflection'),
                          'OK' if d['ok'] else 'TOO MUCH'))
-        fig.text(0.05, 0.945, _wrap(line, 160), fontsize=8, color=INK,
+        fig.text(0.05, 0.955, _wrap(line, 165), fontsize=7.8, color=INK,
                  va='top')
         self.deform_factor = k
+        self.flex_points = flex
 
     def reactions(self):
         fig = self.new_sheet('Reactions')
@@ -989,6 +1111,170 @@ class _Report:
                  'about. Started from an initial bow of L/1000 = %.2f mm in '
                  'the first mode\'s shape.' % curve.get('bow0_mm', 0.0), 86),
                  fontsize=6.8, color='#555', va='top')
+
+    # ── the joints: how much moment each one carries, and which way ──────
+    #: Joints listed per Joints sheet beside the drawing, above the
+    #: title block.
+    JOINT_ROWS = 22
+
+    def joint_moments(self):
+        """One entry per joint that carries moment, worst first.
+
+        THE NUMBER THAT MATTERS AT A JOINT is the largest moment any ONE
+        rod hands it -- what a rigid connection has to be designed for --
+        and NOT the sum: by equilibrium the rods' moments at a free joint
+        cancel, so the sum reads ~0 at exactly the joints that work
+        hardest. The sum is still reported, because it is the check: ~0
+        at a free joint, and at a fixed support the moment the support
+        has to supply.
+
+        Sign and sense follow the tab (`compute_node_moments` and its
+        circular arrows): the moment the rod applies to the joint,
+        positive ANTICLOCKWISE. The TENSION FACE says the same thing the
+        way it matters to a member: which face of that rod, at that
+        joint, the moment stretches -- from the rod's internal moment at
+        that end (M(0) at end A, M(L) at end B; note rod_res 'Mb' is the
+        END ACTION, minus the internal moment) and the rod's +v side.
+        """
+        nm = (self.res or {}).get('node_moments') or {}
+        rxn = (self.res or {}).get('reactions') or {}
+        out = []
+        for ni in range(len(self.nodes)):
+            d = nm.get(ni)
+            if not d:
+                continue
+            members = d.get('members', [])
+            rigid = [m for m in members if m.get('conn') == 'rigid']
+            sup = next((s_ for s_ in self.supports if s_['node'] == ni), None)
+            r_m = float((rxn.get(ni) or {}).get('m', 0.0) or 0.0)
+            big = float(d.get('max_abs', 0.0))
+            if big <= 0.05 and abs(r_m) <= 0.05:
+                continue
+            ri = d.get('max_abs_rod')
+            signed = float(d.get('max_signed', 0.0))
+            face = '—'
+            if ri is not None and ri < len(self.diagrams):
+                rod = self.rods[ri]
+                M = self.diagrams[ri].get('M') or [0.0]
+                m_int = M[0] if rod['a'] == ni else M[-1]
+                if abs(m_int) > 1e-9:
+                    nx, ny = self.normal(ri)
+                    tx, ty = (nx, ny) if m_int > 0 else (-nx, -ny)
+                    face = (('top' if ty > 0 else 'bottom')
+                            if abs(ty) >= abs(tx) else
+                            ('right' if tx > 0 else 'left'))
+            kind = ('rigid' if len(rigid) == len(members) else
+                    'pinned' if not rigid else 'mixed')
+            out.append({'node': ni, 'kind': kind,
+                        'support': sup['type'] if sup else '',
+                        'max_abs': big, 'signed': signed, 'rod': ri,
+                        'face': face, 'net': float(d.get('net', 0.0)),
+                        'reaction_m': r_m})
+        out.sort(key=lambda e: -e['max_abs'])
+        return out
+
+    def _moment_arc(self, ax, x, y, m, r, color):
+        """The tab's circular arrow: anticlockwise for a positive moment,
+        clockwise for a negative one -- the way the moment turns the
+        joint, not a colour code (`_draw_moment_arc` on screen)."""
+        start, sweep = math.radians(20), math.radians(250)
+        sgn = 1.0 if m > 0 else -1.0
+        n = 28
+        angs = [start + sgn * sweep * k / (n - 1) for k in range(n)]
+        xs = [x + r * math.cos(a) for a in angs]
+        ys = [y + r * math.sin(a) for a in angs]
+        ax.plot(xs, ys, color=color, lw=1.4, zorder=7,
+                solid_capstyle='round')
+        ax.annotate('', xy=(xs[-1], ys[-1]), xytext=(xs[-3], ys[-3]),
+                    arrowprops=dict(arrowstyle='-|>', color=color, lw=1.4,
+                                    mutation_scale=9), zorder=7)
+
+    def joints(self):
+        """Every joint that carries moment: how much, the sign, which way
+        it turns the joint, and which face of the rod it stretches.
+
+        Produced only when some joint carries moment -- a rigid rod, or a
+        fixed support. On a pinned truss no joint carries any, and the
+        cover says so.
+        """
+        rows = self.joint_moments()
+        if not rows:
+            return []
+        MOM = '#7b2d8e'
+        per = self.JOINT_ROWS
+        pages = [rows[i:i + per] for i in range(0, len(rows), per)]
+        unit = self.u.lab('moment')
+        head = ['Joint', 'Type', 'Max |M| (%s)' % unit, '±', 'Turns it',
+                'Rod', 'Tension', 'Σ M check']
+        for pno, chunk in enumerate(pages):
+            fig = self.new_sheet('Joints' + (
+                ' (%d/%d)' % (pno + 1, len(pages)) if len(pages) > 1 else ''))
+            ax = self.drawing_axes(fig, rect=(0.04, 0.19, 0.50, 0.72),
+                                   pad=0.16)
+            self.draw_rods(ax, color='#9aa3ab', width=1.4)
+            self.draw_supports(ax)
+            r = 0.035 * self.span
+            shown = {e['node'] for e in rows}
+            for i, (x, y) in enumerate(self.pts):
+                on = i in shown
+                ax.plot([x], [y], 'o', ms=4.2 if on else 3.0,
+                        color=MOM if on else INK, zorder=6)
+                # Below-left, clear of the arrow, which sweeps from the
+                # right round over the top.
+                ax.annotate(str(i), (x, y), xytext=(-11, -11),
+                            textcoords='offset points', fontsize=6.5,
+                            color='#555', zorder=8)
+            for e in rows:
+                x, y = self.pts[e['node']]
+                m = e['signed'] if e['max_abs'] > 0.05 else -e['reaction_m']
+                self._moment_arc(ax, x, y, m, r, MOM)
+                ax.text(x + 1.3 * r, y - 1.3 * r, '%s' % self.u.f(
+                    'moment', m, 1, sign=True), fontsize=6.4, color=MOM,
+                    zorder=8, bbox=dict(boxstyle='round,pad=0.1', fc='white',
+                                        ec='none', alpha=0.85))
+            self.scale_bar(ax)
+            body = []
+            for e in chunk:
+                sign = '+' if e['signed'] > 0 else '−'
+                where = e['kind'] + (' · ' + e['support']
+                                     if e['support'] else '')
+                net = e['net']
+                # At a fixed support the support's own moment is what
+                # closes the sum, so that is what is printed -- read from
+                # the reactions, not inferred from the sum's sign.
+                check = ('%s  support' % self.u.f('moment', e['reaction_m'],
+                                                  2, sign=True)
+                         if e['support'] == 'fixed' else
+                         '%s  ✓' % self.u.f('moment', _z(net), 2))
+                body.append([str(e['node']), where,
+                             self.u.f('moment', e['max_abs'], 2),
+                             sign,
+                             'anticlockwise' if e['signed'] > 0
+                             else 'clockwise',
+                             str(e['rod']) if e['rod'] is not None else '—',
+                             e['face'], check])
+            tx = fig.add_axes((0.545, 0.20, 0.40, 0.71))
+            tx.axis('off')
+            _table(tx, [head] + body, fontsize=6.5)
+            fig.text(0.05, 0.955, _wrap(
+                'The moment at each joint: the largest one any single rod '
+                'hands it -- what a rigid connection is designed for -- '
+                'with its sign, which way it turns the joint (the arrow, '
+                'anticlockwise = +, as on screen), and which face of that '
+                'rod it puts in tension. Σ M is the check: ~0 at a free '
+                'joint by equilibrium, the support\'s own moment at a '
+                'fixed one.', 165), fontsize=7.8, color=INK, va='top')
+            pinned = [i for i in range(len(self.nodes)) if i not in shown]
+            if pinned and pno == len(pages) - 1:
+                fig.text(0.565, 0.185, _wrap(
+                    'No moment at joint%s %s: %s.' % (
+                        's' if len(pinned) > 1 else '',
+                        ', '.join(str(i) for i in pinned[:24])
+                        + ('…' if len(pinned) > 24 else ''),
+                        'every rod there is pinned' if not self.bends()
+                        else 'pinned, or the moments there solved to zero'),
+                    80), fontsize=6.6, color='#666', va='top')
+        return [e['node'] for e in rows]
 
     def plate_table(self):
         """Every plate's check, when the model has plates.
@@ -1425,11 +1711,11 @@ def _rect(x, y, w, h):
     return Rectangle((x, y), w, h, color=SUPPORT, zorder=4)
 
 
-def _table(ax, rows, over_col=None):
+def _table(ax, rows, over_col=None, fontsize=7):
     t = ax.table(cellText=rows[1:] or [[''] * len(rows[0])],
                  colLabels=rows[0], loc='upper left', cellLoc='left')
     t.auto_set_font_size(False)
-    t.set_fontsize(7)
+    t.set_fontsize(fontsize)
     t.scale(1.0, 1.25)
     t.auto_set_column_width(list(range(len(rows[0]))))
     for (r, c), cell in t.get_celld().items():
@@ -1472,7 +1758,7 @@ def buckling_for(nodes, rods, supports, loads, results, n_modes=3):
 def export_pdf(path, nodes, rods, supports, loads, results, checks,
                profiles, title='', units=None, buckling=True,
                diagrams=None, plates=None, plate_checks=None,
-               stability=None):
+               stability=None, deform_scale=None):
     """Write the report to `path`.
 
     EVERYTHING ▶ ANALYZE PRODUCES, IN AS FEW SHEETS AS IT TAKES. What
@@ -1523,7 +1809,8 @@ def export_pdf(path, nodes, rods, supports, loads, results, checks,
 
     rep = _Report(nodes, rods, supports, loads, results, checks, profiles,
                   title, units, diagrams=diagrams, plates=plates,
-                  plate_checks=plate_checks, stability=stability)
+                  plate_checks=plate_checks, stability=stability,
+                  deform_scale=deform_scale)
 
     rep.geometry()
     rep.forces()
@@ -1537,6 +1824,7 @@ def export_pdf(path, nodes, rods, supports, loads, results, checks,
     if rep.bends():
         rep.shear()
         rep.moment()
+    joint_rows = rep.joints()
     rep.rod_table()
     rep.plate_table()
     detail = rep.rod_detail() if rep.bends() else []
@@ -1559,5 +1847,6 @@ def export_pdf(path, nodes, rods, supports, loads, results, checks,
     return {'sheets': len(rep.sheets), 'explained': explained,
             'deform_factor': rep.deform_factor,
             'utilised': utilised, 'buckling': factors,
-            'rod_detail': detail,
+            'rod_detail': detail, 'joints': joint_rows,
+            'flex_points': len(rep.flex_points),
             'headings': [h for _f, h in rep.sheets]}

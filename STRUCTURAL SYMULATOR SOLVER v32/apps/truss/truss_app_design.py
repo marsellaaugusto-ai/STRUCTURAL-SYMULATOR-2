@@ -210,7 +210,8 @@ class TrussDesignMixin:
                 self.profiles, title=self._report_title(),
                 diagrams=self.diagrams, plates=self.plates,
                 plate_checks=getattr(self, 'plate_checks', None),
-                stability=getattr(self, '_stab', None))
+                stability=getattr(self, '_stab', None),
+                deform_scale=self.def_scale.get())
         except Exception as exc:                # noqa: BLE001
             messagebox.showerror('Export PDF', 'The report could not be '
                                  'written:\n%s' % exc)

@@ -1250,3 +1250,195 @@ def test_the_fibre_drawing_matches_the_screen_face_for_face(app):
         'only %d samples checked (%d skipped as boundaries or joints) on a '
         '%dx%d canvas' % (checked, skipped, dc.winfo_width(),
                           dc.winfo_height()))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  The modern sheet (v32 t10)
+#
+#  Asked for on 12-10-26: "polish the pdf presentation so it is more
+#  aesthetically pleasing". The owner chose a modern report -- a coloured
+#  header band per sheet, cards for the key numbers on the cover -- kept
+#  the captions in full, and asked for the author and the course on
+#  every sheet, asked for once and remembered.
+# ═════════════════════════════════════════════════════════════════════════════
+def _framed(monkeypatch, tmp_path, m, res, ch, dg=None, **kw):
+    """Export a report and hand back the _Report as it was framed."""
+    seen = {}
+    real = tp._Report.frame
+
+    def spy(self):
+        real(self)
+        seen['rep'] = self
+    monkeypatch.setattr(tp._Report, 'frame', spy)
+    out = tp.export_pdf(str(tmp_path / 'r.pdf'), m['nodes'], m['rods'],
+                        m['supports'], m['loads'], res, ch, m['profiles'],
+                        diagrams=dg, **kw)
+    return seen['rep'], out
+
+
+def test_every_sheet_carries_its_band_and_a_footer_with_author_and_course(
+        monkeypatch, tmp_path):
+    m, res, ch, dg = _bending_model()
+    rep, out = _framed(monkeypatch, tmp_path, m, res, ch, dg,
+                       title='Girder', author='A. Student',
+                       course='Structures I', buckling=False)
+    n = len(rep.sheets)
+    assert n == out['sheets']
+    for i, (fig, heading) in enumerate(rep.sheets, start=1):
+        said = _flat(fig)
+        assert 'A. Student' in said and 'Structures I' in said, heading
+        assert 'Sheet %d / %d' % (i, n) in said, heading
+        if heading != 'Cover':
+            assert heading in said and '%02d' % i in said, heading
+    cover = _flat(rep.sheets[0][0])
+    assert 'Author A. Student' in cover and 'Course Structures I' in cover
+
+
+def test_a_report_without_an_author_prints_a_dash_not_a_blank(
+        monkeypatch, tmp_path):
+    m, res, ch = _solved('king_post')
+    rep, _out = _framed(monkeypatch, tmp_path, m, res, ch, buckling=False)
+    fields = dict(rep.footer_fields())
+    assert fields['AUTHOR'] == '—' and fields['COURSE'] == '—'
+
+
+def test_the_band_colour_says_what_kind_of_sheet_it_is():
+    c = tp._Report.chapter_colour
+    assert c('Geometry') == c('Axial forces') == c('Reactions')
+    assert c('Shear V') == c('Moment M') == c('Joints')
+    assert c('Rods (1/2)') == c('Utilisation')
+    assert len({c('Geometry'), c('Deflection and stress'), c('Utilisation'),
+                c('Buckling'), c('Moment M')}) == 5
+
+
+def test_the_cover_shows_the_key_numbers_as_cards():
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg)
+    rep.buckling_factors = [0.8]
+    rep.cover(['Geometry'])
+    said = _flat(rep.sheets[0][0]).upper()
+    for label in ('MAX TENSION', 'MAX COMPRESSION', 'DEFLECTION',
+                  'MOST USED ROD', 'BUCKLING', 'WEIGHT'):
+        assert label in said, label
+    stripes = {c[-1] for c in rep._cover_cards()}
+    assert tp._Report.BAD in stripes, 'λ₁ below 1 is not shown as a failure'
+
+
+@pytest.mark.parametrize('bays', [4, 12])
+def test_nothing_on_a_sheet_runs_into_the_band_or_the_footer(
+        monkeypatch, tmp_path, bays):
+    """`frame()` moves every sheet down under the band; anything composed
+    too low then lands on the footer. 12 bays is 37 rods: two rod tables
+    side by side, two Rod detail sheets."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    m, res, ch, dg = _vierendeel_bays(bays)
+    rep, _out = _framed(monkeypatch, tmp_path, m, res, ch, dg,
+                        buckling=False)
+    lo, hi = tp._Report.FOOTER[1], tp._Report.BAND[0]
+    tol = 0.004
+    for fig, heading in rep.sheets:
+        canvas = FigureCanvasAgg(fig)
+        canvas.draw()
+        r = canvas.get_renderer()
+        _w, h = fig.get_size_inches() * fig.dpi
+        boxes = [(t.get_text()[:30], t.get_window_extent(r))
+                 for t in fig.texts if t.get_zorder() < 10 and t.get_text()]
+        for ax in fig.axes:
+            boxes.append(('axes', ax.get_window_extent(r)))
+            boxes += [('table', tab.get_window_extent(r))
+                      for tab in ax.tables]
+            boxes += [(t.get_text()[:30], t.get_window_extent(r))
+                      for t in ax.texts if t.get_text() and t.get_visible()]
+        for what, bb in boxes:
+            assert bb.y0 / h >= lo - tol, (
+                '%s: %r runs into the footer' % (heading, what))
+            if heading != 'Cover':
+                assert bb.y1 / h <= hi + tol, (
+                    '%s: %r runs into the header band' % (heading, what))
+
+
+def test_the_caption_box_sits_between_the_band_and_the_drawing(
+        monkeypatch, tmp_path):
+    m, res, ch = _solved('pratt')
+    rep, _out = _framed(monkeypatch, tmp_path, m, res, ch, buckling=False)
+    for fig, heading in rep.sheets[1:]:
+        cap = [t for t in fig.texts if t.get_gid() == 'caption']
+        assert len(cap) <= 1, heading
+        if cap:
+            assert cap[0].get_position()[1] < tp._Report.BAND[0], heading
+
+
+# ── the author and the course, remembered ─────────────────────────────────
+def test_the_report_prefs_round_trip_and_survive_a_damaged_file(tmp_path):
+    from apps.truss import truss_report_prefs as prefs
+    p = str(tmp_path / 'sub' / 'r.json')
+    assert prefs.load(p) == {'author': '', 'course': ''}
+    assert not prefs.is_set(p)
+    assert prefs.save('  Ana  ', 'Estructuras I', p)
+    assert prefs.is_set(p)
+    assert prefs.load(p) == {'author': 'Ana', 'course': 'Estructuras I'}
+    Path(p).write_text('{not json')
+    assert prefs.load(p) == {'author': '', 'course': ''}
+    Path(p).write_text('["a list"]')
+    assert prefs.load(p) == {'author': '', 'course': ''}
+
+
+def test_the_tab_prints_the_remembered_author_on_the_report(
+        app, tmp_path, monkeypatch):
+    from apps.truss import truss_report_prefs as prefs
+    monkeypatch.setenv(prefs.ENV, str(tmp_path / 'prefs.json'))
+    prefs.save('A. Student', 'Structures I')
+    seen = {}
+    real = tp.export_pdf
+
+    def spy(*a, **k):
+        seen.update(k)
+        return real(*a, **k)
+    monkeypatch.setattr(tp, 'export_pdf', spy)
+    app._load_library_example('king_post')
+    assert app._export_pdf_report(path=str(tmp_path / 'k.pdf')) is not None
+    assert seen['author'] == 'A. Student'
+    assert seen['course'] == 'Structures I'
+
+
+def test_the_author_dialog_saves_what_was_typed(app, tmp_path, monkeypatch):
+    from apps.truss import truss_report_prefs as prefs
+    monkeypatch.setenv(prefs.ENV, str(tmp_path / 'prefs.json'))
+
+    def answer():
+        win = app._report_author_win
+        win._author.set('B. Student')
+        win._course.set('Trusses 101')
+        win._save()
+    app.root.after(200, answer)
+    assert app._ask_report_author() is True
+    assert prefs.load() == {'author': 'B. Student', 'course': 'Trusses 101'}
+
+
+def test_cancelling_the_author_dialog_the_first_time_is_remembered(
+        app, tmp_path, monkeypatch):
+    """So the export that asked does not ask again on the next one."""
+    from apps.truss import truss_report_prefs as prefs
+    monkeypatch.setenv(prefs.ENV, str(tmp_path / 'prefs.json'))
+    app.root.after(200, lambda: app._report_author_win.destroy())
+    assert app._ask_report_author() is False
+    assert prefs.is_set()
+    assert prefs.load() == {'author': '', 'course': ''}
+
+
+def test_the_export_menu_offers_the_author_and_course(app):
+    import tkinter as tk
+    found = []
+
+    def walk(w):
+        for c in w.winfo_children():
+            if isinstance(c, tk.Menubutton):
+                menu = c.nametowidget(c.cget('menu'))
+                for i in range((menu.index('end') or 0) + 1):
+                    try:
+                        found.append(menu.entrycget(i, 'label'))
+                    except tk.TclError:
+                        pass
+            walk(c)
+    walk(app.root.winfo_toplevel())
+    assert 'Report author and course…' in found

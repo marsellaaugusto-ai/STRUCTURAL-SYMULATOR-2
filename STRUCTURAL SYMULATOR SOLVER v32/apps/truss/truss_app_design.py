@@ -190,12 +190,18 @@ class TrussDesignMixin:
                 messagebox.showinfo('Export PDF', 'Analyze the truss first: '
                                     'the report is of a solved truss.')
             return None
+        from . import truss_report_prefs as prefs
         if path is None:
+            # Asked once, the first time a report is written from the
+            # window; changed later from Export ▾.
+            if not prefs.is_set():
+                self._ask_report_author()
             path = filedialog.asksaveasfilename(
                 defaultextension='.pdf', filetypes=[('PDF', '*.pdf')],
                 title='Export the truss report')
         if not path:
             return None
+        who = prefs.load()
         from . import truss_pdf
         try:
             # Hand over what ▶ Analyze already computed -- the diagrams,
@@ -211,7 +217,8 @@ class TrussDesignMixin:
                 diagrams=self.diagrams, plates=self.plates,
                 plate_checks=getattr(self, 'plate_checks', None),
                 stability=getattr(self, '_stab', None),
-                deform_scale=self.def_scale.get())
+                deform_scale=self.def_scale.get(),
+                author=who['author'], course=who['course'])
         except Exception as exc:                # noqa: BLE001
             messagebox.showerror('Export PDF', 'The report could not be '
                                  'written:\n%s' % exc)
@@ -223,6 +230,64 @@ class TrussDesignMixin:
                if out.get('rod_detail') else
                'no shear or moment anywhere, so those sheets are left out'))
         return out
+
+    def _ask_report_author(self):
+        """Who the report is by and for which course: printed on the
+        cover and in every sheet's footer. Both may be left blank; either
+        button remembers the answer, so the question is asked once."""
+        from . import truss_report_prefs as prefs
+        cur = prefs.load()
+        win = tk.Toplevel(self.root)
+        win.title('Report author and course')
+        win.configure(bg=BG)
+        win.resizable(False, False)
+        self._report_author_win = win
+        tk.Label(win, text='Printed on the cover and in the footer of every '
+                 'sheet of the PDF report.\nLeave blank to print none. '
+                 'Change it later from Export ▾.', bg=BG, justify='left',
+                 font=('Helvetica', 10)).grid(row=0, column=0, columnspan=2,
+                                              sticky='w', padx=12,
+                                              pady=(12, 8))
+        author = tk.StringVar(value=cur['author'])
+        course = tk.StringVar(value=cur['course'])
+        for r, (label, var) in enumerate((('Author', author),
+                                          ('Course', course)), start=1):
+            tk.Label(win, text=label, bg=BG).grid(row=r, column=0,
+                                                  sticky='e', padx=(12, 6),
+                                                  pady=3)
+            e = tk.Entry(win, textvariable=var, width=40)
+            e.grid(row=r, column=1, sticky='we', padx=(0, 12), pady=3)
+            if r == 1:
+                e.focus_set()
+        win._author, win._course = author, course
+        done = {'saved': False}
+
+        def save(_e=None):
+            prefs.save(author.get(), course.get())
+            done['saved'] = True
+            win.destroy()
+
+        bar = tk.Frame(win, bg=BG)
+        bar.grid(row=3, column=0, columnspan=2, sticky='e', padx=12,
+                 pady=(8, 12))
+        tk.Button(bar, text='Save', width=8, command=save).pack(side='right')
+        tk.Button(bar, text='Cancel', width=8,
+                  command=win.destroy).pack(side='right', padx=(0, 6))
+        win.bind('<Return>', save)
+        win.bind('<Escape>', lambda _e: win.destroy())
+        win._save = save
+        try:
+            win.transient(self.root.winfo_toplevel())
+            win.wait_visibility()
+            win.grab_set()
+        except tk.TclError:
+            pass
+        win.wait_window()
+        if not done['saved'] and not prefs.is_set():
+            # Cancelled the first time: remember "none" so the export
+            # that asked does not ask again on the next one.
+            prefs.save('', '')
+        return done['saved']
 
     # ── steel sections for the families ───────────────────────────────────
     def _pick_steel_section(self, family, on_done=None):

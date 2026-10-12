@@ -32,7 +32,7 @@ EXPLAIN_RODS = 2
 #: Lines of a step-by-step check that fit one column of an Explain sheet
 #: above the title block. Measured, not guessed: 6.0 pt monospace from
 #: y 0.790 down to y 0.175 on an A4 landscape sheet.
-EXPLAIN_LINES = 49
+EXPLAIN_LINES = 52
 APP_NAME = 'Truss'
 
 
@@ -45,7 +45,8 @@ class _Report:
 
     def __init__(self, nodes, rods, supports, loads, results, checks,
                  profiles, title, units, diagrams=None, plates=None,
-                 plate_checks=None, stability=None, deform_scale=None):
+                 plate_checks=None, stability=None, deform_scale=None,
+                 author='', course=''):
         from apps.stereo.stereo_reports import ReportUnits
         self.nodes, self.rods = nodes, rods
         self.supports, self.loads = supports, loads
@@ -57,6 +58,7 @@ class _Report:
         self.plate_checks = plate_checks or []
         self.stability = stability
         self.deform_scale = deform_scale
+        self.author, self.course = (author or '').strip(), (course or '').strip()
         self.pts = [_xy(p) for p in nodes]
         xs = [p[0] for p in self.pts]
         ys = [p[1] for p in self.pts]
@@ -104,6 +106,32 @@ class _Report:
                 ('CODE', 'CIRSOC 301'),
                 ('DATE', time.strftime('%Y-%m-%d %H:%M'))]
 
+    #: Where a caption starts, on the grid the sheets are composed on.
+    #: `frame()` moves the composed content down by CONTENT_DY to make
+    #: room for the header band, so it lands just under the band.
+    CAPTION_Y = 0.958
+    CAPTION_CHARS = 178
+    CAPTION_SIZE = 7.8
+    CAPTION_SPACING = 1.32
+
+    def caption(self, fig, text, *_style, **_kw):
+        """The sheet's explanation -- the teaching part, kept in full --
+        typeset the same way on every sheet.
+
+        One place, so it is one style: the sheets used to set their own
+        size, colour and wrap width, and no two agreed. Any style
+        arguments a caller passes are ignored on purpose. The text is
+        re-flowed from scratch (callers often pre-wrapped it for a
+        narrower column), and `frame()` draws the tinted box with the
+        chapter-coloured edge behind it.
+        """
+        flat = ' '.join(str(text).split())
+        t = fig.text(0.062, self.CAPTION_Y, _wrap(flat, self.CAPTION_CHARS),
+                     fontsize=self.CAPTION_SIZE, color='#2f3a44',
+                     va='top', ha='left', linespacing=self.CAPTION_SPACING)
+        t.set_gid('caption')
+        return t
+
     def new_sheet(self, heading):
         # A bare Figure, never pyplot: inside the running Tk app pyplot's
         # backend could open a window of its own for every sheet.
@@ -135,12 +163,172 @@ class _Report:
                           (x0 + 0.02 * (x1 - x0), y0 + 0.02 * (y1 - y0)),
                           u=self.u)
 
+    # ── the page: header band, caption box, footer ────────────────────────
+    #
+    # THE MODERN SHEET (t 10, the owner's choice of look). The ISO title
+    # block in the bottom-right corner is gone, and with it the dead
+    # corner every layout had to steer round: a coloured header band
+    # across the top carries the sheet's number and heading, a slim
+    # footer across the bottom carries the fields the title block did --
+    # plus the author and the course -- and the caption, kept in full,
+    # sits in a tinted box under the band.
+    #
+    # The sheets are still COMPOSED on the grid they always were
+    # (content up to y 0.96, nothing below 0.158 on the right), and
+    # `frame()` moves everything down by CONTENT_DY so it sits under the
+    # band and clear of the footer. One translation, applied to every
+    # axes, text and rule alike, so nothing on a sheet moves relative to
+    # anything else -- a sheet that read correctly before reads the same.
+
+    CONTENT_DY = -0.070
+    BAND = (0.918, 0.970)
+    FOOTER = (0.030, 0.071)
+    PAGE_X = (0.026, 0.974)
+
+    #: A colour per chapter, so the band says what kind of sheet it is
+    #: before a word is read: the structure in blue, how it deforms in
+    #: green, whether it is strong enough in amber, buckling in red, and
+    #: the forces inside the members in purple.
+    CHAPTERS = (
+        ('Cover', '#1a6bbd'), ('Geometry', '#1a6bbd'),
+        ('Axial forces', '#1a6bbd'), ('Reactions', '#1a6bbd'),
+        ('Deflection', '#168a64'),
+        ('Utilisation', '#b86e00'), ('Rods', '#b86e00'),
+        ('Rod detail', '#b86e00'), ('Explain', '#b86e00'),
+        ('Plates', '#b86e00'),
+        ('Buckling', '#b03a2e'),
+        ('Shear', '#6a3d9a'), ('Moment', '#6a3d9a'), ('Joints', '#6a3d9a'),
+    )
+
+    @classmethod
+    def chapter_colour(cls, heading):
+        for prefix, colour in cls.CHAPTERS:
+            if heading.startswith(prefix):
+                return colour
+        return '#1a6bbd'
+
+    def footer_fields(self):
+        """The footer's fields -- the old title block's, plus who and
+        for what."""
+        return [('MODEL', (self.title or 'user model')[:30]),
+                ('AUTHOR', (self.author or '—')[:34]),
+                ('COURSE', (self.course or '—')[:34]),
+                ('UNITS', self.u.title_block()),
+                ('CODE', 'CIRSOC 301'),
+                ('DATE', time.strftime('%d/%m/%Y'))]
+
+    def meta(self):
+        # Kept for anything that still asks for the title-block fields.
+        return self.footer_fields()
+
     def frame(self):
-        from apps.stereo import stereo_reports as sr
         n = len(self.sheets)
         for i, (fig, heading) in enumerate(self.sheets):
-            sr._pdf_sheet(fig, i + 1, n, '%s — %s' % (APP_NAME, heading),
-                          self.meta())
+            colour = self.chapter_colour(heading)
+            if heading != 'Cover':
+                self._shift_content(fig, self.CONTENT_DY)
+                self._band(fig, i + 1, heading, colour)
+                self._caption_box(fig, colour)
+            self._footer(fig, i + 1, n, colour)
+            self._page_edge(fig)
+
+    @staticmethod
+    def _shift_content(fig, dy):
+        for ax in fig.axes:
+            b = ax.get_position(original=True)
+            ax.set_position([b.x0, b.y0 + dy, b.width, b.height])
+        for t in fig.texts:
+            x, y = t.get_position()
+            t.set_position((x, y + dy))
+        for a in fig.artists:
+            if hasattr(a, 'get_ydata'):
+                a.set_ydata([y + dy for y in a.get_ydata()])
+
+    def _band(self, fig, number, heading, colour):
+        from matplotlib.patches import Rectangle, FancyBboxPatch
+        x0, x1 = self.PAGE_X
+        y0, y1 = self.BAND
+        fig.add_artist(Rectangle((x0, y0), x1 - x0, y1 - y0,
+                                 transform=fig.transFigure, facecolor=colour,
+                                 edgecolor='none', zorder=10))
+        # The number in a white tile: the sheet's place in the report, at
+        # a glance, the way the contents on the cover counts them.
+        fig.add_artist(FancyBboxPatch(
+            (x0 + 0.012, y0 + 0.010), 0.030, y1 - y0 - 0.020,
+            boxstyle='round,pad=0.0,rounding_size=0.006',
+            transform=fig.transFigure, facecolor='white',
+            edgecolor='none', zorder=11))
+        fig.text(x0 + 0.027, (y0 + y1) / 2, '%02d' % number, fontsize=11,
+                 fontweight='bold', color=colour, ha='center', va='center',
+                 zorder=12)
+        fig.text(x0 + 0.056, (y0 + y1) / 2, heading, fontsize=14,
+                 fontweight='bold', color='white', ha='left', va='center',
+                 zorder=12)
+        fig.text(x1 - 0.012, (y0 + y1) / 2 + 0.008,
+                 self.title or 'Truss', fontsize=9, color='white',
+                 ha='right', va='center', zorder=12)
+        fig.text(x1 - 0.012, (y0 + y1) / 2 - 0.010,
+                 'Structural Simulator · Truss', fontsize=6.5,
+                 color='#ffffffcc', ha='right', va='center', zorder=12)
+
+    def _caption_box(self, fig, colour):
+        """The tinted box behind the caption, sized from its line count
+        (deterministic: no renderer needed to measure it)."""
+        from matplotlib.patches import Rectangle
+        cap = next((t for t in fig.texts if t.get_gid() == 'caption'), None)
+        if cap is None:
+            return
+        lines = cap.get_text().count('\n') + 1
+        line_h = (self.CAPTION_SIZE * self.CAPTION_SPACING / 72.0
+                  / fig.get_size_inches()[1])
+        top = cap.get_position()[1] + 0.010
+        h = lines * line_h + 0.016
+        x0, x1 = self.PAGE_X
+        fig.add_artist(Rectangle((x0 + 0.016, top - h), x1 - x0 - 0.032, h,
+                                 transform=fig.transFigure,
+                                 facecolor=colour, alpha=0.07,
+                                 edgecolor='none', zorder=0))
+        fig.add_artist(Rectangle((x0 + 0.016, top - h), 0.004, h,
+                                 transform=fig.transFigure,
+                                 facecolor=colour, edgecolor='none',
+                                 zorder=1))
+
+    def _footer(self, fig, number, total, colour):
+        from matplotlib.patches import Rectangle
+        from matplotlib.lines import Line2D
+        x0, x1 = self.PAGE_X
+        y0, y1 = self.FOOTER
+        fig.add_artist(Rectangle((x0, y0), x1 - x0, y1 - y0,
+                                 transform=fig.transFigure,
+                                 facecolor='#f4f6f8', edgecolor='none',
+                                 zorder=10))
+        fig.add_artist(Line2D([x0, x1], [y1, y1], color=colour, lw=1.4,
+                              solid_capstyle='butt',
+                              transform=fig.transFigure, zorder=11))
+        fields = self.footer_fields()
+        # Each column as wide as its own longest line, plus a gutter, so
+        # a long course name cannot run into the units beside it.
+        weights = [max(len(str(v)), len(c) + 2) + 4 for c, v in fields]
+        span = 0.80
+        x = x0 + 0.014
+        for (cap, val), w in zip(fields, weights):
+            fig.text(x, y1 - 0.011, cap, fontsize=5.4, color='#7a8590',
+                     fontweight='bold', va='center', zorder=12)
+            fig.text(x, y0 + 0.012, str(val), fontsize=6.8, color='#1f2a33',
+                     va='center', zorder=12)
+            x += span * w / float(sum(weights))
+        fig.text(x1 - 0.014, (y0 + y1) / 2, 'Sheet %d / %d' % (number, total),
+                 fontsize=8, fontweight='bold', color=colour, ha='right',
+                 va='center', zorder=12)
+
+    def _page_edge(self, fig):
+        from matplotlib.patches import Rectangle
+        x0, x1 = self.PAGE_X
+        fig.add_artist(Rectangle((x0, self.FOOTER[0]), x1 - x0,
+                                 self.BAND[1] - self.FOOTER[0],
+                                 transform=fig.transFigure, facecolor='none',
+                                 edgecolor='#c8ced4', linewidth=0.8,
+                                 zorder=13))
 
     # ── the drawing primitives ────────────────────────────────────────────
     def draw_rods(self, ax, color=None, width=1.6, pts=None, numbers=False):
@@ -358,7 +546,7 @@ class _Report:
                        self.u.lab(unit), hits[0][1]))
         else:
             line = '%s. Every rod reads zero.' % what
-        fig.text(0.05, 0.945, _wrap(line, 160), fontsize=8, color=INK,
+        self.caption(fig, _wrap(line, 160), fontsize=8, color=INK,
                  va='top')
         return [ri for _a, ri, _v, _f in hits]
 
@@ -375,49 +563,210 @@ class _Report:
             'horizontal rod)')
 
     # ── the sheets ────────────────────────────────────────────────────────
+    # ── the cover ─────────────────────────────────────────────────────────
+    #: Card stripe colours by verdict.
+    OK, WARN, BAD, NEUTRAL = '#2e9e55', '#d9a21b', '#c0392b', '#8a96a3'
+
     def cover(self, contents):
+        """The first page: what this is, who made it, and the verdict.
+
+        Laid out as the owner chose for t 10 -- a modern report: a title
+        band with the truss drawn in white across it, a row of CARDS for
+        the numbers a reader looks for first (each with a stripe green,
+        amber or red by its verdict), and three columns underneath --
+        the model, what the analysis found, and the contents.
+
+        Everything the old list-of-rows cover said is still here; it was
+        right and it was the whole verdict on one page. It was also one
+        long column with nothing louder than anything else, and its last
+        row had started running into the disclaimer.
+        """
+        from matplotlib.patches import Rectangle
         fig = self.new_sheet('Cover')
-        y = 0.90
-        fig.text(0.06, y, self.title or 'Truss', fontsize=20,
-                 fontweight='bold', color='#1a1a1a')
-        y -= 0.05
-        fig.text(0.06, y, 'Plane truss — analysis and CIRSOC 301 rod '
-                 'checks', fontsize=11, color=INK)
+        blue = self.chapter_colour('Cover')
+        x0, x1 = self.PAGE_X
+        # ── the title band ──
+        fig.add_artist(Rectangle((x0, 0.735), x1 - x0, 0.970 - 0.735,
+                                 transform=fig.transFigure, facecolor=blue,
+                                 edgecolor='none', zorder=0))
+        fig.text(0.05, 0.935, 'TRUSS REPORT', fontsize=8.5,
+                 fontweight='bold', color='#cfe0f3', zorder=2)
+        fig.text(0.05, 0.873, self.title or 'Truss', fontsize=26,
+                 fontweight='bold', color='white', zorder=2)
+        fig.text(0.05, 0.832, 'Plane truss — analysis and CIRSOC 301 rod '
+                 'checks', fontsize=11, color='white', zorder=2)
+        who = []
+        who.append('Author  %s' % (self.author or '—'))
+        who.append('Course  %s' % (self.course or '—'))
+        who.append(time.strftime('%d/%m/%Y'))
+        fig.text(0.05, 0.770, '     ·     '.join(who), fontsize=9,
+                 color='#e6eef8', zorder=2)
+        hero = fig.add_axes((0.50, 0.752, 0.45, 0.200))
+        self._hero(hero)
+
+        # ── the cards ──
+        cards = self._cover_cards()
+        n = len(cards)
+        gap = 0.010
+        w = (0.92 - gap * (n - 1)) / n
+        for k, card in enumerate(cards):
+            self._card(fig, 0.04 + k * (w + gap), 0.565, w, 0.140, *card)
+
+        # ── three columns ──
+        self._cover_column_title(fig, 0.05, 0.515, 'The model', blue)
+        self._kv_rows(fig, 0.05, 0.480, self._model_rows(), key_w=0.095,
+                      wrap=34)
+        self._cover_column_title(fig, 0.37, 0.515,
+                                 'What the analysis found', blue)
+        self._kv_rows(fig, 0.37, 0.480, self._finding_rows(), key_w=0.11,
+                      wrap=40)
+        self._cover_column_title(fig, 0.745, 0.515, 'Contents', blue)
+        for i, c in enumerate(contents):
+            col, row = divmod(i, 14)
+            fig.text(0.745 + col * 0.115, 0.480 - 0.0255 * row,
+                     '%2d' % (i + 2), fontsize=8.5, fontweight='bold',
+                     color=self.chapter_colour(c), va='top')
+            fig.text(0.765 + col * 0.115, 0.480 - 0.0255 * row, c,
+                     fontsize=8.5, color=INK, va='top')
+        fig.text(0.05, 0.092, _wrap(
+            'Results are an aid to a qualified professional, who must '
+            'check them. Rod checks to CIRSOC 301 as implemented; '
+            'first-order analysis; joints and connections are not checked '
+            'here.', 190), fontsize=7, color='#7a8590', va='top')
+
+    def _hero(self, ax):
+        """The truss, white on the title band: the cover says WHICH truss
+        before it says anything about it."""
+        for r in self.rods:
+            (xa, ya), (xb, yb) = self.pts[r['a']], self.pts[r['b']]
+            ax.plot([xa, xb], [ya, yb], color='white', lw=1.8,
+                    solid_capstyle='round', zorder=3)
+        ax.plot([p[0] for p in self.pts], [p[1] for p in self.pts], 'o',
+                ms=2.8, color='white', zorder=4)
+        s_ = 0.025 * self.span
+        for sp in self.supports:
+            x, y = self.pts[sp['node']]
+            ax.fill([x, x - s_, x + s_], [y, y - 1.6 * s_, y - 1.6 * s_],
+                    color='#cfe0f3', zorder=2)
+        x0_, x1_, y0_, y1_ = self.box
+        m = 0.06 * self.span
+        ax.set_xlim(x0_ - m, x1_ + m)
+        ax.set_ylim(y0_ - m - 1.6 * s_, y1_ + m)
+        ax.set_aspect('equal', adjustable='box')
+        ax.axis('off')
+
+    def _cover_cards(self):
+        """(label, value, note, stripe) for each card, verdict first."""
+        rr = self.res['rod_res']
+        F = self.u.lab('force')
+        N = [r['force'] for r in rr]
+        cards = []
+        if N:
+            it = max(range(len(N)), key=lambda i: N[i])
+            ic = min(range(len(N)), key=lambda i: N[i])
+            cards.append(('Max tension', '%s %s' % (
+                self.u.f('force', max(N[it], 0.0), 1, sign=True), F),
+                'rod %d' % it if N[it] > 0.01 else 'no rod is pulled', CT))
+            cards.append(('Max compression', '%s %s' % (
+                self.u.f('force', min(N[ic], 0.0), 1, sign=True), F),
+                'rod %d' % ic if N[ic] < -0.01 else 'no rod is pushed', CC))
+        d = self.defl
+        if d and d['span_m'] > 0:
+            cards.append(('Deflection', '%s %s' % (
+                self.u.f('deflection', d['deflection_mm'], 1),
+                self.u.lab('deflection')),
+                'L/%s · limit L/%d' % (
+                    '%.0f' % d['L_over'] if d['L_over'] < 1e7 else '∞',
+                    td.DEFLECTION_LIMIT),
+                self.OK if d['ok'] else self.BAD))
+        gov = td.governing(self.checks)
+        if gov:
+            i, c = gov
+            u = c['util']
+            cards.append(('Most used rod', '%.2f' % u, 'rod %d · %s' % (
+                i, (c.get('governing') or c.get('mode') or '')[:22]),
+                self.BAD if u > 1.0 + 1e-9 else
+                self.WARN if u > 0.9 else self.OK))
+        else:
+            cards.append(('Most used rod', '—', 'no steel section yet',
+                          self.NEUTRAL))
+        if self.buckling_factors:
+            lam = self.buckling_factors[0]
+            cards.append(('Buckling λ₁', '%.2f' % lam,
+                          'BELOW 1 — buckles first' if lam < 1.0 else
+                          'the load can grow ×%.1f' % lam,
+                          self.BAD if lam < 1.0 else
+                          self.WARN if lam < 2.0 else self.OK))
+        sc = self.score
+        if sc and sc.get('mass_kg'):
+            note = ''
+            if sc.get('carried_kN'):
+                note = 'carries %s %s' % (self.u.f('force', sc['carried_kN'],
+                                                   1), F)
+                if sc.get('ratio'):
+                    note += ' · %.0f× own weight' % sc['ratio']
+            cards.append(('Weight', '%.0f kg' % sc['mass_kg'], note,
+                          self.NEUTRAL))
+        return cards
+
+    def _card(self, fig, x, y, w, h, label, value, note, stripe):
+        from matplotlib.patches import FancyBboxPatch, Rectangle
+        fig.add_artist(FancyBboxPatch(
+            (x, y), w, h, boxstyle='round,pad=0.0,rounding_size=0.008',
+            transform=fig.transFigure, facecolor='#f4f6f9',
+            edgecolor='#dde3e9', linewidth=0.8, zorder=1))
+        fig.add_artist(Rectangle((x, y + 0.012), 0.004, h - 0.024,
+                                 transform=fig.transFigure,
+                                 facecolor=stripe, edgecolor='none',
+                                 zorder=2))
+        fig.text(x + 0.014, y + h - 0.024, label.upper(), fontsize=6.6,
+                 fontweight='bold', color='#6b7783', zorder=3)
+        fig.text(x + 0.014, y + h * 0.42, value, fontsize=15,
+                 fontweight='bold', color='#1f2a33', zorder=3)
+        fig.text(x + 0.014, y + 0.020, note, fontsize=6.8, color='#56626e',
+                 zorder=3)
+
+    @staticmethod
+    def _cover_column_title(fig, x, y, text, colour):
+        from matplotlib.lines import Line2D
+        fig.text(x, y, text, fontsize=10.5, fontweight='bold', color=colour)
+        fig.add_artist(Line2D([x, x + 0.045], [y - 0.010, y - 0.010],
+                              color=colour, lw=2.0,
+                              transform=fig.transFigure))
+
+    @staticmethod
+    def _kv_rows(fig, x, y, rows, key_w, wrap):
+        for k, v in rows:
+            text = _wrap(str(v), wrap)
+            fig.text(x, y, k, fontsize=7.6, color='#7a8590', va='top')
+            fig.text(x + key_w, y, text, fontsize=7.8, color=INK, va='top')
+            y -= 0.022 * (text.count('\n') + 1) + 0.008
+
+    def _model_rows(self):
         x0, x1, y0, y1 = self.box
-        rows = [('Span', '%s %s' % (self.u.f('length', x1 - x0, 2),
-                                    self.u.lab('length'))),
-                ('Height', '%s %s' % (self.u.f('length', y1 - y0, 2),
-                                      self.u.lab('length'))),
+        L = self.u.lab('length')
+        rows = [('Span', '%s %s' % (self.u.f('length', x1 - x0, 2), L)),
+                ('Height', '%s %s' % (self.u.f('length', y1 - y0, 2), L)),
                 ('Nodes / rods', '%d / %d' % (len(self.nodes),
                                               len(self.rods))),
-                ('Supports', ', '.join('%s at %d' % (s['type'], s['node'])
-                                       for s in self.supports)),
+                ('Supports', ', '.join('%s at %d' % (s_['type'], s_['node'])
+                                       for s_ in self.supports)),
                 ('Loads', '%d nodal, total %s %s' % (
                     len(self.loads),
                     self.u.f('force', sum(math.hypot(l['fx'], l['fy'])
                                           for l in self.loads), 1),
                     self.u.lab('force')))]
-        fams = sorted({r.get('profile', 'Default') for r in self.rods})
-        for f in fams:
+        for f in sorted({r.get('profile', 'Default') for r in self.rods}):
             p = self.profiles.get(f, {})
-            rows.append(('Family "%s"' % f,
-                         '%s %s' % (p.get('catalog') or 'no section',
-                                    ('(' + p['material'] + ')')
-                                    if p.get('material') else '')))
-        s = self.score
-        rows.append(('Weight', ts.describe(s)))
-        if self.defl and self.defl['span_m'] > 0:
-            d = self.defl
-            rows.append(('Deflection', '%s %s = L/%s, limit L/%d: %s' % (
-                self.u.f('deflection', d['deflection_mm'], 2),
-                self.u.lab('deflection'),
-                '%.0f' % d['L_over'] if d['L_over'] < 1e7 else '∞',
-                td.DEFLECTION_LIMIT, 'OK' if d['ok'] else 'TOO MUCH')))
-        # THE WHOLE VERDICT, on the first page. Everything ▶ Analyze puts
-        # on screen used to be spread over the sheets that follow, or --
-        # for the stability line and the plate checks -- nowhere in the
-        # report at all. A reader who only ever sees page one should see
-        # what the app said.
+            rows.append(('Family "%s"' % f, '%s%s' % (
+                p.get('catalog') or 'no section',
+                (', ' + p['material']) if p.get('material') else '')))
+        return rows
+
+    def _finding_rows(self):
+        """The verdict in words -- including the two things that used to
+        be nowhere in the report, the stability line and the plates."""
+        rows = []
         if self.stability and self.stability.get('text'):
             rows.append(('Stability', self.stability['text']))
         gov = td.governing(self.checks)
@@ -439,8 +788,7 @@ class _Report:
                 ' — BELOW 1, it buckles before the full load is on'
                 if self.buckling_factors[0] < 1.0 else '')))
         if self.plates:
-            ok = sum(1 for c in self.plate_checks
-                     if c and c.get('ok', True))
+            ok = sum(1 for c in self.plate_checks if c and c.get('ok', True))
             bad = sum(1 for c in self.plate_checks
                       if c and not c.get('ok', True))
             rows.append(('Plates', '%d checked, %d over%s' % (
@@ -461,25 +809,7 @@ class _Report:
                              self.u.lab('moment'), e['node'],
                              'anticlockwise' if e['signed'] > 0
                              else 'clockwise', e['rod'])))
-        y -= 0.07
-        for k, v in rows:
-            fig.text(0.06, y, k, fontsize=9, color='#7a8087')
-            fig.text(0.24, y, _wrap(v, 62), fontsize=9, color=INK,
-                     va='top')
-            y -= 0.034 * (1 + v.count('\n') + len(v) // 62)
-        fig.text(0.62, 0.85, 'Contents', fontsize=11, fontweight='bold',
-                 color=INK)
-        for i, c in enumerate(contents):
-            fig.text(0.62, 0.81 - 0.026 * i, '%d. %s' % (i + 2, c),
-                     fontsize=9, color=INK)
-        # y 0.235 and not 0.145: the ISO title block owns everything
-        # below 0.158 from x 0.414 rightwards, and a full-width line down
-        # there loses its right half behind it.
-        fig.text(0.06, 0.235, _wrap(
-            'Results are an aid to a qualified professional, who must '
-            'check them. Rod checks to CIRSOC 301 as implemented; '
-            'first-order analysis; joints and connections are not checked '
-            'here.', 150), fontsize=7.5, color='#666', va='top')
+        return rows
 
     def geometry(self):
         fig = self.new_sheet('Geometry')
@@ -489,7 +819,7 @@ class _Report:
         self.draw_supports(ax)
         self._dimensions(ax)
         self.scale_bar(ax)
-        fig.text(0.05, 0.945, 'Node numbers in purple, rod numbers in blue. '
+        self.caption(fig, 'Node numbers in purple, rod numbers in blue. '
                  'Dimensions in %s.' % self.u.lab('length'), fontsize=8,
                  color=INK)
 
@@ -536,7 +866,7 @@ class _Report:
                 bbox=dict(boxstyle='round,pad=0.12', fc='white', ec='none',
                           alpha=0.85))
         self.scale_bar(ax)
-        fig.text(0.05, 0.945, 'Axial force N (%s): red pulls (+), blue '
+        self.caption(fig, 'Axial force N (%s): red pulls (+), blue '
                  'pushes (−), grey carries nothing; line width follows |N| '
                  '(largest %s).' % (self.u.lab('force'),
                                     self.u.f('force', big, 1)),
@@ -922,7 +1252,7 @@ class _Report:
                          self.u.f('deflection', d['limit_mm'], 1),
                          self.u.lab('deflection'),
                          'OK' if d['ok'] else 'TOO MUCH'))
-        fig.text(0.05, 0.955, _wrap(line, 165), fontsize=7.8, color=INK,
+        self.caption(fig, _wrap(line, 165), fontsize=7.8, color=INK,
                  va='top')
         self.deform_factor = k
         self.flex_points = flex
@@ -966,7 +1296,7 @@ class _Report:
         rows.append(['Σ', '', self.u.f('force', _z(sx), 2),
                      self.u.f('force', _z(sy), 2)])
         _table(tab, rows)
-        fig.text(0.05, 0.945, 'Support reactions (green arrows), as the '
+        self.caption(fig, 'Support reactions (green arrows), as the '
                  'supports push on the truss; Ry positive upwards. The sums '
                  'balance the loads.', fontsize=8, color=INK)
 
@@ -1005,7 +1335,7 @@ class _Report:
         self._util_key(fig)
 
         if not checked:
-            fig.text(0.05, 0.945, 'No rod is checked: no family has a steel '
+            self.caption(fig, 'No rod is checked: no family has a steel '
                      'section yet, so every rod is drawn grey. Give one a '
                      'section (Section → Material and section) and the '
                      'utilisations appear here.', fontsize=8, color=INK)
@@ -1046,7 +1376,7 @@ class _Report:
         if n_grey:
             line += ('  %d rod(s) are grey: their family has no steel '
                      'section, so they are not checked.' % n_grey)
-        fig.text(0.05, 0.945, _wrap(line, 160), fontsize=8, color=INK,
+        self.caption(fig, _wrap(line, 160), fontsize=8, color=INK,
                  va='top')
         if len(order) > len(show):
             fig.text(0.66, 0.195, 'The %d most used of %d checked rods; '
@@ -1058,9 +1388,9 @@ class _Report:
         """The colour ramp, with what each end means written on it."""
         import numpy as np
         from matplotlib.colors import ListedColormap
-        # x < 0.414 and y > 0.158, which is the strip the ISO title
-        # block (stereo_reports.PDF_TITLE_W/H) leaves free.
-        kx = fig.add_axes((0.05, 0.088, 0.30, 0.022))
+        # Composed at y 0.172 so that, once `frame()` moves the sheet
+        # under the header band, it sits just above the footer.
+        kx = fig.add_axes((0.05, 0.172, 0.30, 0.022))
         steps = np.linspace(0.0, 1.2, 120)
         cmap = ListedColormap([td.util_color(u) for u in steps])
         kx.imshow(steps.reshape(1, -1), aspect='auto', cmap=cmap,
@@ -1069,8 +1399,8 @@ class _Report:
         kx.set_xticks([0.0, 0.6, 1.0, 1.2])
         kx.set_xticklabels(['0', '0.6', '1.0 capacity', '1.2+'], fontsize=6.5)
         kx.tick_params(length=2)
-        fig.text(0.05, 0.048, 'grey = no steel section, not checked',
-                 fontsize=6.5, color='#777')
+        fig.text(0.37, 0.183, 'grey = no steel section, not checked',
+                 fontsize=6.5, color='#777', va='center')
 
     def buckling(self, result, curve):
         """The three lowest buckling factors, their shapes, and the
@@ -1088,10 +1418,8 @@ class _Report:
         """
         fig = self.new_sheet('Buckling')
         if not result or 'error' in (result or {}):
-            fig.text(0.05, 0.93, 'Buckling', fontsize=13, color=INK)
-            fig.text(0.05, 0.86, (result or {}).get(
-                'error', 'Buckling was not computed for this report.'),
-                fontsize=9, color=INK, wrap=True)
+            self.caption(fig, (result or {}).get(
+                'error', 'Buckling was not computed for this report.'))
             return []
         factors = result['factors']
         modes = result['modes']
@@ -1135,7 +1463,7 @@ class _Report:
                 head += ('Mode 2 is %.2f, only %.0f %% higher: no single '
                          'member decides it.'
                          % (factors[1], 100 * (gap - 1)))
-        fig.text(0.05, 0.945, _wrap(head, 160), fontsize=8, color=INK,
+        self.caption(fig, _wrap(head, 160), fontsize=8, color=INK,
                  va='top')
         self._load_deflection(fig, curve)
         fig.text(0.45, 0.325, _wrap(
@@ -1359,10 +1687,10 @@ class _Report:
                              else 'clockwise',
                              str(e['rod']) if e['rod'] is not None else '—',
                              e['face'], check])
-            tx = fig.add_axes((0.545, 0.20, 0.40, 0.71))
+            tx = fig.add_axes((0.545, 0.20, 0.40, 0.69))
             tx.axis('off')
             _table(tx, [head] + body, fontsize=6.5)
-            fig.text(0.05, 0.955, _wrap(
+            self.caption(fig, _wrap(
                 'The moment at each joint: the largest one any single rod '
                 'hands it -- what a rigid connection is designed for -- '
                 'with its sign, which way it turns the joint (the arrow, '
@@ -1427,7 +1755,7 @@ class _Report:
         ax = fig.add_axes((0.05, 0.22, 0.90, 0.68))
         ax.axis('off')
         _table(ax, [head] + body, over_col=7)
-        fig.text(0.05, 0.945, _wrap(
+        self.caption(fig, _wrap(
             'Gusset and shear-panel checks to CIRSOC 301. A panel\'s '
             'shear-BUCKLING utilisation is shown beside its yield one: a '
             'thin plate buckles long before it yields, so a comfortable '
@@ -1469,9 +1797,14 @@ class _Report:
             for h, rows in enumerate(halves):
                 if not rows and h:
                     continue
-                ax = fig.add_axes((0.05 + 0.46 * h, 0.17, 0.44, 0.76))
+                ax = fig.add_axes((0.05 + 0.46 * h, 0.17, 0.44, 0.715))
                 ax.axis('off')
                 _table(ax, [head] + rows, over_col=8)
+            self.caption(
+                fig, 'Every rod: its end nodes, family and steel section, '
+                'length, axial force N (+ pulls, − pushes), the CIRSOC 301 '
+                'check that governs it and how much of its capacity that '
+                'uses (Use = demand / capacity; OVER above 1.0).')
         return len(pages)
 
     # ── one card per rod, with its own shear and moment ───────────────────
@@ -1523,7 +1856,7 @@ class _Report:
     #: sheet count (37 bending rods: 5 sheets -> 3).
     DETAIL_ROWS = 8
     DETAIL_COLS = 2
-    DETAIL_ROW_H = 0.091
+    DETAIL_ROW_H = 0.088
     DETAIL_COL_X = (0.045, 0.515)
 
     def rod_detail(self):
@@ -1559,11 +1892,11 @@ class _Report:
         rows, ncol = self.DETAIL_ROWS, self.DETAIL_COLS
         per = rows * ncol
         pages = [order[i:i + per] for i in range(0, len(order), per)]
-        top0 = 0.905
+        top0 = 0.880
         for pno, chunk in enumerate(pages):
             fig = self.new_sheet('Rod detail' + (
                 ' (%d/%d)' % (pno + 1, len(pages)) if len(pages) > 1 else ''))
-            fig.text(0.05, 0.958, _wrap(
+            self.caption(fig, _wrap(
                 'One row per rod that bends, worst first, down the left '
                 'column and then the right. The thumbnail shows where the '
                 'rod is; each diagram is scaled to its own rod, as on '
@@ -1817,21 +2150,36 @@ def _rect(x, y, w, h):
     return Rectangle((x, y), w, h, color=SUPPORT, zorder=4)
 
 
+TABLE_HEAD = '#33414e'
+TABLE_ZEBRA = '#f3f5f7'
+
+
 def _table(ax, rows, over_col=None, fontsize=7):
+    """A report table: a dark header row and zebra body rows, no grid.
+    Vertical rules are what make a table look like a spreadsheet; the eye
+    follows a row by its tint, not by its box. (Each cell's edge is drawn
+    in its own fill colour: a cell with some edges hidden is not filled
+    at all by matplotlib, so 'no rules' has to be done this way.)"""
     t = ax.table(cellText=rows[1:] or [[''] * len(rows[0])],
                  colLabels=rows[0], loc='upper left', cellLoc='left')
     t.auto_set_font_size(False)
     t.set_fontsize(fontsize)
-    t.scale(1.0, 1.25)
+    t.scale(1.0, 1.3)
     t.auto_set_column_width(list(range(len(rows[0]))))
     for (r, c), cell in t.get_celld().items():
-        cell.set_edgecolor('#c8ccd0')
+        cell.set_linewidth(0.5)
         if r == 0:
-            cell.set_facecolor('#eef1f4')
-            cell.set_text_props(fontweight='bold')
-        elif over_col is not None and c == over_col and \
-                cell.get_text().get_text() == 'OVER':
-            cell.get_text().set_color('#b03a2e')
+            cell.set_facecolor(TABLE_HEAD)
+            cell.set_edgecolor(TABLE_HEAD)
+            cell.set_text_props(fontweight='bold', color='white')
+        else:
+            fill = TABLE_ZEBRA if r % 2 == 0 else 'white'
+            cell.set_facecolor(fill)
+            cell.set_edgecolor(fill)
+            if over_col is not None and c == over_col and \
+                    cell.get_text().get_text() == 'OVER':
+                cell.get_text().set_color('#b03a2e')
+                cell.get_text().set_fontweight('bold')
     return t
 
 
@@ -1864,7 +2212,7 @@ def buckling_for(nodes, rods, supports, loads, results, n_modes=3):
 def export_pdf(path, nodes, rods, supports, loads, results, checks,
                profiles, title='', units=None, buckling=True,
                diagrams=None, plates=None, plate_checks=None,
-               stability=None, deform_scale=None):
+               stability=None, deform_scale=None, author='', course=''):
     """Write the report to `path`.
 
     EVERYTHING ▶ ANALYZE PRODUCES, IN AS FEW SHEETS AS IT TAKES. What
@@ -1916,7 +2264,7 @@ def export_pdf(path, nodes, rods, supports, loads, results, checks,
     rep = _Report(nodes, rods, supports, loads, results, checks, profiles,
                   title, units, diagrams=diagrams, plates=plates,
                   plate_checks=plate_checks, stability=stability,
-                  deform_scale=deform_scale)
+                  deform_scale=deform_scale, author=author, course=course)
 
     rep.geometry()
     rep.forces()

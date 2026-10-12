@@ -121,11 +121,11 @@ def test_every_drawing_is_to_scale(key):
                 [(0, 0), (1, 0), (0, 1)])
             assert abs(x1 - x0) == pytest.approx(abs(y2 - y0), rel=0.005)
             checked += 1
-    # Geometry, forces, the deformed panel and reactions -- four
-    # equal-aspect drawings. (The two graphs on the Deflection sheet are
-    # plots, not drawings, so they are not equal-aspect and are skipped
-    # by the `get_aspect() != 1.0` test above.)
-    assert checked == 4
+    # Geometry, forces, reactions, and on the Deflection sheet the elastic
+    # line AND the fibre stress drawing -- five equal-aspect drawings. (The
+    # two graphs under them are plots, not drawings, so they are not
+    # equal-aspect and are skipped by the `get_aspect() != 1.0` test.)
+    assert checked == 5
 
 
 def test_the_deformed_sheet_says_its_magnification():
@@ -1078,3 +1078,175 @@ def test_the_cover_names_the_biggest_joint_moment():
     top = rep.joint_moments()[0]
     assert 'Joint moment' in said
     assert 'joint %d' % top['node'] in said
+
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  The fibre stress drawing
+#
+#  Reported 12-10-26 with a screenshot of the tab's fibre view: "this is
+#  the fiber stress diagram, why is it missing from the pdf?". The sheet
+#  carried a ranked chart of each rod's two extreme stresses -- the
+#  numbers -- but not the picture: the structure with every rigid rod as
+#  two coloured bands, one per face, flipping colour at contraflexure.
+# ═════════════════════════════════════════════════════════════════════════════
+def _fibre_polygons(fig):
+    from matplotlib.patches import Polygon
+    return [p for a in fig.axes for p in a.patches
+            if isinstance(p, Polygon)
+            and str(p.get_gid() or '').startswith('fibre')]
+
+
+def test_the_deflection_sheet_carries_the_fibre_stress_drawing():
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg)
+    rep.deflection_and_stress()
+    fig = rep.sheets[0][0]
+    polys = _fibre_polygons(fig)
+    rigid = [i for i, r in enumerate(m['rods']) if r.get('conn') == 'rigid']
+    # at least one band on EACH face of every rigid rod
+    assert sum(1 for p in polys if p.get_gid() == 'fibre+1') >= len(rigid)
+    assert sum(1 for p in polys if p.get_gid() == 'fibre-1') >= len(rigid)
+    cols = {tuple(round(c, 3) for c in p.get_facecolor()[:3]) for p in polys}
+    assert len(cols) >= 2, 'the drawing has no tension and compression both'
+    said = _flat(fig)
+    assert 'Fibre stress' in said and 'contraflexure' in said
+    assert 'Fibre stress values' in said, 'the numbers went missing'
+
+
+def test_a_band_flips_colour_where_its_stress_changes_sign():
+    from apps.truss.truss_math import compute_fiber_stress, find_zero_crossings
+    m, res, ch, dg = _bending_model()
+    flips = 0
+    for ri, rod in enumerate(m['rods']):
+        if rod.get('conn') != 'rigid':
+            continue
+        neg, pos = compute_fiber_stress(rod, res['rod_res'][ri], dg[ri]['M'])
+        flips += len(find_zero_crossings(dg[ri]['xs'], pos))
+        flips += len(find_zero_crossings(dg[ri]['xs'], neg))
+    rep = _report(m, res, ch, dg)
+    rep.deflection_and_stress()
+    rigid = sum(1 for r in m['rods'] if r.get('conn') == 'rigid')
+    # one polygon per face per rod, plus one more for every sign change
+    assert len(_fibre_polygons(rep.sheets[0][0])) == 2 * rigid + flips
+
+
+def test_a_pinned_truss_draws_each_rod_in_its_axial_colour():
+    m, res, ch = _solved('pratt')
+    rep = _report(m, res, ch, compute_diagrams(m['nodes'], m['rods'],
+                                               m['loads'], res))
+    rep.deflection_and_stress()
+    fig = rep.sheets[0][0]
+    assert _fibre_polygons(fig) == []
+    assert 'Every rod is pinned' in _flat(fig)
+
+
+def test_the_fibre_drawing_matches_the_screen_face_for_face(app):
+    """The real check, made against the tab itself rather than against a
+    description of it: every rigid rod's two faces sampled along their
+    length, the colour the CANVAS drew read back with find_overlapping,
+    the colour the REPORT drew read back at the same visual spot. The
+    report's spot is found from the screen's own offset direction with
+    y flipped -- not from `normal()`, so this does not test the code
+    with itself. Measured 260 of 260 on the Vierendeel."""
+    import math as _m
+    from matplotlib.patches import Polygon
+    app._load_library_example('vierendeel')
+    app._hide_lesson()
+    app._run_analysis(quiet=True)
+    app.diagram_mode.set('fiber')
+    root = app.root
+    # A canvas big enough to sample. The tab's bands are a FIXED 6 px
+    # whatever the zoom, so on a small canvas the band of one member
+    # reaches over its neighbour near every joint -- measured in a full
+    # suite run, where an earlier test left the window state such that
+    # the middle vertical's band covered the top chord 0.75 m from the
+    # joint. That is the screen being cramped, not a disagreement.
+    root.winfo_toplevel().geometry('1600x1000+0+0')
+    app.shell.set_panel_width(180)
+    # Settle the window FIRST and draw after: the canvas size this test
+    # rebuilds the transform from must be the one the drawing was made at.
+    for _ in range(8):
+        root.update_idletasks()
+        root.update()
+    app._draw_diagrams_only()
+    for _ in range(4):
+        root.update_idletasks()
+        root.update()
+    dc = app.diag_zc.canvas
+    # Where the canvas ACTUALLY drew each joint, read off the drawing --
+    # its node dots are the last ovals, in node order -- rather than
+    # rebuilt from the canvas size, which can change between the drawing
+    # and the reading (measured: drawn at 233 px tall, read at 259).
+    ovals = [i for i in dc.find_all() if dc.type(i) == 'oval']
+    assert len(ovals) >= len(app.nodes), 'the fibre view drew no joints'
+    at = []
+    for i in ovals[-len(app.nodes):]:
+        x0, y0, x1, y1 = dc.coords(i)
+        at.append(((x0 + x1) / 2, (y0 + y1) / 2))
+    thick = 6 * app.diag_zc.zoom
+
+    def canvas_colour(x, y):
+        for item in reversed(dc.find_overlapping(x - .5, y - .5, x + .5, y + .5)):
+            if dc.type(item) == 'polygon':
+                return dc.itemcget(item, 'fill').lower()
+        return None
+
+    rep = tp._Report(app.nodes, app.rods, app._active_supports(),
+                     app._design_loads(), app.results, app.rod_checks,
+                     app.profiles, 'v', None, diagrams=app.diagrams)
+    rep.deflection_and_stress()
+    polys = _fibre_polygons(rep.sheets[0][0])
+    th = rep.FIBRE_BAND * rep.span
+
+    def report_colour(x, y):
+        for p in reversed(polys):                  # topmost first, as drawn
+            if p.get_path().contains_point((x, y)):
+                return '#%02x%02x%02x' % tuple(
+                    int(round(c * 255)) for c in p.get_facecolor()[:3])
+        return None
+
+    from apps.truss.truss_math import compute_fiber_stress, find_zero_crossings
+    checked = skipped = 0
+    for ri, rod in enumerate(app.rods):
+        if rod.get('conn') != 'rigid':
+            continue
+        pa, pb = at[rod['a']], at[rod['b']]
+        L = _m.hypot(pb[0] - pa[0], pb[1] - pa[1])
+        nsx, nsy = -(pb[1] - pa[1]) / L, (pb[0] - pa[0]) / L
+        qa, qb = rep.pts[rod['a']], rep.pts[rod['b']]
+        d = app.diagrams[ri]
+        neg, pos = compute_fiber_stress(rod, app.results['rod_res'][ri],
+                                        d['M'])
+        for side in (1, -1):
+            # Where this face changes sign. A sample within 3 px of one
+            # is on the boundary between two segments, where the canvas's
+            # own hit test (its `closeenough` halo is a pixel) can report
+            # the neighbour: measured as a false mismatch at t 0.65 on a
+            # face that flips at 0.663, on a canvas smaller than usual.
+            flips = [x / d['Lm'] for x in
+                     find_zero_crossings(d['xs'], pos if side > 0 else neg)]
+            for k in range(10):
+                t = 0.05 + k / 10
+                near_flip = any(abs(t - f) * L < 3.0 for f in flips)
+                # ...and the joint zones, where every member meeting there
+                # paints its own band and the topmost one wins on screen.
+                near_joint = min(t, 1 - t) * L < 2 * thick + 2
+                if near_flip or near_joint:
+                    skipped += 1
+                    continue
+                sx = pa[0] + (pb[0] - pa[0]) * t + nsx * side * thick / 2
+                sy = pa[1] + (pb[1] - pa[1]) * t + nsy * side * thick / 2
+                px = qa[0] + (qb[0] - qa[0]) * t + nsx * side * th / 2
+                py = qa[1] + (qb[1] - qa[1]) * t - nsy * side * th / 2
+                a, b = canvas_colour(sx, sy), report_colour(px, py)
+                assert a and b and a == b, (
+                    'rod %d, face %+d, t %.2f: screen %s, report %s '
+                    '(canvas %dx%d, rod drawn %.0f px)'
+                    % (ri, side, t, a, b, dc.winfo_width(),
+                       dc.winfo_height(), L))
+                checked += 1
+    assert checked >= 180, (
+        'only %d samples checked (%d skipped as boundaries or joints) on a '
+        '%dx%d canvas' % (checked, skipped, dc.winfo_width(),
+                          dc.winfo_height()))

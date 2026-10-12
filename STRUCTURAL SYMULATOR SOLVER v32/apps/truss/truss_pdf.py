@@ -556,18 +556,124 @@ class _Report:
         one page; read apart they take three and lose the connection.
         """
         fig = self.new_sheet('Deflection and stress')
-        self._deformed_panel(fig, rect=(0.04, 0.47, 0.92, 0.45))
-        # The dividers. A sheet carrying three graphs has to say so with
-        # a line, or the eye reads the nearest axis label as the caption
-        # of the picture above it. One across, under the drawing, and
-        # one down between the two graphs -- NOT a second across one,
-        # which at this height could only run through their captions or
-        # under the title block.
+        # TWO DRAWINGS ABOVE, TWO GRAPHS BELOW. The fibre stress DRAWING
+        # -- the structure with each rigid rod as two coloured bands, one
+        # per face, the picture the tab shows in its "Compression/Tension
+        # fibers" mode -- is what the owner meant by "the fiber stress
+        # graph". t 06 put a ranked chart of each rod's extreme stresses
+        # here instead, which is the numbers and not the picture; it
+        # stays, under the drawing it quantifies.
+        self._deformed_panel(fig, rect=(0.035, 0.475, 0.50, 0.42),
+                             pad=0.12)
+        self._fibre_drawing_panel(fig, rect=(0.56, 0.475, 0.405, 0.385))
+        # The dividers. A sheet carrying four pictures has to say so with
+        # lines, or the eye reads the nearest axis label as the caption of
+        # the picture next to it: one across between the rows, one down
+        # between the columns of each row.
         _hrule(fig, 0.455)
+        _vrule(fig, 0.548, 0.47, 0.905)
         _vrule(fig, 0.505, 0.19, 0.44)
         self._elastic_curve_panel(fig, rect=(0.075, 0.255, 0.355, 0.155))
         self._fibre_stress_panel(fig, rect=(0.575, 0.255, 0.355, 0.155))
         return self.deform_factor
+
+    #: Thickness of one fibre band, as a fraction of the span. The tab
+    #: draws 6 px on a truss about 750 px wide -- 0.8 % -- and a printed
+    #: half-width drawing needs a little more to read: 1.2 %.
+    FIBRE_BAND = 0.012
+
+    def _fibre_drawing_panel(self, fig, rect):
+        """The fibre stress drawing, as the tab draws it.
+
+        Every RIGID rod as two bands of fixed width, one on each face:
+        `sigma_pos` on its +v face and `sigma_neg` on its -v face
+        (`truss_math.compute_fiber_stress`: N/A ± M·c/I). Each band is
+        cut at every sign change and coloured by the sign of each piece,
+        red for tension and blue for compression -- so a band flips
+        colour exactly at a point of contraflexure, and a heavily
+        compressed member can still show a red patch where its bending
+        is strong enough to win. A PIN rod has no bending to separate
+        its faces, and is one line in the colour of its axial force.
+
+        The faces are the tab's: `normal()` maps its +v side onto this
+        sheet's y-up frame, so the top band of a horizontal rod here is
+        its top band on screen. The bands are a colour code, not a
+        magnitude -- their width says nothing; the ranked chart below
+        gives the values.
+        """
+        from matplotlib.patches import Polygon
+        from .truss_math import compute_fiber_stress
+        # pad 0.05: nothing is drawn around this one -- no loads, no
+        # labels, no deformed shape running past the truss -- so the
+        # margin the other drawings need would only shrink it.
+        ax = self.drawing_axes(fig, rect=rect, pad=0.05)
+        rod_res = self.res['rod_res']
+        th = self.FIBRE_BAND * self.span
+
+        def band(ri, xs, sig, side):
+            rod = self.rods[ri]
+            (xa, ya), (xb, yb) = self.pts[rod['a']], self.pts[rod['b']]
+            nx, ny = self.normal(ri)
+            Lm = xs[-1] if xs and xs[-1] > 1e-12 else 1.0
+            samples = [(x / Lm, v) for x, v in zip(xs, sig)]
+            segs, cur = [], [samples[0]]
+            for k in range(1, len(samples)):
+                f0, v0 = samples[k - 1]
+                f1, v1 = samples[k]
+                if v0 * v1 < 0:
+                    fc = f0 + (f1 - f0) * (-v0) / (v1 - v0)
+                    cur.append((fc, 0.0))
+                    segs.append(cur)
+                    cur = [(fc, 0.0)]
+                cur.append((f1, v1))
+            segs.append(cur)
+            for seg in segs:
+                if len(seg) < 2:
+                    continue
+                avg = sum(v for _f, v in seg) / len(seg)
+                col = CT if avg > 1e-6 else CC if avg < -1e-6 else CZ
+                base = [(xa + (xb - xa) * f, ya + (yb - ya) * f)
+                        for f, _v in seg]
+                off = [(px + nx * th * side, py + ny * th * side)
+                       for px, py in base]
+                ax.add_patch(Polygon(base + off[::-1], closed=True,
+                                     facecolor=col, edgecolor='none',
+                                     zorder=3, gid='fibre%+d' % side))
+
+        n_rigid = 0
+        for ri, rod in enumerate(self.rods):
+            (xa, ya), (xb, yb) = self.pts[rod['a']], self.pts[rod['b']]
+            rr = rod_res[ri] if ri < len(rod_res) else None
+            if (not rr or rr.get('conn', 'pin') != 'rigid'
+                    or ri >= len(self.diagrams)):
+                N = rr.get('force', 0.0) if rr else 0.0
+                col = CT if N > 0.01 else CC if N < -0.01 else CZ
+                ax.plot([xa, xb], [ya, yb], color=col, lw=2.4, zorder=3,
+                        solid_capstyle='butt')
+                continue
+            n_rigid += 1
+            d = self.diagrams[ri]
+            neg, pos = compute_fiber_stress(rod, rr, d['M'])
+            ax.plot([xa, xb], [ya, yb], color='#bbbbbb', lw=0.6, zorder=2)
+            band(ri, list(d['xs']), list(neg), -1)
+            band(ri, list(d['xs']), list(pos), +1)
+        ax.plot([p[0] for p in self.pts], [p[1] for p in self.pts], 'o',
+                ms=2.6, color='#555555', zorder=5)
+
+        x0 = rect[0]
+        top = rect[1] + rect[3] + 0.028
+        fig.text(x0, top, 'Fibre stress', fontsize=8.5, fontweight='bold',
+                 color=INK, va='top')
+        fig.text(x0 + 0.075, top - 0.002, 'top and bottom face of each member',
+                 fontsize=7, color='#777', va='top')
+        fig.text(x0, top - 0.020, _wrap(
+            'red = tension, blue = compression. Axial force and bending '
+            'together (N/A ± M·c/I); a band flips colour at a point of '
+            'contraflexure.' if n_rigid else
+            'red = tension, blue = compression. Every rod is pinned, so '
+            'both faces of a rod carry the same stress and each rod is '
+            'one colour: the axial force.', 92),
+            fontsize=6.6, color='#555', va='top')
 
     @staticmethod
     def _panel_title(fig, x, y, text, note=''):
@@ -636,8 +742,8 @@ class _Report:
         """
         from .truss_math import compute_fiber_stress
         self._panel_title(fig, rect[0], rect[1] + rect[3] + 0.018,
-                          'Fibre stress',
-                          'N/A ± M·c/I at each rod\'s extreme fibres')
+                          'Fibre stress values',
+                          'the two faces of each rod, MPa')
         ax = fig.add_axes(rect)
         rod_res = self.res['rod_res']
         rows = []
@@ -725,7 +831,7 @@ class _Report:
                 out.append((i, t, _xy((px, py))))
         return out
 
-    def _deformed_panel(self, fig, rect):
+    def _deformed_panel(self, fig, rect, pad=0.24):
         """The ELASTIC LINE: the deflected shape with every rigid rod
         drawn as the curve it actually bends into, and its points of
         contraflexure marked.
@@ -745,7 +851,7 @@ class _Report:
         where the joints are.
         """
         from .truss_math import deformed_shape_points
-        ax = self.drawing_axes(fig, rect=rect)
+        ax = self.drawing_axes(fig, rect=rect, pad=pad)
         nr = self.res['node_res']
         dmax_m = max((math.hypot(r['ux'], r['uy']) for r in nr),
                      default=0.0) / 1000.0

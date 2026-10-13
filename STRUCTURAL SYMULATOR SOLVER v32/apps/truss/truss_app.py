@@ -662,17 +662,63 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         except Exception:
             pass
 
-    def _model_in_view(self):
-        """True when every joint is on the visible canvas (or the canvas
-        has no size yet, which says nothing either way)."""
+    def _model_in_view(self, points=None, inset=(0, 0, 0, 0)):
+        """True when every joint (or every one of `points`) is on the
+        visible canvas, `inset` (left, top, right, bottom) pixels in from
+        its edges -- or the canvas has no size yet, which says nothing
+        either way."""
         c = self.zc.canvas
         W, H = c.winfo_width(), c.winfo_height()
-        if W < 50 or H < 50 or not self.nodes:
+        pts = self.nodes if points is None else points
+        if W < 50 or H < 50 or not pts:
             return True
-        for nx, ny in self.nodes:
+        l, t, r, b = inset
+        for nx, ny in pts:
             sx, sy = self.zc.w2s(nx, ny)
-            if not (0 <= sx <= W and 0 <= sy <= H):
+            if not (l <= sx <= W - r and t <= sy <= H - b):
                 return False
+        return True
+
+    def _deformed_points(self):
+        """Where the joints are drawn in the deformed shape, at the
+        magnification on screen (the same arithmetic as _draw)."""
+        if not self.results or not self.show_deform.get():
+            return []
+        k = PX_PER_M * self.def_scale.get() / 1000.0
+        return [(nx + r['ux'] * k, ny + r['uy'] * k)
+                for (nx, ny), r in zip(self.nodes, self.results['node_res'])]
+
+    def _fit_to_results(self):
+        """After ▶ Analyze: if the structure or its deformed shape runs
+        out of the view, fit the view to both. A long span's deflected
+        shape, magnified, hangs well below the structure, and the
+        diagram pane opening underneath shrinks the canvas at the same
+        moment -- the bridge's sagging chord ended under the legend.
+        Nothing moves when everything is already in view."""
+        try:
+            self.root.update_idletasks()    # the canvas at its new size
+        except tk.TclError:
+            return False
+        pts = list(self.nodes) + self._deformed_points()
+        # Clear of the force key along the bottom edge, too.
+        if self._model_in_view(pts, inset=(12, 12, 12, 36)):
+            return False
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        pad = 1.2 * PX_PER_M
+        x0, y0, x1, y1 = min(xs) - pad, min(ys) - pad, max(xs) + pad, \
+            max(ys) + pad
+        c, z = self.zc.canvas, self.zc.zoom
+        W, H = c.winfo_width(), c.winfo_height()
+        top, bottom = 12, H - 36
+        if (x1 - x0) * z <= W - 24 and (y1 - y0) * z <= bottom - top:
+            # It fits at the zoom you chose: bring it into view without
+            # zooming. A small truss was zoomed IN to fill the canvas.
+            self.zc.pan_x = (W / 2.0) / z - (x0 + x1) / 2.0
+            self.zc.pan_y = ((top + bottom) / 2.0) / z - (y0 + y1) / 2.0
+        else:
+            self.zc.fit_to_bbox(x0, y0, x1, y1, margin=46)
+        self._draw()
         return True
 
     def _fit_view(self):
@@ -4281,6 +4327,10 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         self.show_deform.set(True)
         self._draw()
         self._show_diagrams()
+        if not quiet:
+            # Not on a Live re-solve: that runs on every edit, and a view
+            # that jumps while you work is worse than one that needs Fit.
+            self._fit_to_results()
         rr = res['rod_res']
         n_t=sum(1 for r in rr if r['force']>0.01)
         n_c=sum(1 for r in rr if r['force']<-0.01)

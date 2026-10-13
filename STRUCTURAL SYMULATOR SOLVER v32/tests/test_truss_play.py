@@ -488,3 +488,14 @@ def test_a_variant_is_not_kept_at_part_load(app):
     app._apply_slide()
     assert app._keep_variant() is None
     assert 'Load % back to 100' in app.status_var.get()
+
+
+def test_analyze_keeps_a_small_example_s_zoom(app):
+    """Refitting after Analyze is for a deformed shape out of view; a
+    small truss in view must not be zoomed in to fill the canvas."""
+    app._load_library_example('pratt')
+    _settle(app.root)
+    zoom = app.zc.zoom
+    app._run_analysis()
+    _settle(app.root)
+    assert app.zc.zoom == zoom

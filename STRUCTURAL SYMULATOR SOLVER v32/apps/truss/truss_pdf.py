@@ -25,7 +25,7 @@ from . import truss_score as ts
 INK = '#333333'
 GHOST = '#c2c8cd'
 SUPPORT = '#555555'
-LOAD = '#222222'
+LOAD = '#d85a30'          # the tab's load orange (TrussApp CL)
 REACTION = '#1e8f4e'
 ROWS_PER_SHEET = 26
 EXPLAIN_RODS = 2
@@ -85,6 +85,7 @@ class _Report:
         self.buckling_factors = []
         self.flex_points = []
         self._labels = {}         # id(axes) -> [(priority, Text)], see declutter
+        self._arrows = {}         # id(axes) -> [load arrow ends], the same
         self.sheets = []
 
     # ── does anything bend? ───────────────────────────────────────────────
@@ -189,8 +190,37 @@ class _Report:
     # out loses nothing -- every value is in the Rods table -- and saying
     # how many were left out keeps the drawing honest.
 
-    def queue_label(self, ax, text, priority):
-        self._labels.setdefault(id(ax), []).append((priority, text))
+    #: Where along its member a label may sit, tried in this order: the
+    #: middle first, then either side of it. A label that collides at the
+    #: middle often fits a little further along (t 14: on the bridge's
+    #: Axial forces sheet, most of the hidden labels had room there).
+    #: Each spot is (fraction along, side): side 0 is on the member, ±1
+    #: just off it on either side -- where a chord's label goes when the
+    #: chord is shorter than its label (the bridge's 4 m panels).
+    ALONG = ((0.5, 0), (0.5, 1), (0.5, -1), (0.33, 0), (0.67, 0),
+             (0.33, 1), (0.67, 1), (0.33, -1), (0.67, -1),
+             (0.22, 0), (0.78, 0))
+    #: Clear space round every label, in pixels at the sheet's dpi: the
+    #: labels used to butt edge to edge, and onto the joint markers.
+    LABEL_GAP = 2.5
+
+    def queue_label(self, ax, text, priority, member=None, joint=None,
+                    arrow=None):
+        """`member`: the (a, b) end points the label belongs on, so the
+        declutterer can slide it along the member instead of dropping it.
+        `joint` / `arrow`: the joint or the load arrow (its index in
+        `_arrows`) a label names, which it may touch."""
+        self._labels.setdefault(id(ax), []).append(
+            (priority, text, member, joint, arrow))
+
+    def member_label(self, ax, i, text, priority, **kw):
+        """A label on rod `i`, at its middle, free to slide along it."""
+        r = self.rods[i]
+        a, b = self.pts[r['a']], self.pts[r['b']]
+        t = ax.text((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, text, ha='center',
+                    va='center', **kw)
+        self.queue_label(ax, t, priority, member=(a, b))
+        return t
 
     def declutter(self, ax, where=''):
         """Hide the queued labels on `ax` that would overlap one of
@@ -205,14 +235,78 @@ class _Report:
             FigureCanvasAgg(fig)
         renderer = fig.canvas.get_renderer()
         ax.apply_aspect()                 # the equal-aspect box, as drawn
+        from matplotlib.transforms import Bbox
+        # The joints are taken before any label: a number printed over a
+        # joint hides the one thing the drawing is of.
+        dot = 1.8 * fig.dpi / 72.0        # the joint marker, ms 3.2
+        dots = [Bbox.from_bounds(px - dot, py - dot, 2 * dot, 2 * dot)
+                for px, py in ax.transData.transform(self.pts)]
         placed, hidden = [], 0
-        for _p, t in sorted(queue, key=lambda q: -q[0]):
-            bb = t.get_window_extent(renderer).expanded(1.06, 1.12)
-            if any(bb.overlaps(o) for o in placed):
+        gap = self.LABEL_GAP
+
+        # Load arrows are taken too: a value printed across an arrow reads
+        # as belonging to it.
+        arrows = []
+        for (xa, ya), (xb, yb) in self._arrows.pop(id(ax), []):
+            (pa, qa), (pb, qb) = ax.transData.transform([(xa, ya), (xb, yb)])
+            arrows.append(Bbox.from_extents(min(pa, pb) - 1.5,
+                                            min(qa, qb) - 1.5,
+                                            max(pa, pb) + 1.5,
+                                            max(qa, qb) + 1.5))
+
+        def free(t, own, own_arrow):
+            bb = t.get_window_extent(renderer).padded(gap)
+            return bb, not (any(bb.overlaps(o) for o in placed) or
+                            any(bb.overlaps(d) for j, d in enumerate(dots)
+                                if j != own) or
+                            any(bb.overlaps(a) for k, a in enumerate(arrows)
+                                if k != own_arrow))
+
+        def spot(member, f, side, t):
+            (xa, ya), (xb, yb) = member
+            mx, my = xa + f * (xb - xa), ya + f * (yb - ya)
+            if not side:
+                return mx, my
+            # Just clear of the line, on one side: the label's half-extent
+            # across the member, plus the gap and the line's own width.
+            (pa, qa), (pb, qb), (pm, qm) = ax.transData.transform(
+                [(xa, ya), (xb, yb), (mx, my)])
+            L = math.hypot(pb - pa, qb - qa) or 1.0
+            nx, ny = -(qb - qa) / L, (pb - pa) / L
+            ext = t.get_window_extent(renderer)
+            d = 0.5 * (abs(nx) * ext.width + abs(ny) * ext.height) \
+                + gap + 3.0
+            return tuple(ax.transData.inverted().transform(
+                (pm + side * nx * d, qm + side * ny * d)))
+
+        for _p, t, member, own, own_arrow in sorted(queue,
+                                                    key=lambda q: -q[0]):
+            home = t.get_position()
+            tries = [None] if member is None else list(self.ALONG)
+            text = t.get_text()
+            # Last, the same label on two lines -- "11" over "+719.4" --
+            # about 40 % narrower: a bridge chord's label is as long as
+            # its 4 m panel, and two neighbours could not share a side.
+            forms = [text] + ([text.replace(': ', '\n', 1)]
+                              if member is not None and ': ' in text else [])
+            done = False
+            for form in forms:
+                t.set_text(form)
+                for k in tries:
+                    if k is not None:
+                        t.set_position(spot(member, k[0], k[1], t))
+                    bb, ok = free(t, own, own_arrow)
+                    if ok:
+                        placed.append(bb)
+                        done = True
+                        break
+                if done:
+                    break
+            if not done:
+                t.set_text(text)
+                t.set_position(home)
                 t.set_visible(False)
                 hidden += 1
-            else:
-                placed.append(bb)
         if hidden:
             note = ax.text(1.0, 0.0, '%d of %d labels left out where they '
                            'would overlap%s.' % (hidden, len(queue),
@@ -413,13 +507,17 @@ class _Report:
             w = width(i) if callable(width) else width
             ax.plot([ax_, bx], [ay, by], color=c, lw=w,
                     solid_capstyle='round', zorder=3)
-            if numbers:
-                t = ax.text((ax_ + bx) / 2, (ay + by) / 2, str(i),
-                            fontsize=6.5, color='#1a5fa8', ha='center',
-                            va='center', zorder=6,
-                            bbox=dict(boxstyle='round,pad=0.12', fc='white',
-                                      ec='none', alpha=0.85))
-                self.queue_label(ax, t, 1.0)
+            if numbers and pts is self.pts:
+                self.member_label(ax, i, str(i), 1.0, fontsize=6.5,
+                                  color='#1a5fa8', zorder=6,
+                                  bbox=dict(boxstyle='round,pad=0.12',
+                                            fc='white', ec='none',
+                                            alpha=0.85))
+            elif numbers:
+                ax.text((ax_ + bx) / 2, (ay + by) / 2, str(i), fontsize=6.5,
+                        color='#1a5fa8', ha='center', va='center', zorder=6,
+                        bbox=dict(boxstyle='round,pad=0.12', fc='white',
+                                  ec='none', alpha=0.85))
 
     def draw_nodes(self, ax, numbers=False):
         for i, (x, y) in enumerate(self.pts):
@@ -428,7 +526,7 @@ class _Report:
                 t = ax.annotate(str(i), (x, y), xytext=(4, 4),
                                 textcoords='offset points', fontsize=6.5,
                                 color='#7a2e8e', zorder=6)
-                self.queue_label(ax, t, 2.0)
+                self.queue_label(ax, t, 2.0, joint=i)
 
     def draw_supports(self, ax):
         s = 0.025 * self.ann
@@ -447,28 +545,86 @@ class _Report:
         if not self.loads:
             return
         big = max(math.hypot(l['fx'], l['fy']) for l in self.loads) or 1.0
-        for ld in self.loads:
+        live = [l for l in self.loads if math.hypot(l['fx'], l['fy']) > 1e-9]
+        # MANY EQUAL LOADS, ONE LABEL. A bridge deck puts the same 60 kN
+        # on fifteen joints; fifteen "60.0 kN" labels said one thing
+        # fifteen times and covered the web while saying it.
+        kinds = {(round(l['fx'], 6), round(l['fy'], 6)) for l in live}
+        one_note = label and len(live) >= 5 and len(kinds) == 1
+        x0, x1, y0, y1 = self.box
+        for ld in live:
             x, y = self.pts[ld['node']]
             fx, fy = ld['fx'], -ld['fy']           # metres frame: y up
             m = math.hypot(fx, fy)
-            if m < 1e-9:
-                continue
-            L = 0.10 * self.ann * (0.5 + 0.5 * m / big)
+            L = self._load_len(m, big)
             ux, uy = fx / m, fy / m
-            ax.annotate('', xy=(x, y), xytext=(x - L * ux, y - L * uy),
-                        arrowprops=dict(arrowstyle='-|>', color=LOAD,
-                                        lw=1.2), zorder=7)
-            if label:
+            tail = (x - L * ux, y - L * uy)
+            # HUNG, when drawn the usual way would put it through the
+            # truss: a load on a bottom-chord joint, pointing down, is a
+            # deck hanging from it. Drawn from above, its arrow lay along
+            # the vertical over the joint and hid that member and its
+            # label; drawn hanging below, the inside of the truss is clear.
+            eps = 1e-6 * self.span
+            hang = (x0 + eps < tail[0] < x1 - eps and
+                    y0 + eps < tail[1] < y1 - eps)
+            if hang:
+                start, end = (x, y), (x + L * ux, y + L * uy)
+            else:
+                start, end = tail, (x, y)
+            ax.annotate('', xy=end, xytext=start,
+                        arrowprops=dict(arrowstyle='-|>,head_length=0.5,'
+                                        'head_width=0.22', color=LOAD,
+                                        lw=1.0, shrinkA=0, shrinkB=0),
+                        zorder=7)
+            self._arrows.setdefault(id(ax), []).append((start, end))
+            if label and not one_note:
+                at = end if hang else start
                 # On a white backing: inside a truss the label sits over
                 # the web members, which otherwise ran through the digits.
-                t = ax.text(x - L * ux, y - L * uy, '%s %s'
+                t = ax.text(at[0], at[1], '%s %s'
                             % (self.u.f('force', m, 1), self.u.lab('force')),
-                            fontsize=6.5, color=LOAD, va='bottom',
+                            fontsize=6.5, color=LOAD,
+                            va='top' if (hang and uy < 0) else 'bottom',
                             ha='center' if abs(ux) < 0.5 else 'left',
                             zorder=7, bbox=dict(boxstyle='round,pad=0.12',
                                                 fc='white', ec='none',
                                                 alpha=0.9))
-                self.queue_label(ax, t, m / big * 0.5)
+                self.queue_label(ax, t, m / big * 0.5,
+                                 arrow=len(self._arrows[id(ax)]) - 1)
+        if one_note:
+            m = math.hypot(*next(iter(kinds)))
+            note = ax.text(0.0, 1.0, '%d loads of %s %s each%s' % (
+                len(live), self.u.f('force', m, 1), self.u.lab('force'),
+                ', hung from the joints' if any(
+                    self._hangs(l) for l in live) else ''),
+                transform=ax.transAxes, fontsize=7, color=LOAD,
+                va='top', ha='left', zorder=9)
+            note.set_gid('load_note')
+
+    def _load_len(self, m, big):
+        """A load arrow's length on paper: short and light, in the tab's
+        own load orange. Black and a tenth of the drawing long, the
+        bridge's fifteen loads were the loudest thing on three sheets
+        ("those black enormous arrows are not didactic"). At most half a
+        typical member, so they never reach the next joint."""
+        lens = sorted(math.hypot(self.pts[r['a']][0] - self.pts[r['b']][0],
+                                 self.pts[r['a']][1] - self.pts[r['b']][1])
+                      for r in self.rods)
+        cap = 0.5 * lens[len(lens) // 2] if lens else self.ann
+        return min(0.08 * self.ann, cap) * (0.6 + 0.4 * m / big)
+
+    def _hangs(self, ld):
+        """Would this load's arrow be drawn hanging below its joint (see
+        draw_loads)?"""
+        x, y = self.pts[ld['node']]
+        fx, fy = ld['fx'], -ld['fy']
+        m = math.hypot(fx, fy) or 1.0
+        big = max(math.hypot(l['fx'], l['fy']) for l in self.loads) or 1.0
+        L = self._load_len(m, big)
+        tx, ty = x - L * fx / m, y - L * fy / m
+        x0, x1, y0, y1 = self.box
+        eps = 1e-6 * self.span
+        return x0 + eps < tx < x1 - eps and y0 + eps < ty < y1 - eps
 
     # ── shear and moment, as silhouettes along the members ────────────────
     def normal(self, ri):
@@ -982,16 +1138,17 @@ class _Report:
             return CT if N[i] > 0.01 else CC if N[i] < -0.01 else CZ
         self.draw_rods(ax, color=col, width=lambda i: 1.0 + 4.0 * abs(N[i]) / big)
         self.draw_supports(ax)
-        self.draw_loads(ax)
+        # No load arrows here (t 14, the owner: "more confusing than no
+        # arrows at all"). The loads are on the Reactions sheet, where
+        # they balance the reactions; here they only covered the members
+        # whose forces this sheet is for.
         for i, r in enumerate(self.rods):
-            (xa, ya), (xb, yb) = self.pts[r['a']], self.pts[r['b']]
-            t = ax.text((xa + xb) / 2, (ya + yb) / 2, '%d: %s' % (
-                i, self.u.f('force', _z(N[i]), 1, sign=True)), fontsize=6.2,
-                color=col(i), ha='center', va='center', zorder=8,
+            # The biggest forces are the ones worth keeping.
+            self.member_label(ax, i, '%d: %s' % (
+                i, self.u.f('force', _z(N[i]), 1, sign=True)),
+                1.0 + abs(N[i]) / big, fontsize=6.2, color=col(i), zorder=8,
                 bbox=dict(boxstyle='round,pad=0.12', fc='white', ec='none',
                           alpha=0.85))
-            # The biggest forces are the ones worth keeping.
-            self.queue_label(ax, t, 1.0 + abs(N[i]) / big)
         self.scale_bar(ax)
         self.declutter(ax, 'every force is in the Rods table')
         self.caption(fig, 'Axial force N (%s): red pulls (+), blue '
@@ -1445,8 +1602,9 @@ class _Report:
                      self.u.f('force', _z(sy), 2)])
         _table(tab, rows)
         self.caption(fig, 'Support reactions (green arrows), as the '
-                 'supports push on the truss; Ry positive upwards. The sums '
-                 'balance the loads.', fontsize=8, color=INK)
+                 'supports push on the truss, against the loads (orange); Ry '
+                 'positive upwards. The sums balance the loads.', fontsize=8,
+                 color=INK)
 
     def utilisation(self):
         """How hard each rod is working, drawn and ranked.
@@ -1472,16 +1630,11 @@ class _Report:
             return td.util_color(util.get(i))
         self.draw_rods(ax, color=col, width=3.0)
         self.draw_supports(ax)
-        self.draw_loads(ax, label=False)
         for i, u in checked:
-            r = self.rods[i]
-            (xa, ya), (xb, yb) = self.pts[r['a']], self.pts[r['b']]
-            t = ax.text((xa + xb) / 2, (ya + yb) / 2, '%.2f' % u,
-                        fontsize=6.2, color=INK, ha='center', va='center',
-                        zorder=8, bbox=dict(boxstyle='round,pad=0.12',
-                                            fc='white', ec='none',
-                                            alpha=0.85))
-            self.queue_label(ax, t, 1.0 + u)     # the worst ones stay
+            self.member_label(ax, i, '%.2f' % u, 1.0 + u,  # worst ones stay
+                              fontsize=6.2, color=INK, zorder=8,
+                              bbox=dict(boxstyle='round,pad=0.12',
+                                        fc='white', ec='none', alpha=0.85))
         self.scale_bar(ax)
         self.declutter(ax, 'every utilisation is in the Rods table')
         self._util_key(fig)
@@ -1836,7 +1989,7 @@ class _Report:
                 t = ax.annotate(str(i), (x, y), xytext=(-11, -11),
                                 textcoords='offset points', fontsize=6.5,
                                 color='#555', zorder=8)
-                self.queue_label(ax, t, 0.5)
+                self.queue_label(ax, t, 0.5, joint=i)
             big = max((e['max_abs'] for e in rows), default=0.0) or 1.0
             for e in rows:
                 x, y = self.pts[e['node']]

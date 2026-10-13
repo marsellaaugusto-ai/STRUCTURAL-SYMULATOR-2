@@ -147,7 +147,8 @@ With every label on, a hundred members is a hundred numbers. Use
    each end (four), and the top halves of the two end posts. Their
    corner joints have no load and only two members each, which is why
    they carry nothing.
-4. **Deformed shape** is switched on by each ▶ Analyze. Lower its × to
+4. **Deformed shape** is switched on by each ▶ Analyze, and the view is
+   refitted if the magnified shape would run out of it. Lower its × to
    about 10 on a long span, or switch it off while you read forces.
 5. **Zoom in to read numbers.** The canvas leaves out any label that
    would land on another and says how many in the bottom-right corner;
@@ -233,12 +234,20 @@ this changes a small truss's report:
   bridge's load arrows were longer than the bridge was deep, and its
   margins confined it to the middle 60 % of the sheet. It now uses about
   three quarters of the sheet width.
-* **Labels never print on top of each other.** As on the canvas, the
-  most important labels are placed first (the biggest forces, the
-  worst utilisations), and any label that would overlap one already
-  placed is left out. The sheet says how many and where to read them.
-  The bridge's Axial forces sheet keeps 72 of its 112 labels and notes
-  that every force is in the Rods table.
+* **Labels never print on top of each other, or on a joint.** As on the
+  canvas, the most important labels are placed first (the biggest
+  forces, the worst utilisations). Each one tries the middle of its
+  member, then just off the member on either side, then further along
+  it, then the same text on two lines ("11" over "+719.4"). Only when
+  none of those is free is it left out, and the sheet says how many and
+  where to read them. The bridge's Axial forces sheet shows 83 of its 97
+  forces, every chord among them, and notes that every force is in the
+  Rods table.
+* **Loads are drawn only on the Reactions sheet**, where they balance
+  the reactions: short, thin and orange, hung below the bottom chord the
+  way a deck hangs from a through-truss, and labelled once when they are
+  all equal ("15 loads of 60.0 kN each, hung from the joints"). Axial
+  forces and Utilisation show the members alone.
 * **Reactions, Utilisation and Joints put the drawing on top**, full
   width, with the table or the ranking underneath. The Joints table is
   split into two halves.

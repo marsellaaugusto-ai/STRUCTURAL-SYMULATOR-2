@@ -280,3 +280,121 @@ def test_the_tab_traces_a_load_across_the_bridge(app):
     assert sum(shares.values()) == pytest.approx(1.0)
     # the load nearest the pin goes mostly to the pin: 15/16 of it
     assert max(shares.values()) == pytest.approx(15 / 16, abs=1e-6)
+
+
+# ── v32 t 14: the labels on the Axial forces sheet, and the view after
+#    Analyze ("is there any way of fixing the overlap of the labels in
+#    sheet 3??"; "fit the view again after analyze so the deformed shape
+#    shows") ────────────────────────────────────────────────────────────────
+def _rod_of(t):
+    """The rod number of a force label, written "11: +719.4" or, where
+    it is crowded, "11" over "+719.4"; None for any other text."""
+    import re
+    m = re.match(r'^(\d+)(?::|\n)', t.get_text())
+    return m.group(1) if m else None
+
+
+def _forces_sheet(rigid=True):
+    pytest.importorskip('matplotlib')
+    from apps.truss import truss_pdf as tp
+    m, res, dg, ch, _ = _solve(rigid)
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'b', None, diagrams=dg)
+    rep.forces()
+    fig = rep.sheets[0][0]
+    ax = max(fig.axes, key=lambda a: len(a.texts))
+    return tp, rep, m, fig, ax
+
+
+def test_the_deck_loads_hang_below_the_bottom_chord_and_are_labelled_once():
+    """On the Reactions sheet, the one sheet that draws loads: hung below
+    the joints, short, and one note for fifteen equal loads."""
+    pytest.importorskip('matplotlib')
+    from apps.truss import truss_pdf as tp
+    m, res, dg, ch, _ = _solve(True)
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'b', None, diagrams=dg)
+    rep.reactions()
+    ax = rep.sheets[0][0].axes[0]
+    assert all(rep._hangs(l) for l in m['loads'])
+    note = [t.get_text() for t in ax.texts if t.get_gid() == 'load_note']
+    assert note == ['15 loads of 60.0 kN each, hung from the joints']
+    assert not [t for t in ax.texts if t.get_text().startswith('60.0')]
+    # short: no load arrow is longer than half a 4 m panel
+    from matplotlib.colors import to_rgb
+    load = to_rgb(tp.LOAD)
+    arrows = [a for a in ax.texts if getattr(a, 'arrow_patch', None)
+              and tuple(a.arrow_patch.get_edgecolor()[:3]) == load]
+    assert len(arrows) == 15
+    for a in arrows:
+        (x0, y0), (x1, y1) = a.xy, a.xyann
+        assert math.hypot(x1 - x0, y1 - y0) <= 2.0 + 1e-9
+
+
+def test_axial_forces_and_utilisation_draw_no_load_arrows():
+    """"those black enormous arrows are not didactic ... more confusing
+    than no arrows at all": the member sheets show the members."""
+    pytest.importorskip('matplotlib')
+    from matplotlib.colors import to_rgb
+    from apps.truss import truss_pdf as tp
+    m, res, dg, ch, _ = _solve(True)
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'b', None, diagrams=dg)
+    rep.forces()
+    rep.utilisation()
+    load = to_rgb(tp.LOAD)
+    for fig, heading in rep.sheets:
+        for ax in fig.axes:
+            for a in ax.texts:
+                patch = getattr(a, 'arrow_patch', None)
+                if patch is not None:
+                    assert tuple(patch.get_edgecolor()[:3]) != load, heading
+            assert not [t for t in ax.texts if t.get_gid() == 'load_note']
+
+
+def test_a_label_too_long_for_its_chord_steps_off_it_instead_of_vanishing():
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    tp, rep, m, fig, ax = _forces_sheet()
+    FigureCanvasAgg(fig).draw()
+    shown = {_rod_of(t) for t in ax.texts
+             if t.get_visible() and _rod_of(t)}
+    chords = {str(i) for i, r in enumerate(m['rods'])
+              if 'chord' in r['profile']}
+    assert chords <= shown, 'chord labels missing: %s' % sorted(chords - shown)
+    hidden = [t for t in ax.texts if not t.get_visible()]
+    assert len(hidden) <= 15, '%d of 97 force labels hidden' % len(hidden)
+
+
+def test_no_label_covers_a_joint_or_another_label():
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    tp, rep, m, fig, ax = _forces_sheet()
+    canvas = FigureCanvasAgg(fig)
+    canvas.draw()
+    r = canvas.get_renderer()
+    boxes = [t.get_window_extent(r) for t in ax.texts if t.get_visible()
+             and _rod_of(t)]
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            assert not a.overlaps(b)
+    dots = ax.transData.transform(rep.pts)
+    for bb in boxes:
+        for px, py in dots:
+            assert not bb.contains(px, py), 'a label sits on a joint'
+
+
+def test_analyze_brings_the_deformed_shape_into_view(app):
+    app.def_scale.set(300)                 # a deflection far below the bridge
+    app._run_analysis()
+    app.root.update()
+    pts = list(app.nodes) + app._deformed_points()
+    assert app._model_in_view(pts, inset=(12, 12, 12, 36))
+
+
+def test_live_re_solves_never_move_the_view(app):
+    app._run_analysis()
+    app.root.update()
+    before = (app.zc.zoom, app.zc.pan_x, app.zc.pan_y)
+    app.def_scale.set(300)
+    app._run_analysis(quiet=True)
+    app.root.update()
+    assert (app.zc.zoom, app.zc.pan_x, app.zc.pan_y) == before

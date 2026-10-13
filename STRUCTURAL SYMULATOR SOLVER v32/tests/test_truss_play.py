@@ -42,9 +42,9 @@ def _forces(m, family):
 
 # ── the library ───────────────────────────────────────────────────────────
 
-def test_nine_examples_each_with_a_lesson():
+def test_ten_examples_each_with_a_lesson():
     keys = [k for k, _t, _b in tx.EXAMPLES]
-    assert len(keys) == 9 and len(set(keys)) == 9
+    assert len(keys) == 10 and len(set(keys)) == 10
     assert set(keys) == set(tx.LESSONS)
     for k in keys:
         lesson = tx.LESSONS[k]
@@ -204,6 +204,62 @@ def test_single_load_idle_rods_follow_the_joints_not_the_load():
     assert {r['a'], r['b']} == {2, 7}
 
 
+# The K-truss bridge (v32 t 13: "add the k-truss bridge to the examples
+# menu"), one test per question of its lesson.
+def test_bridge_q1_the_biggest_chord_force_is_m_over_d():
+    from apps.truss import truss_large as tl
+    m = tx.k_truss_bridge()
+    chords = _forces(m, 'Top chord') + _forces(m, 'Bottom chord')
+    assert max(abs(f) for f in chords) == pytest.approx(
+        tl.hand_checks()['chord'])
+    # "beside midspan": the chord panels either side of the middle vertical
+    res, _ = _solve(m)
+    xs = [p[0] for p in m['nodes']]
+    mid = (min(xs) + max(xs)) / 2
+    worst = max(range(len(m['rods'])), key=lambda i: abs(res['rod_res'][i]['force']))
+    r = m['rods'][worst]
+    assert min(abs(m['nodes'][r['a']][0] - mid),
+               abs(m['nodes'][r['b']][0] - mid)) < 1e-6
+
+
+def test_bridge_q2_six_idle_rods_each_explained_by_one_joint():
+    m = tx.k_truss_bridge()
+    idle = set(_idle(m))
+    assert len(idle) == 6
+    ys = [p[1] for p in m['nodes']]
+    xs = [p[0] for p in m['nodes']]
+    top, bottom = min(ys), max(ys)                    # canvas y is down
+    left, right = min(xs), max(xs)
+    corners = {i for i, (x, y) in enumerate(m['nodes'])
+               if y == top and x in (left, right)}
+    supports = {s['node'] for s in m['supports']}
+    explained = set()
+    for i, r in enumerate(m['rods']):
+        ends = {r['a'], r['b']}
+        if ends & corners:
+            explained.add(i)          # an unloaded corner with two rods
+        elif ends & supports and all(m['nodes'][n][1] == bottom
+                                     for n in ends):
+            explained.add(i)          # the bottom chord at a support
+    assert idle == explained
+    for c in corners:                 # and the corners really are that
+        assert sum(1 for r in m['rods'] if c in (r['a'], r['b'])) == 2
+        assert all(l['node'] != c for l in m['loads'])
+
+
+def test_bridge_q3_a_load_splits_by_the_lever_rule():
+    from apps.truss import truss_loadpath as lp
+    m = tx.k_truss_bridge()
+    pin = next(s['node'] for s in m['supports'] if s['type'] == 'pin')
+    xs = [m['nodes'][l['node']][0] for l in m['loads']]
+    near = m['loads'][xs.index(min(xs))]['node']
+    mid = m['loads'][len(m['loads']) // 2]['node']
+    for node, share in ((near, 15 / 16), (mid, 1 / 2)):
+        t = lp.trace(m['nodes'], m['rods'], m['supports'], [], m['loads'],
+                     node, analyze)
+        assert t['supports'][pin] == pytest.approx(share, abs=1e-9)
+
+
 # ── the score ─────────────────────────────────────────────────────────────
 
 def test_score_mass_and_carried_load():
@@ -283,6 +339,45 @@ def test_the_library_loads_an_example_with_its_lesson(app):
     assert app._lesson_card is not None
     app._clear_all()
     assert app._example_key is None and app._lesson_card is None
+
+
+def test_the_bridge_opens_fully_in_view_and_small_ones_keep_their_zoom(app):
+    app._load_library_example('pratt')
+    _settle(app.root)
+    zoom = app.zc.zoom
+    assert app._model_in_view()
+    app._load_library_example('k_truss_bridge')
+    _settle(app.root)
+    assert len(app.rods) == 97
+    assert app._model_in_view(), 'the bridge opened partly off screen'
+    assert app.zc.zoom < zoom
+    app._load_library_example('warren')
+    _settle(app.root)
+    assert app._model_in_view()
+
+
+def test_the_examples_menu_offers_the_bridge(app):
+    found = {}
+
+    def walk(w):
+        for c in w.winfo_children():
+            if isinstance(c, tk.Menubutton):
+                menu = c.nametowidget(c.cget('menu'))
+                for i in range((menu.index('end') or 0) + 1):
+                    try:
+                        found[menu.entrycget(i, 'label')] = (menu, i)
+                    except tk.TclError:
+                        pass
+            walk(c)
+    walk(app.root.winfo_toplevel())
+    label = next(k for k in found if k.startswith('K-truss bridge'))
+    menu, i = found[label]
+    menu.invoke(i)
+    assert app._example_key == 'k_truss_bridge'
+    assert app._lesson_card is not None
+    win = app._open_examples()
+    titles = win.listbox.get(0, 'end')
+    assert 'K-truss bridge (97 members)' in titles
 
 
 def test_every_library_example_analyses_in_the_tab(app):

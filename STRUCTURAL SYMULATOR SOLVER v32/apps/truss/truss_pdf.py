@@ -222,11 +222,18 @@ class _Report:
             note.set_gid('declutter')
         return hidden
 
-    def scale_bar(self, ax):
+    def scale_bar(self, ax, centre=False):
+        """Bottom left; or bottom centre, between the supports, on a
+        sheet whose bottom corners carry labels of their own (the
+        reaction values under a slender truss ran into it)."""
         from apps.stereo import stereo_reports as sr
         x0, x1, y0, y1 = ax.get_xlim() + ax.get_ylim()
-        sr._pdf_scale_bar(ax, self.span,
-                          (x0 + 0.02 * (x1 - x0), y0 + 0.02 * (y1 - y0)),
+        bx = x0 + 0.02 * (x1 - x0)
+        if centre:
+            shown = sr._pdf_nice_length(self.u.v('length', self.span)
+                                        * sr.PDF_SCALE_TARGET)
+            bx = (x0 + x1) / 2 - self.u.to_storage('length', shown) / 2
+        sr._pdf_scale_bar(ax, self.span, (bx, y0 + 0.02 * (y1 - y0)),
                           u=self.u)
 
     # ── the page: header band, caption box, footer ────────────────────────
@@ -276,7 +283,8 @@ class _Report:
     def footer_fields(self):
         """The footer's fields -- the old title block's, plus who and
         for what."""
-        return [('MODEL', (self.title or 'user model')[:30]),
+        name = self.title or 'user model'
+        return [('MODEL', name if len(name) <= 40 else name[:39] + '…'),
                 ('AUTHOR', (self.author or '—')[:34]),
                 ('COURSE', (self.course or '—')[:34]),
                 ('UNITS', self.u.title_block()),
@@ -451,9 +459,15 @@ class _Report:
                         arrowprops=dict(arrowstyle='-|>', color=LOAD,
                                         lw=1.2), zorder=7)
             if label:
-                t = ax.text(x - L * ux, y - L * uy, ' %s %s'
+                # On a white backing: inside a truss the label sits over
+                # the web members, which otherwise ran through the digits.
+                t = ax.text(x - L * ux, y - L * uy, '%s %s'
                             % (self.u.f('force', m, 1), self.u.lab('force')),
-                            fontsize=6.5, color=LOAD, va='bottom', zorder=7)
+                            fontsize=6.5, color=LOAD, va='bottom',
+                            ha='center' if abs(ux) < 0.5 else 'left',
+                            zorder=7, bbox=dict(boxstyle='round,pad=0.12',
+                                                fc='white', ec='none',
+                                                alpha=0.9))
                 self.queue_label(ax, t, m / big * 0.5)
 
     # ── shear and moment, as silhouettes along the members ────────────────
@@ -661,8 +675,7 @@ class _Report:
                                  edgecolor='none', zorder=0))
         fig.text(0.05, 0.935, 'TRUSS REPORT', fontsize=8.5,
                  fontweight='bold', color='#cfe0f3', zorder=2)
-        fig.text(0.05, 0.873, self.title or 'Truss', fontsize=26,
-                 fontweight='bold', color='white', zorder=2)
+        self._cover_title(fig, self.title or 'Truss')
         fig.text(0.05, 0.832, 'Plane truss — analysis and CIRSOC 301 rod '
                  'checks', fontsize=11, color='white', zorder=2)
         who = []
@@ -703,6 +716,42 @@ class _Report:
             'check them. Rod checks to CIRSOC 301 as implemented; '
             'first-order analysis; joints and connections are not checked '
             'here.', 190), fontsize=7, color='#7a8590', va='top')
+
+    #: The title's room on the cover: from the left margin to just short
+    #: of the white truss drawn beside it (axes from x 0.50).
+    TITLE_W = 0.43
+
+    def _cover_title(self, fig, title):
+        """The model's name, as large as fits beside the drawing: 26 pt,
+        stepping down to 18, then over two lines. "K-truss bridge 64 m
+        (rigid joints)" at 26 pt ran into the truss."""
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        if not isinstance(fig.canvas, FigureCanvasAgg):
+            FigureCanvasAgg(fig)
+        r = fig.canvas.get_renderer()
+        W = fig.get_size_inches()[0] * fig.dpi
+        t = fig.text(0.05, 0.873, title, fontsize=26, fontweight='bold',
+                     color='white', zorder=2)
+        for size in range(26, 17, -1):
+            t.set_fontsize(size)
+            if t.get_window_extent(r).width / W <= self.TITLE_W:
+                return t
+        words = title.split()
+        best = None
+        for k in range(1, len(words)):
+            a, b = ' '.join(words[:k]), ' '.join(words[k:])
+            score = max(len(a), len(b))
+            if best is None or score < best[0]:
+                best = (score, a + '\n' + b)
+        if best:
+            t.set_text(best[1])
+            t.set_linespacing(1.05)
+            t.set_position((0.05, 0.858))
+            for size in range(22, 13, -1):
+                t.set_fontsize(size)
+                if t.get_window_extent(r).width / W <= self.TITLE_W:
+                    break
+        return t
 
     def _hero(self, ax):
         """The truss, white on the title band: the cover says WHICH truss
@@ -1017,7 +1066,7 @@ class _Report:
         # margin the other drawings need would only shrink it.
         ax = self.drawing_axes(fig, rect=rect, pad=0.05)
         rod_res = self.res['rod_res']
-        th = self.FIBRE_BAND * self.span
+        th = self.FIBRE_BAND * self.ann
 
         def band(ri, xs, sig, side):
             rod = self.rods[ri]
@@ -1119,11 +1168,16 @@ class _Report:
                         td.DEFLECTION_LIMIT,
                         self.u.f('deflection', d['limit_mm'], 1),
                         self.u.lab('deflection')),
-                    fontsize=6, color='#b03a2e', va='top')
+                    fontsize=6, color='#b03a2e', va='bottom')
             worst = min(ds) if ds else 0.0
             if worst < -d['limit_mm']:
                 ax.set_ylim(min(worst * 1.15, -d['limit_mm'] * 1.3),
                             max(max(ds) * 1.15 if ds else 1.0, 1.0))
+            else:
+                # Room under the limit line: autoscaling put it on the
+                # bottom axis, and its label on the tick labels.
+                lo, hi = ax.get_ylim()
+                ax.set_ylim(min(lo, -d['limit_mm'] * 1.12), hi)
         ax.set_xlabel('position along the span (%s)' % self.u.lab('length'),
                       fontsize=6.5)
         ax.set_ylabel('uy (%s, down −)' % self.u.lab('deflection'),
@@ -1359,13 +1413,23 @@ class _Report:
                 ux, uy = fx / m, fy / m
                 # an upward push ends under the symbol, where its head shows
                 tip = (x, y - glyph) if uy > 0.5 else (x, y)
-                ax.annotate('', xy=tip,
-                            xytext=(tip[0] - L * ux, tip[1] - L * uy),
+                tail = (tip[0] - L * ux, tip[1] - L * uy)
+                ax.annotate('', xy=tip, xytext=tail,
                             arrowprops=dict(arrowstyle='-|>', color=REACTION,
                                             lw=1.4), zorder=7)
-        self.scale_bar(ax)
+                # The value at the tail, as on screen: the table has the
+                # numbers, the drawing has to say which arrow is which.
+                ax.text(tail[0], tail[1], '%s %s' % (
+                    self.u.f('force', m, 1), self.u.lab('force')),
+                    fontsize=6.5, color=REACTION, zorder=8,
+                    ha='center' if abs(ux) < 0.5 else
+                    ('right' if ux > 0 else 'left'),
+                    va='top' if uy > 0.5 else 'center',
+                    bbox=dict(boxstyle='round,pad=0.12', fc='white',
+                              ec='none', alpha=0.9))
+        self.scale_bar(ax, centre=True)
         self.declutter(ax)
-        tab = fig.add_axes((0.60, 0.17, 0.35, 0.21) if self.slender
+        tab = fig.add_axes((0.62, 0.17, 0.33, 0.21) if self.slender
                            else (0.67, 0.30, 0.29, 0.60))
         tab.axis('off')
         F = self.u.lab('force')
@@ -1521,15 +1585,24 @@ class _Report:
         self.buckling_factors = list(factors[:n])
         width = 0.90 / max(n, 1)
         for j in range(n):
-            ax = fig.add_axes((0.05 + j * width, 0.52, width * 0.94, 0.30))
+            # A slender truss side by side was three thin strips a third
+            # of the sheet wide; stacked, each mode gets the full width.
+            ax = fig.add_axes((0.20, 0.755 - j * 0.13, 0.75, 0.125)
+                              if self.slender else
+                              (0.05 + j * width, 0.52, width * 0.94, 0.30))
             self._draw_mode(ax, modes[j])
             lam = factors[j]
             tone = '#b03a2e' if lam < 1.0 else INK
             where = modes[j]['peak']
             what = ('rod %d bows' % where[1] if where[0] == 'mid'
                     else 'node %d moves most' % where[1])
-            ax.set_title('Mode %d:  λ = %.2f\n%s' % (j + 1, lam, what),
-                         fontsize=8.5, color=tone)
+            if self.slender:
+                fig.text(0.05, 0.755 - j * 0.13 + 0.0625,
+                         'Mode %d:  λ = %.2f\n%s' % (j + 1, lam, what),
+                         fontsize=8.5, color=tone, va='center')
+            else:
+                ax.set_title('Mode %d:  λ = %.2f\n%s' % (j + 1, lam, what),
+                             fontsize=8.5, color=tone)
         head = 'λ is the factor on the load as it stands. '
         if factors[0] < 1.0:
             head += ('λ₁ = %.2f is BELOW 1: it buckles before the full load '
@@ -1560,7 +1633,7 @@ class _Report:
         self.caption(fig, _wrap(head, 160), fontsize=8, color=INK,
                  va='top')
         self._load_deflection(fig, curve)
-        fig.text(0.45, 0.325, _wrap(
+        fig.text(0.45, 0.285 if self.slender else 0.325, _wrap(
                  'Elastic buckling of the IDEAL truss, so every λ is an '
                  'UPPER bound: imperfections, residual stresses and '
                  'yielding are not modelled, and each rod is cut in two so '
@@ -1611,7 +1684,8 @@ class _Report:
 
     def _load_deflection(self, fig, curve):
         """The second-order curve: how the bow runs away as λ nears λ_cr."""
-        ax = fig.add_axes((0.08, 0.24, 0.30, 0.26))
+        ax = fig.add_axes((0.08, 0.215, 0.30, 0.215) if self.slender
+                          else (0.08, 0.24, 0.30, 0.26))
         if not curve or 'error' in curve or not curve.get('factors'):
             ax.axis('off')
             ax.text(0.0, 0.5, (curve or {}).get(
@@ -1633,7 +1707,8 @@ class _Report:
         ax.legend(fontsize=6, frameon=False, loc='lower right')
         for spine in ('top', 'right'):
             ax.spines[spine].set_visible(False)
-        fig.text(0.45, 0.495, _wrap('The second-order line bends away from the '
+        fig.text(0.45, 0.43 if self.slender else 0.495,
+                 _wrap('The second-order line bends away from the '
                  'first-order one and runs off as λ nears λ_cr: that gap IS '
                  'the amplification every second-order design rule is '
                  'about. Started from an initial bow of L/1000 = %.2f mm in '
@@ -1744,7 +1819,13 @@ class _Report:
                                    (0.04, 0.19, 0.50, 0.72), pad=0.16)
             self.draw_rods(ax, color='#9aa3ab', width=1.4)
             self.draw_supports(ax)
-            r = 0.035 * self.ann
+            # No bigger than a fifth of a typical member, or the arcs of
+            # neighbouring joints run into each other (the bridge's 4 m
+            # panels).
+            lens = sorted(math.hypot(self.pts[q['a']][0] - self.pts[q['b']][0],
+                                     self.pts[q['a']][1] - self.pts[q['b']][1])
+                          for q in self.rods)
+            r = min(0.035 * self.ann, 0.20 * lens[len(lens) // 2])
             shown = {e['node'] for e in rows}
             for i, (x, y) in enumerate(self.pts):
                 on = i in shown

@@ -1,4 +1,4 @@
-"""The Truss tab's example library: nine trusses, each with a lesson.
+"""The Truss tab's example library: ten trusses, each with a lesson.
 
 An example on its own shows what the tab can draw; a question makes
 someone look at it. Each lesson names the one idea its truss is good for
@@ -157,6 +157,14 @@ def single_load():
     return m
 
 
+def k_truss_bridge():
+    """The 64 m K-truss bridge of the large-model protocol: 50 joints,
+    97 members. Built by truss_large (which builds on `_model` here, so it
+    is imported when called, not at the top)."""
+    from .truss_large import k_truss_bridge as build
+    return build()
+
+
 # (key, menu title, builder). The key names the lesson and the best score,
 # so a renamed title cannot orphan either.
 EXAMPLES = (
@@ -169,6 +177,7 @@ EXAMPLES = (
     ('vierendeel', 'Vierendeel girder', vierendeel),
     ('missing_diagonal', 'One diagonal missing', missing_diagonal),
     ('single_load', 'One load, many idle rods', single_load),
+    ('k_truss_bridge', 'K-truss bridge (97 members)', k_truss_bridge),
 )
 
 LESSONS = {
@@ -278,6 +287,23 @@ LESSONS = {
             'more, and no load -- that third rod can carry nothing.',
             'If the idle rods were removed, would the truss still stand? '
             'Read the line under Analyze before you try.',
+        ),
+    },
+    # REPORTS AND GUIDES/LARGE_MODEL_PROTOCOL_v32_t12 walks this one
+    # through the whole tab; the lesson is the protocol's step 6 in brief.
+    'k_truss_bridge': {
+        'goal': 'A hundred members and still statics: the chords carry the '
+                'bending as M / d, and every number can be checked by hand.',
+        'questions': (
+            '▶ Analyze. The biggest chord force is beside midspan. Check it '
+            'as M / d: the moment at that joint (reaction × 28 m, less '
+            'each load to its left × its lever) over the 8 m depth.',
+            'Six rods are dashed: they carry nothing. Find them, and explain '
+            'each with one joint -- an unloaded corner with only two rods, '
+            'or a support that nothing pushes sideways.',
+            'Trace where one load goes: the load next to the pin, then the '
+            'one at midspan. How does each split between the supports, '
+            'and why those fractions?',
         ),
     },
 }

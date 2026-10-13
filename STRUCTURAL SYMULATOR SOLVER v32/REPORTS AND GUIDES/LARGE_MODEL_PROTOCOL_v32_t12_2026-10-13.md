@@ -34,6 +34,11 @@ Every vertical except the middle one is split at mid-height. From each
 mid-height joint, two diagonals run to the top and the bottom of the next
 vertical, pointing away from midspan. That is the "K".
 
+Since t 13 it is also in the library: **Examples ▾ → K-truss bridge —
+97 members, 64 m**, or *Browse the library…* → *K-truss bridge (97
+members)*. It opens fitted to the window, with a lesson card whose three
+questions are this protocol's hand checks in brief.
+
 ### The files, to reproduce it
 
 Everything is in `REPORTS AND GUIDES/large_model_protocol_v32_t12/`:

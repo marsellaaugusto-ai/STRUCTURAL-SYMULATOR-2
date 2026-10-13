@@ -226,7 +226,7 @@ class TrussPlayMixin:
         win.configure(bg='#f5f5f3')
         left = tk.Frame(win, bg='#f5f5f3')
         left.pack(side='left', fill='y', padx=(10, 4), pady=10)
-        lb = tk.Listbox(left, height=len(tx.EXAMPLES), width=26,
+        lb = tk.Listbox(left, height=len(tx.EXAMPLES), width=28,
                         exportselection=False, font=('Helvetica', 10))
         lb.pack(fill='y', expand=True)
         for _k, title, _b in tx.EXAMPLES:
@@ -286,6 +286,10 @@ class TrussPlayMixin:
         self._example_key = key
         self._refresh_profile_combo()
         self._draw()
+        if not self._model_in_view():
+            # The bridge is 64 m: at the usual zoom most of it lands off
+            # screen. The small examples fit, and open as they always did.
+            self._fit_view()
         self._show_lesson(key)
         self.status_var.set('%s loaded — click ▶ Analyze.' % title)
 

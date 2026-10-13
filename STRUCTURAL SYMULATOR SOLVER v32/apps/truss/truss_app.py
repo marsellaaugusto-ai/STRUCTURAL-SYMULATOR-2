@@ -235,6 +235,8 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         # girder among them); the first entry stays the one-click Warren.
         self._menu_button(make_g, 'Examples ▾', [
             ('Warren truss — how triangles carry load', self._load_example),
+            ('K-truss bridge — 97 members, 64 m',
+             lambda: self._load_library_example('k_truss_bridge')),
             ('sep',),
             ('Browse the library…', self._open_examples),
         ])
@@ -659,6 +661,19 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                 cursor='fleur' if self.tool.get() == 'pan' else 'crosshair')
         except Exception:
             pass
+
+    def _model_in_view(self):
+        """True when every joint is on the visible canvas (or the canvas
+        has no size yet, which says nothing either way)."""
+        c = self.zc.canvas
+        W, H = c.winfo_width(), c.winfo_height()
+        if W < 50 or H < 50 or not self.nodes:
+            return True
+        for nx, ny in self.nodes:
+            sx, sy = self.zc.w2s(nx, ny)
+            if not (0 <= sx <= W and 0 <= sy <= H):
+                return False
+        return True
 
     def _fit_view(self):
         """Zoom and centre on everything there is -- structure first, guides

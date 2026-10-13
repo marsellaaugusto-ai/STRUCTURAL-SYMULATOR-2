@@ -1442,3 +1442,69 @@ def test_the_export_menu_offers_the_author_and_course(app):
             walk(c)
     walk(app.root.winfo_toplevel())
     assert 'Report author and course…' in found
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  The aesthetic pass on the rigid bridge (v32 t 13)
+# ═════════════════════════════════════════════════════════════════════════════
+def _bbox(fig, artist):
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    if not isinstance(fig.canvas, FigureCanvasAgg):
+        FigureCanvasAgg(fig)
+    fig.canvas.draw()
+    return artist.get_window_extent(fig.canvas.get_renderer())
+
+
+@pytest.mark.parametrize('title', ['Pratt', 'K-truss bridge 64 m (rigid joints)',
+                                   'A very long model name for a footbridge '
+                                   'over the river, second scheme'])
+def test_the_cover_title_never_runs_into_the_drawing(title):
+    m, res, ch = _solved('pratt')
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], title, None)
+    rep.cover(['Geometry'])
+    fig = rep.sheets[0][0]
+    t = next(t for t in fig.texts if t.get_text().replace('\n', ' ') == title)
+    hero = next(a for a in fig.axes)
+    bb, hb = _bbox(fig, t), _bbox(fig, hero)
+    assert bb.x1 < hb.x0, 'the title runs under the truss drawing'
+    assert t.get_fontsize() >= 14
+    if title == 'Pratt':
+        assert t.get_fontsize() == 26, 'a short title keeps its full size'
+
+
+def test_the_footer_keeps_a_long_model_name_whole():
+    m, res, ch = _solved('pratt')
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'K-truss bridge 64 m (rigid joints)',
+                     None)
+    assert dict(rep.footer_fields())['MODEL'] == \
+        'K-truss bridge 64 m (rigid joints)'
+
+
+def test_each_reaction_arrow_says_its_value_clear_of_the_scale_bar():
+    m, res, ch = _solved('pratt')
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'p', None)
+    rep.reactions()
+    fig = rep.sheets[0][0]
+    ax = fig.axes[0]
+    vals = [t for t in ax.texts if t.get_text().endswith('kN')
+            and t.get_color() == tp.REACTION]
+    assert len(vals) == 2                       # two vertical reactions
+    bar = [t for t in ax.texts if 'true to scale' in t.get_text()]
+    for v in vals:
+        for b in bar:
+            assert not _bbox(fig, v).overlaps(_bbox(fig, b))
+
+
+def test_the_deflection_limit_label_sits_inside_its_graph():
+    m, res, ch = _solved('pratt')
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'p', None)
+    rep.deflection_and_stress()
+    fig = rep.sheets[0][0]
+    ax = next(a for a in fig.axes
+              if any('limit L/' in t.get_text() for t in a.texts))
+    lab = next(t for t in ax.texts if 'limit L/' in t.get_text())
+    assert _bbox(fig, lab).y0 >= ax.get_window_extent().y0 - 0.5

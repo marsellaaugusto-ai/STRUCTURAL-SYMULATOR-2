@@ -115,12 +115,41 @@ def test_without_a_master_it_binds_to_the_wrong_root(two_roots):
 
 
 def test_the_rod_calculations_report_passes_its_own_window(two_roots):
-    """The call site, not just the helper: the report builds a Toplevel and
-    must hand it to render_math, or the fix is academic."""
+    """The call site, not just the helper: a report window that shows Tk
+    images must bind them to itself, or the fix is academic.
+
+    Since v32 t 15 the Rod calculations (and Node force vectors) window
+    shows the PDF's own card sheets, rendered by matplotlib and handed to
+    Tk as ImageTk.PhotoImage -- so the rule moved with it: that image
+    must be given the window as its master, for the same reason
+    render_math must."""
     import re
     src = (Path(__file__).resolve().parents[1]
            / 'apps' / 'truss' / 'truss_app.py').read_text(encoding='utf-8')
-    m = re.search(r'render_math\((.*?)\)', src, re.S)
-    assert m, 'the Rod Calculations report no longer calls render_math'
-    assert 'master=' in m.group(1), (
-        'render_math must be given the window that will show the image')
+    calls = re.findall(r'ImageTk\.PhotoImage\((.*?)\)', src, re.S)
+    assert calls, 'the card report window no longer makes Tk images'
+    for args in calls:
+        assert 'master=' in args, (
+            'a report image must be given the window that will show it')
+
+
+def test_the_card_window_shows_in_a_root_that_is_not_the_default(two_roots):
+    """And it does: the same arrangement that broke render_math -- a
+    leaked default root -- with the real window built in the other one."""
+    if not _have_mathtext():
+        pytest.skip('matplotlib/Pillow not installed')
+    from tkinter import messagebox
+    from apps.truss.truss_app import TrussApp
+    _leaked, root = two_roots
+    for name in ('showerror', 'showwarning', 'showinfo'):
+        setattr(messagebox, name, lambda *a, **k: None)
+    host = tk.Frame(root)
+    host.pack(fill='both', expand=True)
+    app = TrussApp(host)
+    app._load_library_example('pratt')
+    app._run_analysis(quiet=True)
+    win = app._show_rod_calculations_report()     # TclError before
+    root.update_idletasks()
+    assert win is not None and win.winfo_exists()
+    assert win.sheet_count == 2
+    win.destroy()

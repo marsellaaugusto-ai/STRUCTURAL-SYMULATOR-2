@@ -17,7 +17,7 @@ import math, os
 import units
 
 from common import (
-    _ensure_openpyxl, _ensure_matplotlib, render_math,
+    _ensure_openpyxl, _ensure_matplotlib,
     SNAP, PX_PER_M, PANEL_W, INIT_CW, INIT_CH, INIT_DH,
     UnitsMixin,
     CT, CC, CZ, CD, CN, CS, CL, CSP, CG, CG_MINOR, CG_MICRO, CV, CM, CR, CMOM,

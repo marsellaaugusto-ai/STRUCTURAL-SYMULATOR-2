@@ -20,6 +20,8 @@ sketchup_extension/
     align_tool.rb      Align by Points: the two tool classes
     icons/
   ALIGN_BY_POINTS.md   feature documentation + manual test checklist
+  HANDOFF_ALIGN_BY_POINTS_2026-10-13.md
+                       cold-start handoff: state, decisions, open items
 ```
 
 ## Build the installable .rbz
@@ -42,7 +44,9 @@ ruby tools/test_align_tool.rb    # the tools, against tools/sketchup_stub.rb
 ```
 
 Neither needs SketchUp. The manual checklist that does is in
-`ALIGN_BY_POINTS.md`.
+`ALIGN_BY_POINTS.md`, and `HANDOFF_ALIGN_BY_POINTS_2026-10-13.md` is the
+cold-start account of how the feature came to be, what was decided and why,
+and what is still open.
 
 ## Icons
 

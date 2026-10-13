@@ -5764,173 +5764,16 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
     #  wanted back.
     # ══════════════════════════════════════════════════════════════════════════
     def _show_node_vectors_report(self):
+        """Node force vectors: every force on every joint, as cards.
+
+        THE PDF'S CARDS, ON SCREEN (t 15, the owner: "this version is so
+        much better and clearer than the one in the app"). The window
+        used to build its own Tk free-body diagrams and Courier text
+        boxes; it now shows the report's own Node force vectors sheets,
+        drawn by truss_pdf from the same compute_node_design_actions --
+        so the window and the PDF are one drawing and cannot disagree.
         """
-        Opens a report window listing, for every node, the individual force
-        vector that each connected rod applies to that node — magnitude,
-        Fx/Fy components and angle w.r.t. the global coordinate system —
-        together with a small free-body diagram (all vectors drawn from the
-        node's center). This is the data needed to dimension each node's
-        welded gusset plate (every rod converging on a node loads the plate
-        along its own axis).
-        """
-        if not self.results:
-            messagebox.showwarning('Node Force Vectors',
-                'Run the analysis first.'); return
-
-        win = tk.Toplevel(self.root)
-        win.title('Node Force Vectors — for gusset plate design')
-        win.geometry('620x680')
-        win.configure(bg='#f5f5f3')
-
-        tk.Label(win, text='Node Force Vectors', bg='#f5f5f3',
-                 font=('Helvetica',13,'bold'), fg='#1a6bbd').pack(pady=(10,0))
-        tk.Label(win,
-                 text='Convention: global X→ right, Y↑ up, angle θ measured\n'
-                      'counter-clockwise from +X. Each vector is the COMPLETE force\n'
-                      'a member exerts ON the node: axial N plus, at a rigid joint,\n'
-                      'its shear. M is that member end moment. Σ must close to ~0.\n'
-                      'Diagram: all vectors drawn from the node center (free-body).',
-                 bg='#f5f5f3', font=('Helvetica',9), fg='#555',
-                 justify='center').pack(pady=(2,8))
-
-        # ── scrollable area ──────────────────────────────────────────────────
-        outer = tk.Frame(win, bg='#f5f5f3')
-        outer.pack(fill='both', expand=True, padx=10, pady=(0,10))
-        sb = tk.Scrollbar(outer, orient='vertical')
-        sc = tk.Canvas(outer, bg='#f5f5f3', highlightthickness=0,
-                       yscrollcommand=sb.set)
-        sb.config(command=sc.yview)
-        sb.pack(side='right', fill='y')
-        sc.pack(side='left', fill='both', expand=True)
-
-        inner = tk.Frame(sc, bg='#f5f5f3')
-        inner_id = sc.create_window((0,0), window=inner, anchor='nw')
-
-        def _sync_scroll(_e=None):
-            sc.configure(scrollregion=sc.bbox('all'))
-        def _sync_width(e):
-            sc.itemconfig(inner_id, width=e.width)
-        inner.bind('<Configure>', _sync_scroll)
-        sc.bind('<Configure>', _sync_width)
-        # mouse-wheel scrolling -- bind_all is needed (not a plain widget
-        # bind) because <MouseWheel> only fires on the exact widget under
-        # the cursor and won't bubble up from the labels/frames stacked
-        # inside `inner`, so this is the only way to make the wheel work
-        # anywhere over the report window. The half of this that was
-        # missing before: explicitly unbinding it again when the window
-        # closes, so a closed report doesn't leave a global handler firing
-        # against a destroyed canvas every time the user scrolls anywhere
-        # else in the app afterwards.
-        def _wheel(e):
-            sc.yview_scroll(int(-1*(e.delta/120)), 'units')
-        sc.bind_all('<MouseWheel>', _wheel)
-        def _on_close():
-            sc.unbind_all('<MouseWheel>')
-            win.destroy()
-        win.protocol('WM_DELETE_WINDOW', _on_close)
-
-        # COMPLETE joint actions, not the axial-only vectors. A rigid
-        # (Vierendeel) member delivers shear and an end moment to its joint
-        # as well as axial force, and a shear panel delivers corner forces.
-        # Reporting only the axial part understated every Vierendeel
-        # connection, and left the equilibrium line below unable to close --
-        # which reads like a solver bug rather than a missing term.
-        acts = compute_node_design_actions(self.nodes, self.rods,
-                                            self.results['rod_res'],
-                                            self.results.get('plate_res', []))
-        rxns = self.results['reactions']
-        FBD_SIZE = 190
-
-        for ni in range(len(self.nodes)):
-            act  = acts.get(ni, {'members': [], 'plates': [],
-                                  'Fx': 0.0, 'Fy': 0.0, 'M': 0.0})
-            vecs = act['members']
-            ld   = next((l for l in self.loads if l['node']==ni), None)
-            rxn  = rxns.get(ni)
-
-            block = tk.LabelFrame(inner, text=f'Node {ni}', bg='#ffffff',
-                                  font=('Helvetica',10,'bold'), padx=6, pady=6)
-            block.pack(fill='x', padx=4, pady=5)
-
-            if not vecs:
-                tk.Label(block, text='(no rods connected)', bg='#ffffff',
-                         font=('Helvetica',9), fg='#888').pack(anchor='w')
-                continue
-
-            row = tk.Frame(block, bg='#ffffff')
-            row.pack(fill='x')
-
-            # -- free-body diagram canvas --------------------------------------
-            # Drawn from the SAME complete vectors the table lists, plus any
-            # shear-panel corner forces, so the picture and the numbers
-            # cannot disagree about what this joint carries.
-            fbd_vecs = list(vecs) + [
-                dict(pv, kind='plate', rod=None, other=None)
-                for pv in act['plates']]
-            rigid_ms = [m['M'] for m in vecs if m.get('conn') == 'rigid']
-            max_m = max(rigid_ms, key=abs) if rigid_ms else 0.0
-            max_m_rod = next((m['rod'] for m in vecs
-                              if m.get('conn') == 'rigid' and m['M'] == max_m), None)
-            cv = tk.Canvas(row, width=FBD_SIZE, height=FBD_SIZE, bg='white',
-                          highlightthickness=1, highlightbackground='#ddd')
-            cv.pack(side='left', padx=(0,10))
-            self._draw_node_fbd(cv, fbd_vecs, ld, rxn, size=FBD_SIZE,
-                                net_moment=act['M'], max_moment=max_m,
-                                max_moment_rod=max_m_rod)
-
-            # -- numeric listing -------------------------------------------------
-            info = tk.Text(row, width=34, height=max(12, len(vecs)*4+9),
-                          relief='flat', bg='#ffffff', font=('Courier',9))
-            info.pack(side='left', fill='both', expand=True)
-            F, MOM = self.u('force'), self.u('moment')
-            f_ = lambda v: self.show('force', v)
-            m_ = lambda v: self.show('moment', v)
-            for v in vecs:
-                m_str = (f'{m_(v["M"]):+7.2f} {MOM}' if v.get('conn') == 'rigid'
-                          else f' 0.00 {MOM} (pin)')
-                info.insert('end',
-                    f'Rod {v["rod"]:>2d}→N{v["other"]:<2d} [{v["kind"]}]\n'
-                    f'  N  ={f_(v["N"]):+7.2f} {F}  (axial)\n'
-                    f'  |F|={f_(v["magnitude"]):7.2f} {F}  θ={v["angle_deg"]:6.1f}°\n'
-                    f'  Fx={f_(v["Fx"]):+7.2f}  Fy={f_(v["Fy"]):+7.2f} {F}\n'
-                    f'  M ={m_str}\n')
-            for pv in act['plates']:
-                info.insert('end',
-                    f'Panel {pv["plate"]} (shear)\n'
-                    f'  |F|={f_(pv["magnitude"]):7.2f} {F}  θ={pv["angle_deg"]:6.1f}°\n'
-                    f'  Fx={f_(pv["Fx"]):+7.2f}  Fy={f_(pv["Fy"]):+7.2f} {F}\n')
-            sum_fx, sum_fy, sum_m = act['Fx'], act['Fy'], act['M']
-            if ld:
-                info.insert('end', f'Load   Fx={f_(ld["fx"]):+7.2f}  '
-                                    f'Fy={f_(-ld["fy"]):+7.2f} {F}\n')
-                sum_fx += ld['fx']; sum_fy += -ld['fy']
-            if rxn:
-                info.insert('end', f'Rxn({rxn["type"]}):\n')
-                info.insert('end',
-                    f'  Fx={f_(rxn.get("rx",0)):+7.2f}  '
-                    f'Fy={f_(-rxn.get("ry",0)):+7.2f} {F}\n')
-                sum_fx += rxn.get('rx', 0.0); sum_fy += -rxn.get('ry', 0.0)
-                # `reactions[..]['m']` is in the solver's canvas frame (y
-                # DOWN); every member moment above was converted to the
-                # report's y-UP frame, where a moment about z reverses. Adding
-                # it unconverted left SM = 2*m at every fixed support -- which
-                # looked like a solver error and is not one.
-                sum_m  -= rxn.get('m', 0.0)
-            info.insert('end', '-' * 30 + '\n')
-            info.insert('end', f'ΣFx={f_(sum_fx):+8.3f}  '
-                                f'ΣFy={f_(sum_fy):+8.3f} {F}\n')
-            info.insert('end', f'ΣM ={m_(sum_m):+8.3f} {MOM}\n')
-            info.insert('end', ' members + panels + load +\n'
-                               ' reaction: must all be ~0\n')
-            if rigid_ms:
-                info.insert('end', f'Max |M| = {m_(abs(max_m)):6.2f} {MOM} '
-                                    f'(rod {max_m_rod})\n')
-                info.insert('end', '  <- design moment for this joint\n')
-            info.configure(state='disabled')
-
-        tk.Button(win, text='Close', relief='flat', bg='#1a6bbd', fg='white',
-                  font=('Helvetica',10,'bold'),
-                  command=win.destroy).pack(pady=(0,10))
+        return self._show_card_report('nodes')
 
     def _draw_moment_arc(self, canvas, cx, cy, r, moment, color=CMOM, width=2.5,
                          start_angle=20, extent_mag=260, head_len=None):
@@ -5988,289 +5831,136 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                            arrow='last', arrowshape=(hl, hl+2, hw))
         return x1, y1
 
-    def _draw_node_fbd(self, canvas, vecs, load=None, rxn=None, size=190,
-                       net_moment=0.0, max_moment=0.0, max_moment_rod=None):
-        """
-        Draws a small free-body diagram on `canvas`: every force vector
-        acting on the node originates at the canvas center (representing the
-        node), scaled so the largest vector spans most of the canvas.
-        Colors match the main canvas legend: tension=CT, compression=CC,
-        load=CL, reaction=CR. Coordinates are global (Y-up); the canvas
-        itself is screen space (Y-down), so vertical components are flipped
-        only for drawing.
-
-        Moment glyph: drawn from `max_moment` (the largest individual rod
-        end-moment at this joint, signed) rather than `net_moment`. `net`
-        is a pure equilibrium check that is mathematically guaranteed to
-        read ~0 at any free joint no matter how much moment its rods
-        actually carry (see compute_node_moments docstring) -- using it to
-        drive the visible arc would make the glyph disappear at exactly the
-        joints where there's real Vierendeel action to show. `max_moment`
-        is the number a connection actually needs to be designed for.
-        `net_moment` is still shown as a small secondary text label so the
-        equilibrium check remains visible (and becomes the informative one
-        at a fixed-support node, where it captures the reaction moment).
-        """
-        canvas.delete('all')
-        cx = cy = size/2
-
-        # light crosshair through the node
-        canvas.create_line(4, cy, size-4, cy, fill='#eee')
-        canvas.create_line(cx, 4, cx, size-4, fill='#eee')
-
-        mags = [v['magnitude'] for v in vecs]
-        if load: mags.append(math.hypot(load['fx'], load['fy']))
-        if rxn:  mags.append(math.hypot(rxn.get('rx',0), rxn.get('ry',0)))
-        maxmag = max(mags) if mags else 1.0
-        if maxmag < 1e-9: maxmag = 1.0
-        Rmax = size*0.36
-        Rmin = size*0.14
-
-        def draw_arrow(Fx, Fy, color, label, dash=None):
-            mag = math.hypot(Fx, Fy)
-            if mag < 1e-6: return
-            length = Rmin + (Rmax-Rmin)*(mag/maxmag)
-            ux, uy = Fx/mag, Fy/mag           # global (y-up)
-            ex, ey = cx + ux*length, cy - uy*length   # flip y for canvas
-            canvas.create_line(cx, cy, ex, ey, fill=color, width=2,
-                               arrow='last', arrowshape=(9,11,4), dash=dash)
-            lx, ly = cx + ux*(length+16), cy - uy*(length+16)
-            canvas.create_text(lx, ly, text=label, fill=color,
-                               font=('Helvetica',7,'bold'), justify='center')
-
-        for v in vecs:
-            color = CT if v['kind']=='T' else (CC if v['kind']=='C' else CZ)
-            draw_arrow(v['Fx'], v['Fy'], color,
-                      f'R{v["rod"]}\n' + self.fmt('force', v['magnitude']))
-        if load and math.hypot(load['fx'], load['fy']) > 1e-6:
-            draw_arrow(load['fx'], -load['fy'], CL,
-                      'Load\n' + self.fmt('force',
-                                           math.hypot(load["fx"], load["fy"])),
-                      dash=(3,2))
-        if rxn and math.hypot(rxn.get('rx',0), rxn.get('ry',0)) > 1e-6:
-            draw_arrow(rxn.get('rx',0), -rxn.get('ry',0), CR,
-                      'Rxn\n' + self.fmt('force',
-                                          math.hypot(rxn.get("rx", 0),
-                                                     rxn.get("ry", 0))),
-                      dash=(4,2))
-
-        # design moment at this joint -- a circular-arrow glyph, sized/
-        # oriented from the LARGEST individual rod moment meeting here (not
-        # the net sum -- see docstring above).
-        if abs(max_moment) > 0.05:
-            r = size*0.22
-            self._draw_moment_arc(canvas, cx, cy, r, max_moment, color=CMOM, width=2.5)
-            rod_tag = f' (R{max_moment_rod})' if max_moment_rod is not None else ''
-            canvas.create_text(cx, cy-r-20, text=f'M_max={max_moment:+.1f} kN\u00b7m{rod_tag}',
-                              fill=CMOM, font=('Helvetica',7,'bold'))
-            if abs(net_moment) > 0.05:
-                canvas.create_text(cx, cy-r-9, text=f'\u03a3M={net_moment:+.1f} (equilib.)',
-                                  fill='#aaa', font=('Helvetica',6))
-
-        # node dot on top
-        canvas.create_oval(cx-4, cy-4, cx+4, cy+4, fill=CN, outline='')
-
-    def _draw_rod_context(self, canvas, rod_idx, size=170):
-        """
-        Small schematic of the WHOLE truss (all rods in light gray) with the
-        rod at `rod_idx` highlighted — gives visual context for where this
-        member sits, for the Rod Calculations report.
-        """
-        canvas.delete('all')
-        if not self.nodes: return
-        xs = [n[0] for n in self.nodes]; ys = [n[1] for n in self.nodes]
-        minx, maxx = min(xs), max(xs); miny, maxy = min(ys), max(ys)
-        spanx = (maxx-minx) or 1; spany = (maxy-miny) or 1
-        pad = 18
-        scale = min((size-2*pad)/spanx, (size-2*pad)/spany)
-        cx0, cy0 = (minx+maxx)/2, (miny+maxy)/2
-
-        def tx(pt):
-            return size/2 + (pt[0]-cx0)*scale, size/2 + (pt[1]-cy0)*scale
-
-        for i, rod in enumerate(self.rods):
-            if i == rod_idx: continue
-            x0, y0 = tx(self.nodes[rod['a']]); x1, y1 = tx(self.nodes[rod['b']])
-            canvas.create_line(x0, y0, x1, y1, fill='#cfcfcf', width=2)
-
-        rod = self.rods[rod_idx]
-        x0, y0 = tx(self.nodes[rod['a']]); x1, y1 = tx(self.nodes[rod['b']])
-        color = CZ
-        if self.results:
-            f = self.results['rod_res'][rod_idx]['force']
-            color = CT if f>0.01 else (CC if f<-0.01 else CZ)
-        canvas.create_line(x0, y0, x1, y1, fill=color, width=4)
-
-        for i, n in enumerate(self.nodes):
-            x, y = tx(n)
-            if i in (rod['a'], rod['b']):
-                canvas.create_oval(x-5, y-5, x+5, y+5, fill=CS, outline='#333')
-                canvas.create_text(x, y-10, text=str(i), fill='#333',
-                                   font=('Helvetica',7,'bold'))
-            else:
-                canvas.create_oval(x-3, y-3, x+3, y+3, fill='#999', outline='')
-
     def _show_rod_calculations_report(self):
-        """
-        Opens a report window with one block per rod: a small context
-        diagram (where this member sits in the whole truss), the axial-
-        force calculation typeset with matplotlib's mathtext (a built-in
-        LaTeX-style renderer — no separate TeX installation needed), and
-        the complete free-body diagram at BOTH end nodes — i.e. every other
-        rod, load, and reaction converging at that joint. This is meant to
-        let you check one member and both of its gusset-plate connections
-        at a glance.
-        """
+        """Rod calculations: one row per rod, as on the report's Rod
+        calculations sheets -- see _show_node_vectors_report."""
+        return self._show_card_report('rods')
+
+    def _card_report(self, kind):
+        """The _Report holding the card sheets of `kind` ('nodes' or
+        'rods') for the model as solved, framed like the PDF's."""
+        from . import truss_pdf, truss_report_prefs
+        who = truss_report_prefs.load()
+        rep = truss_pdf._Report(
+            self.nodes, self.rods, self._active_supports(),
+            self._design_loads(), self.results, self.rod_checks or [],
+            self.profiles, self._report_title(), None,
+            diagrams=self.diagrams, plates=self.plates,
+            plate_checks=getattr(self, 'plate_checks', None),
+            stability=getattr(self, '_stab', None),
+            author=who['author'], course=who['course'])
+        if kind == 'nodes':
+            rep.node_vectors()
+        else:
+            rep.rod_calculations()
+        rep.frame()
+        return rep
+
+    def _show_card_report(self, kind):
+        title = ('Node force vectors' if kind == 'nodes'
+                 else 'Rod calculations')
         if not self.results:
-            messagebox.showwarning('Rod Calculations', 'Run the analysis first.'); return
+            messagebox.showwarning(title, 'Run the analysis first.')
+            return None
+        from common import _ensure_matplotlib
+        if not _ensure_matplotlib():
+            messagebox.showerror(title, 'This report needs matplotlib, '
+                                 'which could not be installed. Run: pip '
+                                 'install matplotlib pillow')
+            return None
+        from PIL import Image, ImageTk
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        # A hundred-rod model takes a few seconds to draw: say so first.
+        self.status_var.set('Drawing the %s cards…' % title.lower())
+        try:
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
+        rep = self._card_report(kind)
 
-        have_math = _ensure_matplotlib()
         win = tk.Toplevel(self.root)
-        win._math_refs = []   # keep PhotoImage references alive for this window
-        win.title('Rod / Member Calculations')
-        win.geometry('960x720')
-        win.configure(bg='#f5f5f3')
-
-        tk.Label(win, text='Rod / Member Calculations', bg='#f5f5f3',
-                 font=('Helvetica',13,'bold'), fg='#1a6bbd').pack(pady=(10,0))
-        tk.Label(win,
-                 text='Left: where this member sits in the truss. Middle: its axial-force\n'
-                      'calculation. Right: the full free-body diagram at each end node —\n'
-                      'every other rod + load + reaction converging at that joint.',
-                 bg='#f5f5f3', font=('Helvetica',9), fg='#555',
-                 justify='center').pack(pady=(2,8))
-        if not have_math:
-            tk.Label(win,
-                     text='(Couldn\'t load matplotlib/Pillow for LaTeX-style equations — '
-                          'showing plain text instead. Run: pip install matplotlib pillow)',
-                     bg='#f5f5f3', font=('Helvetica',8,'italic'), fg='#b33').pack()
-
-        outer = tk.Frame(win, bg='#f5f5f3')
-        outer.pack(fill='both', expand=True, padx=10, pady=(0,10))
+        win.title(title + ' — ' + self._report_title())
+        win.geometry('1180x820')
+        win.configure(bg='#8f979e')
+        bar = tk.Frame(win, bg='#f5f5f3')
+        bar.pack(fill='x')
+        tk.Label(bar, text='%s — %d sheet%s, as in the PDF report' % (
+            title, len(rep.sheets), '' if len(rep.sheets) == 1 else 's'),
+            bg='#f5f5f3', fg='#1a6bbd',
+            font=('Helvetica', 12, 'bold')).pack(side='left', padx=10,
+                                                 pady=6)
+        outer = tk.Frame(win, bg='#8f979e')
+        outer.pack(fill='both', expand=True)
         sb = tk.Scrollbar(outer, orient='vertical')
-        sc = tk.Canvas(outer, bg='#f5f5f3', highlightthickness=0, yscrollcommand=sb.set)
-        sb.config(command=sc.yview); sb.pack(side='right', fill='y')
+        sc = tk.Canvas(outer, bg='#8f979e', highlightthickness=0,
+                       yscrollcommand=sb.set)
+        sb.config(command=sc.yview)
+        sb.pack(side='right', fill='y')
         sc.pack(side='left', fill='both', expand=True)
-        inner = tk.Frame(sc, bg='#f5f5f3')
-        inner_id = sc.create_window((0,0), window=inner, anchor='nw')
-        inner.bind('<Configure>', lambda e: sc.configure(scrollregion=sc.bbox('all')))
-        sc.bind('<Configure>', lambda e: sc.itemconfig(inner_id, width=e.width))
-        # See the matching comment in _show_node_vectors_report: bind_all is
-        # required for wheel-scroll to work over the whole report, but it
-        # must be torn down when the window closes or it keeps firing
-        # against a destroyed canvas afterwards.
+
+        # The sheets as pictures, one under another: drawn by Agg at a
+        # width that fits the window, so what is on screen is the page.
+        width_px = 1120
+        win._images = []
+        y = 12
+        for fig, _heading in rep.sheets:
+            fig.set_dpi(width_px / fig.get_size_inches()[0])
+            canvas = FigureCanvasAgg(fig)
+            canvas.draw()
+            w, h = canvas.get_width_height()
+            img = Image.frombuffer('RGBA', (w, h), canvas.buffer_rgba(),
+                                   'raw', 'RGBA', 0, 1)
+            photo = ImageTk.PhotoImage(img, master=win)
+            win._images.append(photo)
+            sc.create_image(12, y, image=photo, anchor='nw')
+            y += h + 12
+        sc.configure(scrollregion=(0, 0, width_px + 24, y))
+        # What the cards say, for anything that needs to read it back
+        # (the plate test reads each joint's equilibrium line).
+        win.card_texts = [t.get_text() for fig, _h in rep.sheets
+                          for t in fig.texts
+                          if t.get_gid() in ('node_table', 'calc_text')]
+        win.sheet_count = len(rep.sheets)
+
+        def save_pdf():
+            from tkinter import filedialog
+            from matplotlib.backends.backend_pdf import PdfPages
+            path = filedialog.asksaveasfilename(
+                parent=win, defaultextension='.pdf',
+                filetypes=[('PDF', '*.pdf')], title='Save these sheets')
+            if not path:
+                return
+            with PdfPages(path) as pdf:
+                for fig, _h in rep.sheets:
+                    pdf.savefig(fig)
+            self.status_var.set('Saved %d %s sheet(s) to %s.' % (
+                len(rep.sheets), title.lower(), os.path.basename(path)))
+        win.save_pdf = save_pdf
+
+        # bind_all, so the wheel scrolls wherever the pointer is over the
+        # window -- and unbound again on close, or it keeps firing at a
+        # destroyed canvas (see the Excel and stereo report windows).
         def _wheel(e):
-            sc.yview_scroll(int(-1*(e.delta/120)), 'units')
+            sc.yview_scroll(int(-1 * (e.delta / 120)), 'units')
         sc.bind_all('<MouseWheel>', _wheel)
-        def _on_close():
-            sc.unbind_all('<MouseWheel>')
+        sc.bind_all('<Button-4>', lambda e: sc.yview_scroll(-3, 'units'))
+        sc.bind_all('<Button-5>', lambda e: sc.yview_scroll(3, 'units'))
+
+        def _close():
+            for seq in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
+                sc.unbind_all(seq)
             win.destroy()
-        win.protocol('WM_DELETE_WINDOW', _on_close)
-
-        nv, rxns = self.results['node_vectors'], self.results['reactions']
-        nmom = self.results.get('node_moments', {})
-        CTX_SIZE, FBD_SIZE = 170, 170
-
-        for ri, rod in enumerate(self.rods):
-            a, b = rod['a'], rod['b']
-            na, nb = self.nodes[a], self.nodes[b]
-            dxp, dyp = nb[0]-na[0], nb[1]-na[1]
-            Lm = math.hypot(dxp, dyp) / PX_PER_M
-            theta = math.degrees(math.atan2(-dyp, dxp)) % 360   # global CCW from +X
-            f = self.results['rod_res'][ri]['force']
-            kind = 'Tension' if f>0.01 else ('Compression' if f<-0.01 else 'Zero')
-            color = CT if f>0.01 else (CC if f<-0.01 else CZ)
-
-            block = tk.LabelFrame(inner,
-                text=f'Rod {ri}   (Node {a} → Node {b})   [{kind}]',
-                bg='#ffffff', font=('Helvetica',10,'bold'),
-                fg=(color if color!=CZ else '#333'), padx=6, pady=6)
-            block.pack(fill='x', padx=4, pady=6)
-            row = tk.Frame(block, bg='#ffffff'); row.pack(fill='x')
-
-            # -- context diagram --------------------------------------------------
-            ctx_col = tk.Frame(row, bg='#ffffff'); ctx_col.pack(side='left', padx=(0,10))
-            tk.Label(ctx_col, text='Location in truss', bg='#ffffff',
-                     font=('Helvetica',8,'bold'), fg='#777').pack()
-            ctx = tk.Canvas(ctx_col, width=CTX_SIZE, height=CTX_SIZE, bg='white',
-                           highlightthickness=1, highlightbackground='#ddd')
-            ctx.pack()
-            self._draw_rod_context(ctx, ri, size=CTX_SIZE)
-
-            # -- calculation (LaTeX-style via matplotlib mathtext) -----------------
-            calc_col = tk.Frame(row, bg='#ffffff')
-            calc_col.pack(side='left', fill='both', expand=True, padx=(0,10))
-            tk.Label(calc_col, text='Calculation', bg='#ffffff',
-                     font=('Helvetica',8,'bold'), fg='#777').pack(anchor='w')
-
-            cos_t, sin_t = math.cos(math.radians(theta)), math.sin(math.radians(theta))
-            eqs = [
-                rf'$L=\sqrt{{\Delta x^2+\Delta y^2}}={Lm:.3f}\ m$',
-                rf'$\theta={theta:.1f}^\circ,\ \ \cos\theta={cos_t:.3f},\ \ \sin\theta={sin_t:.3f}$',
-                rf'$N_{{{ri}}}={f:+.2f}\ kN$',
-                rf'$F_{{x,{a}}}=N\cos\theta={f*cos_t:+.2f}\ kN,\quad'
-                rf' F_{{y,{a}}}=N\sin\theta={f*sin_t:+.2f}\ kN$',
-                rf'$F_{{x,{b}}}=-N\cos\theta={-f*cos_t:+.2f}\ kN,\quad'
-                rf' F_{{y,{b}}}=-N\sin\theta={-f*sin_t:+.2f}\ kN$',
-            ]
-            rr = self.results['rod_res'][ri]
-            if rr.get('conn') == 'rigid':
-                # Vierendeel moment: the end moments this rigid connection
-                # carries, plus the peak moment anywhere along its span
-                # (from the same M(x) the diagram pane and fiber-stress
-                # feature both already use, so this number always agrees
-                # with what's plotted elsewhere).
-                Ma, Mb = rr.get('Ma', 0.0), rr.get('Mb', 0.0)
-                peak_M = 0.0
-                if self.diagrams and ri < len(self.diagrams):
-                    Ms = self.diagrams[ri].get('M', [])
-                    if Ms:
-                        peak_M = max(Ms, key=abs)
-                eqs.append(
-                    rf'$\mathrm{{Vierendeel\ moment:}}\ \ M_{{a}}={Ma:+.2f}\ kN{{\cdot}}m,'
-                    rf'\quad M_{{b}}={Mb:+.2f}\ kN{{\cdot}}m$')
-                eqs.append(rf'$\mathrm{{Peak}}\ M(x)={peak_M:+.2f}\ kN{{\cdot}}m'
-                           rf'\ \mathrm{{along\ span}}$')
-            else:
-                eqs.append(r'$\mathrm{Vierendeel\ moment:}\ \ N/A\ \mathrm{-\ pinned\ connection,\ no\ bending}$')
-            for eq in eqs:
-                # master=win: the image must belong to the interpreter of
-                # the window showing it, not to whichever root happens to
-                # be tkinter's default. See common.render_math.
-                img = (render_math(eq, fontsize=12, color='#222222', master=win)
-                       if have_math else None)
-                if img is not None:
-                    win._math_refs.append(img)
-                    tk.Label(calc_col, image=img, bg='#ffffff').pack(anchor='w', pady=2)
-                else:
-                    plain = (eq.replace('$','').replace(r'\Delta','d')
-                               .replace(r'\theta','theta').replace(r'^\circ','deg')
-                               .replace(r'\sqrt','sqrt').replace(r'\quad','   ')
-                               .replace(r'\mathrm','').replace(r'\cdot','\u00b7')
-                               .replace(r'\ ',' ').replace('{','').replace('}',''))
-                    tk.Label(calc_col, text=plain, bg='#ffffff', fg='#222',
-                            font=('Courier',10), justify='left').pack(anchor='w', pady=1)
-
-            # -- end-node free-body diagrams ---------------------------------------
-            for end_node, end_lbl in [(a,'A'), (b,'B')]:
-                end_col = tk.Frame(row, bg='#ffffff'); end_col.pack(side='left', padx=(0,4))
-                tk.Label(end_col, text=f'End {end_lbl} — Node {end_node}', bg='#ffffff',
-                         font=('Helvetica',8,'bold'), fg='#777').pack()
-                cv = tk.Canvas(end_col, width=FBD_SIZE, height=FBD_SIZE, bg='white',
-                              highlightthickness=1, highlightbackground='#ddd')
-                cv.pack()
-                vecs_end = nv.get(end_node, [])
-                ld_end   = next((l for l in self.loads if l['node']==end_node), None)
-                rxn_end  = rxns.get(end_node)
-                nmom_end = nmom.get(end_node, {'net':0.0, 'max_signed':0.0, 'max_abs_rod':None})
-                self._draw_node_fbd(cv, vecs_end, ld_end, rxn_end, size=FBD_SIZE,
-                                    net_moment=nmom_end['net'],
-                                    max_moment=nmom_end.get('max_signed', 0.0),
-                                    max_moment_rod=nmom_end.get('max_abs_rod'))
-
-        tk.Button(win, text='Close', relief='flat', bg='#1a6bbd', fg='white',
-                  font=('Helvetica',10,'bold'),
-                  command=win.destroy).pack(pady=(0,10))
+        win.protocol('WM_DELETE_WINDOW', _close)
+        tk.Button(bar, text='Close', relief='flat', bg='#1a6bbd', fg='white',
+                  font=('Helvetica', 10, 'bold'), padx=10,
+                  command=_close).pack(side='right', padx=(4, 10), pady=6)
+        tk.Button(bar, text='Save as PDF…', relief='flat', bg='#e2e6e4',
+                  font=('Helvetica', 10), padx=10,
+                  command=save_pdf).pack(side='right', pady=6)
+        self._card_window = win
+        self.status_var.set('%s: %d sheet(s), the same as in the PDF '
+                            'report.' % (title, len(rep.sheets)))
+        return win
 
     def _export_excel(self, _event=None):
         # truss_reports.export_excel has handled results=None all along --

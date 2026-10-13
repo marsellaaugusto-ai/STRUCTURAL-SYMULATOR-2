@@ -368,32 +368,25 @@ def test_node_force_vectors_report_balances_at_every_node(app):
                  'G_GPa': 80.0}]
     a._run_analysis()
     assert a.results is not None
-    a._show_node_vectors_report()
+    win = a._show_node_vectors_report()
     root.update_idletasks()
     root.update()
 
-    texts = []
-
-    def walk(w):
-        if isinstance(w, tk.Text):
-            texts.append(w)
-        for c in w.winfo_children():
-            walk(c)
-    walk(root)
-
-    checked = 0
-    for t in texts:
-        body = t.get('1.0', 'end')
-        mf = re.search(r'\u03a3Fx=\s*([-+0-9.]+)\s+\u03a3Fy=\s*([-+0-9.]+)', body)
-        mm = re.search(r'\u03a3M\s*=\s*([-+0-9.]+)', body)
-        if not (mf and mm):
-            continue
-        checked += 1
+    # The window shows the PDF's Node force vectors cards (v32 t 15); it
+    # keeps each card's table text, whose last line is the joint's sums.
+    tables = win.card_texts
+    assert len(tables) == len(a.nodes), (len(tables), len(a.nodes))
+    for body in tables:
+        last = body.rstrip().splitlines()[-1]
+        mf = re.search(r'Fx\s+([-+0-9.]+)\s+Fy\s+([-+0-9.]+)', last)
+        mm = re.search(r'M\s+([-+0-9.]+)', last)
+        assert mf and mm, body
         assert abs(float(mf.group(1))) < 1e-2, body
         assert abs(float(mf.group(2))) < 1e-2, body
         assert abs(float(mm.group(1))) < 1e-2, body
-    assert checked == len(a.nodes), (checked, len(a.nodes))
+        assert last.endswith('✓'), body
 
-    joined = '\n'.join(t.get('1.0', 'end') for t in texts)
-    assert '(axial)' in joined, 'axial N is no longer reported separately'
-    assert 'Panel' in joined, 'the shear panel does not appear at its joints'
+    joined = '\n'.join(tables)
+    assert all(t.splitlines()[0].split()[:2] == ['member', 'N']
+               for t in tables), 'axial N is no longer reported separately'
+    assert 'panel' in joined, 'the shear panel does not appear at its joints'

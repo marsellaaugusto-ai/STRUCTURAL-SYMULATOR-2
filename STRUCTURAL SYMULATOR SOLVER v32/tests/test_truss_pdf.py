@@ -469,7 +469,14 @@ def test_a_pinned_truss_does_not_pay_for_sheets_that_would_be_blank(tmp_path):
     assert 'Moment M' not in heads
     assert not any(h.startswith('Rod detail') for h in heads)
     assert out['rod_detail'] == []
-    assert out['sheets'] <= 10, heads
+    # The node force vectors and rod calculations (asked for on 13-10-26)
+    # are content, not blank sheets; they are held to their own budget:
+    # eight joints and sixteen rods to a sheet.
+    cards = [h for h in heads if h.startswith(('Node force vectors',
+                                               'Rod calculations'))]
+    assert len(cards) == (-(-len(m['nodes']) // 8)
+                          + -(-len(m['rods']) // 16))
+    assert out['sheets'] - len(cards) <= 10, heads
 
 
 def test_a_bending_model_gets_all_three_and_says_so(tmp_path):
@@ -1508,3 +1515,119 @@ def test_the_deflection_limit_label_sits_inside_its_graph():
               if any('limit L/' in t.get_text() for t in a.texts))
     lab = next(t for t in ax.texts if 'limit L/' in t.get_text())
     assert _bbox(fig, lab).y0 >= ax.get_window_extent().y0 - 0.5
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Node force vectors and rod calculations (v32 t 15)
+#
+#  Asked for on 13-10-26: "can you add a node member vector report sheet
+#  and a rod member report sheet to the pdf documents" -- then "the max
+#  moment with the sign and arrow should be there in the cards".
+# ═════════════════════════════════════════════════════════════════════════════
+def _cards(rep, prefix):
+    return [f for f, h in rep.sheets if h.startswith(prefix)]
+
+
+def test_every_joint_gets_a_card_whose_sums_close():
+    import re
+    m, res, ch = _solved('pratt')
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'p', None)
+    assert rep.node_vectors() == list(range(len(m['nodes'])))
+    tables = [t.get_text() for f in _cards(rep, 'Node force vectors')
+              for t in f.texts if t.get_gid() == 'node_table']
+    assert len(tables) == len(m['nodes'])
+    for body in tables:
+        assert body.rstrip().endswith('✓'), body
+        fx, fy = re.search(r'Fx (\S+)\s+Fy (\S+)', body.splitlines()[-1]
+                           ).groups()
+        assert abs(float(fx)) < 0.01 and abs(float(fy)) < 0.01
+
+
+def test_a_node_card_lists_what_compute_node_design_actions_says():
+    from apps.truss.truss_math import compute_node_design_actions
+    m, res, ch = _solved('pratt')
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'p', None)
+    rep.node_vectors()
+    acts = compute_node_design_actions(m['nodes'], m['rods'],
+                                       res['rod_res'])
+    for ni, act in acts.items():
+        for v in act['members']:
+            assert any('r%d→%d' % (v['rod'], v['other']) in t.get_text()
+                       and rep.u.f('force', tp._z(v['N']), 1, sign=True)
+                       in t.get_text()
+                       for f in _cards(rep, 'Node force vectors')
+                       for t in f.texts if t.get_gid() == 'node_table')
+
+
+def test_a_rigid_joint_card_carries_its_max_moment_sign_and_arrow():
+    m, res, ch, dg = _bending_model()
+    rep = _report(m, res, ch, dg)
+    carded = rep.node_vectors()
+    rows = {e['node']: e for e in rep.joint_moments()}
+    e = rows[3]                                  # 43.44 kN·m, clockwise
+    # one table per card, created in joint order
+    tables = [t.get_text() for f in _cards(rep, 'Node force vectors')
+              for t in f.texts if t.get_gid() == 'node_table']
+    body = tables[carded.index(3)]
+    line = next(l for l in body.splitlines() if l.startswith('max M'))
+    assert rep.u.f('moment', e['signed'], 2, sign=True) in line
+    assert ('clockwise' in line) and (('anti' in line) == (e['signed'] > 0))
+    # and the turning arrow is drawn round the joint, in the moment purple
+    fig = _cards(rep, 'Node force vectors')[0]
+    arcs = [l for a in fig.axes for l in a.lines
+            if l.get_color() == '#7b2d8e' and len(l.get_xdata()) > 10]
+    assert len(arcs) >= 4
+
+
+def test_every_rod_gets_a_calculation_row_with_its_end_components():
+    m, res, ch = _solved('pratt')
+    rep = tp._Report(m['nodes'], m['rods'], m['supports'], m['loads'], res,
+                     ch, m['profiles'], 'p', None)
+    assert rep.rod_calculations() == list(range(len(m['rods'])))
+    sheets = _cards(rep, 'Rod calculations')
+    assert len(sheets) == 2                       # 17 rods, 16 to a sheet
+    texts = [t.get_text() for f in sheets for t in f.texts]
+    N = res['rod_res'][13]['force']
+    assert any('N = %s kN' % rep.u.f('force', N, 2, sign=True) in t
+               for t in texts)
+    assert sum(1 for t in texts if t.startswith('Rod ')) == len(m['rods'])
+
+
+# ── the same cards in the tab's two report windows ────────────────────────
+#  "please update the apps ui to show the nodes and member rods like you
+#  are doing for the pdf"
+def test_the_node_window_shows_the_report_s_cards(app, tmp_path,
+                                                  monkeypatch):
+    from tkinter import filedialog
+    app._load_library_example('vierendeel')
+    app._run_analysis(quiet=True)
+    win = app._show_node_vectors_report()
+    app.root.update()
+    assert win.sheet_count == 2                      # 10 joints, 8 a sheet
+    assert len(win.card_texts) == len(app.nodes)
+    assert len(win._images) == win.sheet_count
+    assert all('max M' in t for t in win.card_texts), (
+        'every Vierendeel joint carries moment; its card must say so')
+    out = tmp_path / 'cards.pdf'
+    monkeypatch.setattr(filedialog, 'asksaveasfilename', lambda **k: str(out))
+    win.save_pdf()
+    assert _pages(out) == win.sheet_count
+    win.destroy()
+
+
+def test_the_rod_window_shows_one_row_per_rod(app):
+    app._load_library_example('pratt')
+    app._run_analysis(quiet=True)
+    win = app._show_rod_calculations_report()
+    app.root.update()
+    assert win.sheet_count == 2                      # 17 rods, 16 a sheet
+    assert len(win.card_texts) == len(app.rods)
+    win.destroy()
+
+
+def test_the_card_windows_ask_for_an_analysis_first(app):
+    app._load_library_example('pratt')
+    assert app._show_node_vectors_report() is None
+    assert app._show_rod_calculations_report() is None

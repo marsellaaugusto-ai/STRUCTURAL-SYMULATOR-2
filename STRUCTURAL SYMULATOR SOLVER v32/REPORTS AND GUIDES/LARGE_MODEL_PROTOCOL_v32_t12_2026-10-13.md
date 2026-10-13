@@ -46,9 +46,9 @@ Everything is in `REPORTS AND GUIDES/large_model_protocol_v32_t12/`:
 | File | What it is |
 |---|---|
 | `K-truss bridge 64 m.xlsx` | the model and its results; **Export ▾ → Import model from Excel…** rebuilds it exactly |
-| `K-truss bridge 64 m.pdf` | the report, 10 sheets |
+| `K-truss bridge 64 m.pdf` | the report, 24 sheets |
 | `K-truss bridge 64 m (rigid joints).xlsx` | the same bridge with every joint welded |
-| `K-truss bridge 64 m (rigid joints).pdf` | its report, 21 sheets: the heaviest report the tab writes |
+| `K-truss bridge 64 m (rigid joints).pdf` | its report, 35 sheets: the heaviest report the tab writes |
 
 Both PDFs were written the same way you will reproduce them: import the
 Excel file, ▶ Analyze, **Export PDF report…**. The report takes its title
@@ -210,8 +210,8 @@ its own.
 Welding the joints changes the chord forces by **under 1 %** (945 kN
 pinned, 944 kN rigid), and the largest bending moment is about 5 kN·m.
 A deep, triangulated truss carries its load by axial force either way.
-That is why the pinned model is a fair one, and why its report is 10
-sheets instead of 21. The protocol test asserts the 1 %.
+That is why the pinned model is a fair one, and why its report is 24
+sheets instead of 35. The protocol test asserts the 1 %.
 
 ## Step 9: Report
 
@@ -219,9 +219,19 @@ sheets instead of 21. The protocol test asserts the 1 %.
 
 | | pinned | rigid joints |
 |---|---|---|
-| Sheets | 10 | 21 |
-| Time to write | about 5 s | about 20 s |
+| Sheets | 24 | 35 |
+| Time to write | about 20 s | about 35 s |
+| Of which node force vectors / rod calculations | 7 / 7 | 7 / 7 |
 | Extra sheets | — | Shear V, Moment M, Joints (3 sheets), Rod detail (6 sheets) |
+
+The **Node force vectors** sheets give every joint a card: its free-body
+diagram, the force each member puts on it, the load and reaction, the
+joint's maximum moment with its sign and turning arrow (at a rigid
+joint), and ΣFx, ΣFy, ΣM closing to zero. The **Rod calculations**
+sheets give every rod a row: L, θ, N, the components at each end, and
+the free bodies of both end joints. The same cards open on screen from
+**Export ▾ → Node force vectors…** and **Show me the working (rod
+calculations)…**.
 
 ![The Axial forces sheet of the bridge](ui_v32_t12_bridge_forces_sheet.png)
 

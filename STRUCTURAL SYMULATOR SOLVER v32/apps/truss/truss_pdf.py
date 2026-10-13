@@ -365,6 +365,7 @@ class _Report:
         ('Plates', '#b86e00'),
         ('Buckling', '#b03a2e'),
         ('Shear', '#6a3d9a'), ('Moment', '#6a3d9a'), ('Joints', '#6a3d9a'),
+        ('Node force vectors', '#1a6bbd'), ('Rod calculations', '#1a6bbd'),
     )
 
     @classmethod
@@ -1929,7 +1930,7 @@ class _Report:
         out.sort(key=lambda e: -e['max_abs'])
         return out
 
-    def _moment_arc(self, ax, x, y, m, r, color):
+    def _moment_arc(self, ax, x, y, m, r, color, lw=1.4):
         """The tab's circular arrow: anticlockwise for a positive moment,
         clockwise for a negative one -- the way the moment turns the
         joint, not a colour code (`_draw_moment_arc` on screen)."""
@@ -1939,11 +1940,11 @@ class _Report:
         angs = [start + sgn * sweep * k / (n - 1) for k in range(n)]
         xs = [x + r * math.cos(a) for a in angs]
         ys = [y + r * math.sin(a) for a in angs]
-        ax.plot(xs, ys, color=color, lw=1.4, zorder=7,
+        ax.plot(xs, ys, color=color, lw=lw, zorder=7,
                 solid_capstyle='round')
         ax.annotate('', xy=(xs[-1], ys[-1]), xytext=(xs[-3], ys[-3]),
-                    arrowprops=dict(arrowstyle='-|>', color=color, lw=1.4,
-                                    mutation_scale=9), zorder=7)
+                    arrowprops=dict(arrowstyle='-|>', color=color, lw=lw,
+                                    mutation_scale=9 * lw / 1.4), zorder=7)
 
     def joints(self):
         """Every joint that carries moment: how much, the sign, which way
@@ -2054,6 +2055,300 @@ class _Report:
                         else 'pinned, or the moments there solved to zero'),
                     80), fontsize=6.6, color='#666', va='top')
         return [e['node'] for e in rows]
+
+    # ── node force vectors and rod calculations ───────────────────────────
+    #
+    # Asked for on 13-10-26: "can you add a node member vector report sheet
+    # and a rod member report sheet to the pdf documents". They are the
+    # tab's two report windows, Export ▾ → Node force vectors… and Show me
+    # the working (rod calculations)…, which lived only on screen. Both
+    # read the SAME numbers as those windows (compute_node_design_actions:
+    # the complete action of each member on each joint -- axial, and at a
+    # rigid joint its shear and end moment too), so the page and the
+    # window cannot disagree.
+
+    NODE_COLS, NODE_ROWS = 4, 2
+    CALC_ROWS, CALC_COLS = 8, 2
+
+    def _actions(self):
+        if getattr(self, '_acts', None) is None:
+            from .truss_math import compute_node_design_actions
+            self._acts = compute_node_design_actions(
+                self.nodes, self.rods, self.res['rod_res'],
+                self.res.get('plate_res', []))
+        return self._acts
+
+    def _node_extras(self, ni):
+        """(load (Fx, Fy), reaction (Fx, Fy, M), its type) at joint `ni`,
+        y up, or None for each that is not there."""
+        ld = next((l for l in self.loads if l['node'] == ni), None)
+        load = (ld['fx'], -ld['fy']) if ld else None
+        r = self.res['reactions'].get(ni)
+        rxn = ((r.get('rx', 0.0), -r.get('ry', 0.0), -r.get('m', 0.0))
+               if r else None)
+        return load, rxn, (r.get('type') if r else None)
+
+    def _joint_moment(self, ni):
+        """The joint's design moment as the Joints sheet reports it --
+        the largest one any single rod hands it, signed (anticlockwise
+        +), or at a fixed support its reaction moment -- as (M, rod); or
+        None when the joint carries none."""
+        if getattr(self, '_jm', None) is None:
+            self._jm = {e['node']: e for e in self.joint_moments()}
+        e = self._jm.get(ni)
+        if not e:
+            return None
+        if e['max_abs'] > 0.05:
+            return e['signed'], e['rod']
+        return -e['reaction_m'], None
+
+    def _node_fbd(self, ax, ni, lead=None):
+        """The free-body diagram of joint `ni`: every force on it drawn
+        from its centre. Members in red (pulling: tension) or blue
+        (pushing: compression), with their directions as faint lines;
+        the load orange; the reaction green. With `lead`, that rod's
+        force alone is coloured and the rest are grey -- the rod
+        calculation's view of its two end joints."""
+        act = self._actions().get(ni, {'members': [], 'plates': []})
+        load, rxn, _t = self._node_extras(ni)
+        vecs = []
+        for v in act['members']:
+            col = CT if v['N'] > 0.01 else CC if v['N'] < -0.01 else CZ
+            if lead is not None and v['rod'] != lead:
+                col = '#b8bec4'
+            vecs.append((v['Fx'], v['Fy'], col, 'r%d' % v['rod'],
+                         v['rod'] == lead))
+        for pv in act['plates']:
+            vecs.append((pv['Fx'], pv['Fy'], '#33526b', 'panel', False))
+        if load and math.hypot(*load) > 1e-9:
+            vecs.append((load[0], load[1], LOAD, 'load', False))
+        if rxn and math.hypot(rxn[0], rxn[1]) > 1e-9:
+            vecs.append((rxn[0], rxn[1], REACTION, 'R', False))
+        x, y = self.pts[ni]
+        for v in act['members']:          # the member directions, faint
+            r = self.rods[v['rod']]
+            o = self.pts[r['b'] if r['a'] == ni else r['a']]
+            d = math.hypot(o[0] - x, o[1] - y) or 1.0
+            ax.plot([0, 1.25 * (o[0] - x) / d], [0, 1.25 * (o[1] - y) / d],
+                    color='#e3e7ea', lw=2.4, zorder=1,
+                    solid_capstyle='round')
+        big = max((math.hypot(fx, fy) for fx, fy, *_r in vecs), default=0.0)
+        for fx, fy, col, tag, hot in vecs:
+            mag = math.hypot(fx, fy)
+            if big < 1e-9 or mag < 1e-6 * big:
+                continue
+            ex, ey = fx / big, fy / big
+            ax.annotate('', xy=(ex, ey), xytext=(0, 0), zorder=4 if hot else 3,
+                        arrowprops=dict(arrowstyle='-|>,head_length=0.4,'
+                                        'head_width=0.18', color=col,
+                                        lw=1.6 if hot else 1.0,
+                                        shrinkA=0, shrinkB=0))
+        ax.plot([0], [0], 'o', ms=3.0, color=INK, zorder=5)
+        jm = self._joint_moment(ni)
+        if jm is not None:
+            # The design moment as a turning arrow round the joint, the
+            # way it turns it (anticlockwise +), as on the Joints sheet.
+            self._moment_arc(ax, 0.0, 0.0, jm[0], 0.42, '#7b2d8e',
+                             lw=1.4 if lead is None else 0.9)
+            if lead is None:
+                ax.text(0.5, 0.5, self.u.f('moment', jm[0], 1, sign=True),
+                        fontsize=6.4, color='#7b2d8e', fontweight='bold',
+                        ha='left', va='bottom', zorder=8,
+                        bbox=dict(boxstyle='round,pad=0.1', fc='white',
+                                  ec='none', alpha=0.85))
+        if big < 1e-9:
+            ax.text(0, -0.55, 'no force', fontsize=5.5, color='#888',
+                    ha='center')
+        ax.set_xlim(-1.4, 1.4)
+        ax.set_ylim(-1.4, 1.4)
+        ax.set_aspect('equal', adjustable='box')
+        ax.axis('off')
+
+    def _node_thumb(self, ax, ni):
+        for r in self.rods:
+            (xa, ya), (xb, yb) = self.pts[r['a']], self.pts[r['b']]
+            ax.plot([xa, xb], [ya, yb], color=self.THUMB_REST, lw=0.8,
+                    zorder=2)
+        x, y = self.pts[ni]
+        ax.plot([x], [y], 'o', ms=6.0, color='white', zorder=3)
+        ax.plot([x], [y], 'o', ms=4.2, color=self.THUMB_ROD, zorder=4)
+        ax.set_aspect('equal', adjustable='datalim')
+        ax.axis('off')
+
+    def node_vectors(self):
+        """Node force vectors: one card per joint, eight to a sheet.
+        Returns the joints carded."""
+        acts = self._actions()
+        nodes = [ni for ni in range(len(self.nodes))
+                 if acts.get(ni, {}).get('members')]
+        if not nodes:
+            return []
+        per = self.NODE_COLS * self.NODE_ROWS
+        pages = [nodes[i:i + per] for i in range(0, len(nodes), per)]
+        F, MOM = self.u.lab('force'), self.u.lab('moment')
+        f = lambda v: self.u.f('force', _z(v), 1, sign=True)
+        rigid = any(r.get('conn') == 'rigid' for r in self.rods)
+        cw, ch = 0.92 / self.NODE_COLS, 0.355
+        for pno, chunk in enumerate(pages):
+            fig = self.new_sheet('Node force vectors' + (
+                ' (%d/%d)' % (pno + 1, len(pages)) if len(pages) > 1 else ''))
+            self.caption(fig,
+                'Every force ON each joint, drawn from its centre: each '
+                'member\'s pull (red, tension) or push (blue, compression)%s, '
+                'the load (orange), the reaction (green). x right, y up, θ '
+                'anticlockwise from +x. Σ ≈ 0: the joint is in equilibrium; '
+                'these are the forces its gusset plate is designed for.'
+                % (', with its shear and end moment M at a rigid joint'
+                   if rigid else ''))
+            for k, ni in enumerate(chunk):
+                row, col = divmod(k, self.NODE_COLS)
+                x0 = 0.04 + col * cw
+                top = 0.895 - row * ch
+                self._node_card(fig, ni, x0, top, cw, ch, F, MOM, f, rigid)
+            if len(chunk) > self.NODE_COLS:
+                _hrule(fig, 0.895 - ch + 0.004, 0.04, 0.96, color='#e3e7ea')
+            for c in range(1, min(len(chunk), self.NODE_COLS)):
+                _vrule(fig, 0.04 + c * cw - 0.004,
+                       0.895 - ch * ((len(chunk) - 1) // self.NODE_COLS + 1)
+                       + 0.01, 0.895, color='#e3e7ea')
+        return nodes
+
+    def _node_card(self, fig, ni, x0, top, cw, ch, F, MOM, f, rigid):
+        act = self._actions()[ni]
+        load, rxn, rtype = self._node_extras(ni)
+        head = 'Joint %d' % ni + ('  ·  %s' % rtype if rtype else '')
+        fig.text(x0 + 0.004, top - 0.004, head, fontsize=8.2,
+                 fontweight='bold', color=INK, va='top')
+        tx = fig.add_axes((x0 + cw - 0.085, top - 0.042, 0.075, 0.036))
+        self._node_thumb(tx, ni)
+        ax = fig.add_axes((x0 + 0.004, top - 0.185, 0.12, 0.14))
+        self._node_fbd(ax, ni)
+        # the table, monospaced so its columns line up
+        lines = ['%-8s %8s %6s %8s %8s%s' % (
+            'member', 'N', 'θ°', 'Fx', 'Fy', '%7s' % 'M' if rigid else '')]
+        for v in act['members']:
+            m = ('%7s' % (self.u.f('moment', _z(v['M']), 1, sign=True)
+                          if v.get('conn') == 'rigid' else '0 pin')
+                 if rigid else '')
+            lines.append('%-8s %8s %6.1f %8s %8s%s' % (
+                'r%d→%d' % (v['rod'], v['other']), f(v['N']),
+                v['angle_deg'], f(v['Fx']), f(v['Fy']), m))
+        sx, sy, sm = act['Fx'], act['Fy'], act['M']
+        for pv in act['plates']:
+            lines.append('%-8s %8s %6.1f %8s %8s' % (
+                'panel %s' % pv['plate'], '', pv['angle_deg'], f(pv['Fx']),
+                f(pv['Fy'])))
+        if load:
+            lines.append('%-8s %8s %6s %8s %8s' % ('load', '', '', f(load[0]),
+                                                  f(load[1])))
+            sx += load[0]
+            sy += load[1]
+        if rxn:
+            lines.append('%-8s %8s %6s %8s %8s%s' % (
+                'reaction', '', '', f(rxn[0]), f(rxn[1]),
+                ('%7s' % self.u.f('moment', _z(rxn[2]), 1, sign=True))
+                if rigid and abs(rxn[2]) > 1e-9 else ''))
+            sx += rxn[0]
+            sy += rxn[1]
+            sm += rxn[2]
+        jm = self._joint_moment(ni)
+        if jm is not None:
+            lines.append('max M %s %s%s  %s' % (
+                self.u.f('moment', jm[0], 2, sign=True), MOM,
+                ('  rod %d' % jm[1]) if jm[1] is not None else '  support',
+                'anticlockwise' if jm[0] > 0 else 'clockwise'))
+        ok = (abs(sx) < 0.05 and abs(sy) < 0.05 and abs(sm) < 0.05)
+        lines.append('Σ %s   Fx %s  Fy %s%s  %s' % (
+            F, self.u.f('force', _z(sx), 2), self.u.f('force', _z(sy), 2),
+            ('  M %s' % self.u.f('moment', _z(sm), 2)) if rigid else '',
+            '✓' if ok else '≠ 0'))
+        t = fig.text(x0 + 0.004, top - 0.192, '\n'.join(lines),
+                     fontsize=5.9 if rigid else 6.4, family='monospace',
+                     color=INK, va='top', linespacing=1.35)
+        t.set_gid('node_table')
+
+    def rod_calculations(self):
+        """Rod calculations: one row per rod, sixteen to a sheet -- its
+        length and angle, its force and the two end components, and the
+        free body of each end joint with this rod's force picked out.
+        Returns the rods listed."""
+        rods = list(range(len(self.rods)))
+        if not rods:
+            return []
+        rows, ncol = self.CALC_ROWS, self.CALC_COLS
+        per = rows * ncol
+        pages = [rods[i:i + per] for i in range(0, len(rods), per)]
+        top0, rh = 0.880, 0.088
+        for pno, chunk in enumerate(pages):
+            fig = self.new_sheet('Rod calculations' + (
+                ' (%d/%d)' % (pno + 1, len(pages)) if len(pages) > 1 else ''))
+            self.caption(fig,
+                'Every rod: its length L and angle θ (anticlockwise from +x, '
+                'from its first joint to its second), its axial force N (+ '
+                'pulls, − pushes), and what that force does at each end: Fx '
+                '= N cos θ, Fy = N sin θ on the first joint, and the same '
+                'reversed on the second. Right: the free body of each end '
+                'joint, with this rod\'s force coloured and the rest grey.')
+            used = (len(chunk) + rows - 1) // rows
+            for c in range(used):
+                x_lo = self.DETAIL_COL_X[c]
+                _hrule(fig, top0, x_lo, x_lo + 0.44)
+                for k, ri in enumerate(chunk[c * rows:(c + 1) * rows]):
+                    top = top0 - k * rh
+                    self._calc_row(fig, ri, x_lo, top, rh)
+                    _hrule(fig, top - rh, x_lo, x_lo + 0.44, color='#e3e7ea')
+            if used > 1:
+                _vrule(fig, 0.497, top0 - rows * rh, top0 + 0.01)
+        return rods
+
+    def _calc_row(self, fig, ri, x0, top, h):
+        r = self.rods[ri]
+        a, b = r['a'], r['b']
+        (xa, ya), (xb, yb) = self.pts[a], self.pts[b]
+        L = math.hypot(xb - xa, yb - ya)
+        th = math.degrees(math.atan2(yb - ya, xb - xa)) % 360.0
+        c_, s_ = math.cos(math.radians(th)), math.sin(math.radians(th))
+        N = self.res['rod_res'][ri]['force']
+        kind = ('tension' if N > 0.01 else 'compression' if N < -0.01
+                else 'no force')
+        col = CT if N > 0.01 else CC if N < -0.01 else '#666666'
+        F = self.u.lab('force')
+        f = lambda v: self.u.f('force', _z(v), 2, sign=True)
+        fig.text(x0, top - 0.008, 'Rod %d' % ri, fontsize=8.5,
+                 fontweight='bold', color=INK, va='top')
+        fig.text(x0, top - 0.027, 'joint %d → %d' % (a, b), fontsize=6.2,
+                 color='#555', va='top')
+        fig.text(x0, top - 0.041, kind, fontsize=6.2, color=col,
+                 fontweight='bold', va='top')
+        tx = fig.add_axes((x0, top - h + 0.005, 0.075, 0.026))
+        self.thumbnail(tx, ri, lw=0.7)
+        lines = [
+            'L = %s %s     θ = %.1f°' % (self.u.f('length', L, 3),
+                                        self.u.lab('length'), th),
+            'cos θ = %+.3f   sin θ = %+.3f' % (c_, s_),
+            'N = %s %s' % (f(N), F),
+            'at %d:  Fx = %s   Fy = %s' % (a, f(N * c_), f(N * s_)),
+            'at %d:  Fx = %s   Fy = %s' % (b, f(-N * c_), f(-N * s_)),
+        ]
+        rr = self.res['rod_res'][ri]
+        if r.get('conn') == 'rigid':
+            # A rigid rod hands its joints shear and moment as well; the
+            # free bodies beside this include them, so the row says so.
+            mm = lambda v: self.u.f('moment', _z(v), 2, sign=True)
+            lines.append('rigid: V = %s  Ma = %s  Mb = %s' % (
+                f(rr.get('V', 0.0)), mm(rr.get('Ma', 0.0)),
+                mm(rr.get('Mb', 0.0))))
+        t = fig.text(x0 + 0.085, top - 0.008, '\n'.join(lines),
+                     fontsize=6.1 if len(lines) <= 5 else 5.8,
+                     family='monospace', color=INK, va='top',
+                     linespacing=1.4 if len(lines) <= 5 else 1.3)
+        t.set_gid('calc_text')
+        for k, ni in enumerate((a, b)):
+            ax = fig.add_axes((x0 + 0.300 + k * 0.070, top - h + 0.004,
+                               0.066, h - 0.016))
+            self._node_fbd(ax, ni, lead=ri)
+            ax.set_title('joint %d' % ni, fontsize=5.6, color='#555',
+                         pad=1.0)
 
     def plate_table(self):
         """Every plate's check, when the model has plates.
@@ -2641,7 +2936,9 @@ def export_pdf(path, nodes, rods, supports, loads, results, checks,
         rep.shear()
         rep.moment()
     joint_rows = rep.joints()
+    node_cards = rep.node_vectors()
     rep.rod_table()
+    rod_cards = rep.rod_calculations()
     rep.plate_table()
     detail = rep.rod_detail() if rep.bends() else []
     explained = rep.explain()
@@ -2665,4 +2962,5 @@ def export_pdf(path, nodes, rods, supports, loads, results, checks,
             'utilised': utilised, 'buckling': factors,
             'rod_detail': detail, 'joints': joint_rows,
             'flex_points': len(rep.flex_points),
+            'node_vectors': node_cards, 'rod_calculations': rod_cards,
             'headings': [h for _f, h in rep.sheets]}

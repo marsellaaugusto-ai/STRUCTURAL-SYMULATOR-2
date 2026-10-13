@@ -154,6 +154,11 @@ class TrussDesignMixin:
         if key:
             from . import truss_examples as tx
             return next(t for k, t, _b in tx.EXAMPLES if k == key)
+        # A model opened from a file is called what the file is called:
+        # every report of an imported bridge said only "Truss".
+        name = getattr(self, 'document_name', None)
+        if name:
+            return os.path.splitext(os.path.basename(name))[0][:40]
         return 'Truss'
 
     def _export_pdf_report(self, path=None):

@@ -3103,8 +3103,15 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
         n0 = lp['start']
         if n0 < len(self.nodes):
             sx, sy = w2s(*self.nodes[n0][:2])
-            c.create_text(sx, sy - 34, text='load traced from here',
-                          fill=LP, font=('Helvetica', 8, 'bold'))
+            # Beside the arrow's shaft, not on it: the traced arrow itself
+            # is drawn over this, haloed (see _draw_load).
+            for ddx, ddy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                c.create_text(sx + 12 + ddx, sy - 24 + ddy, anchor='w',
+                              text='traced', fill='white',
+                              font=('Helvetica', 8, 'bold'))
+            c.create_text(sx + 12, sy - 24, anchor='w', text='traced',
+                          fill=LP, font=('Helvetica', 8, 'bold'),
+                          tags=('load_traced_label',))
 
     # ── the mode rail ────────────────────────────────────────────────────
     def _on_mode_change(self, key):
@@ -4723,10 +4730,16 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
                 self._draw_reaction(c,sx,sy,rxn.get('rx',0),rxn.get('ry',0),z,
                                      scale=rxn_scale)
 
-        # load arrows
+        # load arrows -- while a load is traced, it is drawn in the trace's
+        # teal with a halo, and every other load steps back to a pale tone,
+        # so the arrow the chevrons start from is the one that stands out.
+        lp = self._lp if self.show_load_path.get() else None
+        traced = lp['start'] if lp and not lp.get('note') else None
         for ld in self.loads:
             n=self.nodes[ld['node']]; sx,sy=w2s(n[0],n[1])
-            self._draw_load(c,sx,sy,ld['fx'],ld['fy'],z, scale=load_scale)
+            self._draw_load(c,sx,sy,ld['fx'],ld['fy'],z, scale=load_scale,
+                            traced=None if traced is None
+                            else ld['node'] == traced)
 
         # nodes
         for i,(nx,ny) in enumerate(self.nodes):
@@ -5119,18 +5132,34 @@ class TrussApp(TrussLearnMixin, TrussDesignMixin, TrussPlayMixin,
             c.create_text(x, y+36*sc, text=self.support_label(stype),
                           fill='#777', font=('Helvetica', 8))
 
-    def _draw_load(self, c, x, y, fx, fy, z=1, scale=None):
+    #: The trace's colour (see _draw_load_path) and the tone the other
+    #: loads step back to while one is being traced.
+    LP_COLOUR = '#0F8A7E'
+    LOAD_DIMMED = '#ecc3b2'
+
+    def _draw_load(self, c, x, y, fx, fy, z=1, scale=None, traced=None):
+        """`traced`: None when no load is being traced; True for the one
+        that is (teal, thicker, haloed); False for the others (pale)."""
         mag=math.hypot(fx,fy)
         if mag<0.001: return
         sc=1.0   # constant on-screen size regardless of zoom
         length = scale(mag) if scale is not None else 44.0
         nx_,ny_=fx/mag,fy/mag
         ox,oy=x-nx_*length*sc,y-ny_*length*sc
-        c.create_line(ox,oy,x,y,fill=CL,width=2*sc,arrow='last',
-                       arrowshape=(10*sc,12*sc,4*sc))
+        colour, width, tag = CL, 2, 'load_arrow'
+        if traced:
+            colour, width, tag = self.LP_COLOUR, 4, 'load_arrow_traced'
+            c.create_line(ox, oy, x, y, fill='#bfe6e1', width=11,
+                          capstyle='round', tags=('load_halo',))
+        elif traced is False:
+            colour = self.LOAD_DIMMED
+        c.create_line(ox,oy,x,y,fill=colour,width=width*sc,arrow='last',
+                       arrowshape=(12*sc,14*sc,5*sc) if traced
+                       else (10*sc,12*sc,4*sc), tags=(tag,))
         c.create_text(ox-ny_*14*sc,oy+nx_*14*sc,
-                       text=self.fmt('force', mag),fill=CL,
-                       font=('Helvetica',9,'bold'))
+                       text=self.fmt('force', mag),fill=colour,
+                       font=('Helvetica',10 if traced else 9,'bold'),
+                       tags=(tag + '_text',))
 
     def _draw_reaction(self, c, x, y, rx, ry, z=1, scale=None):
         """Green arrows pointing away from the support node."""

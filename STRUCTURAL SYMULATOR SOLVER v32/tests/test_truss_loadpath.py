@@ -321,3 +321,31 @@ def test_force_on_each_member_switches_the_forces_off_and_back_on(app):
     app.show_force_labels.set(True)
     app._draw()
     assert all(':' in t for t in _rod_labels(app))
+
+
+# ── the traced load's own arrow (v32 t 12) ────────────────────────────────
+#  Asked on 13-10-26: "highlight the traced load's arrow on the drawing".
+def test_the_traced_load_s_arrow_stands_out_and_the_others_step_back(app):
+    c = app.zc.canvas
+    app._draw()
+    assert not c.find_withtag('load_arrow_traced')
+    _on(app)
+    target = app._lp_choices[1]
+    app._trace_load_at(target)
+    traced = c.find_withtag('load_arrow_traced')
+    assert len(traced) == 1
+    assert c.itemcget(traced[0], 'fill') == app.LP_COLOUR
+    assert float(c.itemcget(traced[0], 'width')) > 2
+    assert c.find_withtag('load_halo')
+    others = c.find_withtag('load_arrow')
+    assert len(others) == len(app._traceable_loads()) - 1
+    assert all(c.itemcget(i, 'fill') == app.LOAD_DIMMED for i in others)
+    # the arrow follows the choice
+    sx, sy = app.zc.w2s(*app.nodes[target][:2])
+    _x0, _y0, x1, y1 = c.coords(traced[0])
+    assert (x1, y1) == pytest.approx((sx, sy), abs=1.0)
+    app.show_load_path.set(False)
+    app._toggle_load_path()
+    assert not c.find_withtag('load_arrow_traced')
+    assert all(c.itemcget(i, 'fill') != app.LOAD_DIMMED
+               for i in c.find_withtag('load_arrow'))

@@ -65,6 +65,18 @@ class _Report:
         self.box = (min(xs), max(xs), min(ys), max(ys))
         self.span = max(self.box[1] - self.box[0], self.box[3] - self.box[2],
                         1e-9)
+        # THE ANNOTATION SCALE. Supports, load and reaction arrows,
+        # dimension offsets and the margins round a drawing are sized
+        # from this, not from the span. For any truss up to five times as
+        # long as it is deep the two are the same, and the sheets are
+        # exactly what they were. A bridge 64 m long and 8 m deep is not:
+        # sized off the span its load arrows were longer than the truss
+        # was deep, and its margins pushed the truss into the middle 60 %
+        # of the sheet, where a hundred labels could not fit.
+        short = min(self.box[1] - self.box[0], self.box[3] - self.box[2])
+        self.slender = self.span > self.SLENDER * max(short, 1e-9)
+        self.ann = (max(self.SLENDER * short, 0.4 * self.span)
+                    if self.slender else self.span)
         self.defl = td.deflection(nodes, supports, results['node_res'])
         self.score = ts.score(nodes, rods, results, self.checks)
         #: Filled in by `buckling()`; the cover reads it, so the sheets
@@ -72,6 +84,7 @@ class _Report:
         #: nothing (`new_sheet` appends, `cover` inserts at 0).
         self.buckling_factors = []
         self.flex_points = []
+        self._labels = {}         # id(axes) -> [(priority, Text)], see declutter
         self.sheets = []
 
     # ── does anything bend? ───────────────────────────────────────────────
@@ -105,6 +118,11 @@ class _Report:
                 ('UNITS', self.u.title_block()),
                 ('CODE', 'CIRSOC 301'),
                 ('DATE', time.strftime('%Y-%m-%d %H:%M'))]
+
+    #: Longer than this many times its depth, a truss is SLENDER: its
+    #: annotations are sized from its depth (see `ann`) and the sheets
+    #: with a table or a chart beside the drawing put it underneath.
+    SLENDER = 5.0
 
     #: Where a caption starts, on the grid the sheets are composed on.
     #: `frame()` moves the composed content down by CONTENT_DY to make
@@ -148,13 +166,61 @@ class _Report:
         bar."""
         ax = fig.add_axes(rect)
         x0, x1, y0, y1 = self.box
-        m = pad * self.span
-        ax.set_xlim(x0 - m, x1 + m)
+        m = pad * self.ann
+        # Sideways nothing needs more than 0.16: the longest arrow is 0.12
+        # and the depth dimension sits 0.07 out. Above and below hold the
+        # load arrows, two rows of dimensions and the scale bar.
+        mx = min(pad, 0.16) * self.ann if self.slender else m
+        ax.set_xlim(x0 - mx, x1 + mx)
         ax.set_ylim(y0 - m, y1 + m)
         # A metre across is a metre up: the axes box shrinks to fit.
         ax.set_aspect('equal', adjustable='box')
         ax.axis('off')
         return ax
+
+    # ── labels that never overlap ─────────────────────────────────────────
+    #
+    # The canvas has done this from the start (TrussApp._place_labels): the
+    # numbers are drawn most important first and any that would land on
+    # one already drawn is left out, with a count of how many. The report
+    # drew every label wherever it fell. On a ten-rod truss that never
+    # mattered; on a hundred-rod bridge the Axial forces sheet was a strip
+    # of overprinted digits with not one value readable. Leaving a label
+    # out loses nothing -- every value is in the Rods table -- and saying
+    # how many were left out keeps the drawing honest.
+
+    def queue_label(self, ax, text, priority):
+        self._labels.setdefault(id(ax), []).append((priority, text))
+
+    def declutter(self, ax, where=''):
+        """Hide the queued labels on `ax` that would overlap one of
+        higher priority, and say so -- with `where` the hidden values can
+        be read instead. Returns how many were hidden."""
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        queue = self._labels.pop(id(ax), [])
+        if not queue:
+            return 0
+        fig = ax.figure
+        if not isinstance(fig.canvas, FigureCanvasAgg):
+            FigureCanvasAgg(fig)
+        renderer = fig.canvas.get_renderer()
+        ax.apply_aspect()                 # the equal-aspect box, as drawn
+        placed, hidden = [], 0
+        for _p, t in sorted(queue, key=lambda q: -q[0]):
+            bb = t.get_window_extent(renderer).expanded(1.06, 1.12)
+            if any(bb.overlaps(o) for o in placed):
+                t.set_visible(False)
+                hidden += 1
+            else:
+                placed.append(bb)
+        if hidden:
+            note = ax.text(1.0, 0.0, '%d of %d labels left out where they '
+                           'would overlap%s.' % (hidden, len(queue),
+                                                 '; ' + where if where else ''),
+                           transform=ax.transAxes, ha='right', va='bottom',
+                           fontsize=6.2, color='#777', zorder=9)
+            note.set_gid('declutter')
+        return hidden
 
     def scale_bar(self, ax):
         from apps.stereo import stereo_reports as sr
@@ -340,21 +406,24 @@ class _Report:
             ax.plot([ax_, bx], [ay, by], color=c, lw=w,
                     solid_capstyle='round', zorder=3)
             if numbers:
-                ax.text((ax_ + bx) / 2, (ay + by) / 2, str(i), fontsize=6.5,
-                        color='#1a5fa8', ha='center', va='center', zorder=6,
-                        bbox=dict(boxstyle='round,pad=0.12', fc='white',
-                                  ec='none', alpha=0.85))
+                t = ax.text((ax_ + bx) / 2, (ay + by) / 2, str(i),
+                            fontsize=6.5, color='#1a5fa8', ha='center',
+                            va='center', zorder=6,
+                            bbox=dict(boxstyle='round,pad=0.12', fc='white',
+                                      ec='none', alpha=0.85))
+                self.queue_label(ax, t, 1.0)
 
     def draw_nodes(self, ax, numbers=False):
         for i, (x, y) in enumerate(self.pts):
             ax.plot([x], [y], 'o', ms=3.2, color=INK, zorder=5)
             if numbers:
-                ax.annotate(str(i), (x, y), xytext=(4, 4),
-                            textcoords='offset points', fontsize=6.5,
-                            color='#7a2e8e', zorder=6)
+                t = ax.annotate(str(i), (x, y), xytext=(4, 4),
+                                textcoords='offset points', fontsize=6.5,
+                                color='#7a2e8e', zorder=6)
+                self.queue_label(ax, t, 2.0)
 
     def draw_supports(self, ax):
-        s = 0.025 * self.span
+        s = 0.025 * self.ann
         for sp in self.supports:
             x, y = self.pts[sp['node']]
             if sp['type'] == 'fixed':
@@ -376,15 +445,16 @@ class _Report:
             m = math.hypot(fx, fy)
             if m < 1e-9:
                 continue
-            L = 0.10 * self.span * (0.5 + 0.5 * m / big)
+            L = 0.10 * self.ann * (0.5 + 0.5 * m / big)
             ux, uy = fx / m, fy / m
             ax.annotate('', xy=(x, y), xytext=(x - L * ux, y - L * uy),
                         arrowprops=dict(arrowstyle='-|>', color=LOAD,
                                         lw=1.2), zorder=7)
             if label:
-                ax.text(x - L * ux, y - L * uy, ' %s %s'
-                        % (self.u.f('force', m, 1), self.u.lab('force')),
-                        fontsize=6.5, color=LOAD, va='bottom', zorder=7)
+                t = ax.text(x - L * ux, y - L * uy, ' %s %s'
+                            % (self.u.f('force', m, 1), self.u.lab('force')),
+                            fontsize=6.5, color=LOAD, va='bottom', zorder=7)
+                self.queue_label(ax, t, m / big * 0.5)
 
     # ── shear and moment, as silhouettes along the members ────────────────
     def normal(self, ri):
@@ -621,10 +691,10 @@ class _Report:
         self._kv_rows(fig, 0.37, 0.480, self._finding_rows(), key_w=0.11,
                       wrap=40)
         self._cover_column_title(fig, 0.745, 0.515, 'Contents', blue)
-        for i, c in enumerate(contents):
+        for i, (first, c) in enumerate(_group_contents(contents)):
             col, row = divmod(i, 14)
             fig.text(0.745 + col * 0.115, 0.480 - 0.0255 * row,
-                     '%2d' % (i + 2), fontsize=8.5, fontweight='bold',
+                     '%2d' % first, fontsize=8.5, fontweight='bold',
                      color=self.chapter_colour(c), va='top')
             fig.text(0.765 + col * 0.115, 0.480 - 0.0255 * row, c,
                      fontsize=8.5, color=INK, va='top')
@@ -756,9 +826,14 @@ class _Report:
                     self.u.f('force', sum(math.hypot(l['fx'], l['fy'])
                                           for l in self.loads), 1),
                     self.u.lab('force')))]
-        for f in sorted({r.get('profile', 'Default') for r in self.rods}):
+        fams = sorted({r.get('profile', 'Default') for r in self.rods})
+        rows.append(('Rod families', '%d, with their sections:' % len(fams)))
+        for f in fams:
             p = self.profiles.get(f, {})
-            rows.append(('Family "%s"' % f, '%s%s' % (
+            # The name alone, short enough for the key column: 'Family
+            # "Bottom chord"' ran into its own section.
+            rows.append(('  ' + (f if len(f) <= 15 else f[:14] + '…'),
+                         '%s%s' % (
                 p.get('catalog') or 'no section',
                 (', ' + p['material']) if p.get('material') else '')))
         return rows
@@ -819,14 +894,15 @@ class _Report:
         self.draw_supports(ax)
         self._dimensions(ax)
         self.scale_bar(ax)
+        self.declutter(ax, 'every rod and its nodes are in the Rods table')
         self.caption(fig, 'Node numbers in purple, rod numbers in blue. '
                  'Dimensions in %s.' % self.u.lab('length'), fontsize=8,
                  color=INK)
 
     def _dimensions(self, ax):
         x0, x1, y0, y1 = self.box
-        off = 0.07 * self.span
-        tick = 0.012 * self.span
+        off = 0.07 * self.ann
+        tick = 0.012 * self.ann
 
         def hdim(xa, xb, y, text):
             ax.annotate('', xy=(xa, y), xytext=(xb, y),
@@ -860,12 +936,15 @@ class _Report:
         self.draw_loads(ax)
         for i, r in enumerate(self.rods):
             (xa, ya), (xb, yb) = self.pts[r['a']], self.pts[r['b']]
-            ax.text((xa + xb) / 2, (ya + yb) / 2, '%d: %s' % (
+            t = ax.text((xa + xb) / 2, (ya + yb) / 2, '%d: %s' % (
                 i, self.u.f('force', _z(N[i]), 1, sign=True)), fontsize=6.2,
                 color=col(i), ha='center', va='center', zorder=8,
                 bbox=dict(boxstyle='round,pad=0.12', fc='white', ec='none',
                           alpha=0.85))
+            # The biggest forces are the ones worth keeping.
+            self.queue_label(ax, t, 1.0 + abs(N[i]) / big)
         self.scale_bar(ax)
+        self.declutter(ax, 'every force is in the Rods table')
         self.caption(fig, 'Axial force N (%s): red pulls (+), blue '
                  'pushes (−), grey carries nothing; line width follows |N| '
                  '(largest %s).' % (self.u.lab('force'),
@@ -1259,21 +1338,24 @@ class _Report:
 
     def reactions(self):
         fig = self.new_sheet('Reactions')
-        ax = self.drawing_axes(fig, rect=(0.05, 0.19, 0.60, 0.74))
+        # A slender truss across the top, the table under it; anything
+        # else beside it, as before.
+        ax = self.drawing_axes(fig, rect=(0.05, 0.40, 0.90, 0.53)
+                               if self.slender else (0.05, 0.19, 0.60, 0.74))
         self.draw_rods(ax, color=GHOST, width=1.2)
         self.draw_supports(ax)
         self.draw_loads(ax)
         rx = self.res['reactions']
         big = max((math.hypot(r['rx'], r['ry']) for r in rx.values()),
                   default=0.0) or 1.0
-        glyph = 0.025 * self.span * 2.2      # below the support symbol
+        glyph = 0.025 * self.ann * 2.2       # below the support symbol
         for n, r in rx.items():
             x, y = self.pts[n]
             for fx, fy in ((r['rx'], 0.0), (0.0, -r['ry'])):
                 m = math.hypot(fx, fy)
                 if m < 1e-6:
                     continue
-                L = 0.12 * self.span * (0.4 + 0.6 * m / big)
+                L = 0.12 * self.ann * (0.4 + 0.6 * m / big)
                 ux, uy = fx / m, fy / m
                 # an upward push ends under the symbol, where its head shows
                 tip = (x, y - glyph) if uy > 0.5 else (x, y)
@@ -1282,7 +1364,9 @@ class _Report:
                             arrowprops=dict(arrowstyle='-|>', color=REACTION,
                                             lw=1.4), zorder=7)
         self.scale_bar(ax)
-        tab = fig.add_axes((0.67, 0.30, 0.29, 0.60))
+        self.declutter(ax)
+        tab = fig.add_axes((0.60, 0.17, 0.35, 0.21) if self.slender
+                           else (0.67, 0.30, 0.29, 0.60))
         tab.axis('off')
         F = self.u.lab('force')
         rows = [['Node', 'Type', 'Rx (%s)' % F, 'Ry (%s)' % F]]
@@ -1316,7 +1400,8 @@ class _Report:
         checked = [(i, c['util']) for i, c in enumerate(self.checks)
                    if c.get('checked') and c.get('util') is not None]
         fig = self.new_sheet('Utilisation')
-        ax = self.drawing_axes(fig, rect=(0.05, 0.19, 0.56, 0.74))
+        ax = self.drawing_axes(fig, rect=(0.05, 0.45, 0.90, 0.48)
+                               if self.slender else (0.05, 0.19, 0.56, 0.74))
         util = {i: u for i, u in checked}
 
         def col(i):
@@ -1327,11 +1412,14 @@ class _Report:
         for i, u in checked:
             r = self.rods[i]
             (xa, ya), (xb, yb) = self.pts[r['a']], self.pts[r['b']]
-            ax.text((xa + xb) / 2, (ya + yb) / 2, '%.2f' % u, fontsize=6.2,
-                    color=INK, ha='center', va='center', zorder=8,
-                    bbox=dict(boxstyle='round,pad=0.12', fc='white',
-                              ec='none', alpha=0.85))
+            t = ax.text((xa + xb) / 2, (ya + yb) / 2, '%.2f' % u,
+                        fontsize=6.2, color=INK, ha='center', va='center',
+                        zorder=8, bbox=dict(boxstyle='round,pad=0.12',
+                                            fc='white', ec='none',
+                                            alpha=0.85))
+            self.queue_label(ax, t, 1.0 + u)     # the worst ones stay
         self.scale_bar(ax)
+        self.declutter(ax, 'every utilisation is in the Rods table')
         self._util_key(fig)
 
         if not checked:
@@ -1343,8 +1431,11 @@ class _Report:
 
         # The ranking, worst first: the only order worth reading.
         order = sorted(checked, key=lambda t: -t[1])
-        show = order[:18]
-        bx = fig.add_axes((0.66, 0.235, 0.29, 0.675))
+        # Under a slender truss there is room for the worst ten, beside
+        # any other for eighteen.
+        show = order[:10] if self.slender else order[:18]
+        bx = fig.add_axes((0.45, 0.235, 0.50, 0.19) if self.slender
+                          else (0.66, 0.235, 0.29, 0.675))
         ys = list(range(len(show)))[::-1]
         bx.barh(ys, [u for _i, u in show],
                 color=[td.util_color(u) for _i, u in show], height=0.72)
@@ -1379,9 +1470,12 @@ class _Report:
         self.caption(fig, _wrap(line, 160), fontsize=8, color=INK,
                  va='top')
         if len(order) > len(show):
-            fig.text(0.66, 0.195, 'The %d most used of %d checked rods; '
+            # Under the axis title, not on it (it sat on "utilisation
+            # (demand / capacity)" once a chart had a full eighteen bars).
+            fig.text(0.95, 0.148, 'The %d most used of %d checked rods; '
                      'the rest are in the Rods table.'
-                     % (len(show), len(order)), fontsize=6.5, color='#777')
+                     % (len(show), len(order)), fontsize=6.5, color='#777',
+                     ha='right', va='bottom')
         return [i for i, _u in order]
 
     def _util_key(self, fig):
@@ -1486,7 +1580,7 @@ class _Report:
         which for a mode (±φ are the same mode) looks plausible and is
         still wrong next to the loads and supports.
         """
-        amp = 0.07 * self.span
+        amp = 0.07 * self.ann
         moved = [(x + amp * dx, y - amp * dy)
                  for (x, y), (dx, dy) in zip(self.pts, mode['nodes'])]
         for r in self.rods:
@@ -1509,7 +1603,7 @@ class _Report:
             ax.plot(xs, ys, color='#c0392b', lw=1.6, zorder=3)
         for sp in self.supports:
             x, y = self.pts[sp['node']]
-            s = 0.03 * self.span
+            s = 0.03 * self.ann
             ax.fill([x, x - s, x + s], [y, y - 1.6 * s, y - 1.6 * s],
                     color=SUPPORT, zorder=4)
         ax.set_aspect('equal', adjustable='datalim')
@@ -1643,11 +1737,14 @@ class _Report:
         for pno, chunk in enumerate(pages):
             fig = self.new_sheet('Joints' + (
                 ' (%d/%d)' % (pno + 1, len(pages)) if len(pages) > 1 else ''))
-            ax = self.drawing_axes(fig, rect=(0.04, 0.19, 0.50, 0.72),
-                                   pad=0.16)
+            # Slender: the truss across the top and the table under it in
+            # two halves; anything else: the truss beside the table.
+            ax = self.drawing_axes(fig, rect=(0.04, 0.53, 0.92, 0.38)
+                                   if self.slender else
+                                   (0.04, 0.19, 0.50, 0.72), pad=0.16)
             self.draw_rods(ax, color='#9aa3ab', width=1.4)
             self.draw_supports(ax)
-            r = 0.035 * self.span
+            r = 0.035 * self.ann
             shown = {e['node'] for e in rows}
             for i, (x, y) in enumerate(self.pts):
                 on = i in shown
@@ -1655,18 +1752,22 @@ class _Report:
                         color=MOM if on else INK, zorder=6)
                 # Below-left, clear of the arrow, which sweeps from the
                 # right round over the top.
-                ax.annotate(str(i), (x, y), xytext=(-11, -11),
-                            textcoords='offset points', fontsize=6.5,
-                            color='#555', zorder=8)
+                t = ax.annotate(str(i), (x, y), xytext=(-11, -11),
+                                textcoords='offset points', fontsize=6.5,
+                                color='#555', zorder=8)
+                self.queue_label(ax, t, 0.5)
+            big = max((e['max_abs'] for e in rows), default=0.0) or 1.0
             for e in rows:
                 x, y = self.pts[e['node']]
                 m = e['signed'] if e['max_abs'] > 0.05 else -e['reaction_m']
                 self._moment_arc(ax, x, y, m, r, MOM)
-                ax.text(x + 1.3 * r, y - 1.3 * r, '%s' % self.u.f(
+                t = ax.text(x + 1.3 * r, y - 1.3 * r, '%s' % self.u.f(
                     'moment', m, 1, sign=True), fontsize=6.4, color=MOM,
                     zorder=8, bbox=dict(boxstyle='round,pad=0.1', fc='white',
                                         ec='none', alpha=0.85))
+                self.queue_label(ax, t, 1.0 + abs(m) / big)
             self.scale_bar(ax)
+            self.declutter(ax, 'every joint moment is in the Joints table')
             body = []
             for e in chunk:
                 sign = '+' if e['signed'] > 0 else '−'
@@ -1687,9 +1788,18 @@ class _Report:
                              else 'clockwise',
                              str(e['rod']) if e['rod'] is not None else '—',
                              e['face'], check])
-            tx = fig.add_axes((0.545, 0.20, 0.40, 0.69))
-            tx.axis('off')
-            _table(tx, [head] + body, fontsize=6.5)
+            if self.slender:
+                half = (len(body) + 1) // 2
+                for k, part in enumerate((body[:half], body[half:])):
+                    if not part:
+                        continue
+                    tx = fig.add_axes((0.05 + 0.465 * k, 0.17, 0.44, 0.33))
+                    tx.axis('off')
+                    _table(tx, [head] + part, fontsize=6.5)
+            else:
+                tx = fig.add_axes((0.545, 0.20, 0.40, 0.69))
+                tx.axis('off')
+                _table(tx, [head] + body, fontsize=6.5)
             self.caption(fig, _wrap(
                 'The moment at each joint: the largest one any single rod '
                 'hands it -- what a rigid connection is designed for -- '
@@ -1700,7 +1810,8 @@ class _Report:
                 'fixed one.', 165), fontsize=7.8, color=INK, va='top')
             pinned = [i for i in range(len(self.nodes)) if i not in shown]
             if pinned and pno == len(pages) - 1:
-                fig.text(0.565, 0.185, _wrap(
+                fig.text(0.05 if self.slender else 0.565,
+                         0.515 if self.slender else 0.185, _wrap(
                     'No moment at joint%s %s: %s.' % (
                         's' if len(pinned) > 1 else '',
                         ', '.join(str(i) for i in pinned[:24])
@@ -2127,6 +2238,23 @@ def _vrule(fig, x, y0, y1, color='#ccd2d8'):
                   transform=fig.transFigure, zorder=1)
     fig.add_artist(line)
     return line
+
+
+def _group_contents(headings, first=2):
+    """[(sheet number, entry)] for the cover's contents: a run of
+    'Rod detail (1/6)' ... '(6/6)' is one entry, 'Rod detail · 6 sheets',
+    numbered by its first sheet. A hundred-rod rigid model has 21 sheets,
+    and listed one by one they ran off the edge of the cover."""
+    import re
+    out = []
+    for k, h in enumerate(headings):
+        m = re.match(r'^(.*) \((\d+)/(\d+)\)$', h)
+        base, n = (m.group(1), int(m.group(3))) if m else (h, 1)
+        if m and int(m.group(2)) > 1 and out and out[-1][2] == base:
+            continue
+        out.append((first + k, base if n == 1 else
+                    '%s · %d sheets' % (base, n), base))
+    return [(num, text) for num, text, _b in out]
 
 
 def _hrule(fig, y, x0=0.04, x1=0.96, color='#ccd2d8'):

@@ -26,7 +26,7 @@ from common import (
     PANEL_W,
     ScrollPanel, WrapBar, UnitsMixin,
     _nice_ticks, _find_diagram_maxima, make_shape_fn, fit_caption,
-    draw_moment_arrow, LoadScale, declutter_text,
+    draw_moment_arrow, LoadScale, declutter_text, HoverTooltip,
 )
 from .beam_math import (
     BeamModel, BeamResult, _adaptive_vector_integral, _gauss_VM_integral,
@@ -75,6 +75,16 @@ class BeamApp(UnitsMixin, tk.Frame):
                         'defl_ratio': 360.0}
         self.result = None
         self.model = None
+        self._undo_stack = []
+        # The x range both panes show: None means the whole beam. Zoom here is
+        # on the beam's own axis, not a uniform 2-D zoom -- see
+        # tests/test_beam_diagram_interaction.py for why that is the right
+        # affordance for three stacked plots sharing one axis (R-15).
+        self._view = None
+        self._pan = None
+        self._band_boxes = []
+        self._last_diag = None
+        self._hover = HoverTooltip(self)
         # Before _build_ui, because the widgets register themselves with the
         # mixin as they are created. Nothing in the model changes when the
         # convention does -- only how it is written -- so `repaint` only has
@@ -150,6 +160,11 @@ class BeamApp(UnitsMixin, tk.Frame):
         diag_hdr.pack(fill='x')
         tk.Label(diag_hdr, text='Diagrams — shear V, moment M, deflection (run ▶ Analyze)', bg='#f5f5f3',
                  font=('Helvetica', 9, 'bold'), fg='#777').pack(side='left')
+        tk.Button(diag_hdr, text='Fit x', relief='flat', bd=0, padx=6,
+                  font=('Helvetica', 8), command=self._fit_view).pack(side='right', padx=2)
+        tk.Button(diag_hdr, text='Export diagrams…', relief='flat', bd=0, padx=6,
+                  font=('Helvetica', 8), fg='#1a6bbd',
+                  command=self._export_diagrams).pack(side='right', padx=2)
         self.reverse_bmd_var = tk.BooleanVar(master=self, value=False)
         tk.Checkbutton(diag_hdr, text='Reverse BMD (sagging down / hogging up)',
                        variable=self.reverse_bmd_var, bg='#f5f5f3', font=('Helvetica', 8),
@@ -157,6 +172,12 @@ class BeamApp(UnitsMixin, tk.Frame):
         self.diag_canvas = tk.Canvas(left, bg='#fafaf8', height=420, bd=1, relief='solid', highlightthickness=0)
         self.diag_canvas.pack(fill='both', expand=True)
         self.diag_canvas.bind('<Configure>', lambda e: self._draw_diagrams())
+        self.diag_canvas.bind('<Motion>', self._on_diagram_motion)
+        self.diag_canvas.bind('<Leave>', self._on_diagram_leave)
+        self._bind_view_controls(self.diag_canvas,
+                                 lambda: (45, max(46, self.diag_canvas.winfo_width() - 10)))
+        self._bind_view_controls(self.schem,
+                                 lambda: (40, max(41, self.schem.winfo_width() - 40)))
 
         self._build_panel(self.panel_outer.interior)
         self._label_tree_columns()
@@ -171,6 +192,8 @@ class BeamApp(UnitsMixin, tk.Frame):
         # never disagree about how wide the window currently is.
         self.toolbar_wrap = WrapBar(tb)
         self.toolbar_wrap.start()
+        self.bind_all('<Control-z>', self._undo, add='+')
+        self.bind('<Control-z>', self._undo, add='+')
         self.bind('<Configure>', self._on_root_configure, add='+')
         self.after_idle(lambda: self._on_root_configure(None))
 
@@ -192,8 +215,10 @@ class BeamApp(UnitsMixin, tk.Frame):
         self.sup_tree.column('x', width=70)
         self.sup_tree.column('type', width=100)
         self.sup_tree.pack(fill='x', padx=8)
+        self.sup_tree.bind('<Double-1>', lambda e: self._edit_row(self.sup_tree, self.supports))
         sf = tk.Frame(panel, bg='#f0f0ee'); sf.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(sf, text='Add', command=self._add_support).pack(side='left', padx=2)
+        tk.Button(sf, text='Edit', command=lambda: self._edit_row(self.sup_tree, self.supports)).pack(side='left', padx=2)
         tk.Button(sf, text='Delete', command=lambda: self._del_row(self.sup_tree, self.supports)).pack(side='left', padx=2)
 
         self.unit_label(
@@ -204,8 +229,10 @@ class BeamApp(UnitsMixin, tk.Frame):
         self.pl_tree.column('x', width=70)
         self.pl_tree.column('P', width=100)
         self.pl_tree.pack(fill='x', padx=8)
+        self.pl_tree.bind('<Double-1>', lambda e: self._edit_row(self.pl_tree, self.point_loads))
         pf = tk.Frame(panel, bg='#f0f0ee'); pf.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(pf, text='Add', command=self._add_pointload).pack(side='left', padx=2)
+        tk.Button(pf, text='Edit', command=lambda: self._edit_row(self.pl_tree, self.point_loads)).pack(side='left', padx=2)
         tk.Button(pf, text='Delete', command=lambda: self._del_row(self.pl_tree, self.point_loads)).pack(side='left', padx=2)
 
         self.unit_label(
@@ -216,8 +243,10 @@ class BeamApp(UnitsMixin, tk.Frame):
         self.mm_tree.column('x', width=70)
         self.mm_tree.column('M', width=100)
         self.mm_tree.pack(fill='x', padx=8)
+        self.mm_tree.bind('<Double-1>', lambda e: self._edit_row(self.mm_tree, self.moments))
         mf = tk.Frame(panel, bg='#f0f0ee'); mf.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(mf, text='Add', command=self._add_moment).pack(side='left', padx=2)
+        tk.Button(mf, text='Edit', command=lambda: self._edit_row(self.mm_tree, self.moments)).pack(side='left', padx=2)
         tk.Button(mf, text='Delete', command=lambda: self._del_row(self.mm_tree, self.moments)).pack(side='left', padx=2)
 
         self.unit_label(
@@ -228,8 +257,10 @@ class BeamApp(UnitsMixin, tk.Frame):
         for c, w in [('x1', 70), ('x2', 70), ('w1', 80), ('w2', 80)]:
             self.dl_tree.column(c, width=w)
         self.dl_tree.pack(fill='x', padx=8)
+        self.dl_tree.bind('<Double-1>', lambda e: self._edit_row(self.dl_tree, self.dloads))
         df = tk.Frame(panel, bg='#f0f0ee'); df.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(df, text='Add', command=self._add_dload).pack(side='left', padx=2)
+        tk.Button(df, text='Edit', command=lambda: self._edit_row(self.dl_tree, self.dloads)).pack(side='left', padx=2)
         tk.Button(df, text='Delete', command=lambda: self._del_row(self.dl_tree, self.dloads)).pack(side='left', padx=2)
 
         tk.Label(panel, text='NON-UNIFORM DISTRIBUTED LOADS', bg='#f0f0ee',
@@ -242,8 +273,10 @@ class BeamApp(UnitsMixin, tk.Frame):
         for c, w in [('expr', 130), ('x1', 70), ('x2', 70)]:
             self.ndl_tree.column(c, width=w)
         self.ndl_tree.pack(fill='x', padx=8)
+        self.ndl_tree.bind('<Double-1>', lambda e: self._edit_row(self.ndl_tree, self.nonuniform_loads))
         ndf = tk.Frame(panel, bg='#f0f0ee'); ndf.pack(fill='x', padx=8, pady=(2, 8))
         tk.Button(ndf, text='Add', command=self._add_nonuniform_load).pack(side='left', padx=2)
+        tk.Button(ndf, text='Edit', command=lambda: self._edit_row(self.ndl_tree, self.nonuniform_loads)).pack(side='left', padx=2)
         tk.Button(ndf, text='Delete',
                   command=lambda: self._del_row(self.ndl_tree, self.nonuniform_loads)).pack(side='left', padx=2)
 
@@ -267,17 +300,137 @@ class BeamApp(UnitsMixin, tk.Frame):
             tk.Entry(sec, textvariable=v, width=8, font=('Helvetica', 9)).grid(row=i, column=1, pady=1, padx=4)
 
         tk.Label(panel, text='RESULTS', bg='#f0f0ee', font=('Helvetica', 10, 'bold')).pack(anchor='w', **pad)
-        self.res_text = tk.Text(panel, height=16, bg='white', font=('Courier', 9), relief='solid', bd=1)
+        self.res_text = tk.Text(panel, height=16, bg='white', font=('Courier', 9),
+                                relief='solid', bd=1, state='disabled')
         self.res_text.pack(fill='both', expand=True, padx=8, pady=(2, 10))
 
     # ── row management ──────────────────────────────────────────────────────
+    # ── undo ────────────────────────────────────────────────────────────────
+    # How many steps back the tab remembers. Deep enough to cover a wrong
+    # Clear or a mis-click in a long editing session, shallow enough that a
+    # deep copy per step is free.
+    UNDO_DEPTH = 20
+
+    # What an undo step consists of: the structural model, and nothing else.
+    # The section/material boxes are deliberately NOT in it -- they hold a
+    # value being typed rather than a committed change, and rewriting a box
+    # under the cursor is worse than not restoring it.
+    _UNDO_FIELDS = ('supports', 'point_loads', 'moments', 'dloads',
+                    'nonuniform_loads')
+
+    def _model_snapshot(self):
+        return {'length': self.length,
+                **{f: [dict(r) for r in getattr(self, f)]
+                   for f in self._UNDO_FIELDS}}
+
+    def _push_undo(self, label=''):
+        """Remember the model as it is now, before changing it.
+
+        Every mutator calls this first. There was no undo in this tab at all
+        until 2026-10-04, while Truss, Cable Web, Stereo and the profile
+        sketcher all had one, so a deleted load was simply gone (R-14).
+        """
+        self._undo_stack.append((label, self._model_snapshot()))
+        del self._undo_stack[:-self.UNDO_DEPTH]
+
+    def _undo(self, _event=None):
+        if not self._undo_stack:
+            return
+        _label, snap = self._undo_stack.pop()
+        self.length = snap['length']
+        self.set_unit_value(self.len_var, snap['length'])
+        for field in self._UNDO_FIELDS:
+            setattr(self, field, [dict(r) for r in snap[field]])
+        # The diagrams and the results belong to the model that was analysed.
+        # Leaving them on screen beside a model that is no longer that one is
+        # how a user reads the wrong answer.
+        self.result = None
+        self.model = None
+        self.diag_canvas.delete('all')
+        self._set_results_text('')
+        self._refresh_tables()
+
+    # ── rows ────────────────────────────────────────────────────────────────
     def _del_row(self, tree, data_list):
         sel = tree.selection()
         if not sel:
             return
-        idx = tree.index(sel[0])
-        del data_list[idx]
+        self._push_undo('delete')
+        # Every selected row, not just the first: these tables are
+        # selectmode='extended', so three rows could be selected while this
+        # removed exactly one (R-14). Highest index first, so the earlier
+        # indices stay valid as the list shrinks.
+        for idx in sorted((tree.index(iid) for iid in sel), reverse=True):
+            if 0 <= idx < len(data_list):
+                del data_list[idx]
+        self.result = None
+        self.model = None
         self._refresh_tables()
+
+    def _edit_row(self, tree, data_list):
+        """Reopen a row's own Add dialog, pre-filled, and replace it.
+
+        The tables were Add/Delete only, so changing one load's magnitude
+        meant deleting the row and retyping all of it (R-14).
+        """
+        sel = tree.selection()
+        if not sel:
+            return
+        idx = tree.index(sel[0])
+        if not (0 <= idx < len(data_list)):
+            return
+        row = data_list[idx]
+        if 'expr' in row:                       # the q(x) table has its own
+            result = self._ask_nonuniform(initial=row)
+            if not result:
+                return
+        else:
+            fields = [(key, self._row_field_label(key), self._shown(key, value))
+                      for key, value in row.items()]
+            result = self._ask(f'Edit {self._row_kind(data_list)}', fields)
+            if not result:
+                return
+            result = {k: self._stored(k, v) for k, v in result.items()}
+            stations = [k for k in result if k in ('x', 'x1', 'x2')]
+            if not self._on_beam(result, *stations):
+                return
+            if 'x1' in result and result['x2'] < result['x1']:
+                result = dict(result, x1=result['x2'], x2=result['x1'],
+                              **({'w1': result['w2'], 'w2': result['w1']}
+                                 if 'w1' in result else {}))
+        self._push_undo('edit')
+        data_list[idx] = result
+        self.result = None
+        self.model = None
+        self._refresh_tables()
+
+    _ROW_KINDS = (('supports', 'support'), ('point_loads', 'point load'),
+                  ('moments', 'point moment'), ('dloads', 'distributed load'),
+                  ('nonuniform_loads', 'non-uniform load'))
+
+    def _row_kind(self, data_list):
+        for field, name in self._ROW_KINDS:
+            if getattr(self, field, None) is data_list:
+                return name
+        return 'row'
+
+    def _row_field_label(self, key):
+        if key == 'type':
+            return 'Type'
+        unit = self._u(key)
+        return f'{key} ({unit})' if unit else key
+
+    def _set_results_text(self, text):
+        """The results box is OUTPUT. It had no `state`, so the user could
+        type into their own results -- and not find out, because the next
+        Analyze overwrote whatever they typed (R-14). Disabled still selects
+        and copies, which is what the panel is for.
+        """
+        self.res_text.config(state='normal')
+        self.res_text.delete('1.0', 'end')
+        if text:
+            self.res_text.insert('1.0', text)
+        self.res_text.config(state='disabled')
 
     # Which physical quantity each model field is, so one table refresh can
     # convert every column without a per-column special case. This is the only
@@ -425,9 +578,10 @@ class BeamApp(UnitsMixin, tk.Frame):
         rather than decided inside a modal dialog.
         """
         pending = self._entries_off_beam(length)
+        if pending and strays == 'cancel':
+            return False
+        self._push_undo('set length')
         if pending:
-            if strays == 'cancel':
-                return False
             if strays == 'delete':
                 for attr in {s['attr'] for s in pending}:
                     drop = {s['index'] for s in pending if s['attr'] == attr}
@@ -637,7 +791,9 @@ class BeamApp(UnitsMixin, tk.Frame):
                         self._shown('x', self.length / 2)), ('type', 'Type', 'pin')])
         if r:
             r['x'] = self._stored('x', r['x'])
-        if self._on_beam(r, 'x'): self.supports.append(r); self._refresh_tables()
+        if self._on_beam(r, 'x'):
+            self._push_undo('add support')
+            self.supports.append(r); self._refresh_tables()
 
     def _add_pointload(self):
         r = self._ask('Add point load',
@@ -645,7 +801,9 @@ class BeamApp(UnitsMixin, tk.Frame):
                        ('P', f'P ({self._u("P")}, +down)', self._shown('P', 10.0))])
         if r:
             r['x'] = self._stored('x', r['x']); r['P'] = self._stored('P', r['P'])
-        if self._on_beam(r, 'x'): self.point_loads.append(r); self._refresh_tables()
+        if self._on_beam(r, 'x'):
+            self._push_undo('add point load')
+            self.point_loads.append(r); self._refresh_tables()
 
     def _add_moment(self):
         r = self._ask('Add point moment',
@@ -653,7 +811,9 @@ class BeamApp(UnitsMixin, tk.Frame):
                        ('M', f'M ({self._u("M")}, +CCW)', self._shown('M', 10.0))])
         if r:
             r['x'] = self._stored('x', r['x']); r['M'] = self._stored('M', r['M'])
-        if self._on_beam(r, 'x'): self.moments.append(r); self._refresh_tables()
+        if self._on_beam(r, 'x'):
+            self._push_undo('add moment')
+            self.moments.append(r); self._refresh_tables()
 
     def _add_dload(self):
         r = self._ask('Add distributed load', [
@@ -667,10 +827,27 @@ class BeamApp(UnitsMixin, tk.Frame):
         if self._on_beam(r, 'x1', 'x2'):
             if r['x2'] < r['x1']:      # entered right-to-left; the intensities
                 r = dict(r, x1=r['x2'], x2=r['x1'], w1=r['w2'], w2=r['w1'])
+            self._push_undo('add distributed load')
             self.dloads.append(r); self._refresh_tables()
 
     def _add_nonuniform_load(self):
-        win = tk.Toplevel(self); win.title('Add non-uniform distributed load'); win.grab_set()
+        result = self._ask_nonuniform()
+        if result:
+            self._push_undo('add q(x) load')
+            self.nonuniform_loads.append(result)
+            self._refresh_tables()
+
+    def _ask_nonuniform(self, initial=None):
+        """The q(x) dialog, used to add a load and to edit one.
+
+        `initial` pre-fills it from an existing row, which is what makes a
+        q(x) load editable rather than delete-and-retype (R-14). Returns the
+        row, in STORAGE units, or None.
+        """
+        initial = initial or {}
+        title = ('Edit non-uniform distributed load' if initial
+                 else 'Add non-uniform distributed load')
+        win = tk.Toplevel(self); win.title(title); win.grab_set()
         win.configure(bg='#f0f0ee')
         # The expression is in STORAGE units and says so, in both
         # conventions -- see _ndl_hint_text for why it cannot follow the
@@ -680,20 +857,23 @@ class BeamApp(UnitsMixin, tk.Frame):
                            f'  (^ or ** = power):',
                  bg='#f0f0ee',
                  font=('Helvetica', 9)).grid(row=0, column=0, columnspan=2, sticky='w', padx=8, pady=(8, 2))
-        expr_var = tk.StringVar(master=win, value='10*sin(pi*x/L)')
+        expr_var = tk.StringVar(master=win,
+                                value=initial.get('expr', '10*sin(pi*x/L)'))
         tk.Entry(win, textvariable=expr_var, width=28, font=('Helvetica', 9)).grid(
             row=1, column=0, columnspan=2, sticky='we', padx=8, pady=2)
 
         tk.Label(win, text=f'x\u2081 ({self._u("x")}):', bg='#f0f0ee',
                  font=('Helvetica', 9)).grid(
             row=2, column=0, sticky='w', padx=8, pady=4)
-        x1_var = tk.DoubleVar(master=win, value=self._shown('x1', 0.0))
+        x1_var = tk.DoubleVar(master=win,
+                              value=self._shown('x1', initial.get('x1', 0.0)))
         tk.Entry(win, textvariable=x1_var, width=10).grid(row=2, column=1, padx=8, pady=4)
 
         tk.Label(win, text=f'x\u2082 ({self._u("x")}):', bg='#f0f0ee',
                  font=('Helvetica', 9)).grid(
             row=3, column=0, sticky='w', padx=8, pady=4)
-        x2_var = tk.DoubleVar(master=win, value=self._shown('x2', self.length))
+        x2_var = tk.DoubleVar(
+            master=win, value=self._shown('x2', initial.get('x2', self.length)))
         tk.Entry(win, textvariable=x2_var, width=10).grid(row=3, column=1, padx=8, pady=4)
 
         result = {}
@@ -731,9 +911,7 @@ class BeamApp(UnitsMixin, tk.Frame):
         tk.Button(win, text='OK', command=ok, bg='#1a6bbd', fg='white').grid(
             row=4, column=0, columnspan=2, pady=8)
         win.wait_window()
-        if result:
-            self.nonuniform_loads.append(result)
-            self._refresh_tables()
+        return result or None
 
     def _set_length(self):
         try:
@@ -756,11 +934,12 @@ class BeamApp(UnitsMixin, tk.Frame):
         self._draw_schematic()
 
     def _clear_all(self):
+        self._push_undo('clear')
         self.supports = []; self.point_loads = []; self.moments = []; self.dloads = []
         self.nonuniform_loads = []
         self.result = None; self.model = None
         self._refresh_tables()
-        self.res_text.delete('1.0', 'end')
+        self._set_results_text('')
         self.diag_canvas.delete('all')
 
     # ── Excel export / import ────────────────────────────────────────────────
@@ -836,21 +1015,21 @@ class BeamApp(UnitsMixin, tk.Frame):
 
     # ── examples ─────────────────────────────────────────────────────────────
     def _load_example_cantilever(self):
-        self._clear_all()
+        self._clear_all()      # which pushes the undo step for both of us
         self.length = 4.0; self.len_var.set(self._shown('x', 4.0))
         self.supports = [{'x': 0.0, 'type': 'fixed'}]
         self.point_loads = [{'x': 4.0, 'P': 15.0}]
         self._refresh_tables()
 
     def _load_example_overhang(self):
-        self._clear_all()
+        self._clear_all()      # which pushes the undo step for both of us
         self.length = 10.0; self.len_var.set(self._shown('x', 10.0))
         self.supports = [{'x': 2.0, 'type': 'pin'}, {'x': 8.0, 'type': 'roller'}]
         self.dloads = [{'x1': 0.0, 'x2': 10.0, 'w1': 6.0, 'w2': 6.0}]
         self._refresh_tables()
 
     def _load_example_continuous(self):
-        self._clear_all()
+        self._clear_all()      # which pushes the undo step for both of us
         self.length = 10.0; self.len_var.set(self._shown('x', 10.0))
         self.supports = [{'x': 0.0, 'type': 'pin'}, {'x': 5.0, 'type': 'roller'},
                          {'x': 10.0, 'type': 'roller'}]
@@ -1070,8 +1249,7 @@ class BeamApp(UnitsMixin, tk.Frame):
 
         lines += self._model_note_lines(m)
 
-        self.res_text.delete('1.0', 'end')
-        self.res_text.insert('1.0', '\n'.join(lines))
+        self._set_results_text('\n'.join(lines))
 
     @staticmethod
     def _place_clear(canvas, x, y_options, text, others, bounds, **kw):
@@ -1103,6 +1281,16 @@ class BeamApp(UnitsMixin, tk.Frame):
         return canvas.create_text(x, y_options[0], text=text, **kw)
 
     # ── where the extremes are ──────────────────────────────────────────────
+    @staticmethod
+    def _edge_point(xs, ys, i, j, x_edge, margin, vx0, scale_x, y0, maxabs,
+                    avail):
+        """The curve's own point where it crosses a window edge."""
+        span = xs[j] - xs[i]
+        t = (x_edge - xs[i]) / span if abs(span) > 1e-15 else 0.0
+        v = ys[i] + (ys[j] - ys[i]) * t
+        return (margin + (x_edge - vx0) * scale_x,
+                y0 - (v / maxabs) * avail)
+
     @staticmethod
     def _extreme_station(diag, key, score):
         """The x at which `score(diag[key])` is largest."""
@@ -1189,6 +1377,178 @@ class BeamApp(UnitsMixin, tk.Frame):
                 f"reaction is reported for that station.")
         return lines
 
+    # ── the x window both panes show ────────────────────────────────────────
+    # Never narrower than this fraction of the beam, so a runaway zoom cannot
+    # reach a degenerate window the drawing code would divide by.
+    MIN_VIEW_FRACTION = 1e-3
+
+    def _view_window(self):
+        """(x0, x1) of the beam currently shown, always inside [0, L]."""
+        L = max(self.length, 1e-9)
+        if self._view is None:
+            return 0.0, L
+        x0, x1 = self._view
+        span = max(x1 - x0, L * self.MIN_VIEW_FRACTION)
+        x0 = min(max(x0, 0.0), L - span) if span < L else 0.0
+        return x0, min(x0 + span, L)
+
+    def _set_view(self, x0, x1, redraw=False):
+        L = max(self.length, 1e-9)
+        span = max(min(x1, L) - max(x0, 0.0), L * self.MIN_VIEW_FRACTION)
+        if span >= L:
+            self._view = None
+        else:
+            self._view = (min(max(x0, 0.0), L - span),
+                          min(max(x0, 0.0), L - span) + span)
+        if redraw:
+            self._redraw_views()
+
+    def _fit_view(self, _event=None):
+        self._view = None
+        self._redraw_views()
+
+    def _redraw_views(self):
+        self._draw_schematic()
+        self._draw_diagrams()
+
+    def _x_from_px(self, px, left, right):
+        x0, x1 = self._view_window()
+        if right <= left:
+            return x0
+        return x0 + (px - left) * (x1 - x0) / (right - left)
+
+    # ── zoom and pan, on both panes ─────────────────────────────────────────
+    def _bind_view_controls(self, canvas, plot_box):
+        """Wheel to zoom about the pointer, drag to pan, double-click to fit.
+
+        `plot_box` returns (left, right) in pixels for that canvas, since the
+        schematic and the diagram pane reserve different margins.
+        """
+        def zoom(event, factor):
+            left, right = plot_box()
+            if not (left <= event.x <= right):
+                return
+            anchor = self._x_from_px(event.x, left, right)
+            x0, x1 = self._view_window()
+            span = (x1 - x0) * factor
+            frac = (anchor - x0) / (x1 - x0) if x1 > x0 else 0.5
+            self._set_view(anchor - span * frac, anchor + span * (1 - frac),
+                           redraw=True)
+
+        canvas.bind('<Button-4>', lambda e: zoom(e, 1 / 1.25), add='+')
+        canvas.bind('<Button-5>', lambda e: zoom(e, 1.25), add='+')
+        canvas.bind('<MouseWheel>',
+                    lambda e: zoom(e, 1 / 1.25 if e.delta > 0 else 1.25),
+                    add='+')
+
+        def press(event):
+            left, right = plot_box()
+            self._pan = (event.x, self._view_window(), left, right)
+
+        def drag(event):
+            if self._pan is None:
+                return
+            px0, (x0, x1), left, right = self._pan
+            if right <= left:
+                return
+            dx = (event.x - px0) * (x1 - x0) / (right - left)
+            # Dragging right pulls the beam right, so the window moves left.
+            self._set_view(x0 - dx, x1 - dx, redraw=True)
+
+        canvas.bind('<ButtonPress-1>', press, add='+')
+        canvas.bind('<B1-Motion>', drag, add='+')
+        canvas.bind('<ButtonRelease-1>', lambda e: setattr(self, '_pan', None),
+                    add='+')
+        canvas.bind('<Double-1>', self._fit_view, add='+')
+
+    # ── hover readout ───────────────────────────────────────────────────────
+    def _on_diagram_motion(self, event):
+        """V, M and the deflection at the pointer's station.
+
+        All three, not just the band being hovered: someone asking about
+        3.4 m wants the set. The diagrams labelled the automatic maxima and
+        nothing else, so this question needed a spreadsheet (R-15).
+        """
+        c = self.diag_canvas
+        c.delete('hover')
+        diag = self._last_diag
+        if not self.result or diag is None or not self._band_boxes:
+            self._hover.hide()
+            return
+        box = next((b for b in self._band_boxes
+                    if b['top'] <= event.y <= b['bot']
+                    and b['left'] <= event.x <= b['right']), None)
+        if box is None:
+            self._hover.hide()
+            return
+        x = self._x_from_px(event.x, box['left'], box['right'])
+        i = min(range(len(diag['x'])), key=lambda j: abs(diag['x'][j] - x))
+        for band in self._band_boxes:
+            c.create_line(event.x, band['top'], event.x, band['bot'],
+                          fill='#9aa', dash=(2, 2), tags='hover')
+        self._hover.show(
+            event.x_root, event.y_root,
+            f"x = {self._shown('x', diag['x'][i]):.3f} {self._u('x')}\n"
+            f"V = {units.from_si('force', diag['V'][i]):+.2f} "
+            f"{units.label('force')}\n"
+            f"M = {units.from_si('moment', diag['M'][i]):+.2f} "
+            f"{units.label('moment')}\n"
+            f"\u03b4 = {units.from_si('deflection', diag['v'][i]):+.3f} "
+            f"{units.label('deflection')}")
+
+    def _on_diagram_leave(self, _event=None):
+        self.diag_canvas.delete('hover')
+        self._hover.hide()
+
+    # ── export ──────────────────────────────────────────────────────────────
+    def _export_diagrams(self):
+        """Write the diagram pane to a file, so a report does not need a
+        screenshot (R-15).
+
+        PostScript, because that is what a Tk canvas can produce without any
+        third-party help: it is vector, it prints, and every platform can
+        convert it. A `.png` name is honoured when Pillow and its PostScript
+        backend are both present, and says what happened when they are not,
+        rather than writing something broken.
+        """
+        if not self.result:
+            messagebox.showwarning(
+                'Export diagrams',
+                'There is nothing to export yet \u2014 run \u25b6 Analyze first.')
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension='.ps',
+            filetypes=[('PostScript', '*.ps'), ('PNG image', '*.png')],
+            initialfile='beam_diagrams.ps',
+            title='Export diagrams')
+        if not path:
+            return
+        c = self.diag_canvas
+        ps_path = path if not path.lower().endswith('.png') else path[:-4] + '.ps'
+        try:
+            c.postscript(file=ps_path, colormode='color',
+                         width=c.winfo_width(), height=c.winfo_height())
+        except Exception as e:
+            messagebox.showerror('Export failed', str(e))
+            return
+        if path.lower().endswith('.png'):
+            try:
+                from PIL import Image
+                with Image.open(ps_path) as img:
+                    img.load()
+                    img.save(path)
+                messagebox.showinfo('Exported', f'Diagrams saved to:\n{path}')
+                return
+            except Exception:
+                messagebox.showinfo(
+                    'Exported as PostScript',
+                    f'Saved to:\n{ps_path}\n\nA PNG needs Pillow with a '
+                    f'PostScript backend (Ghostscript), which is not '
+                    f'available here. The PostScript file prints as it is, '
+                    f'and any image tool will convert it.')
+                return
+        messagebox.showinfo('Exported', f'Diagrams saved to:\n{ps_path}')
+
     # ── drawing ──────────────────────────────────────────────────────────────
     def _draw_schematic(self):
         c = self.schem
@@ -1197,14 +1557,23 @@ class BeamApp(UnitsMixin, tk.Frame):
         h = c.winfo_height() or 160
         margin = 40
         L = max(self.length, 0.001)
-        scale = (w - 2 * margin) / L
+        # The same x window the diagrams show, so the picture and the plots
+        # are never of different pieces of beam (R-15).
+        vx0, vx1 = self._view_window()
+        scale = (w - 2 * margin) / max(vx1 - vx0, 1e-12)
         y0 = h * 0.55
 
-        def X(x): return margin + x * scale
+        def X(x): return margin + (x - vx0) * scale
 
-        c.create_line(X(0), y0, X(L), y0, width=3, fill=self.CBEAM)
+        def on_view(x, pad=0.0):
+            return vx0 - pad <= x <= vx1 + pad
+
+        c.create_line(X(max(0.0, vx0)), y0, X(min(L, vx1)), y0,
+                      width=3, fill=self.CBEAM)
 
         for s in self.supports:
+            if not on_view(s['x']):
+                continue
             x = X(s['x']); t = s['type']
             if t in ('pin', 'roller'):
                 c.create_polygon(x - 10, y0 + 18, x + 10, y0 + 18, x, y0, fill='', outline=self.CSUP, width=2)
@@ -1233,9 +1602,27 @@ class BeamApp(UnitsMixin, tk.Frame):
         N_SAMPLES = 20
 
         def _q_profile(d):
-            """[(x_world, intensity_kNm), ...] for one distributed load, or
-            None if a user expression will not evaluate."""
+            """[(x_world, intensity_kNm), ...] across the VISIBLE part of one
+            distributed load, or None if there is nothing to draw.
+
+            The sampled domain is the load's own span clipped to the x window,
+            so a load running past the edge still draws right across what is
+            shown. Filtering the samples afterwards instead could leave a
+            single point -- and a one-point polyline is a Tcl error, which is
+            how a stale q(x) load over 0-99 m on a 6 m beam crashed the paint.
+            The intensities are read at the clipped stations, so the chord
+            over a ramp stays the real q(x) rather than being stretched.
+            """
             a, b = min(d['x1'], d['x2']), max(d['x1'], d['x2'])
+            span = b - a
+            lo, hi = max(a, vx0), min(b, vx1)
+            if hi - lo <= 1e-12 or span <= 1e-12:
+                return None
+
+            def intensity_at(xv):
+                frac = (xv - a) / span
+                return d['w1'] + (d['w2'] - d['w1']) * frac
+
             if 'expr' in d:
                 try:
                     fn = make_shape_fn(d['expr'], {'L': self.length})
@@ -1243,23 +1630,23 @@ class BeamApp(UnitsMixin, tk.Frame):
                     return None
                 pts = []
                 for k in range(N_SAMPLES + 1):
-                    # sample strictly inside (a, b): the expression may be
-                    # singular exactly at its own domain edge
+                    # sample strictly inside the visible span: the expression
+                    # may be singular exactly at its own domain edge
                     t = (k + 0.5) / (N_SAMPLES + 1)
-                    xv = a + (b - a) * t
+                    xv = lo + (hi - lo) * t
                     try:
                         pts.append((xv, fn(xv)))
                     except Exception:
                         return None
                 return pts
-            return [(a + (b - a) * k / N_SAMPLES,
-                     d['w1'] + (d['w2'] - d['w1']) * (k / N_SAMPLES))
+            return [(lo + (hi - lo) * k / N_SAMPLES,
+                     intensity_at(lo + (hi - lo) * k / N_SAMPLES))
                     for k in range(N_SAMPLES + 1)]
 
         profiles = []
         for d in list(self.dloads) + list(self.nonuniform_loads):
             pts = _q_profile(d)
-            if pts:
+            if pts and len(pts) >= 2:
                 profiles.append((d, pts))
         # Same compressed relative scale as the point loads and moments above,
         # but normalised against an INTENSITY of its own: two distributed loads
@@ -1314,6 +1701,8 @@ class BeamApp(UnitsMixin, tk.Frame):
         m_scale = LoadScale.of((mm['M'] for mm in self.moments), 7.0, 17.0)
 
         for p in self.point_loads:
+            if not on_view(p['x']):
+                continue
             x = X(p['x'])
             h = p_scale(p['P'])
             top = y0 - h if p['P'] >= 0 else y0 + h
@@ -1326,6 +1715,8 @@ class BeamApp(UnitsMixin, tk.Frame):
                 font=('Helvetica', 8, 'bold'), fill=self.CLOAD))
 
         for mm in self.moments:
+            if not on_view(mm['x']):
+                continue
             x = X(mm['x'])
             ccw = mm['M'] >= 0  # sign convention for this tab: +M = CCW
             r = m_scale(mm['M'])
@@ -1347,10 +1738,14 @@ class BeamApp(UnitsMixin, tk.Frame):
         w = c.winfo_width() or 600
         h = c.winfo_height() or 420
         diag = self.result.sample_diagram(n_per_element=25)
+        self._last_diag = diag          # the hover readout reads it back
         xs = diag['x']
         L = self.length
         margin = 45
-        scale_x = (w - 2 * margin) / L
+        vx0, vx1 = self._view_window()
+        plot_right = w - 10
+        scale_x = (plot_right - margin) / max(vx1 - vx0, 1e-12)
+        self._band_boxes = []
         cap_font = tkfont.Font(font=('Helvetica', 8, 'bold'))
         max_font = tkfont.Font(font=('Helvetica', 8))
         tick_font = tkfont.Font(font=('Helvetica', 7))
@@ -1360,14 +1755,17 @@ class BeamApp(UnitsMixin, tk.Frame):
         # of pixels at ANY window size -- found by the R-13 test that asserts
         # no label leaves its own canvas.
         tick_h = tick_font.metrics('linespace')
-        axis_strip = tick_h + 6
+        # The axis numbers get a strip of their own, and the "showing x = ..."
+        # note another one below them when the pane is zoomed -- sharing a row
+        # with the last tick label is how that note first collided with it.
+        axis_strip = tick_h + 6 + (tick_h + 2 if self._view is not None else 0)
         band_h = (h - 20 - axis_strip) / 3
         # How many ticks the axes can actually label. Asking for a fixed 8
         # drew labels that touched on a narrow pane -- '9' and '10'
         # overlapping by 2 px at a 340 px window -- and the same crowding
         # applies vertically in a short band. Both counts now come from the
         # space available and the font's own measurements.
-        n_xticks = max(2, min(8, int((w - margin - 10)
+        n_xticks = max(2, min(8, int((plot_right - margin)
                                      / max(1, tick_font.measure(f'{L:g}') + 14))))
         n_vticks = max(2, min(5, int(band_h / max(1, tick_h + 6))))
 
@@ -1399,24 +1797,27 @@ class BeamApp(UnitsMixin, tk.Frame):
             maxabs = max(1e-9, max(abs(v) for v in ys))
             avail = band_h / 2 - 14
 
+            self._band_boxes.append({'top': top, 'bot': bot, 'left': margin,
+                                     'right': plot_right})
+
             v_ticks = _nice_ticks(-maxabs, maxabs, n_vticks)
             for vt in v_ticks:
                 yy = y0 - (vt / maxabs) * avail
                 if top + 2 <= yy <= bot - 2:
-                    c.create_line(margin, yy, w - 10, yy, fill='#eee')
+                    c.create_line(margin, yy, plot_right, yy, fill='#eee')
                     c.create_text(margin - 4, yy, text=f'{vt:g}', anchor='e',
                                   font=('Helvetica', 6), fill='#aaa')
-            x_ticks = _nice_ticks(0, L, n_xticks)
+            x_ticks = _nice_ticks(vx0, vx1, n_xticks)
             for xt in x_ticks:
-                xx = margin + xt * scale_x
-                if margin - 1 <= xx <= w - 9:
+                xx = margin + (xt - vx0) * scale_x
+                if margin - 1 <= xx <= plot_right + 1:
                     c.create_line(xx, top, xx, bot, fill='#eee')
                     if bidx == last_band_idx:
                         c.create_text(xx, bot + 3, text=f'{xt:g}', anchor='n',
                                       font=('Helvetica', 7), fill='#888')
 
             c.create_line(margin, top, margin, bot, fill=self.CGRID)
-            c.create_line(margin, y0, w - 10, y0, fill='#bbb')
+            c.create_line(margin, y0, plot_right, y0, fill='#bbb')
 
             # The caption, the max readout and the peak labels were each
             # placed from their own geometry with no regard for the others, so
@@ -1427,32 +1828,63 @@ class BeamApp(UnitsMixin, tk.Frame):
             # the readout, the readout moves to the band's bottom right.
             max_text = f"max ±{maxabs:.2f}"
             max_w = max_font.measure(max_text)
-            avail_cap = (w - 10 - margin) - (max_w + 14)
+            avail_cap = (plot_right - margin) - (max_w + 14)
             if avail_cap < cap_font.measure(symbol):
-                avail_cap = w - 10 - margin
-                max_xy, max_anchor = (w - 10, bot - 4), 'se'
+                avail_cap = plot_right - margin
+                max_xy, max_anchor = (plot_right, bot - 4), 'se'
             else:
-                max_xy, max_anchor = (w - 10, top + 8), 'e'
+                max_xy, max_anchor = (plot_right, top + 8), 'e'
             text, _ = fit_caption(label, avail_cap, cap_font, symbol)
             keep = [c.create_text(margin, top + 8, text=text, anchor='w',
                                   font=('Helvetica', 8, 'bold'), fill='#555'),
                     c.create_text(*max_xy, text=max_text, anchor=max_anchor,
                                   font=('Helvetica', 8), fill='#777')]
+            # Only the samples inside the window, with the curve interpolated
+            # onto each edge so a zoomed plot still starts and ends at the
+            # plot box rather than wherever the nearest sample happens to be.
+            # A Tk canvas does not clip to a region, so anything drawn outside
+            # would simply sit on top of the next band (R-15).
             pts = []
-            for x, v in zip(xs, ys):
-                sx = margin + x * scale_x
-                sy = y0 - (v / maxabs) * avail
-                pts.append((sx, sy))
-            poly = [(margin, y0)] + pts + [(margin + L * scale_x, y0)]
-            flat = [c_ for pt in poly for c_ in pt]
-            c.create_polygon(flat, fill=color, outline=color, stipple='gray50')
-            for i in range(len(pts) - 1):
-                c.create_line(*pts[i], *pts[i + 1], fill=color, width=2)
+            for j, (x, v) in enumerate(zip(xs, ys)):
+                if x < vx0 or x > vx1:
+                    continue
+                if not pts and j > 0 and xs[j - 1] < vx0:
+                    pts.append(self._edge_point(xs, ys, j - 1, j, vx0,
+                                                margin, vx0, scale_x,
+                                                y0, maxabs, avail))
+                pts.append((margin + (x - vx0) * scale_x,
+                            y0 - (v / maxabs) * avail))
+                if j + 1 < len(xs) and xs[j + 1] > vx1:
+                    pts.append(self._edge_point(xs, ys, j, j + 1, vx1,
+                                                margin, vx0, scale_x,
+                                                y0, maxabs, avail))
+            if pts:
+                poly = [(pts[0][0], y0)] + pts + [(pts[-1][0], y0)]
+                flat = [c_ for pt in poly for c_ in pt]
+                c.create_polygon(flat, fill=color, outline=color,
+                                 stipple='gray50', tags='curve')
+                for i in range(len(pts) - 1):
+                    c.create_line(*pts[i], *pts[i + 1], fill=color, width=2,
+                                  tags='curve')
+
+            if bidx == last_band_idx and self._view is not None:
+                # A zoomed pane that looks like the whole beam is a
+                # wrong-answer risk, so it says what it is showing (R-15).
+                c.create_text(
+                    margin, h - 4, anchor='sw', font=('Helvetica', 7),
+                    fill='#1a6bbd',
+                    text=f"showing x = {self._shown('x', vx0):.2f} \u2026 "
+                         f"{self._shown('x', vx1):.2f} of 0 \u2026 "
+                         f"{self._shown('x', L):.2f} {self._u('x')}"
+                         f"  (double-click to fit)")
 
             locs, _ = _find_diagram_maxima(xs, ys)
             for xv in locs:
+                if not (vx0 <= xv <= vx1):
+                    continue
                 idx = min(range(len(xs)), key=lambda i: abs(xs[i] - xv))
-                sx, sy = pts[idx]
+                sx = margin + (xs[idx] - vx0) * scale_x
+                sy = y0 - (ys[idx] / maxabs) * avail
                 c.create_oval(sx - 4, sy - 4, sx + 4, sy + 4, fill='#c0392b', outline='white', width=1)
                 # Its own side of the point first, then the other side, then
                 # a line further out: whichever is free. A marker is never
@@ -1460,7 +1892,16 @@ class BeamApp(UnitsMixin, tk.Frame):
                 # disappears is the failure this finding is about.
                 near = sy - 11 if ys[idx] >= 0 else sy + 11
                 far = sy + 11 if ys[idx] >= 0 else sy - 11
+                # A peak at either end of the plot would hang its centred
+                # label off the canvas now that the plot uses the full width,
+                # so a label close to an edge anchors inward instead. Caught
+                # by R-13's own "no label leaves its canvas" test.
+                lx, anchor = sx, 'center'
+                if sx > plot_right - 24:
+                    lx, anchor = plot_right, 'e'
+                elif sx < margin + 24:
+                    lx, anchor = margin, 'w'
                 keep.append(self._place_clear(
-                    c, sx, (near, far, far + 11, near - 11),
-                    f"x={xv:.2f}", keep, (top, bot),
+                    c, lx, (near, far, far + 11, near - 11),
+                    f"x={xv:.2f}", keep, (top, bot), anchor=anchor,
                     font=('Helvetica', 7), fill='#c0392b'))

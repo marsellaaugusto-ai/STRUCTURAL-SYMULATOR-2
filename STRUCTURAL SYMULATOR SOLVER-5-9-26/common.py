@@ -372,6 +372,55 @@ def declutter_text(canvas, item_ids, step=14, max_passes=8, top_margin=2):
             break
 
 
+class HoverTooltip:
+    """A borrowed-window readout that follows the pointer.
+
+    The Arch tab grew one of these for its diagram pane; the Beam pane needed
+    the same thing for the same reason (R-15), and a second copy of a widget
+    whose whole job is to be destroyed at the right moment is how one of the
+    two ends up leaking a window (MANIFESTO s3j). So it lives here and both
+    tabs use it.
+
+    `text` is the readout currently on screen, or '' when hidden -- which is
+    what a test asks, since the tooltip is a window of its own and not a
+    canvas item.
+    """
+
+    def __init__(self, master, bg='#ffffe0', fg='#222'):
+        self._master = master
+        self._bg, self._fg = bg, fg
+        self._win = None
+        self._label = None
+        self.text = ''
+
+    def show(self, x_root, y_root, text):
+        if not text:
+            self.hide()
+            return
+        if self._win is None:
+            self._win = tk.Toplevel(self._master)
+            self._win.overrideredirect(True)
+            try:
+                self._win.attributes('-topmost', True)
+            except tk.TclError:              # pragma: no cover - platform
+                pass
+            self._label = tk.Label(self._win, bg=self._bg, fg=self._fg,
+                                   font=('Helvetica', 8), justify='left',
+                                   bd=1, relief='solid', padx=6, pady=4)
+            self._label.pack()
+        self._label.config(text=text)
+        self.text = text
+        # Offset so the pointer itself never covers the first character.
+        self._win.geometry(f'+{int(x_root) + 16}+{int(y_root) + 12}')
+
+    def hide(self):
+        self.text = ''
+        if self._win is not None:
+            self._win.destroy()
+            self._win = None
+            self._label = None
+
+
 class LoadScale:
     """Relative, compressed glyph sizing for the loads in one diagram.
 

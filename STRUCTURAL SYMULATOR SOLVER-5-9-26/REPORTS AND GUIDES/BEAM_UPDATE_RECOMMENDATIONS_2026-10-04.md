@@ -52,8 +52,8 @@ So this is not a list of old debt. Everything in Tier 1 below is new.
 | **R-11** | Retire the stale 2026-09-10 Beam report | LOW | 15 min |
 | **R-12** | Tests for everything above, before the fixes land | MED | ~3 h |
 | **R-13** | Diagram captions still collide — now even at 1500 px | LOW | ✅ **done** |
-| **R-14** | No row editing, no undo, results box is editable | LOW | ~4 h |
-| **R-15** | No zoom/pan, no hover readout, no diagram export | LOW | ~6 h |
+| **R-14** | No row editing, no undo, results box is editable | LOW | ✅ **done** |
+| **R-15** | No zoom/pan, no hover readout, no diagram export | LOW | ✅ **done** |
 | **R-16** | Results omit *where* the maxima are, both M extremes, and any deflection limit | MED | ✅ **done** |
 | **R-17** | Excel: `w1_kNm` mislabels a kN/m load; imports are unvalidated | LOW | ✅ **done** |
 | **R-18** | No internal hinges, springs or prescribed settlements | feature | ~1 d |
@@ -551,6 +551,21 @@ label within ~40 px of the right edge should anchor `'e'` instead of centred.
 
 ## R-14 · LOW · No row editing, no undo, and the results box is editable
 
+> **✅ Fixed 2026-10-04.** Double-click any row (or press its new **Edit**
+> button) to reopen that row's own dialog pre-filled, in the selected
+> convention, validated the same way an Add is. Ctrl-Z unwinds up to 20
+> steps over the structural model — the five tables and the length — and
+> clears any stale result, since diagrams belonging to a model that is no
+> longer on screen are how a user reads the wrong answer. The section boxes
+> are deliberately **not** in the undo: they hold a value being typed, not a
+> committed change, and rewriting a box under the cursor is worse than
+> leaving it. `res_text` is `state='disabled'` and written through one
+> setter; it still selects and copies.
+>
+> Also fixed in passing: the tables are `selectmode='extended'`, so three
+> rows could be selected while **Delete** removed exactly one. All of them
+> go now, as a single undo step.
+
 * Every table is Add/Delete only. To change one load's magnitude the user
   deletes the row and retypes it. Bind `<Double-1>` to reopen `_ask`
   pre-filled, which is ~20 lines given `_ask` already exists.
@@ -563,6 +578,36 @@ label within ~40 px of the right edge should anchor `'e'` instead of centred.
   `insert`), which keeps copy working and stops accidental edits.
 
 ## R-15 · LOW · No zoom, no hover readout, no diagram export
+
+> **✅ Fixed 2026-10-04**, in the order this section asked for.
+>
+> 1. **Hover readout.** Moving the pointer over any band draws a cursor
+>    across all three and reports `x`, `V`, `M` and `δ` at that station, in
+>    the selected convention. Checked by hand: at midspan of a 10 m span
+>    under 6 kN/m with 25 kN at x = 7, it reads V = +7.26 kN,
+>    M = +112.80 kN·m against 7.5 and 112.5 at exactly 5.00 m.
+> 2. **Zoom and pan — on the x axis, not `ZoomCanvas`.** Wheel zooms about
+>    the pointer, drag pans, double-click or **Fit x** restores. A
+>    deliberate deviation from this section's own suggestion: these are
+>    three stacked plots sharing one axis, and uniform 2-D zoom would scale
+>    the band heights and the text along with the span, which is not what
+>    "look closer at the support" means. The schematic shares the window,
+>    so the picture and the plots are never of different pieces of beam, and
+>    a zoomed pane states its range — a zoomed diagram that looks like the
+>    whole beam is a wrong-answer risk.
+> 3. **Export.** **Export diagrams…** writes the pane as PostScript, which
+>    is what a Tk canvas can produce unaided: vector, printable,
+>    convertible anywhere. A `.png` name is honoured when Pillow and
+>    Ghostscript are both present and says plainly what happened when they
+>    are not, rather than writing something broken.
+>
+> **Two defects found while building it, both fixed:** clipping a load's
+> *samples* to the window instead of its sampled *domain* could leave a
+> single point, and a one-point polyline is a Tcl error — a stale q(x) load
+> over 0–99 m on a 6 m beam crashed the paint, caught by an unrelated R-4
+> test. And using the pane's full width for the plot pushed the right-hand
+> peak label off the canvas, caught by R-13's own "no label leaves its
+> canvas" test; labels near an edge now anchor inward.
 
 `common.ZoomCanvas` is used by Truss, Cable Web, Stereo, the perforated-beam
 views, the profile sketcher and the section-profile UI. Beam's schematic and

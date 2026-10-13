@@ -9,11 +9,22 @@ Everything below is judged against *"does this build an intuition about
 arches?"*, not against *"is this a competent analysis package?"*
 
 That distinction matters, because the answer to the second question is
-already **yes**. The solver is the most accurate in the project — the
-2026-09-10 re-validation holds (`H = wL²/8f` to 2.5e-14, funicular
-`max|M| ≈ 0`, `M = 0` at the crown hinge), and nothing below asks you to
-change a line of the math. Every recommendation is about what the tab
-*shows* and *asks for*, not what it computes.
+already **yes**, on the evidence available. `REMAINING_BUGS_ARCH_2026-09-10.md`
+reports the solver re-validated to `H = wL²/8f` at 2.5e-14, funicular
+`max|M| ≈ 0`, and `M = 0` at the crown hinge, and the test modules that
+report asked for now exist on disk (`tests/test_arch_math.py`,
+`tests/test_arch_asymmetric_supports.py`).
+
+**I did not re-run that validation in this pass** — the review container has
+neither `tkinter` nor `pytest`, so nothing here was executed. This review is
+a source read: every claim below about what the code *does* was confirmed by
+reading or grepping the file, and no claim about numerical accuracy was
+independently checked. Treat the accuracy figures as inherited, not
+reconfirmed.
+
+That caveat does not weaken the recommendations, because none of them touch
+the math. Every one is about what the tab *shows* and *asks for*, not what
+it computes.
 
 The one-sentence summary: **the Arch tab solves an arch correctly and then
 presents the answer as an engineer's output sheet.** An architect reads
